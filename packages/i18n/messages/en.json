@@ -1,0 +1,12 @@
+{
+  "common": {
+    "appName": "Trivia Arena",
+    "loading": "Loading…",
+    "retry": "Try again"
+  },
+  "leaderboard": {
+    "title": "Leaderboard",
+    "refresh": "Refresh",
+    "updatedAgo": "Updated {ago}"
+  }
+}

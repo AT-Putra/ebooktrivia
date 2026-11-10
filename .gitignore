@@ -1,0 +1,44 @@
+# dependencies
+node_modules/
+.pnpm-store/
+
+# builds
+dist/
+build/
+.next/
+out/
+.turbo/
+coverage/
+*.tsbuildinfo
+
+# env & secrets (never commit)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+secrets/
+infra/**/escrow/
+
+# OMC transient state (plans/specs are kept)
+.omc/state/
+.omc/drafts/
+.omc/logs/
+
+# test artifacts
+playwright-report/
+test-results/
+load/results/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/*
+!.vscode/extensions.json
+.idea/
+
+# OMC ralph transient mirrors
+.omc/prd.json
+.omc/progress.txt
+.omc/notepads/
