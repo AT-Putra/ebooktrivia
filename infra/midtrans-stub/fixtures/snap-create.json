@@ -1,0 +1,22 @@
+{
+  "_provenance": "PROVISIONAL — shaped from Midtrans public docs, not yet recorded from a real Midtrans sandbox (replace when verified in US-005)",
+  "request": {
+    "transaction_details": {
+      "order_id": "ORDER-1",
+      "gross_amount": 50000
+    },
+    "expiry": {
+      "unit": "hours",
+      "duration": 24
+    }
+  },
+  "response_201": {
+    "token": "00000000-0000-0000-0000-000000000000",
+    "redirect_url": "https://app.sandbox.midtrans.com/snap/v4/redirection/00000000-0000-0000-0000-000000000000"
+  },
+  "response_400_duplicate_order_id": {
+    "error_messages": [
+      "transaction_details.order_id sudah digunakan"
+    ]
+  }
+}

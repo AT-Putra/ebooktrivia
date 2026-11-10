@@ -34,6 +34,16 @@ Re-verify before adding a package in a later milestone; bump this table in the s
 | sharp | 0.35.5 | assets + uploads (M1, M2) |
 | next-intl | 4.14.9 | apps (M6/M9) |
 | @playwright/test | 1.65.0 | e2e (M1c) |
+| hono / @hono/node-server | 4.13.17 / 2.1.6 | infra/waha-mock, infra/midtrans-stub (M0c) |
+
+### Container images (dev stack, M0c)
+| Image | Version | Notes |
+|---|---|---|
+| postgres | 18.6 | built as `infra/images/postgres-walg` |
+| wal-g | v3.0.9 | asset `wal-g-pg-24.04-amd64.tar.gz`, sha256 `444ce216230c254edef803e098a59a1746806da3e0d55671d7b0f0082db14ef4` (verified at build) |
+| valkey/valkey | 9.1.3 | ACL users public/worker/admin (`-@dangerous -@admin`), ops (`+ping`) |
+| axllent/mailpit | v1.33.1 | dev SMTP sink |
+| node | 26-slim | stub containers (Node built-in type stripping; dev-only, installs not lockfile-locked) |
 
 ## Tooling decisions recorded during M0a
 - **turbo removed.** `turbo run` could not spawn the npm-shimmed pnpm on Windows. Workspace scripts run through `pnpm -r`, which already runs packages in topological order. Turbo can come back later if build caching is needed.

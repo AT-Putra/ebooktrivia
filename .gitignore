@@ -15,6 +15,7 @@ coverage/
 .env
 .env.*
 !.env.example
+infra/dev/.env
 *.pem
 *.key
 *.p12

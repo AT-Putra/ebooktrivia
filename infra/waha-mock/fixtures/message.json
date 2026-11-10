@@ -1,0 +1,31 @@
+{
+  "_provenance": "PROVISIONAL — shaped from WAHA public docs, not yet recorded from a real WAHA session (replace in US-005)",
+  "inbound_pn": {
+    "event": "message",
+    "session": "default",
+    "payload": {
+      "id": "false_628123456789@c.us_3EB0AAAA0001",
+      "timestamp": 1760000000,
+      "from": "628123456789@c.us",
+      "fromMe": false,
+      "body": "halo",
+      "hasMedia": false,
+      "ack": 1,
+      "ackName": "SERVER"
+    }
+  },
+  "inbound_lid": {
+    "event": "message",
+    "session": "default",
+    "payload": {
+      "id": "false_98765432101234@lid_3EB0AAAA0002",
+      "timestamp": 1760000000,
+      "from": "98765432101234@lid",
+      "fromMe": false,
+      "body": "halo dari lid",
+      "hasMedia": false,
+      "ack": 1,
+      "ackName": "SERVER"
+    }
+  }
+}

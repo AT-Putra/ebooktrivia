@@ -1,0 +1,21 @@
+{
+  "_provenance": "PROVISIONAL — shaped from Midtrans public docs, not yet recorded from a real Midtrans sandbox (replace when verified in US-005)",
+  "pending": {
+    "status_code": "201",
+    "transaction_status": "pending",
+    "gross_amount": "50000.00",
+    "order_id": "ORDER-1"
+  },
+  "settlement": {
+    "status_code": "200",
+    "transaction_status": "settlement",
+    "gross_amount": "50000.00",
+    "order_id": "ORDER-1"
+  },
+  "expire": {
+    "status_code": "407",
+    "transaction_status": "expire",
+    "gross_amount": "50000.00",
+    "order_id": "ORDER-1"
+  }
+}

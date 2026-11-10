@@ -1,0 +1,64 @@
+# Local dev stack. All secrets below are DEV ONLY placeholders.
+name: ebooktrivia-dev
+services:
+  postgres:
+    build: ../images/postgres-walg
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-devonly} # DEV ONLY
+    ports: ["127.0.0.1:55432:5432"]
+    volumes: ["pgdata:/var/lib/postgresql"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  valkey:
+    image: valkey/valkey:9.1.3
+    command: ["valkey-server", "/usr/local/etc/valkey/valkey.conf"]
+    ports: ["127.0.0.1:56379:6379"]
+    volumes:
+      - ./valkey/valkey.conf:/usr/local/etc/valkey/valkey.conf:ro
+      - ./valkey/users.acl:/usr/local/etc/valkey/users.acl:ro
+      - valkeydata:/data
+    healthcheck:
+      test: ["CMD-SHELL", "valkey-cli --user ops --pass ops-devonly --no-auth-warning ping | grep -q PONG"] # DEV ONLY
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  mailpit:
+    image: axllent/mailpit:v1.33.1
+    ports: ["127.0.0.1:51025:1025", "127.0.0.1:58025:8025"]
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  waha-mock:
+    build: ../waha-mock
+    environment:
+      WAHA_MOCK_API_KEY: ${WAHA_MOCK_API_KEY:-devonly-waha-key} # DEV ONLY
+      WAHA_MOCK_WEBHOOK_HMAC_SECRET: ${WAHA_MOCK_WEBHOOK_HMAC_SECRET:-devonly-waha-hmac} # DEV ONLY
+    ports: ["127.0.0.1:53000:3000"]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/healthz').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  midtrans-stub:
+    build: ../midtrans-stub
+    environment:
+      MIDTRANS_STUB_SERVER_KEY: ${MIDTRANS_STUB_SERVER_KEY:-SB-Mid-server-DEVONLY} # DEV ONLY
+    ports: ["127.0.0.1:53001:3000"]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/healthz').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pgdata:
+  valkeydata:

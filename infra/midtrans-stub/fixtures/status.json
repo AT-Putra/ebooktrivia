@@ -1,0 +1,16 @@
+{
+  "_provenance": "PROVISIONAL — shaped from Midtrans public docs, not yet recorded from a real Midtrans sandbox (replace when verified in US-005)",
+  "settlement": {
+    "status_code": "200",
+    "status_message": "Success, transaction is found",
+    "transaction_id": "11111111-1111-1111-1111-111111111111",
+    "order_id": "ORDER-1",
+    "gross_amount": "50000.00",
+    "currency": "IDR",
+    "payment_type": "qris",
+    "transaction_status": "settlement",
+    "fraud_status": "accept",
+    "transaction_time": "2026-11-10 10:00:00",
+    "signature_key": "<sha512hex(order_id+status_code+gross_amount+serverKey)>"
+  }
+}
