@@ -3,6 +3,7 @@ packages:
   - "packages/*"
   - "tools/*"
   - "infra/*"
+  - "spikes/*"
 allowBuilds:
   esbuild: true
 minimumReleaseAgeExclude:
