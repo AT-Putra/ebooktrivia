@@ -90,3 +90,11 @@ Re-verify before adding a package in a later milestone; bump this table in the s
 | lighthouse | 13.6.0 | e2e (`lighthouse.ts`, mobile form factor, Playwright Chromium) |
 
 Mockups: set `ENABLE_MOCKUPS=1` for production starts; without it every `/mockups/*` route is 404 (checked per request). Screenshots live in `docs/mockups/`.
+
+## packages/db (US-009, M2a) - verified 2026-11-11 (`npm view <pkg> version`)
+| Package | Version | Notes |
+|---|---|---|
+| drizzle-orm / drizzle-kit / postgres | 0.45.4 / 0.31.11 / 4.1.0 | unchanged; npm latest equals the pin |
+| better-auth | 1.7.19 (devDependency) | same pin as the R13 spike; npm `latest` is 1.7.20 (published 2026-11-10). Used only to derive and regression-check the `player_auth` / `admin_auth` DDL (`scripts/better-auth-ddl.ts`, `test/better-auth.int.test.ts`) |
+| kysely | 0.28.17 (devDependency) | same as the R13 spike (Better Auth accepts `^0.28.17 \|\| ^0.29.0`); npm `latest` is 0.29.8. Kept equal to the spike so the lockfile holds one kysely |
+| pg / @types/pg | 8.23.1 / 8.23.1 (devDependencies) | npm latest equals the pin; Better Auth's `PostgresDialect` driver in the DDL script and test |

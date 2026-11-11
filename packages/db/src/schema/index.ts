@@ -1,9 +1,11 @@
-// Spike R1 sample schema; replaced by the full M2 schema in US-009.
-import { bigint, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
-
-export const products = pgTable("products", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  title: text("title").notNull(),
-  priceIdr: bigint("price_idr", { mode: "bigint" }).notNull(),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-});
+// Full M2 schema, split by domain. Hand-written SQL (roles, SECURITY DEFINER functions,
+// triggers, grants, seeds) lives in ../../sql and is applied by ../migrate.ts after the
+// drizzle migrations.
+export * from "./auth.ts";
+export * from "./catalog.ts";
+export * from "./delivery.ts";
+export * from "./funnel.ts";
+export * from "./governance.ts";
+export * from "./play.ts";
+export * from "./player.ts";
+export * from "./tracking.ts";
