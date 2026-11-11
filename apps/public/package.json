@@ -4,19 +4,28 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "sync-assets": "node ../../scripts/sync-ui-assets.mjs",
+    "predev": "pnpm run sync-assets",
     "dev": "next dev",
+    "prebuild": "pnpm run sync-assets",
     "build": "next build",
     "start": "next start",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
+    "@ebooktrivia/i18n": "workspace:*",
+    "@ebooktrivia/ui": "workspace:*",
+    "@phosphor-icons/react": "2.1.10",
     "next": "16.4.6",
     "react": "19.3.1",
     "react-dom": "19.3.1"
   },
   "devDependencies": {
+    "@tailwindcss/postcss": "4.3.5",
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
+    "postcss": "8.5.32",
+    "tailwindcss": "4.3.5",
     "typescript": "7.0.2"
   }
 }

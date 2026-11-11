@@ -1,0 +1,35 @@
+@import "@ebooktrivia/ui/styles.css";
+
+/* Scan the shared UI package for utility classes. */
+@source "../../../../packages/ui/src";
+
+/* next/font exposes hashed family names through these variables (see layout.tsx). */
+[data-theme="admin-light"],
+[data-theme="admin-dark"] {
+  --font-heading: var(--font-fira-sans), "Fira Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: var(--font-fira-sans), "Fira Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-fira-code), "Fira Code", ui-monospace, monospace;
+  --topbar-h: 3rem;
+}
+
+/* Chart series colours: >= 3:1 against `card` in both themes; also differ by dash + marker shape. */
+[data-theme="admin-dark"] {
+  --chart-1: #38bdf8;
+  --chart-2: #fbbf24;
+}
+
+[data-theme="admin-light"] {
+  --chart-1: #0369a1;
+  --chart-2: #b45309;
+}
+
+body {
+  font-size: 0.875rem;
+  line-height: 1.45;
+}
+
+html {
+  scroll-padding-top: calc(var(--topbar-h) + 4rem);
+}
+
+/* Subtle (dial 2/10): 150ms colour/opacity transitions only; no entrance animation. */

@@ -2,11 +2,149 @@
   "common": {
     "appName": "Trivia Arena",
     "loading": "Memuat…",
-    "retry": "Coba lagi"
+    "retry": "Coba lagi",
+    "skipToContent": "Lewati ke konten",
+    "mockupBadge": "Mockup, data contoh"
   },
   "leaderboard": {
     "title": "Papan Peringkat",
     "refresh": "Perbarui",
-    "updatedAgo": "Diperbarui {ago}"
+    "refreshing": "Memuat…",
+    "updatedAgo": "Diperbarui {ago}",
+    "justNow": "baru saja",
+    "secondsAgo": "{n} detik lalu",
+    "minutesAgo": "{n} menit lalu",
+    "showAll": "Lihat semua",
+    "showLess": "Tampilkan lebih sedikit",
+    "colRank": "Peringkat",
+    "colName": "Nama",
+    "colScore": "Skor",
+    "colTime": "Waktu",
+    "myRank": "Peringkat saya",
+    "you": "Kamu",
+    "gap": "Peringkat di antara 10 besar dan kamu tidak ditampilkan",
+    "captionTop": "10 pemain teratas dan peringkatmu",
+    "rankMedal": "Juara {n}"
+  },
+  "trivia": {
+    "pageTitle": "Trivia",
+    "programSwitcher": "Ganti program",
+    "programSwitcherNav": "Program",
+    "programProgress": "{done}/{total} selesai",
+    "pickProgram": "Pilih program",
+    "close": "Tutup",
+    "account": "Akun",
+    "banner": {
+      "title": "Program",
+      "prizes": "Hadiah",
+      "gold": "Juara 1",
+      "silver": "Juara 2",
+      "bronze": "Juara 3",
+      "salesEndsIn": "Penjualan berakhir dalam",
+      "graceEndsIn": "Masa bermain berakhir dalam",
+      "prizeArt": "Ilustrasi hadiah utama"
+    },
+    "profile": {
+      "title": "Profil Saya",
+      "score": "Skor",
+      "totalTime": "Total waktu",
+      "setsCompleted": "Set selesai",
+      "rank": "Peringkat",
+      "nextUnlock": "Set berikutnya terbuka dalam {countdown} WIB",
+      "unlockSchedule": "Set baru terbuka setiap pukul 00.00 WIB"
+    },
+    "grid": {
+      "title": "Daftar Set",
+      "set": "Set {n}",
+      "play": "Main",
+      "resume": "Lanjutkan",
+      "next": "Berikutnya",
+      "completed": "Selesai",
+      "score": "{score}/{max}",
+      "viewResult": "Lihat hasil",
+      "locked": "terkunci",
+      "unlocksIn": "Terbuka dalam {when}",
+      "unlocksOn": "Terbuka {date} 00.00 WIB",
+      "inDays": "{n} hari",
+      "ariaLocked": "Set {n}, terkunci, {label}",
+      "ariaCompleted": "Set {n}, selesai, skor {score} dari {max}"
+    },
+    "sets": {
+      "culture": "Budaya",
+      "geography": "Geografi",
+      "history": "Sejarah",
+      "nature": "Alam",
+      "science": "Sains",
+      "sports": "Olahraga"
+    }
+  },
+  "play": {
+    "title": "Set {n}",
+    "exit": "Keluar dari set",
+    "exitWarning": "Waktu tetap berjalan",
+    "progress": "Soal {current} dari {total}",
+    "timerLabel": "Sisa waktu {n} detik",
+    "seconds": "detik",
+    "timeLow": "Waktu hampir habis",
+    "options": "Pilihan jawaban",
+    "correct": "Benar! +10 poin",
+    "wrong": "Jawabanmu salah. +0 poin",
+    "yourAnswer": "Jawabanmu",
+    "correctAnswer": "Jawaban benar",
+    "timeout": "Waktu habis. 0 poin.",
+    "explanation": "Penjelasan",
+    "next": "Lanjut",
+    "seeResult": "Lihat hasil",
+    "resultTitle": "Set selesai",
+    "resultScore": "Skor",
+    "resultTime": "Total waktu",
+    "resultRank": "Peringkat",
+    "backToSets": "Kembali ke daftar set",
+    "demoNote": "Demo mockup: soal contoh, tidak ada data yang dikirim."
+  },
+  "order": {
+    "pageTitle": "Status pesanan",
+    "orderSummary": "Ringkasan pesanan",
+    "product": "Produk",
+    "amount": "Jumlah",
+    "orderRef": "Kode pesanan",
+    "contact": "Kontak",
+    "whatsapp": "WhatsApp",
+    "email": "Email",
+    "copyRef": "Salin kode pesanan",
+    "copied": "Tersalin",
+    "help": "Butuh bantuan?",
+    "helpLink": "Hubungi kami",
+    "sendWhatsapp": "Kirim via WhatsApp",
+    "whatsappText": "Halo, ini kode pesanan saya {ref} untuk {product}.",
+    "enterTrivia": "Masuk ke Trivia",
+    "enterTriviaDisabled": "Tersedia setelah pembayaran berhasil",
+    "orderAgain": "Pesan lagi",
+    "tryPayAgain": "Coba bayar lagi",
+    "openPayment": "Buka halaman pembayaran",
+    "checking": "Memeriksa pembayaran…",
+    "checkedAgo": "Dicek terakhir {n} detik lalu",
+    "pending": {
+      "title": "Menunggu pembayaran",
+      "body": "Selesaikan pembayaran di aplikasi pembayaranmu. Halaman ini diperbarui otomatis.",
+      "art": "Ilustrasi jam pasir menunggu pembayaran"
+    },
+    "paid": {
+      "title": "Pembayaran berhasil",
+      "body": "Ebook dan akses trivia sedang dikirim ke WhatsApp dan email kamu.",
+      "announce": "Pembayaran berhasil. Kamu bisa masuk ke trivia.",
+      "art": "Ilustrasi pembayaran berhasil"
+    },
+    "expired": {
+      "title": "Pembayaran kedaluwarsa",
+      "body": "Waktu pembayaran sudah habis. Kamu bisa memesan lagi kapan saja.",
+      "announce": "Pembayaran kedaluwarsa. Kamu bisa memesan lagi.",
+      "art": "Ilustrasi waktu pembayaran habis"
+    },
+    "failed": {
+      "title": "Pembayaran gagal",
+      "body": "Pembayaran tidak dapat diproses. Tidak ada dana yang ditagihkan. Silakan coba lagi.",
+      "announce": "Pembayaran gagal. Silakan coba bayar lagi."
+    }
   }
 }

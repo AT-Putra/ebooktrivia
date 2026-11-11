@@ -4,6 +4,7 @@ packages:
   - "tools/*"
   - "infra/*"
   - "spikes/*"
+  - "e2e"
 allowBuilds:
   esbuild: true
 minimumReleaseAgeExclude:

@@ -33,7 +33,7 @@ Re-verify before adding a package in a later milestone; bump this table in the s
 | exceljs / papaparse | 4.4.0 / 5.7.0 | question import (M5b) |
 | sharp | 0.35.5 | assets + uploads (M1, M2) |
 | next-intl | 4.14.9 | apps (M6/M9) |
-| @playwright/test | 1.65.0 | e2e (M1c) |
+| @playwright/test | 1.65.0 | e2e (M1c), `e2e/` |
 | hono / @hono/node-server | 4.13.17 / 2.1.6 | infra/waha-mock, infra/midtrans-stub (M0c) |
 
 ### Container images (dev stack, M0c)
@@ -75,3 +75,18 @@ Re-verify before adding a package in a later milestone; bump this table in the s
 - **Transparent overlays:** requested with `background: "transparent"` + `output_format: "png"`; the endpoint honours it, so alpha is preserved into AVIF/WebP.
 - **Regenerate:** `pnpm assets` (generate then optimize). Raw PNGs go to `tools/assets/raw/` (gitignored) and existing ones are skipped. Use `pnpm --filter @ebooktrivia/assets-tools run assets:generate -- --force [asset-id ...]` to redo specific assets, then `pnpm --filter @ebooktrivia/assets-tools run assets:optimize`.
 - **Output:** `packages/ui/assets/<stem>/<stem>@{1,2}x.{avif,webp}` plus `packages/ui/assets/manifest.json` (sha256, prompt, model, generatedAt). `tools/assets/src/manifest.test.ts` verifies it offline.
+
+## M1c mockups + accessibility gate (US-008) - verified 2026-11-11 (`npm view <pkg> version`)
+| Package | Version | Where |
+|---|---|---|
+| @tailwindcss/postcss | 4.3.5 | apps/public, apps/admin (devDependency; same as tailwindcss) |
+| postcss | 8.5.32 | apps/public, apps/admin (devDependency) |
+| tailwindcss | 4.3.5 | apps/public, apps/admin (devDependency) |
+| @phosphor-icons/react | 2.1.10 | apps/public, apps/admin |
+| typescript | 7.0.2 | apps/admin devDependency (every Next app pins it, see docs/spikes/R1.md) |
+| next / react / react-dom | 16.4.6 / 19.3.1 / 19.3.1 | apps/admin (same as apps/public) |
+| @playwright/test | 1.65.0 | `e2e/` (`@ebooktrivia/e2e`); install the browser with `pnpm --filter @ebooktrivia/e2e exec playwright install chromium-headless-shell chromium` |
+| @axe-core/playwright | 4.14.0 | e2e |
+| lighthouse | 13.6.0 | e2e (`lighthouse.ts`, mobile form factor, Playwright Chromium) |
+
+Mockups: set `ENABLE_MOCKUPS=1` for production starts; without it every `/mockups/*` route is 404 (checked per request). Screenshots live in `docs/mockups/`.

@@ -1,0 +1,79 @@
+@import "@ebooktrivia/ui/styles.css";
+
+/* Scan the shared UI package for utility classes. */
+@source "../../../../packages/ui/src";
+
+/* next/font exposes hashed family names through these variables (see layout.tsx). */
+:root {
+  --font-heading: var(--font-russo), "Russo One", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: var(--font-chakra), "Chakra Petch", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-chakra), "Chakra Petch", ui-monospace, monospace;
+  --header-h: 7rem;
+}
+
+@media (min-width: 48rem) {
+  :root {
+    --header-h: 4.75rem;
+  }
+}
+
+html {
+  scroll-padding-top: calc(var(--header-h) + 0.5rem);
+}
+
+body {
+  font-size: 1rem;
+  line-height: 1.5;
+}
+
+/* Grid stagger-in (pages/trivia.md): 300ms, 40ms per tile; removed under reduced motion. */
+@keyframes tile-in {
+  from {
+    opacity: 0;
+    transform: translateY(16px) scale(0.92);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .tile-in {
+    animation: tile-in var(--duration-slow) var(--ease-spring) both;
+  }
+}
+
+/* Question flow motion (pages/trivia.md "Motion"): fade + 8px translate, check pop. */
+@keyframes reveal-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes check-pop {
+  0% {
+    transform: scale(0.6);
+  }
+  70% {
+    transform: scale(1.15);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .reveal-in {
+    animation: reveal-in var(--duration-base) var(--ease-out) both;
+  }
+
+  .check-pop {
+    animation: check-pop var(--duration-slow) var(--ease-spring) both;
+  }
+}

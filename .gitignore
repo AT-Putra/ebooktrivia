@@ -22,10 +22,14 @@ infra/dev/.env
 secrets/
 infra/**/escrow/
 
-# OMC transient state (plans/specs are kept)
-.omc/state/
-.omc/drafts/
-.omc/logs/
+# OMC transient state (plans/specs are kept). `**/` because hooks also create .omc/ in
+# sub-package dirs when a command runs from there.
+**/.omc/state/
+**/.omc/drafts/
+**/.omc/logs/
+**/.omc/project-memory.json
+apps/**/.omc/
+packages/**/.omc/
 
 # test artifacts
 playwright-report/

@@ -2,11 +2,149 @@
   "common": {
     "appName": "Trivia Arena",
     "loading": "Loading…",
-    "retry": "Try again"
+    "retry": "Try again",
+    "skipToContent": "Skip to content",
+    "mockupBadge": "Mockup, sample data"
   },
   "leaderboard": {
     "title": "Leaderboard",
     "refresh": "Refresh",
-    "updatedAgo": "Updated {ago}"
+    "refreshing": "Loading…",
+    "updatedAgo": "Updated {ago}",
+    "justNow": "just now",
+    "secondsAgo": "{n} seconds ago",
+    "minutesAgo": "{n} minutes ago",
+    "showAll": "Show all",
+    "showLess": "Show less",
+    "colRank": "Rank",
+    "colName": "Name",
+    "colScore": "Score",
+    "colTime": "Time",
+    "myRank": "My rank",
+    "you": "You",
+    "gap": "Ranks between the top 10 and you are not shown",
+    "captionTop": "Top 10 players and your rank",
+    "rankMedal": "Place {n}"
+  },
+  "trivia": {
+    "pageTitle": "Trivia",
+    "programSwitcher": "Switch program",
+    "programSwitcherNav": "Program",
+    "programProgress": "{done}/{total} done",
+    "pickProgram": "Choose a program",
+    "close": "Close",
+    "account": "Account",
+    "banner": {
+      "title": "Program",
+      "prizes": "Prizes",
+      "gold": "1st place",
+      "silver": "2nd place",
+      "bronze": "3rd place",
+      "salesEndsIn": "Sales end in",
+      "graceEndsIn": "Play window ends in",
+      "prizeArt": "Main prize illustration"
+    },
+    "profile": {
+      "title": "My Profile",
+      "score": "Score",
+      "totalTime": "Total time",
+      "setsCompleted": "Sets completed",
+      "rank": "Rank",
+      "nextUnlock": "Next set opens in {countdown} WIB",
+      "unlockSchedule": "New sets open every day at 00:00 WIB"
+    },
+    "grid": {
+      "title": "Sets",
+      "set": "Set {n}",
+      "play": "Play",
+      "resume": "Resume",
+      "next": "Next",
+      "completed": "Completed",
+      "score": "{score}/{max}",
+      "viewResult": "View result",
+      "locked": "locked",
+      "unlocksIn": "Opens in {when}",
+      "unlocksOn": "Opens {date} 00:00 WIB",
+      "inDays": "{n} days",
+      "ariaLocked": "Set {n}, locked, {label}",
+      "ariaCompleted": "Set {n}, completed, score {score} of {max}"
+    },
+    "sets": {
+      "culture": "Culture",
+      "geography": "Geography",
+      "history": "History",
+      "nature": "Nature",
+      "science": "Science",
+      "sports": "Sports"
+    }
+  },
+  "play": {
+    "title": "Set {n}",
+    "exit": "Leave set",
+    "exitWarning": "The clock keeps running",
+    "progress": "Question {current} of {total}",
+    "timerLabel": "{n} seconds left",
+    "seconds": "sec",
+    "timeLow": "Time is almost up",
+    "options": "Answer options",
+    "correct": "Correct! +10 points",
+    "wrong": "Your answer is wrong. +0 points",
+    "yourAnswer": "Your answer",
+    "correctAnswer": "Correct answer",
+    "timeout": "Time is up. 0 points.",
+    "explanation": "Explanation",
+    "next": "Continue",
+    "seeResult": "See result",
+    "resultTitle": "Set complete",
+    "resultScore": "Score",
+    "resultTime": "Total time",
+    "resultRank": "Rank",
+    "backToSets": "Back to sets",
+    "demoNote": "Mockup demo: sample questions, nothing is submitted."
+  },
+  "order": {
+    "pageTitle": "Order status",
+    "orderSummary": "Order summary",
+    "product": "Product",
+    "amount": "Amount",
+    "orderRef": "Order reference",
+    "contact": "Contact",
+    "whatsapp": "WhatsApp",
+    "email": "Email",
+    "copyRef": "Copy order reference",
+    "copied": "Copied",
+    "help": "Need help?",
+    "helpLink": "Contact us",
+    "sendWhatsapp": "Send via WhatsApp",
+    "whatsappText": "Hello, this is my order reference {ref} for {product}.",
+    "enterTrivia": "Enter Trivia",
+    "enterTriviaDisabled": "Available after payment succeeds",
+    "orderAgain": "Order again",
+    "tryPayAgain": "Try paying again",
+    "openPayment": "Open payment page",
+    "checking": "Checking payment…",
+    "checkedAgo": "Last checked {n} seconds ago",
+    "pending": {
+      "title": "Waiting for payment",
+      "body": "Complete the payment in your payment app. This page updates automatically.",
+      "art": "Hourglass illustration waiting for payment"
+    },
+    "paid": {
+      "title": "Payment successful",
+      "body": "Your ebook and trivia access are being sent to your WhatsApp and email.",
+      "announce": "Payment successful. You can enter the trivia.",
+      "art": "Payment successful illustration"
+    },
+    "expired": {
+      "title": "Payment expired",
+      "body": "The payment window has closed. You can order again at any time.",
+      "announce": "Payment expired. You can order again.",
+      "art": "Payment window closed illustration"
+    },
+    "failed": {
+      "title": "Payment failed",
+      "body": "The payment could not be processed. You were not charged. Please try again.",
+      "announce": "Payment failed. Please try paying again."
+    }
   }
 }

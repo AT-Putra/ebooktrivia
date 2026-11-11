@@ -10,6 +10,7 @@
     "./tokens.css": "./src/tokens.css",
     "./styles.css": "./src/styles.css",
     "./contrast-pairs.json": "./src/contrast-pairs.json",
+    "./assets/manifest.json": "./assets/manifest.json",
     "./lib/utils": "./src/lib/utils.ts",
     "./components/*": "./src/components/*.tsx"
   },
