@@ -11,7 +11,8 @@
     "typecheck": "tsc --noEmit -p tsconfig.json && pnpm -r --workspace-concurrency=4 run typecheck",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
-    "check:i18n": "tsx scripts/check-i18n.ts packages/i18n/messages"
+    "check:i18n": "tsx scripts/check-i18n.ts packages/i18n/messages",
+    "check:contrast": "tsx scripts/check-contrast.ts"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",

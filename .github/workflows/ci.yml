@@ -33,6 +33,8 @@ jobs:
         run: pnpm -s test
       - name: i18n key parity
         run: pnpm -s check:i18n
+      - name: Contrast gate
+        run: pnpm -s check:contrast
 
   secrets-scan:
     runs-on: ubuntu-latest

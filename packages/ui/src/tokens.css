@@ -1,0 +1,196 @@
+/*
+ * Design tokens (Tailwind CSS 4 @theme). SEMANTIC tokens only: components use
+ * classes such as bg-primary / text-on-primary and never raw hex.
+ *
+ * Themes, selected with the data-theme attribute on <html> or any wrapper:
+ *   (default)                 trivia buyer UI (light)
+ *   data-theme="admin-light"  admin console, light
+ *   data-theme="admin-dark"   admin console, dark
+ *
+ * Every theme block defines the FULL colour set so scripts/check-contrast.ts
+ * can resolve each pair per theme. Fonts are named here but loaded by the apps
+ * (next/font): trivia = Russo One + Chakra Petch, admin = Fira Sans + Fira Code.
+ */
+@import "tw-animate-css";
+
+@theme {
+  /* ---- colour: trivia (default) ---- */
+  --color-background: #EFF6FF;
+  --color-foreground: #0F172A;
+  --color-card: #FFFFFF;
+  --color-card-foreground: #0F172A;
+  --color-popover: #FFFFFF;
+  --color-popover-foreground: #0F172A;
+  --color-primary: #2563EB;
+  --color-on-primary: #FFFFFF;
+  --color-secondary: #7C3AED;
+  --color-on-secondary: #FFFFFF;
+  --color-accent: #F59E0B;
+  --color-on-accent: #0F172A;
+  --color-muted: #F1F5FD;
+  --color-muted-foreground: #475569;
+  --color-border: #E4ECFC;
+  --color-input: #64748B;
+  --color-destructive: #DC2626;
+  --color-on-destructive: #FFFFFF;
+  --color-destructive-soft: #FEE2E2;
+  --color-destructive-soft-foreground: #7F1D1D;
+  --color-success: #15803D;
+  --color-on-success: #FFFFFF;
+  --color-success-soft: #DCFCE7;
+  --color-success-soft-foreground: #14532D;
+  --color-warning: #B45309;
+  --color-on-warning: #FFFFFF;
+  --color-warning-soft: #FEF3C7;
+  --color-warning-soft-foreground: #78350F;
+  --color-info: #0369A1;
+  --color-on-info: #FFFFFF;
+  --color-info-soft: #E0F2FE;
+  --color-info-soft-foreground: #0C4A6E;
+  --color-ring: #2563EB;
+  --color-scrim: #0F172A;
+
+  /* ---- typography ---- */
+  --font-heading: "Russo One", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Chakra Petch", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Chakra Petch", ui-monospace, monospace;
+
+  /* ---- radius ---- */
+  --radius-sm: 0.375rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+  --radius-xl: 1rem;
+  --radius-2xl: 1.5rem;
+
+  /* ---- elevation ---- */
+  --shadow-sm: 0 1px 2px 0 rgb(15 23 42 / 0.06);
+  --shadow-md: 0 4px 6px -1px rgb(15 23 42 / 0.1), 0 2px 4px -2px rgb(15 23 42 / 0.06);
+  --shadow-lg: 0 10px 15px -3px rgb(15 23 42 / 0.12), 0 4px 6px -4px rgb(15 23 42 / 0.08);
+  --shadow-xl: 0 20px 25px -5px rgb(15 23 42 / 0.16), 0 8px 10px -6px rgb(15 23 42 / 0.1);
+
+  /* ---- motion ---- */
+  --duration-instant: 0ms;
+  --duration-fast: 100ms;
+  --duration-base: 200ms;
+  --duration-slow: 300ms;
+  --duration-slower: 450ms;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in: cubic-bezier(0.7, 0, 0.84, 0);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+
+  /* ---- z-index scale ---- */
+  --z-base: 0;
+  --z-raised: 10;
+  --z-sticky: 20;
+  --z-dropdown: 40;
+  --z-overlay: 100;
+  --z-modal: 110;
+  --z-toast: 1000;
+}
+
+/* Admin console, light. Density follows the admin MASTER (dense, 4px grid). */
+[data-theme="admin-light"] {
+  --color-background: #F8FAFC;
+  --color-foreground: #0F172A;
+  --color-card: #FFFFFF;
+  --color-card-foreground: #0F172A;
+  --color-popover: #FFFFFF;
+  --color-popover-foreground: #0F172A;
+  --color-primary: #0F172A;
+  --color-on-primary: #F8FAFC;
+  --color-secondary: #E2E8F0;
+  --color-on-secondary: #0F172A;
+  --color-accent: #15803D;
+  --color-on-accent: #FFFFFF;
+  --color-muted: #F1F5F9;
+  --color-muted-foreground: #475569;
+  --color-border: #CBD5E1;
+  --color-input: #64748B;
+  --color-destructive: #DC2626;
+  --color-on-destructive: #FFFFFF;
+  --color-destructive-soft: #FEE2E2;
+  --color-destructive-soft-foreground: #7F1D1D;
+  --color-success: #15803D;
+  --color-on-success: #FFFFFF;
+  --color-success-soft: #DCFCE7;
+  --color-success-soft-foreground: #14532D;
+  --color-warning: #B45309;
+  --color-on-warning: #FFFFFF;
+  --color-warning-soft: #FEF3C7;
+  --color-warning-soft-foreground: #78350F;
+  --color-info: #0369A1;
+  --color-on-info: #FFFFFF;
+  --color-info-soft: #E0F2FE;
+  --color-info-soft-foreground: #0C4A6E;
+  --color-ring: #0F172A;
+  --color-scrim: #0F172A;
+  --font-heading: "Fira Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Fira Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Fira Code", ui-monospace, monospace;
+}
+
+/* Admin console, dark (default admin theme). Lighter tonal status colours, not inverted. */
+[data-theme="admin-dark"] {
+  --color-background: #0F172A;
+  --color-foreground: #F8FAFC;
+  --color-card: #1B2336;
+  --color-card-foreground: #F8FAFC;
+  --color-popover: #1B2336;
+  --color-popover-foreground: #F8FAFC;
+  --color-primary: #F8FAFC;
+  --color-on-primary: #0F172A;
+  --color-secondary: #334155;
+  --color-on-secondary: #F8FAFC;
+  --color-accent: #22C55E;
+  --color-on-accent: #0F172A;
+  --color-muted: #272F42;
+  --color-muted-foreground: #94A3B8;
+  --color-border: #475569;
+  --color-input: #64748B;
+  --color-destructive: #F87171;
+  --color-on-destructive: #0F172A;
+  --color-destructive-soft: #7F1D1D;
+  --color-destructive-soft-foreground: #FECACA;
+  --color-success: #4ADE80;
+  --color-on-success: #0F172A;
+  --color-success-soft: #14532D;
+  --color-success-soft-foreground: #BBF7D0;
+  --color-warning: #FBBF24;
+  --color-on-warning: #0F172A;
+  --color-warning-soft: #78350F;
+  --color-warning-soft-foreground: #FDE68A;
+  --color-info: #38BDF8;
+  --color-on-info: #0F172A;
+  --color-info-soft: #0C4A6E;
+  --color-info-soft-foreground: #BAE6FD;
+  --color-ring: #FFFFFF;
+  --color-scrim: #000000;
+  --font-heading: "Fira Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Fira Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Fira Code", ui-monospace, monospace;
+}
+
+/* Tabular figures: timers, countdowns, scores, rank, money, table numerals. */
+@utility tabular {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+
+@utility timer-digits {
+  font-family: var(--font-sans);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+  letter-spacing: 0;
+}
+
+/* Respect reduced motion globally: durations collapse, final states render at once. */
+@media (prefers-reduced-motion: reduce) {
+  :root,
+  [data-theme] {
+    --duration-fast: 0ms;
+    --duration-base: 0ms;
+    --duration-slow: 0ms;
+    --duration-slower: 0ms;
+  }
+}

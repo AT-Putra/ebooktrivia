@@ -48,3 +48,17 @@ Re-verify before adding a package in a later milestone; bump this table in the s
 ## Tooling decisions recorded during M0a
 - **turbo removed.** `turbo run` could not spawn the npm-shimmed pnpm on Windows. Workspace scripts run through `pnpm -r`, which already runs packages in topological order. Turbo can come back later if build caching is needed.
 - **GitHub Actions are pinned to commit SHAs** (latest releases on 2026-11-10): actions/checkout v7.0.1, actions/setup-node v7.1.0, gitleaks/gitleaks-action v3.0.0, google/osv-scanner-action v2.7.0.
+
+## packages/ui (US-006, M1a) — verified 2026-11-11 (`npm view <pkg> version`)
+| Package | Version | Notes |
+|---|---|---|
+| tailwindcss | 4.3.5 | `@theme` semantic tokens in `packages/ui/src/tokens.css` |
+| tw-animate-css | 1.4.0 | enter/exit animation utilities used by dialog/tooltip |
+| shadcn (CLI) | 4.23.0 | devDependency; `packages/ui/components.json` (new-york, Tailwind 4, no config file). Components are hand-adapted to `on-*` token names instead of shadcn's `*-foreground` |
+| radix-ui (unified package) | 1.8.1 | provides Dialog, Tooltip, Tabs, Label, Slot used by shadcn components |
+| @phosphor-icons/react | 2.1.10 | only icon library; no emoji icons |
+| class-variance-authority | 0.7.1 | |
+| clsx | 2.1.1 | |
+| tailwind-merge | 3.7.0 | |
+| react / react-dom | 19.3.1 | as in apps |
+| @types/react / @types/react-dom | 19.3.0 | as in apps/public |
