@@ -12,7 +12,8 @@
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "check:i18n": "tsx scripts/check-i18n.ts packages/i18n/messages",
-    "check:contrast": "tsx scripts/check-contrast.ts"
+    "check:contrast": "tsx scripts/check-contrast.ts",
+    "assets": "pnpm --filter @ebooktrivia/assets-tools run assets:generate && pnpm --filter @ebooktrivia/assets-tools run assets:optimize"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",

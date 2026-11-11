@@ -62,3 +62,16 @@ Re-verify before adding a package in a later milestone; bump this table in the s
 | tailwind-merge | 3.7.0 | |
 | react / react-dom | 19.3.1 | as in apps |
 | @types/react / @types/react-dom | 19.3.0 | as in apps/public |
+
+## tools/assets (US-007, M1b) — verified 2026-11-11
+| Package | Version | Notes |
+|---|---|---|
+| sharp | 0.35.5 | `tools/assets` (`@ebooktrivia/assets-tools`): raw PNG to AVIF + WebP at 1x/2x |
+
+## Assets
+- **Model / endpoint:** `cx/gpt-image-2.6-flare` via the local 9router, `POST http://localhost:20128/v1/images/generations` (`Authorization: Bearer <key>`). The key lives in the Windows user environment variable `9router`. Git Bash does not pass digit-leading names to Node, so `tools/assets/src/key.ts` falls back to `reg query HKCU\Environment /v 9router`. The key is never logged or written.
+- **Style statement (prepended to every prompt, see `tools/assets/prompts.json`):** premium playful 3D-rendered cartoon illustration, soft clay-like shapes, gentle rim lighting; quiz blue `#2563EB` + violet `#7C3AED` + gold `#F59E0B` on a light `#EFF6FF` background; no text, letters, logos, real people or brands; all-ages safe.
+- **Actual sizes:** the model returns its own dimensions (a 1024x1024 request returned 1254x1254), so `optimize.ts` reads real dimensions with sharp. 2x = raw size, 1x = half.
+- **Transparent overlays:** requested with `background: "transparent"` + `output_format: "png"`; the endpoint honours it, so alpha is preserved into AVIF/WebP.
+- **Regenerate:** `pnpm assets` (generate then optimize). Raw PNGs go to `tools/assets/raw/` (gitignored) and existing ones are skipped. Use `pnpm --filter @ebooktrivia/assets-tools run assets:generate -- --force [asset-id ...]` to redo specific assets, then `pnpm --filter @ebooktrivia/assets-tools run assets:optimize`.
+- **Output:** `packages/ui/assets/<stem>/<stem>@{1,2}x.{avif,webp}` plus `packages/ui/assets/manifest.json` (sha256, prompt, model, generatedAt). `tools/assets/src/manifest.test.ts` verifies it offline.

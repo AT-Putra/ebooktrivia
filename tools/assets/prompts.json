@@ -1,0 +1,111 @@
+{
+  "model": "cx/gpt-image-2.6-flare",
+  "style": "Style: premium playful 3D-rendered cartoon illustration with soft clay-like shapes, gentle rim lighting and smooth gradients, as used in a polished Indonesian trivia and knowledge contest app. Palette: quiz blue (#2563EB), violet (#7C3AED) and gold (#F59E0B) accents on a light airy blue-white background (#EFF6FF), deep navy (#0F172A) only for small details. Strictly no text, letters, numbers, words or logos anywhere, no real people, no real brands, friendly and safe for all ages.",
+  "assets": [
+    {
+      "id": "set-history",
+      "stem": "set-history",
+      "size": "1024x1024",
+      "prompt": "Square thumbnail for a history trivia set: an ancient stone temple with stepped tiers, a rolled parchment scroll and a vintage hourglass, centered composition. Style: premium playful 3D-rendered cartoon illustration with soft clay-like shapes, gentle rim lighting and smooth gradients, as used in a polished Indonesian trivia and knowledge contest app. Palette: quiz blue (#2563EB), violet (#7C3AED) and gold (#F59E0B) accents on a light airy blue-white background (#EFF6FF), deep navy (#0F172A) only for small details. Strictly no text, letters, numbers, words or logos anywhere, no real people, no real brands, friendly and safe for all ages."
+    },
+    {
+      "id": "set-science",
+      "stem": "set-science",
+      "size": "1024x1024",
+      "prompt": "Square thumbnail for a science trivia set: a glowing lightbulb, a bubbling flask, an atom with orbiting rings and a small telescope, centered composition. Style: premium playful 3D-rendered cartoon illustration with soft clay-like shapes, gentle rim lighting and smooth gradients, as used in a polished Indonesian trivia and knowledge contest app. Palette: quiz blue (#2563EB), violet (#7C3AED) and gold (#F59E0B) accents on a light airy blue-white background (#EFF6FF), deep navy (#0F172A) only for small details. Strictly no text, letters, numbers, words or logos anywhere, no real people, no real brands, friendly and safe for all ages."
+    },
+    {
+      "id": "set-nature",
+      "stem": "set-nature",
+      "size": "1024x1024",
+      "prompt": "Square thumbnail for a nature trivia set: a friendly cartoon baby orangutan peeking over large blue-teal and violet-tinted stylised tropical leaves, a golden flower and a small waterfall, a soft blue-violet misty background with only minimal green, centered composition. Style: premium playful 3D-rendered cartoon illustration with soft clay-like shapes, gentle rim lighting and smooth gradients, as used in a polished Indonesian trivia and knowledge contest app. Palette: quiz blue (#2563EB), violet (#7C3AED) and gold (#F59E0B) accents on a light airy blue-white background (#EFF6FF), deep navy (#0F172A) only for small details. Strictly no text, letters, numbers, words or logos anywhere, no real people, no real brands, friendly and safe for all ages."
+    },
+    {
+      "id": "set-geography",
+      "stem": "set-geography",
+      "size": "1024x1024",
+      "prompt": "Square thumbnail for a geography trivia set: a stylised globe on a stand with an island archipelago, a compass and a folded map with a pin, centered composition. Style: premium playful 3D-rendered cartoon illustration with soft clay-like shapes, gentle rim lighting and smooth gradients, as used in a polished Indonesian trivia and knowledge contest app. Palette: quiz blue (#2563EB), violet (#7C3AED) and gold (#F59E0B) accents on a light airy blue-white background (#EFF6FF), deep navy (#0F172A) only for small details. Strictly no text, letters, numbers, words or logos anywhere, no real people, no real brands, friendly and safe for all ages."
+    },
+    {
+      "id": "set-culture",
+      "stem": "set-culture",
+      "size": "1024x1024",
+      "prompt": "Square thumbnail for a culture trivia set: traditional Indonesian batik-patterned fabric, a gamelan gong and a shadow puppet silhouette (wayang), centered composition. Style: premium playful 3D-rendered cartoon illustration with soft clay-like shapes, gentle rim lighting and smooth gradients, as used in a polished Indonesian trivia and knowledge contest app. Palette: quiz blue (#2563EB), violet (#7C3AED) and gold (#F59E0B) accents on a light airy blue-white background (#EFF6FF), deep navy (#0F172A) only for small details. Strictly no text, letters, numbers, words or logos anywhere, no real people, no real brands, friendly and safe for all ages."
+    },
+    {
+      "id": "set-sports",
+      "stem": "set-sports",
+      "size": "1024x1024",
+      "prompt": "Square thumbnail for a sports trivia set: a football, a badminton shuttlecock with racket and a gold medal on a ribbon, dynamic centered composition. Style: premium playful 3D-rendered cartoon illustration with soft clay-like shapes, gentle rim lighting and smooth gradients, as used in a polished Indonesian trivia and knowledge contest app. Palette: quiz blue (#2563EB), violet (#7C3AED) and gold (#F59E0B) accents on a light airy blue-white background (#EFF6FF), deep navy (#0F172A) only for small details. Strictly no text, letters, numbers, words or logos anywhere, no real people, no real brands, friendly and safe for all ages."
+    },
+    {
+      "id": "overlay-lock",
+      "stem": "overlay-lock",
+      "size": "1024x1024",
+      "transparent": true,
+      "prompt": "A large chunky padlock, closed, in violet and gold with a soft glossy shine, centered, to be overlaid on a locked card. Style: premium playful 3D-rendered cartoon illustration with soft clay-like shapes, gentle rim lighting and smooth gradients, as used in a polished Indonesian trivia and knowledge contest app. Palette: quiz blue (#2563EB), violet (#7C3AED) and gold (#F59E0B) accents on a light airy blue-white background (#EFF6FF), deep navy (#0F172A) only for small details. Strictly no text, letters, numbers, words or logos anywhere, no real people, no real brands, friendly and safe for all ages. Isolated on a fully transparent background."
+    },
+    {
+      "id": "overlay-unlocked-glow",
+      "stem": "overlay-unlocked-glow",
+      "size": "1024x1024",
+      "transparent": true,
+      "prompt": "A rounded-square glowing frame border made of golden light with sparkles at the corners, the center completely empty and transparent so content below shows through, to be overlaid on an unlocked card. Style: premium playful 3D-rendered cartoon illustration with soft clay-like shapes, gentle rim lighting and smooth gradients, as used in a polished Indonesian trivia and knowledge contest app. Palette: quiz blue (#2563EB), violet (#7C3AED) and gold (#F59E0B) accents on a light airy blue-white background (#EFF6FF), deep navy (#0F172A) only for small details. Strictly no text, letters, numbers, words or logos anywhere, no real people, no real brands, friendly and safe for all ages. Isolated on a fully transparent background."
+    },
+    {
+      "id": "overlay-completed-badge",
+      "stem": "overlay-completed-badge",
+      "size": "1024x1024",
+      "transparent": true,
+      "prompt": "A round gold and blue achievement badge with a big checkmark symbol (a tick shape, not a letter) and a small ribbon, centered, glossy. Style: premium playful 3D-rendered cartoon illustration with soft clay-like shapes, gentle rim lighting and smooth gradients, as used in a polished Indonesian trivia and knowledge contest app. Palette: quiz blue (#2563EB), violet (#7C3AED) and gold (#F59E0B) accents on a light airy blue-white background (#EFF6FF), deep navy (#0F172A) only for small details. Strictly no text, letters, numbers, words or logos anywhere, no real people, no real brands, friendly and safe for all ages. Isolated on a fully transparent background."
+    },
+    {
+      "id": "banner-program",
+      "stem": "banner-program",
+      "size": "1536x1024",
+      "prompt": "Wide abstract banner background for a trivia program: soft swirling waves of blue and violet with floating golden stars, question-mark-free decorative confetti and light bokeh, large calm area in the left half for text overlay, no focal characters. Style: premium playful 3D-rendered cartoon illustration with soft clay-like shapes, gentle rim lighting and smooth gradients, as used in a polished Indonesian trivia and knowledge contest app. Palette: quiz blue (#2563EB), violet (#7C3AED) and gold (#F59E0B) accents on a light airy blue-white background (#EFF6FF), deep navy (#0F172A) only for small details. Strictly no text, letters, numbers, words or logos anywhere, no real people, no real brands, friendly and safe for all ages."
+    },
+    {
+      "id": "prize-placeholder",
+      "stem": "prize-placeholder",
+      "size": "1024x1024",
+      "prompt": "A shiny golden trophy cup next to a gift box with a violet ribbon, centered, celebratory sparkles. Style: premium playful 3D-rendered cartoon illustration with soft clay-like shapes, gentle rim lighting and smooth gradients, as used in a polished Indonesian trivia and knowledge contest app. Palette: quiz blue (#2563EB), violet (#7C3AED) and gold (#F59E0B) accents on a light airy blue-white background (#EFF6FF), deep navy (#0F172A) only for small details. Strictly no text, letters, numbers, words or logos anywhere, no real people, no real brands, friendly and safe for all ages."
+    },
+    {
+      "id": "empty-programs",
+      "stem": "empty-programs",
+      "size": "1024x1024",
+      "prompt": "Empty state illustration: an open empty treasure chest and a small curious cartoon owl looking at a blank notice board, hinting that no programs are available yet, centered. Style: premium playful 3D-rendered cartoon illustration with soft clay-like shapes, gentle rim lighting and smooth gradients, as used in a polished Indonesian trivia and knowledge contest app. Palette: quiz blue (#2563EB), violet (#7C3AED) and gold (#F59E0B) accents on a light airy blue-white background (#EFF6FF), deep navy (#0F172A) only for small details. Strictly no text, letters, numbers, words or logos anywhere, no real people, no real brands, friendly and safe for all ages."
+    },
+    {
+      "id": "empty-leaderboard",
+      "stem": "empty-leaderboard",
+      "size": "1024x1024",
+      "prompt": "Empty state illustration: an empty three-step winners podium with a lonely golden star floating above the top step and a few sparkles, centered. Style: premium playful 3D-rendered cartoon illustration with soft clay-like shapes, gentle rim lighting and smooth gradients, as used in a polished Indonesian trivia and knowledge contest app. Palette: quiz blue (#2563EB), violet (#7C3AED) and gold (#F59E0B) accents on a light airy blue-white background (#EFF6FF), deep navy (#0F172A) only for small details. Strictly no text, letters, numbers, words or logos anywhere, no real people, no real brands, friendly and safe for all ages."
+    },
+    {
+      "id": "hero-login",
+      "stem": "hero-login",
+      "size": "1024x1536",
+      "prompt": "Portrait hero illustration for a login screen: a friendly cartoon owl mascot wearing a graduation cap, holding a glowing key, surrounded by floating books, stars and a lightbulb, with a flowing blue-to-violet background gradient. Style: premium playful 3D-rendered cartoon illustration with soft clay-like shapes, gentle rim lighting and smooth gradients, as used in a polished Indonesian trivia and knowledge contest app. Palette: quiz blue (#2563EB), violet (#7C3AED) and gold (#F59E0B) accents on a light airy blue-white background (#EFF6FF), deep navy (#0F172A) only for small details. Strictly no text, letters, numbers, words or logos anywhere, no real people, no real brands, friendly and safe for all ages."
+    },
+    {
+      "id": "status-pending",
+      "stem": "status-pending",
+      "size": "1024x1024",
+      "prompt": "Payment pending illustration: a friendly hourglass beside a digital wallet and a small clock, calm waiting mood, centered. Style: premium playful 3D-rendered cartoon illustration with soft clay-like shapes, gentle rim lighting and smooth gradients, as used in a polished Indonesian trivia and knowledge contest app. Palette: quiz blue (#2563EB), violet (#7C3AED) and gold (#F59E0B) accents on a light airy blue-white background (#EFF6FF), deep navy (#0F172A) only for small details. Strictly no text, letters, numbers, words or logos anywhere, no real people, no real brands, friendly and safe for all ages."
+    },
+    {
+      "id": "status-paid",
+      "stem": "status-paid",
+      "size": "1024x1024",
+      "prompt": "Payment success illustration: a happy open wallet with gold coins, a large green-blue checkmark symbol (a tick shape, not a letter) and confetti, centered. Style: premium playful 3D-rendered cartoon illustration with soft clay-like shapes, gentle rim lighting and smooth gradients, as used in a polished Indonesian trivia and knowledge contest app. Palette: quiz blue (#2563EB), violet (#7C3AED) and gold (#F59E0B) accents on a light airy blue-white background (#EFF6FF), deep navy (#0F172A) only for small details. Strictly no text, letters, numbers, words or logos anywhere, no real people, no real brands, friendly and safe for all ages."
+    },
+    {
+      "id": "status-expired",
+      "stem": "status-expired",
+      "size": "1024x1024",
+      "prompt": "Payment expired illustration: a faded cracked hourglass with spilled sand and a drooping calendar page, soft muted blue and violet, gentle not scary, centered. Style: premium playful 3D-rendered cartoon illustration with soft clay-like shapes, gentle rim lighting and smooth gradients, as used in a polished Indonesian trivia and knowledge contest app. Palette: quiz blue (#2563EB), violet (#7C3AED) and gold (#F59E0B) accents on a light airy blue-white background (#EFF6FF), deep navy (#0F172A) only for small details. Strictly no text, letters, numbers, words or logos anywhere, no real people, no real brands, friendly and safe for all ages."
+    }
+  ]
+}

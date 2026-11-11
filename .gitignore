@@ -43,3 +43,6 @@ Thumbs.db
 .omc/prd.json
 .omc/progress.txt
 .omc/notepads/
+
+# AI asset raw outputs (regenerate with pnpm assets)
+tools/assets/raw/
