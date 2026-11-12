@@ -1,0 +1,25 @@
+{
+  "name": "@ebooktrivia/adapters",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test:coverage": "vitest run --coverage --config vitest.config.ts",
+    "test:int": "vitest run --config vitest.int.config.ts"
+  },
+  "dependencies": {
+    "@cap.js/server": "4.0.5",
+    "@ebooktrivia/core": "workspace:*",
+    "altcha-lib": "2.8.0",
+    "nodemailer": "10.5.0",
+    "undici": "8.12.4"
+  },
+  "devDependencies": {
+    "@ebooktrivia/midtrans-stub": "workspace:*",
+    "@ebooktrivia/waha-mock": "workspace:*"
+  }
+}

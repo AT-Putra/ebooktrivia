@@ -37,6 +37,8 @@ jobs:
         run: pnpm --filter @ebooktrivia/crypto test:coverage
       - name: Uploads coverage gate (>= 95 % lines)
         run: pnpm --filter @ebooktrivia/uploads test:coverage
+      - name: Adapters coverage gate (>= 95 % lines)
+        run: pnpm --filter @ebooktrivia/adapters test:coverage
       - name: i18n key parity
         run: pnpm -s check:i18n
       - name: Contrast gate
@@ -56,8 +58,13 @@ jobs:
           --health-interval 5s
           --health-timeout 3s
           --health-retries 20
+      mailpit:
+        image: axllent/mailpit:v1.33.1
+        ports: ["1025:1025", "8025:8025"]
     env:
       TEST_PG_URL: postgres://postgres:ci-only@127.0.0.1:5432/postgres
+      MAILPIT_SMTP_PORT: "1025"
+      MAILPIT_API: http://127.0.0.1:8025
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -71,6 +78,8 @@ jobs:
         run: pnpm --filter @ebooktrivia/db test:int
       - name: Secret resolver end to end (fresh database)
         run: pnpm --filter @ebooktrivia/crypto test:int
+      - name: SMTP adapter round trip (Mailpit)
+        run: pnpm --filter @ebooktrivia/adapters test:int
 
   secrets-scan:
     runs-on: ubuntu-latest

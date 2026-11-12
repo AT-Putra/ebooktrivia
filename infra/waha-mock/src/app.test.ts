@@ -97,6 +97,19 @@ describe("waha-mock", () => {
     expect((await app.request("/api/sendFile", post(body))).status).toBe(200);
   });
 
+  it("serves a message by id: emitted inbound messages and sent ones, 404 otherwise", async () => {
+    const app = make(() => Promise.resolve(new Response("ok")));
+    const payload = { id: "false_628123@c.us_AAA1", from: "628123@c.us", fromMe: false, body: "halo", hasMedia: false, timestamp: 1760000000 };
+    await app.request("/__mock/emit", post({ event: "message", session: "default", targetUrl: "http://hook.test/waha", payload }, { "content-type": "application/json" }));
+    const found = await app.request("/api/default/chats/628123@c.us/messages/false_628123@c.us_AAA1?downloadMedia=false", { headers: auth });
+    expect(found.status).toBe(200);
+    expect(await found.json()).toMatchObject({ id: payload.id, from: "628123@c.us", fromMe: false, body: "halo", hasMedia: false, timestamp: 1760000000 });
+    const sent = (await (await app.request("/api/sendText", post({ session: "default", chatId: "628123@c.us", text: "hi" }))).json()) as { id: string };
+    expect(await (await app.request(`/api/default/chats/628123@c.us/messages/${sent.id}`, { headers: auth })).json()).toMatchObject({ id: sent.id, fromMe: true, body: "hi" });
+    expect((await app.request("/api/default/chats/628123@c.us/messages/false_628123@c.us_NOPE", { headers: auth })).status).toBe(404);
+    expect((await app.request("/api/default/chats/628999@c.us/messages/false_628123@c.us_AAA1", { headers: auth })).status).toBe(404);
+  });
+
   it("emit posts a webhook whose X-Webhook-Hmac is HMAC-SHA512 of the raw body", async () => {
     const calls: { url: string; init: RequestInit }[] = [];
     const fake: typeof fetch = (input, init) => {

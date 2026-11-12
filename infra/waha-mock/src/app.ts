@@ -110,6 +110,17 @@ export function createWahaMockApp(opts: WahaMockOptions): Hono {
       return c.json({ error: "event, session, targetUrl required" }, 400);
     }
     const payload = body["payload"] ?? {};
+    // Inbound messages are recorded so GET .../messages/:messageId can serve them (the worker
+    // re-fetches an inbound message by id before acting on it).
+    if (event === "message" && isRecord(payload) && payload["fromMe"] === false) {
+      const id = str(payload["id"]);
+      const from = str(payload["from"]);
+      const timestamp = payload["timestamp"];
+      const text = str(payload["body"]);
+      if (id !== undefined && from !== undefined && typeof timestamp === "number") {
+        messages.push({ id, timestamp, chatId: from, fromMe: false, ...(text !== undefined && { body: text }) });
+      }
+    }
     const raw = JSON.stringify({
       id: `evt_${randomBytes(8).toString("hex")}`,
       timestamp: Date.now(),
@@ -209,6 +220,21 @@ export function createWahaMockApp(opts: WahaMockOptions): Hono {
         ...(m.filename !== undefined && { media: { filename: m.filename, url: m.url } }),
       }));
     return c.json(out);
+  });
+
+  api.get("/:session/chats/:chatId/messages/:messageId", (c) => {
+    const chatId = c.req.param("chatId");
+    const m = messages.find((x) => x.id === c.req.param("messageId") && x.chatId === chatId);
+    if (!m) return c.json({ message: "Message not found" }, 404);
+    return c.json({
+      id: m.id,
+      timestamp: m.timestamp,
+      from: m.fromMe ? me(c.req.param("session")).id : m.chatId,
+      fromMe: m.fromMe,
+      body: m.body ?? m.caption ?? "",
+      hasMedia: m.url !== undefined,
+      ...(m.filename !== undefined && { media: { filename: m.filename, url: m.url } }),
+    });
   });
 
   app.route("/api", api);
