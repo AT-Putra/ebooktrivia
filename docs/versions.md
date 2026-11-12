@@ -107,3 +107,10 @@ Mockups: set `ENABLE_MOCKUPS=1` for production starts; without it every `/mockup
 | parse5 | 8.1.1 (devDependency) | npm `latest`, published 2026-11-07; pulls in entities 9.0.0 (2026-10-29). pnpm installed it without a release-age block. Only for `src/template-html.test.ts`, the email_html sentinel that parses every rendered template with a real HTML parser. If the 2-week age policy in docs/spikes/R13.md is meant to apply here, the fallback is parse5 8.0.1 (2026-04-19, entities ^8) |
 
 `packages/core` has no runtime dependencies (Node's `node:crypto` only). Coverage gate: `pnpm --filter @ebooktrivia/core test:coverage` (v8; lines/statements >= 95 %, branches/functions >= 90 %), also run in CI.
+
+## packages/crypto and packages/uploads (US-011, M2c) - verified 2026-11-12
+No new runtime third-party package. Both have the same coverage gate as core (`test:coverage`, run in CI). Test-only: `exceljs` 4.4.0 (npm `latest` on 2026-11-12, the version planned for M5b) as a devDependency of uploads, to prove real exceljs output (writeBuffer and the streaming WorkbookWriter with data descriptors) passes inspectZip and that exceljs reads the canonical copy back.
+| Package | Version | Notes |
+|---|---|---|
+| @ebooktrivia/crypto | workspace | sealed box + per-secret envelope on `node:crypto` only (X25519, HKDF-SHA256, AES-256-GCM); runtime dependency `@ebooktrivia/core` (decodeSecretKey, SecretResolver). devDependencies `@ebooktrivia/db` and `postgres` 4.1.0 for `test:int` (npm `latest` is 4.1.1; kept equal to the packages/db pin so the lockfile holds one copy) |
+| @ebooktrivia/uploads | workspace | upload policy; `sharp` 0.35.5 (same pin as tools/assets; npm `latest` is 0.35.5 on 2026-11-12). ZIP inspection uses `node:zlib` (streaming `createInflateRaw`, `crc32`) instead of a ZIP library, so no fflate / yauzl |

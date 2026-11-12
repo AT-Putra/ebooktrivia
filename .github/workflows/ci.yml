@@ -33,6 +33,10 @@ jobs:
         run: pnpm -s test
       - name: Core coverage gate (>= 95 % lines)
         run: pnpm --filter @ebooktrivia/core test:coverage
+      - name: Crypto coverage gate (>= 95 % lines)
+        run: pnpm --filter @ebooktrivia/crypto test:coverage
+      - name: Uploads coverage gate (>= 95 % lines)
+        run: pnpm --filter @ebooktrivia/uploads test:coverage
       - name: i18n key parity
         run: pnpm -s check:i18n
       - name: Contrast gate
@@ -65,6 +69,8 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Migrations, roles, denial tests (fresh database, applied twice)
         run: pnpm --filter @ebooktrivia/db test:int
+      - name: Secret resolver end to end (fresh database)
+        run: pnpm --filter @ebooktrivia/crypto test:int
 
   secrets-scan:
     runs-on: ubuntu-latest

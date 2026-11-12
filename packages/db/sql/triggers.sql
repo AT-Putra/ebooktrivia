@@ -16,7 +16,8 @@
 -- product mismatch, ET043 program not on sale, ET044 order expiry too far out,
 -- ET045 winner confirmation reserved for admin, ET046 program status change reserved for admin,
 -- ET050 play row for a player not eligible on a published program, ET051 question/option not in
--- the attempt's set/question.
+-- the attempt's set/question, ET060 settings_secrets relabelled without re-encryption,
+-- ET061 settings_secrets id change.
 
 SELECT pg_catalog.set_config('search_path', 'pg_catalog, pg_temp', false);
 
@@ -437,6 +438,97 @@ $fn$;
 CREATE OR REPLACE TRIGGER player_program_stats_play_guard
   BEFORE INSERT OR UPDATE ON public.player_program_stats
   FOR EACH ROW EXECUTE FUNCTION public.player_program_stats_play_guard();
+
+-- ---------------------------------------------------------------------------------------------
+-- settings_secrets labels (US-011; US-009 security finding: admin_rw could relabel the payment
+-- row as a conversions secret of an attacker adnet + host and keep its ciphertext). The
+-- ciphertext and sealed DEK are bound by their AAD to id, scope, name, adnet_id, bound_host and
+-- key_id (@ebooktrivia/crypto), so such a row no longer decrypts; this guard refuses the relabel
+-- itself. A label change needs a fresh encryption in the same UPDATE: ciphertext, nonce AND
+-- sealed_dek all change (ET060). The id never changes (ET061). No caller check: it binds the
+-- owner and superusers too.
+CREATE OR REPLACE FUNCTION public.settings_secrets_guard()
+  RETURNS trigger
+  LANGUAGE plpgsql
+  SET search_path = pg_catalog, pg_temp
+AS $fn$
+BEGIN
+  IF NEW.id IS DISTINCT FROM OLD.id THEN
+    RAISE EXCEPTION 'settings_secrets.id is immutable' USING ERRCODE = 'ET061';
+  END IF;
+  IF (NEW.scope IS DISTINCT FROM OLD.scope
+      OR NEW.name IS DISTINCT FROM OLD.name
+      OR NEW.adnet_id IS DISTINCT FROM OLD.adnet_id
+      OR NEW.bound_host IS DISTINCT FROM OLD.bound_host
+      OR NEW.key_id IS DISTINCT FROM OLD.key_id)
+     AND (NEW.ciphertext IS NOT DISTINCT FROM OLD.ciphertext
+          OR NEW.nonce IS NOT DISTINCT FROM OLD.nonce
+          OR NEW.sealed_dek IS NOT DISTINCT FROM OLD.sealed_dek) THEN
+    RAISE EXCEPTION 'changing scope, name, adnet_id, bound_host or key_id of a secret needs a new ciphertext, nonce and sealed_dek'
+      USING ERRCODE = 'ET060';
+  END IF;
+  RETURN NEW;
+END
+$fn$;
+
+CREATE OR REPLACE TRIGGER settings_secrets_guard
+  BEFORE UPDATE ON public.settings_secrets
+  FOR EACH ROW EXECUTE FUNCTION public.settings_secrets_guard();
+
+-- Endpoint binding (plan M2.3): changing an endpoint host deletes the secrets bound to it in the
+-- same transaction, so a compromised admin cannot point a decrypted secret at a host it
+-- controls. Raises nothing. SECURITY DEFINER: the delete runs whoever changes the endpoint.
+--   adnets.endpoint_host: every secret of that adnet not bound to the new host.
+--   waha_servers: messaging secrets bound to the old base_url_host, when base_url_host or the
+--     scheme://authority of base_url changes (the worker sends to base_url, so a base_url moved
+--     to another host while base_url_host stays the same also clears the key). Secrets bound to
+--     that host are deleted even if another server uses it too: that server's key must be
+--     entered again. Since migration 0002 the CHECK waha_servers_base_url_check also ties
+--     base_url to base_url_host on INSERT and UPDATE (security review US-011 #1).
+--   NOT YET COVERED: SMTP and CAPI endpoints have no host column. The story that adds one (M3)
+--     must add the same clear-on-change trigger and an INSERT-time consistency CHECK.
+CREATE OR REPLACE FUNCTION public.adnets_clear_bound_secrets()
+  RETURNS trigger
+  LANGUAGE plpgsql
+  SECURITY DEFINER
+  SET search_path = pg_catalog, pg_temp
+AS $fn$
+BEGIN
+  DELETE FROM public.settings_secrets s
+   WHERE s.adnet_id = NEW.id AND s.bound_host IS DISTINCT FROM NEW.endpoint_host;
+  RETURN NULL;
+END
+$fn$;
+
+CREATE OR REPLACE TRIGGER adnets_clear_bound_secrets
+  AFTER UPDATE ON public.adnets
+  FOR EACH ROW WHEN (OLD.endpoint_host IS DISTINCT FROM NEW.endpoint_host)
+  EXECUTE FUNCTION public.adnets_clear_bound_secrets();
+
+CREATE OR REPLACE FUNCTION public.waha_servers_clear_bound_secrets()
+  RETURNS trigger
+  LANGUAGE plpgsql
+  SECURITY DEFINER
+  SET search_path = pg_catalog, pg_temp
+AS $fn$
+DECLARE
+  -- scheme://authority of base_url, lowercase; NULL when base_url does not start that way.
+  v_old_origin text := substring(lower(OLD.base_url) from '^[a-z][a-z0-9+.-]*://[^/?#\\]*');
+  v_new_origin text := substring(lower(NEW.base_url) from '^[a-z][a-z0-9+.-]*://[^/?#\\]*');
+BEGIN
+  IF NEW.base_url_host IS DISTINCT FROM OLD.base_url_host
+     OR v_new_origin IS DISTINCT FROM v_old_origin
+     OR (v_new_origin IS NULL AND NEW.base_url IS DISTINCT FROM OLD.base_url) THEN
+    DELETE FROM public.settings_secrets s
+     WHERE s.scope = 'messaging' AND s.bound_host = OLD.base_url_host;
+  END IF;
+  RETURN NULL;
+END
+$fn$;
+
+CREATE OR REPLACE TRIGGER waha_servers_clear_bound_secrets
+  AFTER UPDATE ON public.waha_servers
+  FOR EACH ROW EXECUTE FUNCTION public.waha_servers_clear_bound_secrets();
 
 -- ---------------------------------------------------------------------------------------------
 -- Fire every trigger on our tables in ALL session_replication_role modes. The default (ENABLE,

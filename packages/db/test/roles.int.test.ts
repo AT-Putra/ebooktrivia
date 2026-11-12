@@ -255,10 +255,18 @@ describe("public_rw denials", () => {
   });
 
   it("gets only payment-scope secrets, still sealed, from get_payment_secret()", async () => {
+    // settings_secrets_binding_check: only a conversions secret carries an adnet + bound host.
+    const adnet = first(
+      await sql<{ id: string }[]>`
+        INSERT INTO adnets (slug, name, clickid_param, endpoint_host)
+        VALUES ('probe-adnet', 'Probe', 'clickid', 'track.adnet.example') RETURNING id`,
+    ).id;
     for (const scope of ["payment", "messaging", "conversions"]) {
+      const bound = scope === "conversions" ? { adnet, host: "track.adnet.example" } : { adnet: null, host: null };
       await sql`
-        INSERT INTO settings_secrets (scope, name, ciphertext, nonce, sealed_dek, key_id, last4)
-        VALUES (${scope}, ${`${scope}.probe_key`}, ${bytes(48)}, ${bytes(12)}, ${bytes(80)}, ${`${scope}-k1`}, 'abcd')`;
+        INSERT INTO settings_secrets (scope, name, adnet_id, bound_host, ciphertext, nonce, sealed_dek, key_id, last4)
+        VALUES (${scope}, ${`${scope}.probe_key`}, ${bound.adnet}, ${bound.host}, ${bytes(48)}, ${bytes(12)}, ${bytes(80)},
+                ${`${scope}-k1`}, 'abcd')`;
     }
     for (const role of ["public_rw", "worker_rw"] as const) {
       const rows = await asRole(role, (tx) => tx<{ name: string; ciphertext: Buffer }[]>`SELECT * FROM get_payment_secret()`);

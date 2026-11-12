@@ -18,7 +18,22 @@ export const wahaServers = pgTable(
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
-  (t) => [check("waha_servers_base_url_host_check", sql`${t.baseUrlHost} = lower(${t.baseUrlHost})`)],
+  (t) => [
+    check("waha_servers_base_url_host_check", sql`${t.baseUrlHost} = lower(${t.baseUrlHost})`),
+    // Security review US-011 #1: the WAHA key is sealed with bound_host = base_url_host, but the
+    // client sends to base_url, so the two must be one fact. One strict grammar: https only,
+    // lowercase ASCII host (punycode for IDN), optional non-default port 1..65535 without leading
+    // zeros, and a path of printable ASCII starting with "/" (no userinfo, no backslash or "?" in
+    // the authority); base_url_host must be exactly that authority. For DNS names and dotted-quad
+    // IPv4 this equals new URL(base_url).host. IPv4 shorthands (127.1, 0x7f.1, 2130706433, ...)
+    // pass this CHECK but are normalised by the URL parser, so they differ; they fail closed,
+    // because a secret cannot be bound to a non-canonical host (crypto isCanonicalHost) and the
+    // WAHA client must call @ebooktrivia/crypto assertWahaTarget before sending the key.
+    check(
+      "waha_servers_base_url_check",
+      sql`${t.baseUrl} ~ '^https://[a-z0-9.-]+(:[1-9][0-9]{0,4})?(/[!-~]*)?$' AND ${t.baseUrlHost} = substring(${t.baseUrl} from '^https://([^/]+)') AND ${t.baseUrlHost} !~ ':443$' AND coalesce(substring(${t.baseUrlHost} from ':([0-9]+)$')::integer, 443) <= 65535`,
+    ),
+  ],
 );
 
 export const wahaSessions = pgTable(

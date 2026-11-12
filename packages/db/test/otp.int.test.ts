@@ -12,7 +12,7 @@ beforeAll(async () => {
 
 /** Stores an OTP row as public_rw (as the app would) and returns its id. */
 async function storeOtp(phone: string, expiresInSeconds = 300): Promise<{ id: string; sealed: Buffer }> {
-  const sealed = bytes(72);
+  const sealed = bytes(54);
   const row = await asRole("public_rw", async (tx) =>
     first(
       await tx<{ id: string }[]>`
@@ -257,7 +257,7 @@ describe("player_otps rows", () => {
       first(
         await tx<{ created_at: Date; expires_at: Date; clock: Date }[]>`
           INSERT INTO public.player_otps (phone, mac, sealed_code, expires_at, created_at)
-          VALUES (${uniquePhone()}, ${bytes(32)}, ${bytes(72)}, now() + interval '10 years', '2000-01-01T00:00:00Z')
+          VALUES (${uniquePhone()}, ${bytes(32)}, ${bytes(54)}, now() + interval '10 years', '2000-01-01T00:00:00Z')
           RETURNING created_at, expires_at, clock_timestamp() AS clock`,
       ),
     );
@@ -270,15 +270,16 @@ describe("player_otps rows", () => {
       first(
         await tx<{ ttl: number }[]>`
           INSERT INTO public.player_otps (phone, mac, sealed_code, expires_at)
-          VALUES (${uniquePhone()}, ${bytes(32)}, ${bytes(72)}, clock_timestamp() + interval '60 seconds')
+          VALUES (${uniquePhone()}, ${bytes(32)}, ${bytes(54)}, clock_timestamp() + interval '60 seconds')
           RETURNING extract(epoch FROM expires_at - created_at)::int AS ttl`,
       ),
     );
     expect(row.ttl).toBeLessThanOrEqual(60);
   });
 
-  // Security review item 8: sealed_code had no length bound.
-  it.each([0, 10, 47, 129, 4096])("reject a sealed_code of %i bytes (23514)", async (n) => {
+  // Security review item 8: sealed_code had no length bound. US-011 pins the construction: a
+  // 6-digit code in the @ebooktrivia/crypto sealed box is exactly 6 + 48 = 54 bytes.
+  it.each([0, 10, 47, 48, 53, 55, 72, 128, 129, 4096])("reject a sealed_code of %i bytes (23514)", async (n) => {
     const insert = asRole(
       "public_rw",
       (tx) => tx`
@@ -288,12 +289,12 @@ describe("player_otps rows", () => {
     expect(await sqlState(insert)).toBe("23514");
   });
 
-  it.each([48, 54, 128])("accept a sealed_code of %i bytes", async (n) => {
+  it("accept a sealed_code of exactly 54 bytes", async () => {
     await asRole(
       "public_rw",
       (tx) => tx`
         INSERT INTO public.player_otps (phone, mac, sealed_code, expires_at)
-        VALUES (${uniquePhone()}, ${bytes(32)}, ${bytes(n)}, now() + interval '5 minutes')`,
+        VALUES (${uniquePhone()}, ${bytes(32)}, ${bytes(54)}, now() + interval '5 minutes')`,
     );
   });
 });

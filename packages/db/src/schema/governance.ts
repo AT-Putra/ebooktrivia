@@ -184,10 +184,14 @@ export const deletionRequests = pgTable(
 );
 
 /**
- * Sealed secrets (M2.3 crypto, US-010): AES-256-GCM ciphertext with its own DEK, AAD =
- * `settings_secrets|ciphertext|{id}`; the DEK is sealed (X25519 sealed box) to the scope public
- * key `key_id`. `bound_host` is the endpoint host the secret was bound to at write time; changing
- * that host must clear the secret. `last4` is captured at write time for display.
+ * Sealed secrets (M2.3 crypto, @ebooktrivia/crypto): `ciphertext` = AES-256-GCM(DEK, nonce) ||
+ * tag with a fresh DEK per write; `sealed_dek` = the DEK sealed (X25519 sealed box) to the scope
+ * public key `key_id`. The AAD of both is the canonical encoding of table, column, id, scope,
+ * name, adnet_id, bound_host and key_id, so a relabelled row no longer decrypts; the
+ * settings_secrets_guard trigger also refuses a relabel without re-encryption (ET060) and an id
+ * change (ET061). `bound_host` is the endpoint host the secret was bound to at write time;
+ * changing that host deletes the secret (triggers on adnets / waha_servers). `last4` is
+ * captured at write time for display.
  * public_rw cannot read this table; it gets payment-scope rows only via get_payment_secret().
  */
 export const settingsSecrets = pgTable(
@@ -213,6 +217,13 @@ export const settingsSecrets = pgTable(
     check("settings_secrets_nonce_check", sql`octet_length(${t.nonce}) = 12`),
     check("settings_secrets_last4_check", sql`char_length(${t.last4}) <= 4`),
     check("settings_secrets_bound_host_check", sql`${t.boundHost} IS NULL OR ${t.boundHost} = lower(${t.boundHost})`),
+    // Security review US-011 #3: only conversions secrets carry an adnet, and every conversions
+    // secret is bound to an adnet and a host. get_payment_secret() returns no scope/adnet_id, so the
+    // public app rebuilds the AAD with adnet null; this makes that assumption a DB invariant.
+    check(
+      "settings_secrets_binding_check",
+      sql`(${t.scope} = 'conversions') = (${t.adnetId} IS NOT NULL) AND (${t.scope} <> 'conversions' OR ${t.boundHost} IS NOT NULL)`,
+    ),
     unique("settings_secrets_scope_name_adnet_key").on(t.scope, t.name, t.adnetId).nullsNotDistinct(),
   ],
 );

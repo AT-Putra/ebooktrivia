@@ -19,7 +19,8 @@
 --   ET009 setting missing or not a positive integer
 --   ET010 enqueue_*: source row not found       ET011 enqueue_mo: order has no Snap redirect URL
 --   triggers.sql: ET020/ET021 content lock, ET030/ET031 audit_log, ET040-ET044 orders,
---   ET045 winners, ET046 programs, ET050/ET051 play rows; roles.sql: ET090 foreign-owned object.
+--   ET045 winners, ET046 programs, ET050/ET051 play rows, ET060/ET061 settings_secrets;
+--   roles.sql: ET090 foreign-owned object.
 
 SELECT pg_catalog.set_config('search_path', 'pg_catalog, pg_temp', false);
 
@@ -250,9 +251,11 @@ CREATE OR REPLACE FUNCTION public.get_payment_secret()
   SECURITY DEFINER
   SET search_path = pg_catalog, pg_temp
 AS $fn$
+  -- adnet_id IS NULL: callers rebuild the AAD with adnet null (settings_secrets_binding_check
+  -- already guarantees it for payment rows; this keeps the function correct on its own).
   SELECT s.id, s.name, s.ciphertext, s.nonce, s.sealed_dek, s.key_id, s.bound_host, s.updated_at
     FROM public.settings_secrets s
-   WHERE s.scope = 'payment'
+   WHERE s.scope = 'payment' AND s.adnet_id IS NULL
    ORDER BY s.name;
 $fn$;
 

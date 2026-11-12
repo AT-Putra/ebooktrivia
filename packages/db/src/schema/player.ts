@@ -73,10 +73,9 @@ export const playerOtps = pgTable(
   (t) => [
     e164Check("player_otps_phone_check", t.phone),
     check("player_otps_mac_check", sql`octet_length(${t.mac}) = 32`),
-    // A libsodium sealed box adds 48 bytes (32-byte ephemeral public key + 16-byte MAC) to its
-    // plaintext, so a 6-digit code seals to 54 bytes. 48..128 leaves room for a small envelope
-    // (version / key id) until US-011 fixes the exact construction, and blocks arbitrary payloads.
-    check("player_otps_sealed_code_check", sql`octet_length(${t.sealedCode}) BETWEEN 48 AND 128`),
+    // @ebooktrivia/crypto sealed box (US-011): 32-byte ephemeral public key + AES-256-GCM
+    // ciphertext + 16-byte tag, so the 6-digit code seals to exactly 6 + 48 = 54 bytes.
+    check("player_otps_sealed_code_check", sql`octet_length(${t.sealedCode}) = 54`),
     nonNegative("player_otps_attempts_check", t.attempts),
     index("player_otps_phone_idx").on(t.phone, t.createdAt),
   ],

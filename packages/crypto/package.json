@@ -1,0 +1,21 @@
+{
+  "name": "@ebooktrivia/crypto",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test:coverage": "vitest run --coverage --config vitest.config.ts",
+    "test:int": "vitest run --config vitest.int.config.ts"
+  },
+  "dependencies": {
+    "@ebooktrivia/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@ebooktrivia/db": "workspace:*",
+    "postgres": "4.1.0"
+  }
+}
