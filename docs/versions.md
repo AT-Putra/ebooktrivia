@@ -98,3 +98,12 @@ Mockups: set `ENABLE_MOCKUPS=1` for production starts; without it every `/mockup
 | better-auth | 1.7.19 (devDependency) | same pin as the R13 spike; npm `latest` is 1.7.20 (published 2026-11-10). Used only to derive and regression-check the `player_auth` / `admin_auth` DDL (`scripts/better-auth-ddl.ts`, `test/better-auth.int.test.ts`) |
 | kysely | 0.28.17 (devDependency) | same as the R13 spike (Better Auth accepts `^0.28.17 \|\| ^0.29.0`); npm `latest` is 0.29.8. Kept equal to the spike so the lockfile holds one kysely |
 | pg / @types/pg | 8.23.1 / 8.23.1 (devDependencies) | npm latest equals the pin; Better Auth's `PostgresDialect` driver in the DDL script and test |
+
+## packages/core (US-010, M2b) - verified 2026-11-11 (`npm view <pkg> version`)
+| Package | Version | Notes |
+|---|---|---|
+| fast-check | 4.10.2 (devDependency) | npm `latest`, published 2026-09-19, so well past the pnpm release-age gate; property tests for unlock, ranking, money, phone, templates, shuffle and the state machines. Pulls in pure-rand 8.4.2 |
+| @ebooktrivia/db | workspace (devDependency) | only for `src/db-drift.test.ts`, which asserts core's state lists equal the DB enums |
+| parse5 | 8.1.1 (devDependency) | npm `latest`, published 2026-11-07; pulls in entities 9.0.0 (2026-10-29). pnpm installed it without a release-age block. Only for `src/template-html.test.ts`, the email_html sentinel that parses every rendered template with a real HTML parser. If the 2-week age policy in docs/spikes/R13.md is meant to apply here, the fallback is parse5 8.0.1 (2026-04-19, entities ^8) |
+
+`packages/core` has no runtime dependencies (Node's `node:crypto` only). Coverage gate: `pnpm --filter @ebooktrivia/core test:coverage` (v8; lines/statements >= 95 %, branches/functions >= 90 %), also run in CI.

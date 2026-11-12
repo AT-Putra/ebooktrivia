@@ -31,6 +31,8 @@ jobs:
         run: pnpm -s typecheck
       - name: Unit tests
         run: pnpm -s test
+      - name: Core coverage gate (>= 95 % lines)
+        run: pnpm --filter @ebooktrivia/core test:coverage
       - name: i18n key parity
         run: pnpm -s check:i18n
       - name: Contrast gate

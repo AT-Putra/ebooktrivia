@@ -28,6 +28,7 @@ infra/**/escrow/
 **/.omc/drafts/
 **/.omc/logs/
 **/.omc/project-memory.json
+**/.omc/sessions/
 apps/**/.omc/
 packages/**/.omc/
 
