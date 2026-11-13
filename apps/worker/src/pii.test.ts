@@ -26,14 +26,16 @@ describe("maskPii", () => {
   });
 
   // An unbounded email pattern backtracked quadratically: 64 KB of letters (one GlitchTip body)
-  // took about 3 s per string.
-  it("stays linear on a 64 KB input without an @", () => {
+  // took about 3 s per string, so 128 KB would take about 12 s. The linear patterns take tens of
+  // milliseconds; the 2 s budget leaves room for a loaded CI machine (a 250 ms budget flaked
+  // while other suites ran in parallel) and still fails any quadratic regression by far.
+  it("stays linear on a 128 KB input without an @", () => {
     const started = performance.now();
-    expect(maskPii("x".repeat(64 * 1024))).toHaveLength(64 * 1024);
-    expect(maskPii("a@" + "a.".repeat(30_000))).toContain("a.");
-    expect(maskPii("1-".repeat(32 * 1024))).toBe("[number]-");
-    expect(maskPii("1".repeat(64 * 1024))).toBe("[number]");
-    expect(maskPii("12.".repeat(20_000))).toBe("[number].");
-    expect(performance.now() - started).toBeLessThan(250);
+    expect(maskPii("x".repeat(128 * 1024))).toHaveLength(128 * 1024);
+    expect(maskPii("a@" + "a.".repeat(60_000))).toContain("a.");
+    expect(maskPii("1-".repeat(64 * 1024))).toBe("[number]-");
+    expect(maskPii("1".repeat(128 * 1024))).toBe("[number]");
+    expect(maskPii("12.".repeat(40_000))).toBe("[number].");
+    expect(performance.now() - started).toBeLessThan(2000);
   });
 });

@@ -37,7 +37,8 @@ describe("inspectZip", () => {
 
   // Zip bomb: ~60 KB that inflates to 60 MiB. The headers are not trusted: a lying header that
   // claims 10 bytes is stopped at the budget all the same.
-  it("stops a zip bomb at the budget, whatever the headers claim", async () => {
+  // Builds and inflates 60 MiB twice: allow the package's 30 s, not the root run's 5 s default.
+  it("stops a zip bomb at the budget, whatever the headers claim", { timeout: 30_000 }, async () => {
     const bomb = xlsx([{ name: "xl/bomb.bin", data: Buffer.alloc(60 * MiB) }]);
     expect(bomb.length).toBeLessThan(100 * 1024);
     expect((await zipError(bomb)).code).toBe("too_large_uncompressed");
@@ -45,7 +46,7 @@ describe("inspectZip", () => {
     expect((await zipError(lying)).code).toBe("too_large_uncompressed");
   });
 
-  it("counts the budget over all entries, not per entry", async () => {
+  it("counts the budget over all entries, not per entry", { timeout: 30_000 }, async () => {
     const parts = Array.from({ length: 6 }, (_, i) => ({ name: `xl/part${i.toString()}.bin`, data: Buffer.alloc(10 * MiB) }));
     expect((await zipError(makeZip(parts))).code).toBe("too_large_uncompressed");
     expect((await inspectZip(makeZip(parts.slice(0, 4)), LIMITS)).uncompressedBytes).toBe(40 * MiB);

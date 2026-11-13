@@ -273,7 +273,8 @@ describe("XLSX (kind import)", () => {
     expect(await rejection({ kind: "import", bytes: big, filename: "a.xlsx" })).toBe("too_large");
   });
 
-  it("rejects a zip bomb: a small file that inflates past 50 MiB, whatever its headers claim", async () => {
+  // Builds and inflates about 100 MiB: allow the package's 30 s, not the root run's 5 s default.
+  it("rejects a zip bomb: a small file that inflates past 50 MiB, whatever its headers claim", { timeout: 30_000 }, async () => {
     const bomb = xlsx([{ name: "xl/sharedStrings.xml", data: Buffer.alloc(51 * MiB, 0x41), declaredSize: 1024 }]);
     expect(bomb.length).toBeLessThan(200 * 1024);
     expect(await rejection({ kind: "import", bytes: bomb, filename: "a.xlsx", mimeType: XLSX_MIME })).toBe("xlsx_too_large_uncompressed");
