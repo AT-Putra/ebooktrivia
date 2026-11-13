@@ -46,7 +46,7 @@ jobs:
 
   db-integration:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     services:
       postgres:
         image: postgres:18.6
@@ -65,8 +65,34 @@ jobs:
       TEST_PG_URL: postgres://postgres:ci-only@127.0.0.1:5432/postgres
       MAILPIT_SMTP_PORT: "1025"
       MAILPIT_API: http://127.0.0.1:8025
+      # The dev stack's Valkey ACL (infra/dev/valkey/users.acl), CI ONLY.
+      TEST_VALKEY_URL: redis://127.0.0.1:6379
+      TEST_VALKEY_USERNAME: worker
+      TEST_VALKEY_PASSWORD: worker-devonly
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Not a service container: services start before checkout and cannot mount the ACL files.
+      - name: Start Valkey with the dev ACL users
+        run: |
+          docker run -d --name valkey -p 127.0.0.1:6379:6379 \
+            -v "$PWD/infra/dev/valkey/valkey.conf:/usr/local/etc/valkey/valkey.conf:ro" \
+            -v "$PWD/infra/dev/valkey/users.acl:/usr/local/etc/valkey/users.acl:ro" \
+            valkey/valkey:9.1.3 valkey-server /usr/local/etc/valkey/valkey.conf
+          for i in $(seq 1 30); do
+            docker exec valkey valkey-cli --user ops --pass ops-devonly --no-auth-warning ping | grep -q PONG && exit 0
+            sleep 1
+          done
+          docker logs valkey
+          exit 1
+      # ACL DRYRUN is itself an @admin command that no dev user may run (worker is -@admin, ops is
+      # +ping only, default is off), so the ACL is asserted by running the commands as `worker`:
+      # FLUSHALL must be refused (on this empty, just-started Valkey a wrong ACL flushes nothing)
+      # and INFO, which BullMQ / ioredis need on connect, must be answered.
+      - name: Assert the worker ACL (no FLUSHALL, INFO allowed)
+        run: |
+          cli() { docker exec valkey valkey-cli --user worker --pass worker-devonly --no-auth-warning "$@" 2>&1; }
+          cli FLUSHALL | grep -q "NOPERM" || { echo "worker may run FLUSHALL"; exit 1; }
+          cli INFO server | grep -q "^valkey_version:" || { echo "worker may not run INFO"; exit 1; }
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .nvmrc
@@ -80,6 +106,12 @@ jobs:
         run: pnpm --filter @ebooktrivia/crypto test:int
       - name: SMTP adapter round trip (Mailpit)
         run: pnpm --filter @ebooktrivia/adapters test:int
+      # Here, not in verify: the worker is mostly I/O, so its gate counts the integration tests.
+      - name: Worker coverage gate (>= 95 % lines; unit + in-process integration)
+        run: pnpm --filter @ebooktrivia/worker test:coverage
+      # The rest of test:int (the coverage step already ran the other integration files).
+      - name: Worker chaos and load tests (real worker / internal processes)
+        run: pnpm --filter @ebooktrivia/worker test:chaos
 
   secrets-scan:
     runs-on: ubuntu-latest

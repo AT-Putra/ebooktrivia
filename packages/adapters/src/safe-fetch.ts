@@ -14,9 +14,11 @@
 //     the raw stream is not exposed, so no caller can read unbounded. Body-read failures are
 //     SafeFetchErrors too (timeout / request_failed), never a raw DOMException.
 //   - https only, unless a caller passes allowHttp (dev stubs).
-//   - A9 (later story): allowHttp / devAllowLoopback still need a production guard (refuse them
-//     when NODE_ENV=production). A10 (later story): the two undici Agents are never closed; the
-//     worker needs a close() for graceful shutdown. Both recorded, not done here.
+//   - A9: allowHttp / devAllowLoopback are dev-only. The worker config loader refuses its dev
+//     flags when NODE_ENV=production (apps/worker/src/worker-config.ts); every other caller must
+//     do the same.
+//   - A10: close() closes the two undici Agents (waits for in-flight requests; afterwards every
+//     request fails with request_failed), for graceful shutdown.
 //
 // Address policy:
 //   ALWAYS blocked: unspecified, loopback, link-local (incl. 169.254.169.254 metadata), 0/8,
@@ -227,7 +229,11 @@ export interface SafeResponse {
   cancel(): Promise<void>;
 }
 
-export type SafeFetch = (url: string | URL, init?: Omit<RequestInit, "dispatcher" | "redirect">) => Promise<SafeResponse>;
+export interface SafeFetch {
+  (url: string | URL, init?: Omit<RequestInit, "dispatcher" | "redirect">): Promise<SafeResponse>;
+  /** Closes the connection pools once in-flight requests finish; later requests fail. Idempotent. */
+  close(): Promise<void>;
+}
 
 const DEFAULT_TIMEOUT_MS = 5000;
 const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
@@ -303,8 +309,10 @@ export function createSafeFetch(options: SafeFetchOptions = {}): SafeFetch {
   });
   const publicAgent = new Agent(agentOptions(false));
   const privateAgent = new Agent(agentOptions(true));
+  let closing: Promise<void> | undefined;
+  const close = (): Promise<void> => (closing ??= Promise.all([publicAgent.close(), privateAgent.close()]).then(() => undefined));
 
-  return async (input, init = {}) => {
+  const safeFetch = async (input: string | URL, init: Omit<RequestInit, "dispatcher" | "redirect"> = {}): Promise<SafeResponse> => {
     let url: URL;
     try {
       url = new URL(input);
@@ -339,4 +347,5 @@ export function createSafeFetch(options: SafeFetchOptions = {}): SafeFetch {
     }
     return safeResponse(response, maxBodyBytes, () => timeout.aborted);
   };
+  return Object.assign(safeFetch, { close });
 }

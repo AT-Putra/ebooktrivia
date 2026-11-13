@@ -7,6 +7,8 @@ packages:
   - "e2e"
 allowBuilds:
   esbuild: true
+  # bullmq -> msgpackr: optional native decoder; msgpackr falls back to pure JS, so no install script runs.
+  msgpackr-extract: false
 minimumReleaseAgeExclude:
   - "@typescript-eslint/eslint-plugin@8.72.2"
   - "@typescript-eslint/parser@8.72.2"
@@ -29,3 +31,4 @@ minimumReleaseAgeExclude:
   - "@next/swc-win32-arm64-msvc@16.4.6"
   - "@next/swc-win32-x64-msvc@16.4.6"
   - next@16.4.6
+  - bullmq@6.7.5

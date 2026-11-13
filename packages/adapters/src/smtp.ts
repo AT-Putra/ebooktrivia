@@ -18,8 +18,8 @@
 //     maybe_sent (the connection broke or timed out after DATA, so the message may have been
 //     queued). nodemailer stamps every socket error with command "CONN" whatever the stage, so the
 //     stage comes from its transaction log (transactionLog + a logger that only records "DATA").
-//   - A9 (later story): devAllowPlaintext still needs a production guard (refuse it when
-//     NODE_ENV=production); recorded, not done here.
+//   - A9: devAllowPlaintext is dev-only. The worker config loader refuses its dev flags when
+//     NODE_ENV=production (apps/worker/src/worker-config.ts); every other caller must do the same.
 
 import { createTransport } from "nodemailer";
 import { isRecord } from "./http.ts";

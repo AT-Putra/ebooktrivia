@@ -21,7 +21,7 @@ Re-verify before adding a package in a later milestone; bump this table in the s
 | tailwindcss | 4.3.5 | packages/ui (M1) |
 | drizzle-orm / drizzle-kit | 0.45.4 / 0.31.11 | packages/db (M0b spike, M2) |
 | postgres (driver) | 4.1.0 | packages/db (M2) |
-| bullmq / ioredis | 6.7.3 / 6.0.0 | apps/worker (M3) |
+| bullmq / ioredis | 6.7.5 / 6.0.0 | apps/worker (M3; see the US-013 section) |
 | better-auth | 1.7.19 | apps/admin, apps/public (M0d spike, M5a, M9) |
 | zod | 4.6.7 | packages/core (M2) |
 | @cap.js/server / @cap.js/widget | 4.0.5 / 0.1.62 | adapters / sdk (M3, M6) |
@@ -41,7 +41,7 @@ Re-verify before adding a package in a later milestone; bump this table in the s
 |---|---|---|
 | postgres | 18.6 | built as `infra/images/postgres-walg` |
 | wal-g | v3.0.9 | asset `wal-g-pg-24.04-amd64.tar.gz`, sha256 `444ce216230c254edef803e098a59a1746806da3e0d55671d7b0f0082db14ef4` (verified at build) |
-| valkey/valkey | 9.1.3 | ACL users public/worker/admin (`-@dangerous -@admin`), ops (`+ping`) |
+| valkey/valkey | 9.1.3 | ACL users public/worker/admin (`-@dangerous -@admin`; worker also `+info`, US-013), ops (`+ping`) |
 | axllent/mailpit | v1.33.1 | dev SMTP sink |
 | node | 26-slim | stub containers (Node built-in type stripping; dev-only, installs not lockfile-locked) |
 
@@ -122,3 +122,16 @@ No new runtime third-party package. Both have the same coverage gate as core (`t
 | undici | 8.12.4 | npm `latest` (published 2026-11-05; Node 26.12 bundles 8.12.2). safe-fetch uses its `Agent` with `connect.lookup` so the address is checked at connect time, and its `fetch` with `redirect: "manual"`. undici decompresses bodies transparently, so safe-fetch returns a `SafeResponse` that reads through `maxBodyBytes` (default 1 MiB, counted on decoded bytes) and wraps body-read failures as `SafeFetchError` |
 | @cap.js/server | 4.0.5 | npm `latest` (published 2025-12-14). Primary captcha: `noFSState`, storage hooks injectable (Valkey in M6). Its process `beforeExit`/SIGINT/SIGTERM/SIGQUIT handlers (they call `process.exit`) are removed after construction. Single use is also enforced by the adapter's `ReplayStore`, because Cap's read-then-delete lets concurrent validations both pass with async storage |
 | altcha-lib | 2.8.0 | npm `latest` (published 2026-10-24). Fallback captcha, v2 API: PBKDF2/SHA-256, deterministic counter with key signature, `expiresAt` always set and checked by the adapter with its own clock; replay via `ReplayStore` (the library has none) |
+
+## apps/worker (US-013, M3b) - verified 2026-11-12 (`npm view <pkg> version`)
+| Package | Version | Notes |
+|---|---|---|
+| bullmq | 6.7.5 | npm `latest` (published 2026-11-11T21:25Z). Younger than pnpm's minimum release age, so pnpm added it to `minimumReleaseAgeExclude` in pnpm-workspace.yaml. Its optional native decoder `msgpackr-extract` 3.0.7 is listed `false` in `allowBuilds` (no install script; msgpackr falls back to pure JS). Optional peers pg / redis / bullmq-otel unused (Redis backend only) |
+| ioredis | 6.0.0 | npm `latest`; BullMQ 6's peer, also the worker's Valkey health PING |
+| hono / @hono/node-server | 4.13.17 / 2.1.6 | internal process HTTP server (same pins as the stubs) |
+| pino | 10.4.0 | JSON logs with key-based redaction at any depth (apps/worker/src/log.ts) |
+| postgres | 4.1.0 | same pin as packages/db |
+
+Valkey ACL (infra/dev/valkey/users.acl): the `worker` user needs `+info`. BullMQ and ioredis run INFO on connect (version / eviction-policy check and ready check) and fail with NOPERM without it; verified against the real ACL. FLUSHALL stays denied (`-@dangerous`), so the Valkey-loss chaos test runs a throwaway ACL-less Valkey container. M4: the production ACL needs the same `+info` for `worker`.
+
+Worker gates: `pnpm --filter @ebooktrivia/worker test:coverage` (unit + in-process integration tests, needs PostgreSQL and Valkey; lines/statements >= 95 %, branches/functions >= 90 %) and `test:chaos` (the chaos tests with real worker processes and the /caddy/ask load test; needs Docker for the throwaway Valkey); both run in the CI db-integration job. `test:int` runs every integration file locally.

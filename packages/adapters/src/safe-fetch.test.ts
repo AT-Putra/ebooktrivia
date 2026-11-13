@@ -314,3 +314,15 @@ describe("system resolver and the exported lookup", () => {
     expect((v4only.error as SafeFetchError).code).toBe("dns_failed");
   });
 });
+
+describe("A10: close() releases the connection pools", () => {
+  it("waits for an in-flight request, then refuses new ones, and is idempotent", async () => {
+    const safeFetch = createSafeFetch({ allowHttp: true, devAllowLoopback: true, timeoutMs: 3000 });
+    const inFlight = safeFetch(`${base}/size/64`);
+    const closing = safeFetch.close();
+    expect(await (await inFlight).text()).toHaveLength(64);
+    await closing;
+    expect(await failure(safeFetch(`${base}/size/64`))).toBe("request_failed");
+    await expect(safeFetch.close()).resolves.toBeUndefined();
+  });
+});

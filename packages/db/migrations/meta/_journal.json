@@ -22,6 +22,13 @@
       "when": 1794463742000,
       "tag": "0002_waha_url_binding_secret_shape",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1794474817980,
+      "tag": "0003_lp_domains_notify",
+      "breakpoints": true
     }
   ]
 }
