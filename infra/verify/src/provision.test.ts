@@ -112,6 +112,16 @@ describe("provisioning", () => {
     expect(provision).toMatch(/restart_needed "ebt-egress-guard\.service \(restarts the whole stack/);
   });
 
+  it("checks the egress guard's rules with nft -c before installing them (a broken file would stop the stack at boot)", () => {
+    const provision = code("infra/provision/provision.sh");
+    const check = provision.search(/nft -c -f "\$rendered"/);
+    const install = provision.search(/put_file \/etc\/nftables\/ebt-egress\.nft /);
+    expect(check, "nft -c -f on the rendered file").toBeGreaterThan(-1);
+    expect(install, "put_file of the rules").toBeGreaterThan(-1);
+    expect(check).toBeLessThan(install);
+    expect(provision).toMatch(/put_file \/etc\/nftables\/ebt-egress\.nft 644 root root <"\$rendered"/);
+  });
+
   it("refuses firewalld policies and direct rules it did not ship (SL4)", () => {
     for (const file of ["infra/provision/provision.sh", "infra/verify/host-check.sh"]) {
       expect(code(file), file).toMatch(/--get-policies/);

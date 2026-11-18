@@ -370,8 +370,22 @@ step_egress_guard() {
   step "egress guard (nftables, app user)"
   local was_active=0
   systemctl is-active --quiet ebt-egress-guard.service && was_active=1
-  put_file /etc/nftables/ebt-egress.nft 644 root root < <(sed "s/@APP@/$APP/g" "$FILES/ebt-egress.nft")
+  # Checked by nft before it is installed: a broken file on disk would fail the guard at the next
+  # boot, and with it the app user's systemd (Requires=) and every container.
+  local rendered
+  assert_root_path /etc/nftables/ebt-egress.nft
+  rendered=$(mktemp -p /etc/nftables .ebt-egress-check.XXXXXX)
+  # shellcheck disable=SC2064 # the path is fixed now, on purpose
+  trap "rm -f '$rendered'" EXIT
+  sed "s/@APP@/$APP/g" "$FILES/ebt-egress.nft" >"$rendered"
+  local check_errors
+  if ! check_errors=$(nft -c -f "$rendered" 2>&1); then
+    die "the egress guard's rules ($FILES/ebt-egress.nft) do not load: ${check_errors//$'\n'/ }; the installed /etc/nftables/ebt-egress.nft is unchanged"
+  fi
+  put_file /etc/nftables/ebt-egress.nft 644 root root <"$rendered"
   local rules_changed=$LAST_CHANGED
+  rm -f "$rendered"
+  trap - EXIT
   put_file /etc/systemd/system/ebt-egress-guard.service 644 root root <"$FILES/ebt-egress-guard.service"
   local unit_changed=$LAST_CHANGED
   if ((unit_changed)); then systemctl daemon-reload; fi

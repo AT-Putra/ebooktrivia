@@ -268,6 +268,21 @@ guard_reload_check() {
   log=$(sim "$copy/infra/provision/provision.sh" 2>&1)
   printf '%s\n' "$log" >"$OUT/guard-reload-2.log"
   expect "one more run with the same rules" "summary: 0 changed, 4 skipped in container" "$(tail -1 <<<"$log")"
+  # A broken rules file must stop provisioning before it is installed: on disk it would fail the
+  # guard at the next boot, and with it the app user's systemd (Requires=) and the whole stack.
+  local sha_before drops_before
+  sha_before=$(sim sha256sum /etc/nftables/ebt-egress.nft)
+  drops_before=$(sim nft list table inet ebt_egress | grep -c 'drop' || true)
+  sim sed -i 's|^\t\tmeta skuid "@APP@" ip daddr 203.0.113.254 counter drop$|\t\tmeta skuid "@APP@" ip daddr 203.0.113.254 this is not nft|' \
+    "$copy/infra/provision/files/ebt-egress.nft"
+  if log=$(sim "$copy/infra/provision/provision.sh" 2>&1); then
+    fail "provisioning accepted a broken rules file"
+  else
+    pass "provisioning stops on a broken rules file ($(grep -m1 -o 'ERROR .*' <<<"$log" | cut -c1-90))"
+  fi
+  printf '%s\n' "$log" >"$OUT/guard-reload-broken.log"
+  expect "installed rules file unchanged (sha256)" "$sha_before" "$(sim sha256sum /etc/nftables/ebt-egress.nft)"
+  expect "live table keeps its drops" "$drops_before" "$(sim nft list table inet ebt_egress | grep -c 'drop' || true)"
   # Back to the repository's rules, the same way.
   log=$(sim /opt/ebooktrivia/infra/provision/provision.sh 2>&1)
   printf '%s\n' "$log" >"$OUT/guard-reload-3.log"
