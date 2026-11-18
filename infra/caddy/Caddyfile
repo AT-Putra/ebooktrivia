@@ -1,0 +1,284 @@
+# Caddy 2.11.9 edge (plan M4.3). Rootless, socket-activated (infra/quadlet/caddy.socket):
+#   fd/3 = TCP :80, fd/4 = TCP :443, both bound by systemd in the host network namespace, so every
+#   connection keeps the real client address (podman's rootless port forwarding would replace it
+#   with the container's own address; see docs/runbooks/staging-provision.md).
+# The container has a pinned address on each network it shares with an app: 10.89.50.2 (public),
+# 10.89.52.2 (admin), 10.89.53.2 (internal). Each app believes X-Forwarded-For from that address
+# only (TRUSTED_PROXY_IP in its quadlet).
+#
+# Environment (infra/quadlet/caddy.container, EnvironmentFile /etc/ebooktrivia/caddy.env, written
+# by infra/provision from provision.env; nothing in it is secret):
+#   DOMAIN                   base domain: admin./play./order./api.{$DOMAIN}
+#   ACME_EMAIL               ACME account contact
+#   ADMIN_ALLOWED_CIDRS      space-separated; only these may reach admin.{$DOMAIN}
+#   GLITCHTIP_ALLOWED_CIDRS  space-separated; only these may POST the GlitchTip hook
+{
+	# No admin endpoint: the config only changes by restarting the unit.
+	admin off
+	email {$ACME_EMAIL}
+	# The :80 server is the explicit http:// site below (it is socket-activated, so Caddy cannot
+	# open its own redirect listener).
+	auto_https disable_redirects
+	# TLS-ALPN-01 on fd/4 only. The HTTP-01 solver would want its own :80 listener inside the
+	# container, which no traffic reaches.
+	cert_issuer acme {
+		disable_http_challenge
+	}
+	# Let's Encrypt no longer runs OCSP responders.
+	ocsp_stapling off
+	# LP domains: a certificate only for a host the internal process approves (an exact stored
+	# lp_domains host, apps/worker/src/hosts.ts). internal:9000 is on ebt-internal, an internal
+	# network it shares with Caddy only; no port of it is published.
+	on_demand_tls {
+		ask http://internal:9000/caddy/ask
+	}
+	servers {
+		# The Host header must equal the TLS server name.
+		strict_sni_host on
+		protocols h1 h2
+		# Caddy is the edge: no proxy in front of it is trusted, so X-Forwarded-For / X-Real-IP
+		# from a client never become the client address (no trusted_proxies, no client_ip_headers).
+		# Slow clients: 10 s for the headers, 30 s for a whole request body, 10 min to write a
+		# response (a 100 MB PDF on a ~1.5 Mbit/s link). Caddy 2.11.9 has no per-route body timeout,
+		# so admin uploads must fit one body in 30 s (chunked in the admin upload story, M5b).
+		timeouts {
+			read_header 10s
+			read_body 30s
+			write 10m
+			idle 2m
+		}
+		max_header_size 64KB
+	}
+	# Caddy's own log (errors carry the request URI too): the same redaction as the access logs.
+	log default {
+		output stdout
+		format filter {
+			wrap json
+			fields {
+				request>uri regexp "(?i)^/+(hooks/glitchtip|files)/.*$" "/$1/[redacted]"
+			}
+		}
+	}
+}
+
+# Access log of every site. The GlitchTip hook token and signed-file tokens sit in the path and a
+# signed URL's signature in the query, so every /hooks/glitchtip/ and /files/ URI (any case, any
+# leading slashes) is replaced whole before the line is written. Cookies and Authorization go too.
+(access_log) {
+	log {
+		output stdout
+		format filter {
+			wrap json
+			fields {
+				request>uri regexp "(?i)^/+(hooks/glitchtip|files)/.*$" "/$1/[redacted]"
+				request>headers>Cookie delete
+				request>headers>Authorization delete
+			}
+		}
+	}
+}
+
+(https) {
+	bind fd/4 {
+		protocols h1 h2
+	}
+}
+
+# Headers on the app hosts. Set when the response is written (defer), so they replace the app's
+# copies; CSP is added next to the app's nonce CSP (proxy.ts), and a browser enforces both.
+(app_headers) {
+	header {
+		defer
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy strict-origin-when-cross-origin
+		+Content-Security-Policy "frame-ancestors 'none'"
+		-Server
+		-X-Powered-By
+	}
+}
+
+# Upstream request headers. X-Forwarded-For is set to exactly the TCP peer (the real client); every
+# other client-address header a client might send is removed before the request reaches an app.
+(upstream_headers) {
+	header_up X-Forwarded-For {remote_host}
+	header_up -X-Real-IP
+	header_up -Forwarded
+	header_up -X-Client-IP
+	header_up -True-Client-IP
+	header_up -CF-Connecting-IP
+	header_up -Fastly-Client-IP
+	header_up -X-Cluster-Client-IP
+}
+
+# Idle pooled connections to the apps close after 30 s, before the apps' own keep-alive timeout
+# (65 s, packages/edge), so a request is never sent on a connection the app is closing.
+(upstream_transport) {
+	transport http {
+		keepalive 30s
+	}
+}
+
+# public@a and public@b. Active health checks hit the shallow /livez of the edge listener
+# (packages/edge); a draining instance answers 503 there for EDGE_DRAIN_MS (5 s) before it stops
+# accepting, longer than health_interval + health_timeout. lb_try_duration retries a failed dial
+# on the other instance.
+(public_upstreams) {
+	reverse_proxy public-a:3000 public-b:3000 {
+		import upstream_headers
+		import upstream_transport
+		lb_policy round_robin
+		lb_try_duration 10s
+		lb_try_interval 250ms
+		fail_duration 10s
+		health_uri /livez
+		health_interval 2s
+		health_timeout 1s
+		health_status 200
+		health_fails 1
+		health_passes 2
+	}
+}
+
+# Blocked on every host: /internal (plan M4.3) and /livez (the load balancer's, checked on the
+# upstreams directly, never through a site). Matched case-insensitively on the cleaned path.
+(blocked_paths) {
+	@blocked path /internal /internal/* /livez /livez/*
+	handle @blocked {
+		respond 404
+	}
+}
+
+# Port 80: redirect to HTTPS.
+http:// {
+	bind fd/3
+	import access_log
+	redir https://{host}{uri} 308
+}
+
+admin.{$DOMAIN} {
+	import https
+	import access_log
+	import app_headers
+	import blocked_paths
+	@outside not remote_ip {$ADMIN_ALLOWED_CIDRS}
+	handle @outside {
+		respond 404
+	}
+	handle {
+		# Ebook PDFs go up to the 100 MiB hard cap of packages/uploads.
+		request_body {
+			max_size 110MB
+		}
+		reverse_proxy admin:3000 {
+			import upstream_headers
+			import upstream_transport
+			# Retry a failed dial (admin restarting) like the public load balancer does.
+			lb_try_duration 10s
+			lb_try_interval 250ms
+		}
+	}
+}
+
+play.{$DOMAIN} {
+	import https
+	import access_log
+	import app_headers
+	import blocked_paths
+	handle {
+		request_body {
+			max_size 1MB
+		}
+		import public_upstreams
+	}
+}
+
+# The payment status page origin: vendor pixels run here, so it never carries cookies in either
+# direction (plan M4.3).
+order.{$DOMAIN} {
+	import https
+	import access_log
+	import app_headers
+	import blocked_paths
+	request_header -Cookie
+	header {
+		defer
+		-Set-Cookie
+	}
+	handle {
+		request_body {
+			max_size 1MB
+		}
+		import public_upstreams
+	}
+}
+
+api.{$DOMAIN} {
+	import https
+	import access_log
+	import app_headers
+	import blocked_paths
+	# The GlitchTip alert hook: only this exact path shape, only POST, only from the GlitchTip host,
+	# goes to the internal process (which checks the token by its SHA-256). Anything else under
+	# /hooks/glitchtip/ is a 404 here and never reaches an app.
+	handle /hooks/glitchtip/* {
+		@glitchtip {
+			method POST
+			path_regexp ^/hooks/glitchtip/[A-Za-z0-9_-]{16,512}$
+			remote_ip {$GLITCHTIP_ALLOWED_CIDRS}
+		}
+		handle @glitchtip {
+			request_body {
+				max_size 64KB
+			}
+			reverse_proxy internal:9000 {
+				import upstream_headers
+			}
+		}
+		handle {
+			respond 404
+		}
+	}
+	handle {
+		request_body {
+			max_size 1MB
+		}
+		import public_upstreams
+	}
+}
+
+# LP domains (any other host): on-demand certificates gated by the internal ask, static files from
+# /srv/lp/hosts/<host>/current. `current` is a relative symlink to a release directory, swapped
+# atomically on publish. Only lowercase stored-form hosts map to a directory (browsers send the
+# host lowercased; anything else, including "..", is a 404 before a path is built).
+https:// {
+	import https
+	import access_log
+	tls {
+		on_demand
+	}
+	header {
+		defer
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		Content-Security-Policy "frame-ancestors 'self'; base-uri 'self'; object-src 'none'"
+		-Server
+	}
+	import blocked_paths
+	@lp {
+		method GET HEAD
+		expression `{http.request.host}.matches("^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$")`
+	}
+	handle @lp {
+		root * /srv/lp/hosts/{http.request.host}/current
+		encode zstd gzip
+		file_server {
+			hide .*
+		}
+	}
+	handle {
+		respond 404
+	}
+}

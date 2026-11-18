@@ -112,6 +112,13 @@ describe("loadInternalConfig", () => {
     expect(loadInternalConfig({ ...BASE, ...runtime }).nodeEnv).toBe("production");
   });
 
+  // The names rootless podman 5.8 gives the internal quadlet's container (infra/quadlet/
+  // internal.container, observed in infra/verify/local/stack-sim.sh) next to internal.env.
+  it("accepts the environment of its podman container", () => {
+    const podman = { HOME: "/home/node", HOSTNAME: "internal", NODE_VERSION: "26.13.0", PATH: "/usr/local/bin:/usr/bin", PWD: "/app", container: "podman" };
+    expect(loadInternalConfig({ ...BASE, ...podman }).nodeEnv).toBe("production");
+  });
+
   it("reads no environment variable outside its own list", () => {
     const reads = new Set<string>();
     const env = new Proxy(

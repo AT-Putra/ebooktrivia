@@ -1,0 +1,39 @@
+# Internal process (Caddy's on-demand TLS ask, GlitchTip hook): holds no keys. Its environment is
+# an allowlist (apps/worker/src/internal-config.ts), so it gets internal.env and nothing else. It
+# shares an internal network with Caddy only (no egress) and listens on that address only; the
+# data network takes it to PostgreSQL. The health check asks for a reserved name: 404 means up.
+[Unit]
+Description=ebooktrivia internal process (ask, GlitchTip hook)
+Wants=postgres.service
+After=postgres.service
+
+[Container]
+Image=localhost/ebooktrivia/worker:current
+Pull=never
+ContainerName=internal
+Network=ebt-internal.network:ip=10.89.53.15
+Network=ebt-data.network:ip=10.89.51.15
+Exec=node apps/worker/src/main.ts --role=internal
+EnvironmentFile=/etc/ebooktrivia/internal.env
+Environment=INTERNAL_HOST=10.89.53.15 INTERNAL_PORT=9000 NODE_OPTIONS=--max-old-space-size=64
+UserNS=keep-id:uid=1000,gid=1000
+HealthCmd=bash -c 'exec 3<>/dev/tcp/10.89.53.15/9000 && printf "GET /caddy/ask?domain=health-check.invalid HTTP/1.0\r\n\r\n" >&3 && head -1 <&3 | grep -q " 404 "'
+HealthInterval=5s
+HealthTimeout=3s
+HealthRetries=3
+HealthStartPeriod=30s
+Notify=healthy
+LogDriver=journald
+Memory=120m
+ReadOnly=true
+NoNewPrivileges=true
+DropCapability=all
+StopTimeout=15
+
+[Service]
+Restart=always
+TimeoutStartSec=120
+TimeoutStopSec=25
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,3 @@
+# Caddy certificates and ACME account (/data).
+[Volume]
+VolumeName=ebt-caddy-data

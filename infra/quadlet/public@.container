@@ -1,0 +1,42 @@
+# Public app (play./order./api.<domain>), two instances behind Caddy's load balancer: public@a and
+# public@b (symlinks to this template). Their pinned addresses, EDGE_HOST (the edge address they
+# listen on, nothing else) and health check are in public@{a,b}.container.d/: every instance
+# drop-in must set HealthCmd (Notify=healthy below waits for it; quadlets.test.ts). The edge listener
+# (packages/edge) serves /livez and drains on SIGTERM; StopTimeout covers EDGE_DRAIN_MS +
+# EDGE_CLOSE_TIMEOUT_MS. Ebook files are read-only here (/srv/data/deliverables); the rest of
+# /srv/data (imports, proofs) is admin's only.
+[Unit]
+Description=ebooktrivia public app (instance %i)
+Wants=postgres.service valkey.service
+After=postgres.service valkey.service
+
+[Container]
+Image=localhost/ebooktrivia/public:current
+Pull=never
+ContainerName=public-%i
+EnvironmentFile=/etc/ebooktrivia/public.env
+Environment=TRUSTED_PROXY_IP=10.89.50.2 EDGE_PORT=3000 EDGE_DRAIN_MS=5000 EDGE_CLOSE_TIMEOUT_MS=15000
+Environment=NODE_OPTIONS=--max-old-space-size=448
+# The image's node user (uid 1000) is the app user on the host.
+UserNS=keep-id:uid=1000,gid=1000
+Volume=/srv/data/deliverables:/srv/data/deliverables:ro,z
+Tmpfs=/app/apps/public/.next/cache:rw,size=64m,mode=1777
+HealthInterval=2s
+HealthTimeout=2s
+HealthRetries=3
+HealthStartPeriod=30s
+Notify=healthy
+LogDriver=journald
+Memory=700m
+ReadOnly=true
+NoNewPrivileges=true
+DropCapability=all
+StopTimeout=30
+
+[Service]
+Restart=always
+TimeoutStartSec=120
+TimeoutStopSec=40
+
+[Install]
+WantedBy=default.target

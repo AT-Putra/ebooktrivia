@@ -1,0 +1,99 @@
+# App images (plan M4.2), built from the repository root:
+#   podman build -f infra/images/app/Containerfile --target public -t localhost/ebooktrivia/public:current .
+#   podman build -f infra/images/app/Containerfile --target admin  -t localhost/ebooktrivia/admin:current  .
+#   podman build -f infra/images/app/Containerfile --target worker -t localhost/ebooktrivia/worker:current .
+# (infra/provision/build-images.sh runs these on the VM until the deploy story pushes them to a
+# registry by digest.) The worker image also runs the internal process (--role=internal) and the
+# migrate job. Every image runs as the unprivileged `node` user (uid 1000) of the base image.
+ARG NODE_IMAGE=docker.io/library/node:26.13.0-trixie-slim@sha256:5adad64f9a1fca2d51972caa65983634c8a774eb300d72b20f7f2a0f60368072
+
+# pnpm 12 is one native binary, shipped in @pnpm/exe.linux-x64. Its tarball is checked against a
+# SHA-512 pinned here (the registry's dist.integrity for 12.18.0) before the binary is used.
+FROM ${NODE_IMAGE} AS pnpm
+ARG PNPM_VERSION=12.18.0
+ARG PNPM_EXE_SHA512=389f97db072b6a5742c23ef9a4221ead601141246975f8f47814ecff6383ca17de5b8eb294e9e34c813f18aadae8c9fa13bdbf8019974bc8a0ad48a86be17d7d
+WORKDIR /tmp/pnpm
+RUN npm pack "@pnpm/exe.linux-x64@${PNPM_VERSION}" --silent \
+ && echo "${PNPM_EXE_SHA512}  pnpm-exe.linux-x64-${PNPM_VERSION}.tgz" | sha512sum -c - \
+ && tar -xzf "pnpm-exe.linux-x64-${PNPM_VERSION}.tgz" package/pnpm \
+ && install -m 0755 package/pnpm /usr/local/bin/pnpm \
+ && pnpm --version
+
+# Only the workspace manifests and the lockfile, so the dependency layers below are rebuilt only
+# when one of them changes, not on every source edit.
+FROM ${NODE_IMAGE} AS manifests
+COPY . /src
+RUN mkdir /out && cd /src \
+ && find . -name package.json -not -path '*/node_modules/*' -print0 | tar --null -cf - -T - pnpm-lock.yaml pnpm-workspace.yaml \
+  | tar -xf - -C /out
+
+FROM ${NODE_IMAGE} AS deps
+COPY --from=pnpm /usr/local/bin/pnpm /usr/local/bin/pnpm
+WORKDIR /repo
+COPY --from=manifests /out/ ./
+ENV CI=1 NEXT_TELEMETRY_DISABLED=1
+
+FROM deps AS build-public
+RUN pnpm install --frozen-lockfile --filter "@ebooktrivia/public..."
+COPY . .
+RUN pnpm --filter @ebooktrivia/public run build
+
+FROM deps AS build-admin
+RUN pnpm install --frozen-lockfile --filter "@ebooktrivia/admin..."
+COPY . .
+RUN pnpm --filter @ebooktrivia/admin run build
+
+# The worker runs its TypeScript directly (Node type stripping). Node refuses to strip types under
+# node_modules, so the workspace layout is kept: workspace packages stay in packages/ and pnpm's
+# node_modules links point there.
+FROM deps AS build-worker
+RUN pnpm install --frozen-lockfile --prod --filter "@ebooktrivia/worker..."
+COPY . .
+RUN mkdir -p /out \
+ && cp -a package.json pnpm-workspace.yaml node_modules /out/ \
+ && mkdir -p /out/apps /out/packages \
+ && cp -a apps/worker /out/apps/ \
+ && for p in core db adapters; do cp -a "packages/$p" /out/packages/; done \
+ && rm -rf /out/apps/worker/test /out/apps/worker/coverage \
+ && find /out/apps /out/packages -name '*.test.ts' -delete
+
+# Next.js standalone output plus the edge listener (packages/edge, run as TypeScript). The edge
+# package is linked into the app's node_modules the way pnpm links it in the repository.
+FROM ${NODE_IMAGE} AS public
+WORKDIR /app
+COPY --from=build-public --chown=root:root /repo/apps/public/.next/standalone/ ./
+COPY --from=build-public --chown=root:root /repo/apps/public/.next/static ./apps/public/.next/static
+COPY --from=build-public --chown=root:root /repo/apps/public/public ./apps/public/public
+COPY --chown=root:root packages/edge/package.json ./packages/edge/package.json
+COPY --chown=root:root packages/edge/src ./packages/edge/src
+COPY --chown=root:root apps/public/src/server.ts ./apps/public/src/server.ts
+RUN mkdir -p apps/public/node_modules/@ebooktrivia \
+ && ln -sfn ../../../../packages/edge apps/public/node_modules/@ebooktrivia/edge \
+ && find packages/edge -name '*.test.ts' -delete
+ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 EDGE_PORT=3000
+USER node
+EXPOSE 3000
+CMD ["node", "apps/public/src/server.ts"]
+
+FROM ${NODE_IMAGE} AS admin
+WORKDIR /app
+COPY --from=build-admin --chown=root:root /repo/apps/admin/.next/standalone/ ./
+COPY --from=build-admin --chown=root:root /repo/apps/admin/.next/static ./apps/admin/.next/static
+COPY --chown=root:root packages/edge/package.json ./packages/edge/package.json
+COPY --chown=root:root packages/edge/src ./packages/edge/src
+COPY --chown=root:root apps/admin/src/server.ts ./apps/admin/src/server.ts
+RUN mkdir -p apps/admin/node_modules/@ebooktrivia \
+ && ln -sfn ../../../../packages/edge apps/admin/node_modules/@ebooktrivia/edge \
+ && find packages/edge -name '*.test.ts' -delete
+ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 EDGE_PORT=3000
+USER node
+EXPOSE 3000
+CMD ["node", "apps/admin/src/server.ts"]
+
+FROM ${NODE_IMAGE} AS worker
+WORKDIR /app
+COPY --from=build-worker --chown=root:root /out/ ./
+ENV NODE_ENV=production
+USER node
+# --role=internal for the internal process; `node packages/db/src/migrate.ts` for the migrate job.
+CMD ["node", "apps/worker/src/main.ts", "--role=worker"]

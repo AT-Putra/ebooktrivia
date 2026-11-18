@@ -1,0 +1,10 @@
+# Data network: PostgreSQL and Valkey and their clients. Internal: no egress, and Caddy is not on
+# it, so Caddy cannot reach the data stores.
+[Unit]
+Description=ebooktrivia data network (internal)
+
+[Network]
+NetworkName=ebt-data
+Subnet=10.89.51.0/24
+Gateway=10.89.51.1
+Internal=true

@@ -1,0 +1,26 @@
+# One-shot migration job (packages/db/src/migrate.ts), started by the deploy before the rolling
+# restart; never at boot. Its login ebt_migrate is a superuser (roles.sql resets cluster roles),
+# so pg_hba.conf allows it from this pinned address only.
+[Unit]
+Description=ebooktrivia database migrations (one-shot)
+Requires=postgres.service
+After=postgres.service
+
+[Container]
+Image=localhost/ebooktrivia/worker:current
+Pull=never
+ContainerName=migrate
+Network=ebt-data.network:ip=10.89.51.16
+Exec=node packages/db/src/migrate.ts
+EnvironmentFile=/etc/ebooktrivia/migrate.env
+UserNS=keep-id:uid=1000,gid=1000
+LogDriver=journald
+Memory=256m
+ReadOnly=true
+NoNewPrivileges=true
+DropCapability=all
+
+[Service]
+Type=oneshot
+RemainAfterExit=no
+TimeoutStartSec=600

@@ -1,0 +1,34 @@
+# Worker (outbox relay, consumers, sweepers, heartbeat). On the edge network for egress only (it
+# listens nowhere); writes LP releases to /srv/lp and reads the ebook files it sends. It has no
+# health endpoint: Uptime Kuma's push monitor and the deep /healthz (a later story) watch its
+# heartbeat; systemd restarts it when it exits.
+[Unit]
+Description=ebooktrivia worker
+Wants=postgres.service valkey.service
+After=postgres.service valkey.service
+
+[Container]
+Image=localhost/ebooktrivia/worker:current
+Pull=never
+ContainerName=worker
+Network=ebt-edge.network:ip=10.89.50.14
+Network=ebt-data.network:ip=10.89.51.14
+Exec=node apps/worker/src/main.ts --role=worker
+EnvironmentFile=/etc/ebooktrivia/worker.env
+Environment=NODE_OPTIONS=--max-old-space-size=448
+UserNS=keep-id:uid=1000,gid=1000
+Volume=/srv/data/deliverables:/srv/data/deliverables:ro,z
+Volume=/srv/lp:/srv/lp:z
+LogDriver=journald
+Memory=600m
+ReadOnly=true
+NoNewPrivileges=true
+DropCapability=all
+StopTimeout=35
+
+[Service]
+Restart=always
+TimeoutStopSec=45
+
+[Install]
+WantedBy=default.target

@@ -110,8 +110,46 @@ jobs:
       - name: Worker coverage gate (>= 95 % lines; unit + in-process integration)
         run: pnpm --filter @ebooktrivia/worker test:coverage
       # The rest of test:int (the coverage step already ran the other integration files).
-      - name: Worker chaos and load tests (real worker / internal processes)
+      - name: Worker chaos and load tests, production Valkey ACL (real processes, Docker)
         run: pnpm --filter @ebooktrivia/worker test:chaos
+
+  # Static checks of the VM infrastructure (US-014). The provisioning itself and the full stack run
+  # locally in infra/verify/local/{vm-sim,stack-sim}.sh (privileged systemd container, nested
+  # rootless podman) and on the staging VM (docs/runbooks/staging-provision.md).
+  infra:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: ShellCheck (every infra script)
+        run: bash infra/verify/local/shellcheck.sh
+      - name: Caddyfile validate, caddy fmt, adapted JSON up to date (Caddy 2.11.9)
+        run: bash infra/verify/local/caddy-adapt.sh --check
+      - name: Quadlet generator dry run (AlmaLinux 10.2, podman 5.8)
+        run: bash infra/verify/local/quadlet-dryrun.sh
+
+  # The production server entry (Next.js behind packages/edge) on a real build: /livez, the page,
+  # the listener on the configured address (US-014 review C-L2).
+  edge-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+      - name: Install pnpm
+        run: npm install -g pnpm@12.18.0
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build public and admin
+        run: pnpm --filter @ebooktrivia/public run build && pnpm --filter @ebooktrivia/admin run build
+      - name: Smoke-test node apps/<app>/src/server.ts
+        run: bash infra/verify/local/edge-smoke.sh public && bash infra/verify/local/edge-smoke.sh admin
 
   secrets-scan:
     runs-on: ubuntu-latest

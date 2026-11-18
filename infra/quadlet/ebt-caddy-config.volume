@@ -1,0 +1,3 @@
+# Caddy autosaved config (/config; the admin endpoint is off, so it is only written at start).
+[Volume]
+VolumeName=ebt-caddy-config

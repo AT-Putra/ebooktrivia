@@ -1,0 +1,26 @@
+# Build context of infra/images/app/Containerfile (podman reads this file too). Only sources and
+# the lockfile go in; dependencies are installed inside the build. Every workspace package keeps its
+# package.json in the context, so `pnpm install --frozen-lockfile` sees the whole workspace.
+**/node_modules
+**/.next
+**/coverage
+**/.turbo
+**/*.tsbuildinfo
+**/.omc
+.git
+.github
+docs
+design-system
+tools/assets/raw
+playwright-report
+test-results
+# never send secrets into a build
+**/.env
+**/.env.*
+!**/.env.example
+**/*.pem
+**/*.key
+**/secrets
+infra/**/escrow
+# npm / pnpm configuration may hold registry tokens; the build needs none of it.
+**/.npmrc

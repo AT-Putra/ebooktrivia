@@ -1,0 +1,21 @@
+# Managed by infra/provision (installed as /etc/systemd/system/ebt-egress-guard.service). Loads the
+# nftables table inet ebt_egress (/etc/nftables/ebt-egress.nft): the app user, and so every
+# rootless container, cannot reach the provider's metadata service or this host's own addresses.
+# Its own table: firewalld reloads leave it alone. Loaded before user sessions (and linger
+# managers) start.
+[Unit]
+Description=ebooktrivia egress guard for the app user (nftables)
+After=network-pre.target firewalld.service
+Before=systemd-user-sessions.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /etc/nftables/ebt-egress.nft
+# New rules: `systemctl reload`, never restart (the app user's systemd Requires= this unit, so a
+# restart would restart it and every container). The file replaces the table in one transaction.
+ExecReload=/usr/sbin/nft -f /etc/nftables/ebt-egress.nft
+ExecStop=/usr/sbin/nft delete table inet ebt_egress
+
+[Install]
+WantedBy=multi-user.target

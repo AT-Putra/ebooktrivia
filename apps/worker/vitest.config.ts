@@ -4,13 +4,14 @@ import { defineConfig } from "vitest/config";
 // Valkey, so the gate runs the unit tests (src/, also run by root `pnpm test`) AND the in-process
 // integration tests (test/, real PostgreSQL + Valkey, see vitest.int.config.ts). The chaos and
 // load tests are left out: they only drive child processes, which v8 coverage does not measure
-// (`test:chaos` runs them; `test:int` runs every integration file).
+// (`test:chaos` runs them; `test:int` runs every integration file). So is the production Valkey
+// ACL test (US-014): it needs Docker and covers no worker source.
 // Run: pnpm --filter @ebooktrivia/worker test:coverage (needs the dev stack, or TEST_PG_URL and
 // TEST_VALKEY_URL).
 export default defineConfig({
   test: {
     include: ["src/**/*.test.ts", "test/**/*.int.test.ts"],
-    exclude: ["test/chaos.int.test.ts", "test/caddy-load.int.test.ts", "**/node_modules/**"],
+    exclude: ["test/chaos.int.test.ts", "test/caddy-load.int.test.ts", "test/prod-valkey-acl.int.test.ts", "**/node_modules/**"],
     globalSetup: ["test/global-setup.ts"],
     fileParallelism: false,
     testTimeout: 60_000,

@@ -28,6 +28,7 @@ export const RUNTIME_ENV = [
   "USERPROFILE", // os.homedir() (Windows)
   "HOSTNAME", // set by container runtimes
   "container", // set by podman
+  "PWD", // set by podman for every container (the working directory; US-014 found it in the quadlet)
   "TZ", // time zone
   "LANG", // locale
   "NODE_OPTIONS", // Node runtime flags, operator-controlled

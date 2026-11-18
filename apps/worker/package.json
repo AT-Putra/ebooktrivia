@@ -9,7 +9,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test:coverage": "vitest run --coverage --config vitest.config.ts",
     "test:int": "vitest run --config vitest.int.config.ts",
-    "test:chaos": "vitest run --config vitest.int.config.ts test/chaos.int.test.ts test/caddy-load.int.test.ts"
+    "test:chaos": "vitest run --config vitest.int.config.ts test/chaos.int.test.ts test/caddy-load.int.test.ts test/prod-valkey-acl.int.test.ts"
   },
   "dependencies": {
     "@ebooktrivia/adapters": "workspace:*",

@@ -1,0 +1,16 @@
+# Caddy's listeners, bound by the app user's systemd in the HOST network namespace and handed to
+# the container (socket activation). Connections therefore keep the real client address, which
+# podman's rootless port forwarding would replace with the container's own. Binding 80/443 as a
+# user needs net.ipv4.ip_unprivileged_port_start=80 (infra/provision). Order matters: the Caddyfile
+# binds fd/3 (port 80) and fd/4 (port 443). HTTP/3 (UDP) is not offered.
+[Unit]
+Description=Caddy listeners (:80, :443)
+
+[Socket]
+ListenStream=[::]:80
+ListenStream=[::]:443
+BindIPv6Only=both
+NoDelay=true
+
+[Install]
+WantedBy=sockets.target

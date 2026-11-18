@@ -1,0 +1,34 @@
+# Caddy edge (infra/caddy/Caddyfile), socket-activated by caddy.socket. Pinned on each network it
+# shares with an app; that address is the app's TRUSTED_PROXY_IP: 10.89.50.2 (public), 10.89.52.2
+# (admin), 10.89.53.2 (internal).
+[Unit]
+Description=Caddy edge proxy
+Requires=caddy.socket
+After=caddy.socket
+
+[Container]
+Image=docker.io/library/caddy:2.11.9@sha256:e40b94d0a43b5ff69cb20568d73f10c70703df7b0ffc2298eb3d723cdc9d0bd1
+ContainerName=caddy
+Network=ebt-edge.network:ip=10.89.50.2
+Network=ebt-admin.network:ip=10.89.52.2
+Network=ebt-internal.network:ip=10.89.53.2
+Exec=caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
+EnvironmentFile=/etc/ebooktrivia/caddy.env
+# Provisioned config: root-owned, labeled container_file_t by infra/provision, never relabeled here.
+Volume=/etc/ebooktrivia/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+# LP content, written by the worker (shared label).
+Volume=/srv/lp:/srv/lp:ro,z
+Volume=ebt-caddy-data.volume:/data:Z
+Volume=ebt-caddy-config.volume:/config:Z
+LogDriver=journald
+Memory=150m
+ReadOnly=true
+NoNewPrivileges=true
+DropCapability=all
+
+[Service]
+Restart=always
+TimeoutStopSec=30
+
+[Install]
+WantedBy=default.target

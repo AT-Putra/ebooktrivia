@@ -1,0 +1,10 @@
+# Edge network: Caddy, public@a/b and the worker. The only network with egress (ACME, Midtrans,
+# WAHA, SMTP, conversion APIs). Caddy is pinned at 10.89.50.2, public's TRUSTED_PROXY_IP. No port
+# is published: Caddy's listeners come from caddy.socket.
+[Unit]
+Description=ebooktrivia edge network
+
+[Network]
+NetworkName=ebt-edge
+Subnet=10.89.50.0/24
+Gateway=10.89.50.1

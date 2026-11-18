@@ -1,0 +1,18 @@
+# Managed by infra/provision (installed as /etc/nftables/ebt-egress.nft with @APP@ replaced, loaded
+# by ebt-egress-guard.service; security review S6). The app user, and so every rootless container
+# (their traffic leaves through the user's pasta process), may not reach the provider's metadata
+# service (169.254.0.0/16; IPv6: link-local fe80::/10 and fd00:ec2::254) or any address of this host. Allowed: replies on connections others
+# opened (Caddy's socket-activated listeners) and DNS (port 53 before any NAT: the resolver may be
+# local or link-local).
+table inet ebt_egress
+delete table inet ebt_egress
+table inet ebt_egress {
+	chain output {
+		type filter hook output priority filter; policy accept;
+		ct state established,related accept
+		meta skuid "@APP@" meta l4proto { tcp, udp } ct original proto-dst 53 accept
+		meta skuid "@APP@" ip daddr 169.254.0.0/16 counter drop
+		meta skuid "@APP@" ip6 daddr { fe80::/10, fd00:ec2::254 } counter drop
+		meta skuid "@APP@" fib daddr type local counter drop
+	}
+}

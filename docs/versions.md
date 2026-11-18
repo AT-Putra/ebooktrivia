@@ -135,3 +135,30 @@ No new runtime third-party package. Both have the same coverage gate as core (`t
 Valkey ACL (infra/dev/valkey/users.acl): the `worker` user needs `+info`. BullMQ and ioredis run INFO on connect (version / eviction-policy check and ready check) and fail with NOPERM without it; verified against the real ACL. FLUSHALL stays denied (`-@dangerous`), so the Valkey-loss chaos test runs a throwaway ACL-less Valkey container. M4: the production ACL needs the same `+info` for `worker`.
 
 Worker gates: `pnpm --filter @ebooktrivia/worker test:coverage` (unit + in-process integration tests, needs PostgreSQL and Valkey; lines/statements >= 95 %, branches/functions >= 90 %) and `test:chaos` (the chaos tests with real worker processes and the /caddy/ask load test; needs Docker for the throwaway Valkey); both run in the CI db-integration job. `test:int` runs every integration file locally.
+
+## Staging VM, quadlets, Caddy (US-014, M4a) - verified 2026-11-13
+| Component | Version | Notes |
+|---|---|---|
+| AlmaLinux | 10.2 (Lavender Lion) | VM OS. 10.3 is beta: not used. Local stand-ins: `almalinux:10.2@sha256:5a4b41a427c9717be8f4ac2a32aa22efbae5f9124fbcb79a6765394f312acfe8` (dry runs) and `almalinux/10-init@sha256:967cce22cb0e0266c5f6538cda936ed8a0f24eafd5afdcf38518818d4bf403b9` (systemd PID 1, `infra/verify/local/vm-sim`) |
+| podman | 5.8.2 (AlmaLinux 10.2 AppStream, `podman-5.8.2-12.el10_2.alma.1`) | quadlets need >= 4.4; `Notify=healthy` and template drop-ins need 5.x (provision.sh refuses < 5). Networking: netavark 1.17.2, aardvark-dns 1.17.1, passt/pasta 0^20251210, crun 1.30.1, conmon 2.2.1 |
+| firewalld / chrony / dnf-automatic | 2.4.3 / 4.8 / 4.20.0 | AlmaLinux 10.2 BaseOS/AppStream |
+| fail2ban | 1.1.0 (`fail2ban-server`, `-firewalld`, `-selinux`) | EPEL 10 (`epel-release` 10-6 from AlmaLinux extras) |
+| container-selinux | 2.248.0 | |
+| caddy | 2.11.9, `docker.io/library/caddy:2.11.9@sha256:e40b94d0a43b5ff69cb20568d73f10c70703df7b0ffc2298eb3d723cdc9d0bd1` | socket-activated (`bind fd/3`, `fd/4`, Caddy >= 2.9) |
+| valkey/valkey | 9.1.3, `@sha256:3add1a336a920ea54770a001ab6feb3da5fceea96a40373a3a2cd469b815f0b7` | production ACL in `infra/provision/files/valkey/` |
+| node (app images) | 26.13.0, `docker.io/library/node:26.13.0-trixie-slim@sha256:5adad64f9a1fca2d51972caa65983634c8a774eb300d72b20f7f2a0f60368072` | `infra/images/app/Containerfile` (public, admin, worker). Same as `.nvmrc`; the image was published 2026-11-05 |
+| postgres-walg | postgres 18.6 + wal-g v3.0.9 | `infra/images/postgres-walg`, built on the VM as `localhost/ebooktrivia/postgres-walg:18.6` |
+| koalaman/shellcheck | v0.11.0 | `infra/verify/local/shellcheck.sh`, CI job `infra` |
+| ghcr.io/letsencrypt/pebble | 2.10.2 | local ACME test CA in `infra/verify/local/stack-sim.sh` only (2.10.3, published 2026-11-11, is newer; the older one is used) |
+| docker.io/curlimages/curl | 8.17.0 | test client containers in `stack-sim.sh` only |
+
+New workspace packages: `@ebooktrivia/edge` (`packages/edge`: the apps' HTTP listener, /livez + drain, trusted-proxy X-Forwarded-For; no dependencies) and `@ebooktrivia/infra-verify` (`infra/verify`: Caddy JSON and quadlet consistency tests). No new npm dependency.
+
+### US-014 review fixes - verified 2026-11-13
+| Component | Version | Notes |
+|---|---|---|
+| podman (dry run) | `podman-5.8.2-12.el10_2.alma.1` | `infra/verify/local/quadlet-dryrun.sh` installs exactly this build and fails on another |
+| pnpm in the app images | 12.18.0, `@pnpm/exe.linux-x64` tarball sha512 `389f97db072b6a5742c23ef9a4221ead601141246975f8f47814ecff6383ca17de5b8eb294e9e34c813f18aadae8c9fa13bdbf8019974bc8a0ad48a86be17d7d` (registry `dist.integrity`) | `infra/images/app/Containerfile` checks it with `sha512sum -c` before using the binary; npm no longer installs pnpm there |
+| postgres (base of postgres-walg) | 18.6, `docker.io/library/postgres:18.6@sha256:5a5a84b19854a9ffaa54082c166ff4ec27473a361e496e5ea167f298f2da9722` | every `FROM` in `infra/**/{Containerfile,Dockerfile}` is now pinned by digest (checked by `infra/verify/src/quadlets.test.ts`) |
+| node (dev stubs) | 26.13.0, same digest as the app images | `infra/waha-mock`, `infra/midtrans-stub` (were `node:26-slim`). `node:26-slim` now resolves to 26.13.1: bump `.nvmrc` and every pin together in a later change |
+| nftables / audit | AlmaLinux 10.2 BaseOS | egress guard (`ebt-egress-guard.service`), `ausearch` for host-check |

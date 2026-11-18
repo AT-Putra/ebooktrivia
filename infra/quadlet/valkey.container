@@ -1,0 +1,35 @@
+# Valkey 9.1.3: ACL users only (default off), noeviction, AOF (infra/provision writes valkey.conf
+# and users.acl with password hashes generated on the VM). Only the data network reaches it. Runs
+# as the image's valkey user (uid 999, the app user on the host) from the start: no capabilities.
+[Unit]
+Description=ebooktrivia Valkey
+
+[Container]
+Image=docker.io/valkey/valkey:9.1.3@sha256:3add1a336a920ea54770a001ab6feb3da5fceea96a40373a3a2cd469b815f0b7
+ContainerName=valkey
+Network=ebt-data.network:ip=10.89.51.3
+Exec=valkey-server /etc/valkey/valkey.conf
+# REDISCLI_AUTH: the `ops` password (PING only), for the health check.
+EnvironmentFile=/etc/ebooktrivia/valkey.env
+User=999:999
+UserNS=keep-id:uid=999,gid=999
+Volume=ebt-valkeydata.volume:/data:Z
+Volume=/etc/ebooktrivia/valkey/valkey.conf:/etc/valkey/valkey.conf:ro
+Volume=/etc/ebooktrivia/valkey/users.acl:/etc/valkey/users.acl:ro
+HealthCmd=valkey-cli --user ops --no-auth-warning ping
+HealthInterval=5s
+HealthTimeout=3s
+HealthRetries=10
+Notify=healthy
+LogDriver=journald
+Memory=512m
+ReadOnly=true
+NoNewPrivileges=true
+DropCapability=all
+StopTimeout=30
+
+[Service]
+Restart=always
+
+[Install]
+WantedBy=default.target

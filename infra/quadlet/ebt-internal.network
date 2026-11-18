@@ -1,0 +1,10 @@
+# Internal-process network: Caddy (10.89.53.2) and the internal process only, which answers
+# Caddy's on-demand TLS ask and the GlitchTip hook. Internal: it needs no egress (review S2).
+[Unit]
+Description=ebooktrivia internal-process network (internal)
+
+[Network]
+NetworkName=ebt-internal
+Subnet=10.89.53.0/24
+Gateway=10.89.53.1
+Internal=true

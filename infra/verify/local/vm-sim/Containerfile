@@ -1,0 +1,10 @@
+# A local stand-in for the staging VM: AlmaLinux 10.2 with systemd as PID 1, run privileged by
+# infra/verify/local/vm-sim.sh. The provisioning scripts run in it unchanged; what a container
+# cannot do (SELinux, kernel-wide sysctls, the host clock, possibly firewalld) they report as
+# "SKIPPED in container". The image masks systemd-logind, which linger (rootless podman user
+# services) needs, so it is unmasked here. sudo and openssh-server are what a cloud image has.
+FROM docker.io/almalinux/10-init@sha256:967cce22cb0e0266c5f6538cda936ed8a0f24eafd5afdcf38518818d4bf403b9
+RUN systemctl unmask systemd-logind \
+ && dnf -y -q install sudo openssh-server openssh-clients \
+ && dnf clean all \
+ && useradd --create-home --groups wheel opsadmin

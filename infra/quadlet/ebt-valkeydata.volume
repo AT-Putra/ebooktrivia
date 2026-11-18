@@ -1,0 +1,3 @@
+# Valkey AOF and RDB files. Valkey is disposable (plan M4.5: not backed up).
+[Volume]
+VolumeName=ebt-valkeydata

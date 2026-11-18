@@ -1,0 +1,13 @@
+# Managed by infra/provision (installed as /etc/fail2ban/jail.d/90-ebooktrivia.local). Bans go
+# through firewalld (fail2ban-firewalld sets banaction in jail.d/00-firewalld.conf); sshd failures
+# are read from the journal.
+[DEFAULT]
+backend = systemd
+bantime = 1h
+bantime.increment = true
+findtime = 10m
+maxretry = 5
+
+[sshd]
+enabled = true
+mode = aggressive

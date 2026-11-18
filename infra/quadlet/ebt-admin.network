@@ -1,0 +1,10 @@
+# Admin network: Caddy (10.89.52.2, admin's TRUSTED_PROXY_IP) and the admin app only. Internal (no
+# egress), so no other container can reach admin and bypass Caddy's IP allowlist (review S2).
+[Unit]
+Description=ebooktrivia admin network (internal)
+
+[Network]
+NetworkName=ebt-admin
+Subnet=10.89.52.0/24
+Gateway=10.89.52.1
+Internal=true

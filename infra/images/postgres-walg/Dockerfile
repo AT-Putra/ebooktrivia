@@ -1,6 +1,6 @@
 # Dev/prod-parity Postgres with the wal-g binary present. WAL archiving is NOT
 # enabled here (archive_mode stays off); only the binary is installed.
-FROM postgres:18.6
+FROM docker.io/library/postgres:18.6@sha256:5a5a84b19854a9ffaa54082c166ff4ec27473a361e496e5ea167f298f2da9722
 
 ARG WALG_VERSION=v3.0.9
 ARG WALG_ASSET=wal-g-pg-24.04-amd64
