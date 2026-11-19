@@ -18,7 +18,11 @@ describe("parseRole", () => {
 });
 
 describe("main", () => {
-  it("loads the chosen role and fails fast on its configuration", async () => {
+  // main() dynamically imports each role's whole module graph (bullmq, ioredis, postgres, hono).
+  // The first, cold import takes about 1 s alone but passed the 5 s default while 69 suites ran in
+  // parallel (failed the ralph gate on 2026-11-19), so this test gets its own budget. A real hang
+  // still fails it.
+  it("loads the chosen role and fails fast on its configuration", { timeout: 30_000 }, async () => {
     await expect(main(["--role=internal"], {})).rejects.toThrow(ConfigError);
     await expect(main(["--role=internal"], { NODE_ENV: "test" })).rejects.toThrow(/GLITCHTIP_HOOK_TOKEN_SHA256 is required/);
     await expect(main([], { NODE_ENV: "test" })).rejects.toThrow(/DATABASE_URL_WORKER is required/);
