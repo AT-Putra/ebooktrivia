@@ -25,7 +25,8 @@ export const WINDOW_SECONDS = LOGIN_THROTTLE_WINDOW_SECONDS;
 export const LOCK_SECONDS = 15 * 60;
 export const MAX_CONSECUTIVE = 20;
 
-export type ThrottleKind = "account" | "second_factor" | "ip";
+/** `pending_sign_in`: a password step of a user from one address, waiting for its completion (G2). */
+export type ThrottleKind = "account" | "second_factor" | "ip" | "pending_sign_in";
 
 export function throttleKey(kind: ThrottleKind, value: string): string {
   return createHash("sha256").update(`${kind}:${value}`).digest("hex");
@@ -130,6 +131,33 @@ export async function beginAttempt(sql: Sql, keys: readonly string[], consecutiv
       },
     },
   };
+}
+
+const pendingKey = (userId: string, bucket: string): string => throttleKey("pending_sign_in", `${userId}|${bucket}`);
+
+/**
+ * Records that a password step of `userId` passed from address `bucket` (lib/client-ip.ts
+ * throttleBucket) and now waits for its second factor or enrollment (security review US-016 G2).
+ * Kept in login_throttle, so the worker's sweeper removes it once its window is over.
+ */
+export async function notePendingSignIn(sql: Sql, userId: string, bucket: string): Promise<void> {
+  await sql`
+    INSERT INTO admin_auth.login_throttle AS t (key, failures, window_started_at)
+    VALUES (${pendingKey(userId, bucket)}, 1, clock_timestamp())
+    ON CONFLICT (key) DO UPDATE SET
+      failures = CASE WHEN t.window_started_at <= clock_timestamp() - make_interval(secs => ${WINDOW_SECONDS}) THEN 1 ELSE t.failures + 1 END,
+      window_started_at = CASE WHEN t.window_started_at <= clock_timestamp() - make_interval(secs => ${WINDOW_SECONDS})
+                               THEN clock_timestamp() ELSE t.window_started_at END`;
+}
+
+/** Takes one pending password step of `userId` from `bucket`; false when that address had none in the window. */
+export async function takePendingSignIn(sql: Sql, userId: string, bucket: string): Promise<boolean> {
+  const taken = await sql`
+    UPDATE admin_auth.login_throttle SET failures = failures - 1
+     WHERE key = ${pendingKey(userId, bucket)} AND failures > 0
+       AND window_started_at > clock_timestamp() - make_interval(secs => ${WINDOW_SECONDS})
+    RETURNING 1`;
+  return taken.length === 1;
 }
 
 /** Clears keys, consecutive counts and hard locks included (recovery CLI, Owner reset). */

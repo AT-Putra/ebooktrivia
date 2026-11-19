@@ -5,7 +5,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { recoverAdminUser } from "../src/lib/admin-users.ts";
 import { runMutation } from "../src/lib/audit.ts";
-import { signInWithPassword, verifyTotpSignIn } from "../src/lib/auth/service.ts";
+import { signInWithPassword, startEnrollment, verifyTotpSignIn } from "../src/lib/auth/service.ts";
 import { beginAttempt, MAX_CONSECUTIVE, MAX_FAILURES, throttleKey } from "../src/lib/auth/throttle.ts";
 import { throttleBucket } from "../src/lib/client-ip.ts";
 import { auditRows, codeFor, CookieJar, createTestAdmin, enroll, type Enrolled, freshIp, newRuntime, password, passwordStep, root, system, wrongTotp } from "./support.ts";
@@ -260,5 +260,70 @@ describe("unfinished sign-ins (security review US-016 F1)", () => {
     for (let i = 0; i < MAX_FAILURES - 1; i++) await attempt(admin.email, admin.password, freshIp());
     await enroll(rt, "staff", admin);
     expect(await root`SELECT 1 FROM admin_auth.login_throttle WHERE key = ${throttleKey("account", admin.email)}`).toHaveLength(0);
+  });
+});
+
+describe("enrollment step 1 (security review US-016 G1)", () => {
+  it("counts a successful step 1 until enrollment completes: the 6th in 15 minutes is refused", async () => {
+    const admin = await createTestAdmin(rt);
+    const ip = freshIp();
+    const jar = new CookieJar();
+    jar.apply((await system(() => signInWithPassword(rt, { email: admin.email, password: admin.password }, jar.request(ip)), ip)).setCookies);
+    let current = admin.password;
+    for (let i = 0; i < MAX_FAILURES; i++) {
+      const next = password();
+      const res = await system(() => startEnrollment(rt, { userId: admin.userId }, { password: current, newPassword: next }, jar.request(freshIp())), ip);
+      expect(res.kind, `step 1 #${String(i + 1)}`).toBe("verify");
+      current = next;
+    }
+    const sixth = await system(() => startEnrollment(rt, { userId: admin.userId }, { password: current, newPassword: password() }, jar.request(freshIp())), ip);
+    expect(sixth).toMatchObject({ kind: "locked", permanent: false });
+    expect(await auditRows(admin.userId, "admin_auth.totp_enrollment_started")).toHaveLength(MAX_FAILURES);
+  });
+});
+
+describe("address refund at sign-in completion (security review US-016 G2)", () => {
+  async function addressFailures(ip: string): Promise<number> {
+    const [row] = await root<{ failures: number }[]>`SELECT failures FROM admin_auth.login_throttle WHERE key = ${throttleKey("ip", throttleBucket(ip))}`;
+    return row?.failures ?? 0;
+  }
+
+  it("refunds nothing when the code comes from another address than the password step", async () => {
+    const admin = await enroll(rt);
+    const x = freshIp();
+    const y = freshIp();
+    await attempt(`nobody-${String(Date.now())}-a@example.test`, WRONG, x);
+    await attempt(`nobody-${String(Date.now())}-b@example.test`, WRONG, x);
+    expect(await addressFailures(x)).toBe(2);
+    const jar = await passwordStep(rt, admin, y);
+    const res = await system(async () => verifyTotpSignIn(rt, { code: await codeFor(admin.userId, admin.secret) }, jar.request(x)), x);
+    expect(res.outcome).toEqual({ kind: "signed_in" });
+    expect(await addressFailures(x)).toBe(2);
+    expect(await addressFailures(y)).toBe(1);
+  });
+
+  it("refunds the password step's address when the same address completes", async () => {
+    const admin = await enroll(rt);
+    const x = freshIp();
+    await attempt(`nobody-${String(Date.now())}-c@example.test`, WRONG, x);
+    const jar = await passwordStep(rt, admin, x);
+    expect(await addressFailures(x)).toBe(2);
+    const res = await system(async () => verifyTotpSignIn(rt, { code: await codeFor(admin.userId, admin.secret) }, jar.request(x)), x);
+    expect(res.outcome).toEqual({ kind: "signed_in" });
+    expect(await addressFailures(x)).toBe(1);
+  });
+
+  it("refunds an address once per password step from it, however many completions follow", async () => {
+    const admin = await enroll(rt);
+    const x = freshIp();
+    await attempt(`nobody-${String(Date.now())}-d@example.test`, WRONG, x);
+    await attempt(`nobody-${String(Date.now())}-e@example.test`, WRONG, x);
+    const fromX = await passwordStep(rt, admin, x);
+    const fromY = await passwordStep(rt, admin, freshIp());
+    for (const jar of [fromX, fromY]) {
+      const res = await system(async () => verifyTotpSignIn(rt, { code: await codeFor(admin.userId, admin.secret) }, jar.request(x)), x);
+      expect(res.outcome).toEqual({ kind: "signed_in" });
+    }
+    expect(await addressFailures(x)).toBe(2);
   });
 });

@@ -27,7 +27,7 @@ import { SESSION_COOKIE, TOTP_ISSUER, TWO_FACTOR_COOKIE } from "./instance.ts";
 import { prepareRecoveryCodes, storeRecoveryCodes } from "./recovery-codes.ts";
 import { authHeaders, normalizeEmail, PASSWORD_MAX, PASSWORD_MIN } from "./request.ts";
 import type { AuthRuntime } from "./runtime.ts";
-import { beginAttempt, clearThrottle, type FailureResult, type Gate, LOCK_SECONDS, refund, throttleKey } from "./throttle.ts";
+import { beginAttempt, clearThrottle, type FailureResult, type Gate, LOCK_SECONDS, notePendingSignIn, refund, takePendingSignIn, throttleKey } from "./throttle.ts";
 
 export interface RequestInfo {
   readonly headers: Headers;
@@ -103,12 +103,15 @@ async function userIdByEmail(sql: Sql, email: string): Promise<string | null> {
 
 /**
  * A sign-in is complete (second factor passed, or TOTP enrolled): the account key its password step
- * kept counted is cleared and that step's address count is refunded (security review US-016 F1).
+ * kept counted is cleared (security review US-016 F1). The address count of that password step is
+ * refunded only when this request comes from the same address and a password step from it is still
+ * pending (G2): completing from another address refunds nothing, so nobody can steer refunds to an
+ * address of their choice.
  */
 async function signInCompleted(sql: Sql, userId: string, req: RequestInfo): Promise<void> {
   const [user] = await sql<{ email: string }[]>`SELECT email FROM admin_auth."user" WHERE id = ${userId}`;
   if (user !== undefined) await clearThrottle(sql, [throttleKey("account", user.email)]);
-  await refund(sql, [ipKey(req)]);
+  if (await takePendingSignIn(sql, userId, throttleBucket(req.ip))) await refund(sql, [ipKey(req)]);
 }
 
 /** Logs and audits a second-factor hard lock (security review US-016 SM2). */
@@ -186,11 +189,14 @@ export async function signInWithPassword(rt: AuthRuntime, input: { email: string
     }
     return { outcome: { kind: "invalid" }, setCookies: [] };
   }
-  // Deliberately neither `succeeded` nor `failed`: the attempt stays counted until signInCompleted.
+  // Deliberately neither `succeeded` nor `failed`: the attempt stays counted until signInCompleted,
+  // which refunds the address only if the completion comes from this same address (G2).
   const setCookies = result.headers.getSetCookie();
   const body: unknown = result.response;
+  const signedInUserId = await userIdByEmail(rt.sql, email);
+  if (signedInUserId !== null) await notePendingSignIn(rt.sql, signedInUserId, throttleBucket(req.ip));
   if (typeof body === "object" && body !== null && "twoFactorRedirect" in body && body.twoFactorRedirect === true) {
-    const userId = await userIdByEmail(rt.sql, email);
+    const userId = signedInUserId;
     await recordEvent(rt.sql, { action: "admin_auth.password_verified", entityType: "admin_user", entityId: userId, facts: { next: "second_factor" } });
     return { outcome: { kind: "second_factor" }, setCookies };
   }
@@ -376,7 +382,11 @@ export async function startEnrollment(
       actor,
     });
   });
-  await gate.attempt.succeeded([userKey]);
+  // Kept counted on the user's key (security review US-016 G1): step 1 repeated without finishing
+  // enrollment is capped at 5 per 15 minutes; completeEnrollment's successful TOTP check clears it.
+  // The address count is refunded: the cap is per user, and a successful step must not use up the
+  // address budget that real failures need (one office, several admins enrolling).
+  await refund(rt.sql, [ipKey(req)]);
   return { kind: "verify", secret, uri: totpURI, qrSvgDataUrl: totpQrDataUrl(totpURI), recoveryCodes: codes.shown };
 }
 
