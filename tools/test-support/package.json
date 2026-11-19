@@ -1,0 +1,17 @@
+{
+  "name": "@ebooktrivia/test-support",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./database": "./src/database.ts",
+    "./totp": "./src/totp.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@ebooktrivia/db": "workspace:*",
+    "postgres": "4.1.0"
+  }
+}

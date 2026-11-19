@@ -50,6 +50,8 @@ export const adminProfiles = pgTable(
     role: text("role").notNull(),
     displayName: text("display_name").notNull(),
     disabledAt: tstz("disabled_at"),
+    /** Set while TOTP is not enrolled: after it, the account cannot sign in until an Owner resets it (US-016 SL3). */
+    enrollBy: tstz("enroll_by"),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },

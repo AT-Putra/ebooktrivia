@@ -196,7 +196,7 @@ describe("SECURITY DEFINER functions (functions.sql, triggers.sql)", () => {
   it("grants EXECUTE per role exactly", async () => {
     const rows = await sql<{ fn: string; role: string; ok: boolean }[]>`
       SELECT fn, r AS role, has_function_privilege(r, fn, 'EXECUTE') AS ok
-      FROM unnest(${["public.enqueue_otp(uuid)", "public.enqueue_notification(uuid)", "public.enqueue_waha_inbound(uuid)", "public.enqueue_mo(uuid)", "public.get_payment_secret()"]}::text[]) fn
+      FROM unnest(${["public.enqueue_otp(uuid)", "public.enqueue_notification(uuid)", "public.enqueue_waha_inbound(uuid)", "public.enqueue_mo(uuid)", "public.get_payment_secret()", "public.sweep_login_throttle(integer)"]}::text[]) fn
       CROSS JOIN unnest(${[...APP_ROLES]}::text[]) r
       WHERE has_function_privilege(r, fn, 'EXECUTE') ORDER BY 1, 2`;
     expect(rows.map((r) => `${r.role} ${r.fn}`)).toEqual([
@@ -206,7 +206,13 @@ describe("SECURITY DEFINER functions (functions.sql, triggers.sql)", () => {
       "public_rw public.enqueue_waha_inbound(uuid)",
       "public_rw public.get_payment_secret()",
       "worker_rw public.get_payment_secret()",
+      "worker_rw public.sweep_login_throttle(integer)",
     ]);
+  });
+
+  it("keeps one sweep_login_throttle, taking the window (migration 0006 drops the argument-less one)", async () => {
+    const rows = await sql<{ sig: string }[]>`SELECT p.oid::regprocedure::text AS sig FROM pg_proc p WHERE p.proname = 'sweep_login_throttle'`;
+    expect(rows.map((r) => r.sig)).toEqual(["sweep_login_throttle(integer)"]);
   });
 });
 

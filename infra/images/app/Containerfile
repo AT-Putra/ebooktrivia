@@ -38,10 +38,15 @@ RUN pnpm install --frozen-lockfile --filter "@ebooktrivia/public..."
 COPY . .
 RUN pnpm --filter @ebooktrivia/public run build
 
+# ADMIN_ORIGIN (https://admin.<DOMAIN>) is read by apps/admin/next.config.ts at build time for the
+# server-action allowedOrigins; the build fails without it. infra/provision/build-images.sh passes it
+# from DOMAIN.
 FROM deps AS build-admin
+ARG ADMIN_ORIGIN
 RUN pnpm install --frozen-lockfile --filter "@ebooktrivia/admin..."
 COPY . .
-RUN pnpm --filter @ebooktrivia/admin run build
+RUN test -n "$ADMIN_ORIGIN" || { echo "build-arg ADMIN_ORIGIN is required" >&2; exit 1; } \
+ && ADMIN_ORIGIN="$ADMIN_ORIGIN" pnpm --filter @ebooktrivia/admin run build
 
 # The worker runs its TypeScript directly (Node type stripping). Node refuses to strip types under
 # node_modules, so the workspace layout is kept: workspace packages stay in packages/ and pnpm's
@@ -89,6 +94,25 @@ ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 EDGE_PORT=3000
 USER node
 EXPOSE 3000
 CMD ["node", "apps/admin/src/server.ts"]
+
+# The admin account CLI (Owner bootstrap and recovery, apps/admin/src/cli/admin.ts; runbook
+# docs/runbooks/admin-access.md). Like the worker it runs its TypeScript directly: the admin app's
+# production dependencies and sources, no Next.js build (the standalone output bundles Better Auth).
+FROM deps AS build-admin-cli
+RUN pnpm install --frozen-lockfile --prod --filter "@ebooktrivia/admin..."
+COPY . .
+RUN mkdir -p /out/apps/admin /out/packages \
+ && cp -a package.json pnpm-workspace.yaml node_modules /out/ \
+ && cp -a apps/admin/package.json apps/admin/node_modules apps/admin/src /out/apps/admin/ \
+ && for p in db edge; do cp -a "packages/$p" /out/packages/; done \
+ && find /out/apps /out/packages -name '*.test.ts' -delete
+
+FROM ${NODE_IMAGE} AS admin-cli
+WORKDIR /app
+COPY --from=build-admin-cli --chown=root:root /out/ ./
+ENV NODE_ENV=production
+USER node
+ENTRYPOINT ["node", "apps/admin/src/cli/admin.ts"]
 
 FROM ${NODE_IMAGE} AS worker
 WORKDIR /app

@@ -259,7 +259,38 @@ AS $fn$
    ORDER BY s.name;
 $fn$;
 
+-- Admin login throttle housekeeping (US-016), run by the worker's minute sweepers: deletes
+-- admin_auth.login_throttle rows whose window and lock are both over. The window is the caller's
+-- (@ebooktrivia/db LOGIN_THROTTLE_WINDOW_SECONDS, the same constant the admin app counts with); it
+-- must be at least 15 minutes, so a caller cannot sweep windows that are still counting (ET070).
+-- Rows counting consecutive second-factor failures, or hard-locked, stay: deleting them would reset
+-- the long-term budget. worker_rw has no other access to admin_auth; this function is its only way
+-- in, and it can only delete spent rows. (Migration 0006 drops the earlier argument-less version.)
+CREATE OR REPLACE FUNCTION public.sweep_login_throttle(p_window_seconds integer)
+  RETURNS integer
+  LANGUAGE plpgsql
+  VOLATILE
+  SECURITY DEFINER
+  SET search_path = pg_catalog, pg_temp
+AS $fn$
+DECLARE
+  v_deleted integer;
+BEGIN
+  IF p_window_seconds IS NULL OR p_window_seconds < 900 OR p_window_seconds > 86400 THEN
+    RAISE EXCEPTION 'sweep_login_throttle: window must be 900..86400 seconds' USING ERRCODE = 'ET070';
+  END IF;
+  DELETE FROM admin_auth.login_throttle
+   WHERE window_started_at <= clock_timestamp() - make_interval(secs => p_window_seconds)
+     AND (locked_until IS NULL OR locked_until <= clock_timestamp())
+     AND consecutive = 0
+     AND hard_locked_at IS NULL;
+  GET DIAGNOSTICS v_deleted = ROW_COUNT;
+  RETURN v_deleted;
+END
+$fn$;
+
 REVOKE ALL ON FUNCTION public.setting_positive_int(text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.sweep_login_throttle(integer) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.enqueue_otp(uuid) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.enqueue_notification(uuid) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.enqueue_waha_inbound(uuid) FROM PUBLIC;

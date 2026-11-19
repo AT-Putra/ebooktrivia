@@ -5,6 +5,13 @@ packages:
   - "infra/*"
   - "spikes/*"
   - "e2e"
+# Dev tools that are optional peers of runtime packages (better-auth's test / CLI integrations,
+# next's Playwright hook) are removed from them, so no production install carries them (US-016
+# review SL6: the admin-cli image held vitest, drizzle-kit, esbuild, picomatch).
+overrides:
+  better-auth>vitest: "-"
+  better-auth>drizzle-kit: "-"
+  next>@playwright/test: "-"
 allowBuilds:
   esbuild: true
   # bullmq -> msgpackr: optional native decoder; msgpackr falls back to pure JS, so no install script runs.

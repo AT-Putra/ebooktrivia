@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Smoke test of the production server entry (apps/<app>/src/server.ts: Next.js behind the edge
 # listener) on a `next build` output, run the way the image runs it (NODE_ENV=production, explicit
-# EDGE_HOST and TRUSTED_PROXY_IP). Checks /livez (200), / (200, HTML), the listener address, then
+# EDGE_HOST and TRUSTED_PROXY_IP). Checks /livez (200), a page (200, HTML: / for public, /login for
+# admin, whose / redirects there without a session), the listener address, then
 # the drain on SIGTERM: "draining" in the log, /livez 503 during the drain window, "drained", exit
 # 0. (The client-address rewrite is not visible from outside the real app: packages/edge's tests
 # and infra/verify/local/stack-sim.sh's client-ip probe check it.) Linux only (signals); used by CI
@@ -13,6 +14,8 @@ HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO=$(cd "$HERE/../../.." && pwd)
 app=${1:-public}
 port=${EDGE_SMOKE_PORT:-3990}
+page=/
+[[ $app == admin ]] && page=/login
 [[ -f $REPO/apps/$app/.next/required-server-files.json ]] || {
   printf 'apps/%s has no build: run pnpm --filter @ebooktrivia/%s build first\n' "$app" "$app" >&2
   exit 1
@@ -45,8 +48,8 @@ check() {
 }
 yes_no() { if "$@"; then printf yes; else printf no; fi; }
 check "/livez" 200 "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/livez")"
-check "/ (Next.js page)" 200 "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/")"
-check "/ is HTML" yes "$(yes_no bash -c "curl -s http://127.0.0.1:$port/ | grep -qi '<html'")"
+check "$page (Next.js page)" 200 "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port$page")"
+check "$page is HTML" yes "$(yes_no bash -c "curl -s http://127.0.0.1:$port$page | grep -qi '<html'")"
 check "listener on EDGE_HOST" yes "$(yes_no grep -q '"msg":"listening on 127.0.0.1' "$log")"
 
 # Drain: SIGTERM, then /livez must turn 503 while the server still answers, then the process exits 0.

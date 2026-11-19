@@ -162,3 +162,21 @@ New workspace packages: `@ebooktrivia/edge` (`packages/edge`: the apps' HTTP lis
 | postgres (base of postgres-walg) | 18.6, `docker.io/library/postgres:18.6@sha256:5a5a84b19854a9ffaa54082c166ff4ec27473a361e496e5ea167f298f2da9722` | every `FROM` in `infra/**/{Containerfile,Dockerfile}` is now pinned by digest (checked by `infra/verify/src/quadlets.test.ts`) |
 | node (dev stubs) | 26.13.0, same digest as the app images | `infra/waha-mock`, `infra/midtrans-stub` (were `node:26-slim`). `node:26-slim` now resolves to 26.13.1: bump `.nvmrc` and every pin together in a later change |
 | nftables / audit | AlmaLinux 10.2 BaseOS | egress guard (`ebt-egress-guard.service`), `ausearch` for host-check |
+
+## apps/admin auth (US-016, M5a-1) - verified 2026-11-18 (`npm view <pkg> time`)
+No package outside this file or the plan. Added to apps/admin: better-auth, @node-rs/argon2, drizzle-orm, postgres and `@ebooktrivia/db` (workspace). Added to e2e: postgres and `@ebooktrivia/db`, for the test database.
+| Package | Version | Notes |
+|---|---|---|
+| better-auth | 1.7.19 | Kept at the pin, the version spike R13 and `packages/db` verified. npm `latest` is 1.7.25 (2026-11-14). Every release after 1.7.18 (2026-11-05) is younger than the 2-week age gate, so the bump is due once 1.7.25 has aged (re-run R13's gated tests and `test/better-auth.int.test.ts` then). Used through `auth.api` only, with the HTTP handler not mounted: drizzle adapter, `twoFactor` (TOTP, account lockout 5 / 15 min, backup codes disabled), `useSecureCookies: false` + `__Host-` names (R13 recipe B), session 12 h with refresh disabled |
+| @node-rs/argon2 | 2.2.2 | npm `latest` (2026-10-06). argon2id m=19456 KiB, t=2, p=1 (the package default algorithm; the `Algorithm` const enum cannot be imported under isolatedModules, so a test asserts `$argon2id$`). Prebuilt per-platform bindings (optionalDependencies), no install script. `serverExternalPackages` in next.config.ts; traced into the standalone output |
+| drizzle-orm / postgres | 0.45.4 / 4.1.0 | same pins as packages/db; one postgres.js pool per app process, drizzle only for Better Auth's adapter |
+| @playwright/test | 1.65.0 | unchanged. npm `latest` is 1.65.1 (2026-11-13, under the age gate) |
+| next | 16.4.6 | unchanged (npm `latest`). `experimental.authInterrupts` is turned on for `forbidden()` (403); the e2e suite asserts the status, so a behaviour change on upgrade fails it |
+| uqr | 0.1.3 | npm `latest`, published 2026-04-03 (past the 2-week gate), MIT, no dependencies. Owner-approved (US-016 review D2). Renders the TOTP setup QR code as SVG on the server (`lib/auth/service.ts` totpQrDataUrl), shown as a `data:` image beside the text key |
+
+### US-016 review fixes - verified 2026-11-19
+- **better-auth versioned secrets:** `secrets: [{version, value}]` (1.7.19), from `ADMIN_AUTH_SECRETS="2:<new>,1:<old>"`, so rotation keeps enrolled TOTP secrets (runbook `docs/runbooks/admin-access.md`).
+- **pnpm overrides** (pnpm-workspace.yaml): `better-auth>vitest`, `better-auth>drizzle-kit` and `next>@playwright/test` are removed (`"-"`). They are optional peers (test and CLI integrations), which pnpm resolved from other workspace packages, so the admin-cli production image carried vitest, drizzle-kit, esbuild and picomatch. No package version changed (lockfile compared before and after). `resolvePeersFromWorkspaceRoot: false` / `dedupePeerDependents: false` were tried first: they do not re-resolve an existing lockfile, so they were not kept.
+- **`@ebooktrivia/test-support`** (tools/test-support, workspace, test code only): the throwaway-database helper and the RFC 6238 TOTP generator shared by apps/admin integration tests and the e2e suite. No new package.
+
+Admin gates: `pnpm --filter @ebooktrivia/admin test:int` (needs PostgreSQL: Better Auth flows, lockout, sessions, audit, CLI) and the Playwright spec `e2e/tests/admin-auth.spec.ts` (builds and starts its own `next start` on port 3202 with a throwaway database).

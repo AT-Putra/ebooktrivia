@@ -37,7 +37,7 @@ async function ensureServer(app: "public" | "admin", url: string, port: number):
     cwd: repoRoot,
     shell: true,
     stdio: "inherit",
-    env: { ...process.env, ENABLE_MOCKUPS: "1" },
+    env: { ...process.env, ENABLE_MOCKUPS: "1", ADMIN_ORIGIN: "http://127.0.0.1:3202", ADMIN_ALLOW_INSECURE_LOOPBACK: "1" },
   });
   if (build.status !== 0) throw new Error(`build failed for ${filter}`);
   const appDir = `${repoRoot}apps/${app}/`;

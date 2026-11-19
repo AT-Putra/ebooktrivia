@@ -150,6 +150,8 @@ GRANT INSERT (actor_kind, actor_admin_user_id, action, entity_type, entity_id, c
   ON public.audit_log TO worker_rw;
 
 GRANT EXECUTE ON FUNCTION public.get_payment_secret() TO worker_rw;
+-- Deletes spent admin login-throttle rows only (functions.sql); no other admin_auth access.
+GRANT EXECUTE ON FUNCTION public.sweep_login_throttle(integer) TO worker_rw;
 
 -- ---------------------------------------------------------------------------------------------
 -- internal_rw (apps/worker --role=internal: Caddy ask, GlitchTip hook). No keys.

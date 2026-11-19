@@ -427,8 +427,8 @@ put_env_file() {
 
 # render_env DEST TEMPLATE [DROPPED_KEY...]: the content DEST should have, on stdout. A key
 # already in DEST keeps its value, even an empty one. Otherwise @GEN@ becomes 64 random hex
-# characters, and @GEN_TOKEN_SHA256@ the SHA-256 of a new random token, which is written to
-# $ETC/glitchtip-hook.token (root, 0600) for the operator. Keys the operator added to DEST stay,
+# characters, @DOMAIN@ the configured DOMAIN, and @GEN_TOKEN_SHA256@ the SHA-256 of a new random
+# token, which is written to $ETC/glitchtip-hook.token (root, 0600) for the operator. Keys the operator added to DEST stay,
 # except the DROPPED_KEYs (moved elsewhere by this version). Log lines go to stderr. Runs in this
 # shell (only its output is redirected), so the change counter is kept.
 render_env() {
@@ -452,6 +452,7 @@ render_env() {
         value=$(sha256_hex "$token")
       else
         value=${spec//@GEN@/$(random_hex)}
+        value=${value//@DOMAIN@/$CFG_DOMAIN}
       fi
       printf '%s=%s\n' "$key" "$value"
     else

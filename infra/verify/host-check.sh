@@ -233,8 +233,15 @@ for dir in caddy postgres valkey; do expect "$ETC/$dir" "750 root $APP" "$(stat 
 for name in public admin worker internal migrate postgres valkey caddy; do
   file=$ETC/$name.env
   expect "$file mode/owner" "640 root $APP" "$(stat -c '%a %U %G' "$file" 2>/dev/null)"
-  if grep -vE '^[[:space:]]*#' "$file" 2>/dev/null | grep -qE '__SET_ME__|@GEN@|@GEN_TOKEN_SHA256@'; then fail "$file has unfilled placeholders"; else pass "$file has no placeholders"; fi
+  if grep -vE '^[[:space:]]*#' "$file" 2>/dev/null | grep -qE '__SET_ME__|@GEN@|@GEN_TOKEN_SHA256@|@DOMAIN@'; then fail "$file has unfilled placeholders"; else pass "$file has no placeholders"; fi
 done
+# The e2e-only switch that lets the admin console accept a plain-http loopback origin
+# (apps/admin/src/lib/config.ts) must never reach a server.
+if grep -qE '^[[:space:]]*ADMIN_ALLOW_INSECURE_LOOPBACK=' "$ETC/admin.env" 2>/dev/null; then
+  fail "$ETC/admin.env sets ADMIN_ALLOW_INSECURE_LOOPBACK (test-only)"
+else
+  pass "$ETC/admin.env does not set ADMIN_ALLOW_INSECURE_LOOPBACK"
+fi
 for file in caddy/Caddyfile valkey/valkey.conf valkey/users.acl postgres/pg_hba.conf postgres/superuser.pass; do
   expect "$ETC/$file mode/owner" "640 root $APP" "$(stat -c '%a %U %G' "$ETC/$file" 2>/dev/null)"
 done

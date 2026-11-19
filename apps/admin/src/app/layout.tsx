@@ -3,6 +3,10 @@ import { Fira_Code, Fira_Sans } from "next/font/google";
 import type { ReactNode } from "react";
 import "./globals.css";
 
+// Every page is rendered per request: the per-request CSP nonce (proxy.ts) is only applied to
+// dynamically rendered pages, and the console reads the session on each request.
+export const dynamic = "force-dynamic";
+
 const firaSans = Fira_Sans({
   subsets: ["latin"],
   weight: ["400", "500", "600", "700"],
@@ -18,6 +22,7 @@ const firaCode = Fira_Code({
 
 export const metadata: Metadata = {
   title: "Admin Console",
+  robots: { index: false, follow: false },
 };
 
 export const viewport: Viewport = {

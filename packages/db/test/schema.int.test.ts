@@ -63,7 +63,7 @@ const PLAN_TABLES = {
     "heartbeats",
   ],
   player_auth: ["account", "session", "user", "verification"],
-  admin_auth: ["account", "session", "twoFactor", "user", "verification"],
+  admin_auth: ["account", "login_throttle", "recovery_code", "session", "session_state", "totp_used", "twoFactor", "user", "verification"],
 } as const;
 
 describe("migrations", () => {

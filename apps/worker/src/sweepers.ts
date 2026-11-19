@@ -22,6 +22,9 @@
 //                  per program after the GraceEndHook: US-028 plugs the finalize / snapshot /
 //                  winners work in there, so the status only moves once that work committed with
 //                  it. A failing program is logged and alerted and does not hold back the others.
+//   login_throttle admin login-throttle rows whose window and lock are over (US-016), through the
+//                  SECURITY DEFINER public.sweep_login_throttle(): worker_rw has no other access
+//                  to admin_auth. Consecutive second-factor counts and hard locks are kept.
 // conversions, deliveries and grace_end need a port (the fire port US-024, the delivery consumer
 // US-025, the grace-end hook US-028): runSweeps skips each one until its port is registered, so
 // nothing is moved that the worker cannot finish (the worker cannot move a program back).
@@ -36,6 +39,7 @@ import {
   type OrderStatus,
   transitionOrder,
 } from "@ebooktrivia/core";
+import { LOGIN_THROTTLE_WINDOW_SECONDS } from "@ebooktrivia/db/login-throttle";
 import type { Queue } from "bullmq";
 import type postgres from "postgres";
 import { applyConversionDecision, NO_SINK_DEDUPES, type SinkDedupePolicy } from "./conversion-fire.ts";
@@ -194,6 +198,12 @@ export async function expireOrders(sql: postgres.Sql): Promise<number> {
   });
 }
 
+/** Deletes spent admin login-throttle rows (the admin app's own window); returns how many. */
+export async function sweepLoginThrottle(sql: postgres.Sql, windowSeconds = LOGIN_THROTTLE_WINDOW_SECONDS): Promise<number> {
+  const [row] = await sql<{ n: number }[]>`SELECT public.sweep_login_throttle(${windowSeconds}::integer) AS n`;
+  return row?.n ?? 0;
+}
+
 export async function endGracePeriods(sql: postgres.Sql, hook: GraceEndHook, log: Logger): Promise<number> {
   const due = await sql<{ id: string }[]>`
     SELECT id FROM public.programs
@@ -329,6 +339,7 @@ export async function runSweeps(deps: SweepDeps): Promise<void> {
   if (deliveryQueue !== undefined) sweepers.push(["due_deliveries", () => sweepDueDeliveries({ ...deps, deliveryQueue })]);
   sweepers.push(["order_expiry", () => expireOrders(deps.sql)]);
   if (graceEnd !== undefined) sweepers.push(["grace_end", () => endGracePeriods(deps.sql, graceEnd, deps.log)]);
+  sweepers.push(["login_throttle", () => sweepLoginThrottle(deps.sql)]);
   for (const [sweeper, run] of sweepers) {
     try {
       const result = await run();

@@ -18,6 +18,7 @@ import {
   runSweeps,
   sweepDueConversions,
   sweepDueDeliveries,
+  sweepLoginThrottle,
   sweepOutbox,
 } from "../src/sweepers.ts";
 import { type Catalog, createCatalog, createConversionEvents, createOrders, createOutboxRows, first, letters, sql } from "./support/db.ts";
@@ -265,6 +266,42 @@ describe("lease expiry sweeper", () => {
   });
 });
 
+describe("admin login throttle sweeper (US-016)", () => {
+  it("deletes spent rows only: an active window, an active lock, consecutive failures and a hard lock stay", async () => {
+    const key = () => `${letters()}${letters()}`.replace(/[g-z]/g, "e").padEnd(64, "0");
+    const keys = { spent: key(), lockSpent: key(), window: key(), locked: key(), consecutive: key(), hard: key() };
+    await sql`
+      INSERT INTO admin_auth.login_throttle (key, failures, window_started_at, locked_until, consecutive, hard_locked_at) VALUES
+        (${keys.spent}, 3, now() - interval '16 minutes', NULL, 0, NULL),
+        (${keys.lockSpent}, 5, now() - interval '40 minutes', now() - interval '1 minute', 0, NULL),
+        (${keys.window}, 2, now() - interval '5 minutes', NULL, 0, NULL),
+        (${keys.locked}, 5, now() - interval '20 minutes', now() + interval '5 minutes', 0, NULL),
+        (${keys.consecutive}, 1, now() - interval '30 minutes', NULL, 7, NULL),
+        (${keys.hard}, 5, now() - interval '3 days', now() - interval '2 days', 20, now() - interval '2 days')`;
+    expect(await sweepLoginThrottle(workerSql)).toBeGreaterThanOrEqual(2);
+    const left = await sql<{ key: string }[]>`SELECT key FROM admin_auth.login_throttle WHERE key = ANY(${Object.values(keys)})`;
+    expect(left.map((r) => r.key).sort()).toEqual([keys.window, keys.locked, keys.consecutive, keys.hard].sort());
+  });
+
+  it("refuses a window shorter than 15 minutes, so live windows are never swept (ET070)", async () => {
+    for (const window of [0, 60, 899, 86_401]) {
+      const error = await sweepLoginThrottle(workerSql, window).then(
+        () => null,
+        (e: unknown) => e,
+      );
+      expect((error as postgres.PostgresError).code, String(window)).toBe("ET070");
+    }
+  });
+
+  it("is the worker's only access to admin_auth", async () => {
+    const denied = await workerSql`SELECT 1 FROM admin_auth.login_throttle LIMIT 1`.then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect((denied as postgres.PostgresError).code).toBe("42501");
+  });
+});
+
 describe("runSweeps", () => {
   it("runs every sweeper and keeps going when one fails", async () => {
     const [orderId] = await createOrders(catalog, 1, { status: "pending", expiresAt: new Date(Date.now() - 1000) });
@@ -272,7 +309,7 @@ describe("runSweeps", () => {
     const broken = postgres(inject("workerDbUrl"), { ...PG_CONNECTION_OPTIONS, max: 1, onnotice: () => undefined });
     await broken.end();
     await runSweeps({ sql: broken, log: captured.log, outboxQueues: new Map(), outboxStaleMs: 120_000 });
-    expect(captured.lines.filter((l) => l["level"] === 50).map((l) => l["sweeper"])).toEqual(["lease_expiry", "outbox", "order_expiry"]);
+    expect(captured.lines.filter((l) => l["level"] === 50).map((l) => l["sweeper"])).toEqual(["lease_expiry", "outbox", "order_expiry", "login_throttle"]);
     await runSweeps({ sql: workerSql, log: captured.log, outboxQueues: new Map(), outboxStaleMs: 120_000 });
     expect(first(await sql<{ status: string }[]>`SELECT status::text FROM orders WHERE id = ${orderId ?? ""}`).status).toBe("expired");
   });
@@ -282,7 +319,7 @@ describe("runSweeps", () => {
     const ended = await createCatalog({ salesEndAt: new Date(Date.now() - 3 * 86_400_000), graceDays: 1 });
     const captured = captureLogger("debug");
     await runSweeps({ sql: workerSql, log: captured.log, outboxQueues: new Map(), outboxStaleMs: 120_000 });
-    expect(captured.lines.filter((l) => l["msg"] === "sweep done").map((l) => l["sweeper"])).toEqual(["lease_expiry", "outbox", "order_expiry"]);
+    expect(captured.lines.filter((l) => l["msg"] === "sweep done").map((l) => l["sweeper"])).toEqual(["lease_expiry", "outbox", "order_expiry", "login_throttle"]);
     expect(first(await sql<{ status: string }[]>`SELECT status::text FROM programs WHERE id = ${ended.programId}`).status).toBe("published");
 
     const withPorts = captureLogger("debug");
@@ -302,6 +339,7 @@ describe("runSweeps", () => {
       "due_deliveries",
       "order_expiry",
       "grace_end",
+      "login_throttle",
     ]);
     expect(first(await sql<{ status: string }[]>`SELECT status::text FROM programs WHERE id = ${ended.programId}`).status).toBe("awaiting_confirmation");
   });

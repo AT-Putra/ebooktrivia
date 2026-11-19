@@ -1,0 +1,100 @@
+// Admin authorization (AC-A1, plan M5a.3). The one place that decides what a role may do: pages,
+// server actions and route handlers ask `requireAdmin({ permission })` (lib/next/require-admin.ts),
+// and the console hides every control whose permission `can` denies.
+//
+// Staff get exactly AC-A1's four groups: manage content, manage trivia, resends, view reports.
+// Everything else is Owner-only (owner decision D1, US-016 review: everything beyond AC-A1 stays
+// Owner-only, legal pages included), in particular the plan's explicit denials: every integration secret
+// (gateway / postback / CAPI / SMTP / WAHA), prices, buyer exports, the winners export, LP domain
+// registration and question content on locked sets (§10 item 18). The database still refuses
+// structural edits of locked questions for everyone (content lock triggers ET020/ET021).
+// Unknown roles and unknown permissions are denied.
+
+export const ROLES = ["owner", "staff"] as const;
+export type Role = (typeof ROLES)[number];
+
+/** owner: Owner only. staff: Owner and Staff. staff_unlocked: Staff only while the set is unlocked. */
+type Rule = "owner" | "staff" | "staff_unlocked";
+
+const RULES = {
+  // View reports (AC-A1), and the signed-in user's own account (recovery codes, sign out).
+  "dashboard.view": "staff",
+  "reports.view": "staff",
+  "account.manage_own": "staff",
+  // Manage content (AC-A1).
+  "product.content.edit": "staff",
+  "landing_page.content.edit": "staff",
+  "message_template.edit": "staff",
+  "message_template.test_send": "staff",
+  // Manage trivia (AC-A1); locked sets are Owner-only (§10 item 18).
+  "trivia_set.edit": "staff",
+  "question.content.edit": "staff_unlocked",
+  "question.import": "staff_unlocked",
+  // Resends (AC-A1).
+  "delivery.resend": "staff",
+  // Secrets (AC-A1): gateway, postback, CAPI, SMTP, WAHA settings.
+  "midtrans.edit": "owner",
+  "adnet.edit": "owner",
+  "pixel.edit": "owner",
+  "smtp.edit": "owner",
+  "waha.edit": "owner",
+  // Prices (AC-A1).
+  "product.price.edit": "owner",
+  // Exports: buyer data (AC-A1), the sales CSV (AC-A5), winners (plan M5a.3).
+  "buyer.export": "owner",
+  "sales.export": "owner",
+  "winners.export": "owner",
+  // LP domain registration (§10 item 18).
+  "lp_domain.register": "owner",
+  // Not granted to Staff by AC-A1, so Owner-only.
+  "program.edit": "owner",
+  "program.reschedule": "owner",
+  "prize_tier.edit": "owner",
+  "legal_page.edit": "owner",
+  "winners.confirm": "owner",
+  "prize_fulfillment.update": "owner",
+  "rescore.override": "owner",
+  "deletion_request.process": "owner",
+  "conversion.refire": "owner",
+  "delivery.mark_unknown_sent": "owner",
+  "order.review.resolve": "owner",
+  "ad_spend.edit": "owner",
+  "app_settings.edit": "owner",
+  "admin_user.manage": "owner",
+  "audit.view": "owner",
+} as const satisfies Record<string, Rule>;
+
+export type Permission = keyof typeof RULES;
+/** Permissions whose answer depends on whether the trivia set is locked (has attempts). */
+export type QuestionPermission = { [P in Permission]: (typeof RULES)[P] extends "staff_unlocked" ? P : never }[Permission];
+export interface QuestionContext {
+  /** The set has at least one attempt (content lock). */
+  readonly setLocked: boolean;
+}
+
+export const PERMISSIONS: readonly Permission[] = Object.keys(RULES) as Permission[];
+
+const RULE_BY_PERMISSION = new Map<string, Rule>(Object.entries(RULES));
+
+export function can(role: Role, permission: Exclude<Permission, QuestionPermission>): boolean;
+export function can(role: Role, permission: QuestionPermission, context: QuestionContext): boolean;
+export function can(role: Role, permission: Permission, context?: QuestionContext): boolean {
+  const rule = RULE_BY_PERMISSION.get(permission);
+  if (rule === undefined) return false;
+  // A role read from the database is checked at runtime too: anything but these two is denied.
+  const actual: string = role;
+  if (actual === "owner") return true;
+  if (actual !== "staff") return false;
+  switch (rule) {
+    case "staff":
+      return true;
+    case "staff_unlocked":
+      return context?.setLocked === false;
+    case "owner":
+      return false;
+  }
+}
+
+export function isRole(value: unknown): value is Role {
+  return value === "owner" || value === "staff";
+}
