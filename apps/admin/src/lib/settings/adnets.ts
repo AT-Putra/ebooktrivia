@@ -10,7 +10,7 @@
 // (@ebooktrivia/core renderPostbackUrlRedacted) against sample values, so a template the worker
 // would refuse is refused here.
 import { randomUUID } from "node:crypto";
-import { postbackSecretNames, renderPostbackUrlRedacted, TemplateError, type TemplateErrorCode } from "@ebooktrivia/core";
+import { postbackSecretNames, renderPostbackUrlRedacted, SDK_PATTERNS, TemplateError, type TemplateErrorCode } from "@ebooktrivia/core";
 import { type FieldKind, withAudit } from "../audit.ts";
 import type { Sql } from "../db.ts";
 import { checkHostname, ENDPOINT_MESSAGES } from "./endpoints.ts";
@@ -44,6 +44,15 @@ const TEMPLATE_MESSAGES: Readonly<Partial<Record<TemplateErrorCode, string>>> = 
 const SAMPLE = { clickid: "click123", txid: "TX0001", payout: "10000", status: "approved", sub_id: "sub", pub: "pub" } as const;
 const STATIC_ORIGIN = /^(https?:\/\/[^/?#{}\s]+)(?:[/?#]|$)/i;
 const SECRET_NAME = /^[a-z0-9_]+(\.[a-z0-9_]+)*$/;
+const CLICKID_PARAM = new RegExp(SDK_PATTERNS.clickidParam);
+/**
+ * The landing-page SDK captures, stores for 30 days and sends (to the API and, as {clickid}, to the
+ * adnet's postback) whatever the click-id parameter carries. A parameter named like personal data
+ * would put a buyer's e-mail address or phone number there, so no name with such a WHOLE word
+ * (no_hp, phone_number, session_id; not swap_id or hpid) is accepted here, and adnets.clickid_param
+ * has the same CHECK (migration 0010).
+ */
+const PERSONAL_PARAM = new RegExp(SDK_PATTERNS.personalParamName, "i");
 
 export interface AdnetInput {
   readonly slug: string;
@@ -58,7 +67,10 @@ export interface AdnetInput {
 
 export function parseAdnet(values: Readonly<Record<"slug" | "name" | "clickidParam" | "mo" | "mt" | "reversal" | "payout", string>>, active: boolean): AdnetInput {
   const clickidParam = values.clickidParam.trim();
-  if (!/^[A-Za-z0-9_.-]{1,64}$/.test(clickidParam)) throw new InvalidInput("The click id parameter is 1 to 64 letters, digits, _ . or -.");
+  if (!CLICKID_PARAM.test(clickidParam)) throw new InvalidInput("The click id parameter is 1 to 64 letters, digits, _ . or -.");
+  if (PERSONAL_PARAM.test(clickidParam)) {
+    throw new InvalidInput("The click id parameter cannot have a personal-data word as a whole word, delimited by _ . - or the ends of the name (phone, hp, wa, nama, name, email, mail, token, otp, kode, nik, ktp, card, kartu, pass, password, pwd, secret, auth, session): the tracking script would store and send whatever it carries. Use the name your adnet gives the click id, such as clickid or cid.");
+  }
   const template = (raw: string, label: string) => optionalLine(raw, `The ${label} template is one line of up to 2048 characters.`, 2048);
   return {
     slug: slug(values.slug, "The slug is lowercase letters, digits and single hyphens (up to 64)."),

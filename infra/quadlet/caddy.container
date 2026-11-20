@@ -18,6 +18,8 @@ EnvironmentFile=/etc/ebooktrivia/caddy.env
 Volume=/etc/ebooktrivia/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
 # LP content, written by the worker (shared label).
 Volume=/srv/lp:/srv/lp:ro,z
+# The landing-page SDK (api.<DOMAIN>/sdk/), written by infra/provision/build-images.sh sdk.
+Volume=/srv/sdk:/srv/sdk:ro,z
 Volume=ebt-caddy-data.volume:/data:Z
 Volume=ebt-caddy-config.volume:/config:Z
 LogDriver=journald

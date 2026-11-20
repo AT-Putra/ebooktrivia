@@ -146,5 +146,47 @@
       "body": "The payment could not be processed. You were not charged. Please try again.",
       "announce": "Payment failed. Please try paying again."
     }
+  },
+  "sdk": {
+    "submitting": "Processing your order…",
+    "field": {
+      "name": {
+        "required": "Enter your full name.",
+        "tooLong": "The name is too long, {max} characters at most."
+      },
+      "phone": {
+        "empty": "Enter your WhatsApp number.",
+        "invalidCharacters": "The number may only hold digits, spaces, dots, hyphens and parentheses.",
+        "notIndonesian": "Use an Indonesian number that starts with 08 or +62.",
+        "notMobile": "That is not a mobile number. Use a WhatsApp number that starts with 08.",
+        "invalidLength": "The number has the wrong length. Check your WhatsApp number."
+      },
+      "email": {
+        "required": "Enter your e-mail address.",
+        "invalid": "The e-mail address is not valid. Example: name@example.com"
+      },
+      "consent": {
+        "required": "Tick the consent box to continue.",
+        "outdated": "The terms and policy were just updated. Reload the page, then accept the latest version."
+      }
+    },
+    "consent": {
+      "lead": "I agree to the",
+      "terms": "Terms & Prize Rules",
+      "privacy": "Privacy Policy",
+      "and": "and the",
+      "newTab": "opens in a new tab"
+    },
+    "error": {
+      "captcha": "The security check failed. Try again.",
+      "rateLimited": "Too many attempts. Wait a moment, then try again.",
+      "salesClosed": "Sales have closed.",
+      "gateway": "The payment could not be created yet. Try again in a moment.",
+      "unavailable": "The service is busy. Try again in a moment.",
+      "network": "Could not connect. Check your internet connection, then try again.",
+      "redirectRefused": "The payment address was not recognised, so you were not redirected. Contact the organiser.",
+      "notReady": "This page cannot take orders yet.",
+      "generic": "Something went wrong. Try again."
+    }
   }
 }

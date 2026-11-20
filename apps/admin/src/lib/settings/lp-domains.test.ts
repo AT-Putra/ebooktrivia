@@ -45,7 +45,11 @@ describe("checkLpDomain (risk R4: LP hosts never share a site with the app)", ()
     ["an IPv6 literal", "[2001:db8::1]"],
     ["a bare IPv6", "2001:db8::1"],
     ["a port", "shop.brand.example:443"],
+    // Only a bare host is ever registered, so a landing page's origin is always `https://<host>`
+    // (the checkout API's CORS origin, US-020): no http origin, and no origin with a port, can be registered.
     ["a scheme", "https://shop.brand.example"],
+    ["a plain-http scheme", "http://shop.brand.example"],
+    ["a protocol-relative URL", "//shop.brand.example"],
     ["a path", "shop.brand.example/x"],
     ["a single label", "localhost"],
     ["a bare TLD", "com"],

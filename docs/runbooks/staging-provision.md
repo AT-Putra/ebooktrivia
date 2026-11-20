@@ -48,7 +48,7 @@ files (`0600`, owned by the app user):
 ```sh
 cd /opt/ebooktrivia
 sudo infra/provision/provision.sh                 # 1. host + config; run it again: "summary: 0 changed"
-sudo infra/provision/build-images.sh              # 2. postgres-walg, public, admin, worker (10-20 min)
+sudo infra/provision/build-images.sh              # 2. postgres-walg, public, admin, worker, then the landing-page SDK files into /srv/sdk (10-20 min)
 ```
 
 ### Operator steps
@@ -157,6 +157,7 @@ sudo journalctl CONTAINER_NAME=caddy -o cat | grep remote_ip | tail -3
   SELECT id, session_name FROM waha_sessions WHERE session_name !~ '^[A-Za-z0-9_-]{1,64}$';
   ```
   0007 also locks every program that already has a paid order (`locked_at` = its first `paid_at`).
+- **Migration 0010 refuses a click-id parameter named like personal data (US-019).** It adds `adnets_clickid_param_personal_check`, so `migrate.service` fails (and changes nothing) when an adnet's `clickid_param` has one of these as a WHOLE word, delimited by `_`, `.`, `-` or the ends of the name: phone, hp, wa, whatsapp, nama, name, email, mail, token, otp, kode, nik, ktp, card, kartu, pass, password, pwd, secret, auth, session (`no_hp`, `phone_number` and `session_id` are refused; `swap_id` and `hpid` are not). Find them with `SELECT id, slug, clickid_param FROM adnets WHERE clickid_param ~* '(^|[_.-])(phone|hp|wa|whatsapp|nama|name|email|mail|token|otp|kode|nik|ktp|card|kartu|pass|password|pwd|secret|auth|session)($|[_.-])'`, change the parameter in the adnet's settings (and in its tracking links), then start `migrate.service` again.
 - **A failed first PostgreSQL start** (initdb stopped half-way, wrong superuser password file): `sudo $A systemctl --user stop postgres.service`, `sudo $A podman volume rm ebt-pgdata`, start it again, then `db-roles.sh` and `migrate.service`. This deletes the database: only before real data exists.
 - **The client-ip probe did not stop** (`client-ip-probe.sh stop` failed half-way): `sudo runuser -u ebt -- rm -f /home/ebt/.config/containers/systemd/public@b.container.d/90-client-ip-probe.conf`, `sudo rm -rf /etc/ebooktrivia/probe`, `sudo $A systemctl --user daemon-reload`, `sudo $A systemctl --user restart public@b.service`. host-check fails while the drop-in exists.
 - **Undo a provisioning run:** it only adds files under `/etc` and the app user's home and changes firewalld, sshd and SELinux settings; the lockout steps above undo the access changes. Uninstalling the packages is not needed for a retry: every step is idempotent.
@@ -195,6 +196,7 @@ sudo journalctl CONTAINER_NAME=caddy -o cat | grep remote_ip | tail -3
   - It rewrites `X-Forwarded-For` to that single address before Next.js or Better Auth read it.
 - **Keep-alive.** Caddy closes idle upstream connections after 30 s, and the apps after 65 s. Caddy therefore never reuses a connection that an app is closing.
 - **`ebt_migrate` is a superuser** (roles.sql resets cluster-wide role state), allowed from the migrate container's address only. It is also a member of `migrator`, as the roles.sql comment says.
+- **SDK files:** `/srv/sdk` (app user, 750) is mounted read-only into Caddy and served at `api.<DOMAIN>/sdk/` (`handle_path /sdk/*`). `build-images.sh sdk` builds them in the Containerfile's `sdk` stage and adds them without deleting anything: `sdk-v<version>.js` and `cap-v<version>.js` are immutable (a one-year `immutable` cache; a changed file with an existing name is refused, so bump `packages/sdk/package.json` first), `v1.js` is replaced by a rename (5 minute cache). Run it again on every SDK release.
 - **LP roots:** only lowercase stored-form hosts map to `/srv/lp/hosts/<host>/current`. Browsers send hosts lowercased; anything else, `..` included, is a 404. `current` must be a **relative** symlink to a release directory, swapped with `ln -s ... current.new && mv -T current.new current`.
 
 ## What was verified locally (no VM yet)

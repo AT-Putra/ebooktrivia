@@ -152,6 +152,19 @@ describe("adnet templates and the endpoint host", () => {
     expect(() => parseAdnet({ ...base, clickidParam: "click id" }, true)).toThrow(InvalidInput);
     expect(() => parseAdnet({ ...base, payout: "-1" }, true)).toThrow(InvalidInput);
   });
+
+  it.each(["clickid", "cid", "aff_click_id", "transaction_id", "tid", "sub.id-1", "swap_id", "shpclid", "ad_wave", "gwa", "hpid", "oauth", "username"])("accepts the click id parameter %s", (clickidParam) => {
+    expect(parseAdnet({ ...base, clickidParam }, true).clickidParam).toBe(clickidParam);
+  });
+
+  // The tracking script stores for 30 days and sends (to the API and as {clickid} to the adnet) whatever
+  // this parameter carries, so a name that invites personal data is refused (US-019 security review).
+  it.each(["email", "EMAIL", "e-mail", "user_email", "no_hp", "no_wa", "phone_number", "whatsapp", "nama", "nama_lengkap", "full_name", "access_token", "otp", "kode_otp", "nik", "ktp", "card_number", "kartu", "password", "pwd", "secret", "client_secret", "session_id"])(
+    "refuses the click id parameter %s, which is named like personal data",
+    (clickidParam) => {
+      expect(refused(() => parseAdnet({ ...base, clickidParam }, true))).toMatch(/personal-data word/);
+    },
+  );
 });
 
 describe("SMTP", () => {

@@ -2,6 +2,7 @@
 #   podman build -f infra/images/app/Containerfile --target public -t localhost/ebooktrivia/public:current .
 #   podman build -f infra/images/app/Containerfile --target admin  -t localhost/ebooktrivia/admin:current  .
 #   podman build -f infra/images/app/Containerfile --target worker -t localhost/ebooktrivia/worker:current .
+#   podman build -f infra/images/app/Containerfile --target sdk --output type=local,dest=<dir> .   (static files, no image)
 # (infra/provision/build-images.sh runs these on the VM until the deploy story pushes them to a
 # registry by digest.) The worker image also runs the internal process (--role=internal) and the
 # migrate job. Every image runs as the unprivileged `node` user (uid 1000) of the base image.
@@ -47,6 +48,18 @@ RUN pnpm install --frozen-lockfile --filter "@ebooktrivia/admin..."
 COPY . .
 RUN test -n "$ADMIN_ORIGIN" || { echo "build-arg ADMIN_ORIGIN is required" >&2; exit 1; } \
  && ADMIN_ORIGIN="$ADMIN_ORIGIN" pnpm --filter @ebooktrivia/admin run build
+
+# The landing-page SDK (packages/sdk, US-019): static files for Caddy to serve from /srv/sdk at
+# api.<DOMAIN>/sdk/ (sdk-v<version>.js, the v1.js alias, the self-hosted Cap widget). No image runs
+# them: the `sdk` target is built with --output type=local so only the files come out
+# (infra/provision/build-images.sh sdk publishes them).
+FROM deps AS build-sdk
+RUN pnpm install --frozen-lockfile --filter "@ebooktrivia/sdk..."
+COPY . .
+RUN pnpm --filter @ebooktrivia/sdk run build
+
+FROM scratch AS sdk
+COPY --from=build-sdk /repo/packages/sdk/dist/ /
 
 # The worker runs its TypeScript directly (Node type stripping). Node refuses to strip types under
 # node_modules, so the workspace layout is kept: workspace packages stay in packages/ and pnpm's

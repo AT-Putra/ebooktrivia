@@ -240,6 +240,36 @@ api.{$DOMAIN} {
 			respond 404
 		}
 	}
+	# The landing-page SDK (packages/sdk, US-019): static files that `infra/provision/build-images.sh
+	# sdk` writes to /srv/sdk, served without a CDN. A versioned file (sdk-v1.2.3.js, and the Cap
+	# widget cap-v0.1.62.js with its WebAssembly solvers cap-wasm-v0.0.8.wasm and
+	# cap-hashwx-v0.0.8.wasm next to it) never changes, so it is cached for a year; the alias v1.js
+	# moves with every v1 release, so it is cached for 5 minutes. The `file` matcher adds a header to
+	# a file that exists only: a 404 for a version that is not deployed yet is never cached. The files are
+	# public and carry no credentials, and a landing page on another origin must be able to read them:
+	# the Cap widget fetch()es its WebAssembly (CORS), and a page with COEP require-corp can only embed
+	# the script if it is marked cross-origin.
+	handle_path /sdk/* {
+		root * /srv/sdk
+		header {
+			Access-Control-Allow-Origin "*"
+			Cross-Origin-Resource-Policy cross-origin
+		}
+		@immutable {
+			path_regexp ^/(?:(?:sdk|cap)-v[0-9]+\.[0-9]+\.[0-9]+\.js|cap-(?:wasm|hashwx)-v[0-9]+\.[0-9]+\.[0-9]+\.wasm)$
+			file {path}
+		}
+		header @immutable Cache-Control "public, max-age=31536000, immutable"
+		@alias {
+			path /v1.js
+			file {path}
+		}
+		header @alias Cache-Control "public, max-age=300"
+		encode zstd gzip
+		file_server {
+			hide .*
+		}
+	}
 	handle {
 		request_body {
 			max_size 1MB

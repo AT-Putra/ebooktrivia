@@ -26,6 +26,10 @@ export const adnets = pgTable(
   (t) => [
     check("adnets_slug_check", sql`${t.slug} ~ '^[a-z0-9]+(-[a-z0-9]+)*$'`),
     check("adnets_clickid_param_check", sql`${t.clickidParam} ~ '^[A-Za-z0-9_.-]{1,64}$'`),
+    // The SDK captures, stores and sends whatever this parameter carries: no personal-data WORD in its name
+    // (whole words delimited by _ . - or the ends of the name; the same pattern as SDK_PATTERNS.personalParamName
+    // in @ebooktrivia/core, which a core test pins equal, so the JS RegExp and this ~* agree).
+    check("adnets_clickid_param_personal_check", sql`${t.clickidParam} !~* '(^|[_.-])(phone|hp|wa|whatsapp|nama|name|email|mail|token|otp|kode|nik|ktp|card|kartu|pass|password|pwd|secret|auth|session)($|[_.-])'`),
     nonNegative("adnets_payout_idr_check", t.payoutIdr),
     check("adnets_endpoint_host_check", sql`${t.endpointHost} IS NULL OR ${t.endpointHost} = lower(${t.endpointHost})`),
   ],

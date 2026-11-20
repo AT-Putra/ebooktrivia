@@ -42,3 +42,6 @@ minimumReleaseAgeExclude:
   - "@next/swc-win32-x64-msvc@16.4.6"
   - next@16.4.6
   - bullmq@6.7.5
+  # @cap.js/widget 0.1.62 (US-019): the Owner approved this exemption on 2026-11-20. It was published
+  # 2026-11-09, inside the 2-week window; it is self-hosted by the SDK build (packages/sdk).
+  - "@cap.js/widget@0.1.62"

@@ -223,12 +223,12 @@ describe("quadlets", () => {
     expect(readQuadlet("postgres.container").get("Container", "Tmpfs")).toEqual(["/var/run/postgresql:rw,mode=1777,size=1m"]);
   });
 
-  it("mount data by need: deliverables read-only for public and the worker, everything for admin, LP content for Caddy and the worker", () => {
+  it("mount data by need: deliverables read-only for public and the worker, everything for admin, LP content for Caddy and the worker, the SDK files for Caddy only", () => {
     const mounts = (name: string) => unit(name).q.get("Container", "Volume").filter((v) => v.startsWith("/srv/")).sort();
     expect(mounts("public@a")).toEqual(["/srv/data/deliverables:/srv/data/deliverables:ro,z"]);
     expect(mounts("admin")).toEqual(["/srv/data:/srv/data:z"]);
     expect(mounts("worker")).toEqual(["/srv/data/deliverables:/srv/data/deliverables:ro,z", "/srv/lp:/srv/lp:z"]);
-    expect(mounts("caddy")).toEqual(["/srv/lp:/srv/lp:ro,z"]);
+    expect(mounts("caddy")).toEqual(["/srv/lp:/srv/lp:ro,z", "/srv/sdk:/srv/sdk:ro,z"]);
     for (const name of ["internal", "postgres", "valkey", "migrate"]) expect(mounts(name), name).toEqual([]);
   });
 
@@ -262,9 +262,11 @@ describe("quadlets", () => {
       const text = readFileSync(join(REPO, file), "utf8");
       const args: Record<string, string> = Object.fromEntries([...text.matchAll(/^ARG (\w+)=(\S+)$/gm)].map((m) => [m[1] ?? "", m[2] ?? ""]));
       const stages = new Set([...text.matchAll(/^FROM \S+ AS (\S+)$/gim)].map((m) => m[1]));
-      for (const [, ref] of text.matchAll(/^FROM (\S+)/gm)) {
+      for (const [, ref, stage] of text.matchAll(/^FROM (\S+)(?: AS (\S+))?$/gim)) {
         const image = (ref ?? "").replace(/^\$\{(\w+)\}$/, (_, n: string) => args[n] ?? "");
         if (stages.has(image)) continue;
+        // `scratch` is the empty image and has no digest: allowed for the app Containerfile's `sdk` stage only (static files, no image runs).
+        if (image === "scratch" && stage === "sdk" && file.replaceAll("\\", "/") === "infra/images/app/Containerfile") continue;
         expect(image, `${file}: FROM ${String(ref)}`).toMatch(/^docker\.io\/[\w./-]+(:[\w.-]+)?@sha256:[0-9a-f]{64}$/);
       }
     }

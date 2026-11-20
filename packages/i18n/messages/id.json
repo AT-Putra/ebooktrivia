@@ -146,5 +146,47 @@
       "body": "Pembayaran tidak dapat diproses. Tidak ada dana yang ditagihkan. Silakan coba lagi.",
       "announce": "Pembayaran gagal. Silakan coba bayar lagi."
     }
+  },
+  "sdk": {
+    "submitting": "Memproses pesanan…",
+    "field": {
+      "name": {
+        "required": "Isi nama lengkapmu.",
+        "tooLong": "Nama terlalu panjang, maksimal {max} karakter."
+      },
+      "phone": {
+        "empty": "Isi nomor WhatsApp-mu.",
+        "invalidCharacters": "Nomor hanya boleh berisi angka, spasi, titik, tanda hubung, dan tanda kurung.",
+        "notIndonesian": "Gunakan nomor Indonesia yang diawali 08 atau +62.",
+        "notMobile": "Itu bukan nomor seluler. Gunakan nomor WhatsApp yang diawali 08.",
+        "invalidLength": "Panjang nomor tidak sesuai. Periksa lagi nomor WhatsApp-mu."
+      },
+      "email": {
+        "required": "Isi alamat e-mail-mu.",
+        "invalid": "Alamat e-mail tidak valid. Contoh: nama@contoh.com"
+      },
+      "consent": {
+        "required": "Centang persetujuan untuk melanjutkan.",
+        "outdated": "Syarat dan kebijakan baru saja diperbarui. Muat ulang halaman, lalu setujui versi terbaru."
+      }
+    },
+    "consent": {
+      "lead": "Saya menyetujui",
+      "terms": "Syarat & Ketentuan",
+      "privacy": "Kebijakan Privasi",
+      "and": "dan",
+      "newTab": "buka di tab baru"
+    },
+    "error": {
+      "captcha": "Verifikasi keamanan gagal. Coba lagi.",
+      "rateLimited": "Terlalu banyak percobaan. Tunggu sebentar, lalu coba lagi.",
+      "salesClosed": "Penjualan sudah ditutup.",
+      "gateway": "Pembayaran belum bisa dibuat. Coba lagi sebentar lagi.",
+      "unavailable": "Layanan sedang sibuk. Coba lagi sebentar lagi.",
+      "network": "Tidak bisa terhubung. Periksa koneksi internetmu, lalu coba lagi.",
+      "redirectRefused": "Alamat pembayaran tidak dikenali, jadi kamu tidak dialihkan. Hubungi penyelenggara.",
+      "notReady": "Halaman ini belum bisa menerima pesanan.",
+      "generic": "Terjadi kesalahan. Coba lagi."
+    }
   }
 }

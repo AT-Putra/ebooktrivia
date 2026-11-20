@@ -6,11 +6,15 @@
   "scripts": {
     "test:mockups": "playwright test",
     "lighthouse:mockups": "tsx lighthouse.ts",
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test:sdk": "playwright test -c playwright.sdk.config.ts"
   },
   "devDependencies": {
     "@axe-core/playwright": "4.14.0",
+    "@ebooktrivia/adapters": "workspace:*",
+    "@ebooktrivia/core": "workspace:*",
     "@ebooktrivia/db": "workspace:*",
+    "@ebooktrivia/sdk": "workspace:*",
     "@ebooktrivia/test-support": "workspace:*",
     "@playwright/test": "1.65.0",
     "lighthouse": "13.6.0",

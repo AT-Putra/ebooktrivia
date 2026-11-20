@@ -5,7 +5,9 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./hosts": "./src/hosts.ts"
+    "./hosts": "./src/hosts.ts",
+    "./phone": "./src/phone.ts",
+    "./sdk-contract": "./src/sdk-contract.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",

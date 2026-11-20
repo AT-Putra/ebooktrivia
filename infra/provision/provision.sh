@@ -474,6 +474,8 @@ step_config_files() {
   local dir
   for dir in caddy postgres valkey; do ensure_dir "$ETC/$dir" 750 root "$APP"; done
   ensure_dir /srv/lp 750 "$APP" "$APP"
+  # The SDK files (build-images.sh sdk) Caddy serves at api.<DOMAIN>/sdk/; the app user writes them.
+  ensure_dir /srv/sdk 750 "$APP" "$APP"
   ensure_dir /srv/data 750 "$APP" "$APP"
   # Inside the app user's directories the app user creates the rest.
   app_ensure_dir /srv/lp/hosts 750

@@ -369,9 +369,18 @@ importers:
       '@axe-core/playwright':
         specifier: 4.14.0
         version: 4.14.0(playwright-core@1.65.0)
+      '@ebooktrivia/adapters':
+        specifier: workspace:*
+        version: link:../packages/adapters
+      '@ebooktrivia/core':
+        specifier: workspace:*
+        version: link:../packages/core
       '@ebooktrivia/db':
         specifier: workspace:*
         version: link:../packages/db
+      '@ebooktrivia/sdk':
+        specifier: workspace:*
+        version: link:../packages/sdk
       '@ebooktrivia/test-support':
         specifier: workspace:*
         version: link:../tools/test-support
@@ -483,6 +492,24 @@ importers:
   packages/edge: {}
 
   packages/i18n: {}
+
+  packages/sdk:
+    devDependencies:
+      '@cap.js/wasm':
+        specifier: 0.0.8
+        version: 0.0.8
+      '@cap.js/widget':
+        specifier: 0.1.62
+        version: 0.1.62
+      '@ebooktrivia/core':
+        specifier: workspace:*
+        version: link:../core
+      '@ebooktrivia/i18n':
+        specifier: workspace:*
+        version: link:../i18n
+      esbuild:
+        specifier: 0.28.2
+        version: 0.28.2
 
   packages/ui:
     dependencies:
@@ -809,6 +836,12 @@ packages:
 
   '@cap.js/server@4.0.5':
     resolution: {integrity: sha512-S902YIyGyiriNaexfqTzMy5ixxSb3/jYSJwr2gAY9d7XXoYftcifgij/11pjuiU72Ogm6XKZOggDB2DtjRMyww==}
+
+  '@cap.js/wasm@0.0.8':
+    resolution: {integrity: sha512-rX+4/v2sz4GKLnygXHOS89O7c4GM2qNQcDJP6Y2cyGwoKjg83bsfWHt1TWr9GBzHpFADvju5fvLWYds21nS8sA==}
+
+  '@cap.js/widget@0.1.62':
+    resolution: {integrity: sha512-ooufENSpF5r6nlPbYQc4UMpcvTJYnWkbOJduwltVtEiEZY5RsTAeruWFOAZH63nSOsp6XP4+xMDvLPKfFL5LDw==}
 
   '@dotenvx/dotenvx@1.75.1':
     resolution: {integrity: sha512-/BITOC9dmS/edY2zQwZNicQ059O6RKabtQfyEafV0nGtfYRNHYy1DIPiYVcov40+tob9hfmBnbR963dS+EQ1DQ==}
@@ -6017,6 +6050,10 @@ snapshots:
       keyv: 5.6.0
 
   '@cap.js/server@4.0.5': {}
+
+  '@cap.js/wasm@0.0.8': {}
+
+  '@cap.js/widget@0.1.62': {}
 
   '@dotenvx/dotenvx@1.75.1':
     dependencies:

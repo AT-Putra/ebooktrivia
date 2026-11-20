@@ -129,6 +129,8 @@ jobs:
         run: bash infra/verify/local/shellcheck.sh
       - name: Caddyfile validate, caddy fmt, adapted JSON up to date (Caddy 2.11.9)
         run: bash infra/verify/local/caddy-adapt.sh --check
+      - name: SDK route headers in a real Caddy 2.11.9 (immutable versions, 5 minute alias, no cached 404)
+        run: bash infra/verify/local/sdk-headers.sh
       - name: Quadlet generator dry run (AlmaLinux 10.2, podman 5.8)
         run: bash infra/verify/local/quadlet-dryrun.sh
 
@@ -190,7 +192,7 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Install the Playwright browser
         run: pnpm --filter @ebooktrivia/e2e exec playwright install --with-deps chromium chromium-headless-shell
-      - name: Playwright (mockups, 404 guard, admin auth)
+      - name: Playwright (mockups, 404 guard, admin auth, settings and trivia, landing-page SDK)
         run: pnpm --filter @ebooktrivia/e2e exec playwright test
 
   secrets-scan:

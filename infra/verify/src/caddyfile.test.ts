@@ -128,6 +128,65 @@ describe("adapted Caddyfile", () => {
     expect(handlers([site(null)]).find((h) => h.handler === "file_server")?.["hide"]).toEqual([".*", "/etc/caddy/Caddyfile"]);
   });
 
+  // US-019: the landing-page SDK, static files from /srv/sdk (infra/verify/local/sdk-headers.sh runs
+  // the same block in a real Caddy and checks the headers a browser receives).
+  describe("SDK route of api.<DOMAIN>", () => {
+    const sdk = routes([site("api.example.test")]).find((r) => (r.match?.[0]?.["path"] as string[] | undefined)?.includes("/sdk/*"));
+    const inner = (sdk?.handle ?? []).flatMap((h) => h.routes ?? []);
+    /** The routes of the SDK block that set a Cache-Control header, with the value they set. */
+    const cacheRoutes = inner.flatMap((r) =>
+      handlers([r])
+        .filter((h) => h.handler === "headers")
+        .map((h) => ({ value: ((h["response"] as { set?: Record<string, string[]> }).set ?? {})["Cache-Control"]?.[0], match: r.match?.[0] }))
+        .filter((c) => c.value !== undefined),
+    );
+
+    it("strips /sdk and serves /srv/sdk through file_server, compressed, hiding dot files", () => {
+      expect(sdk).toBeDefined();
+      expect(handlers(inner).find((h) => h.handler === "rewrite")?.["strip_path_prefix"]).toBe("/sdk");
+      expect(handlers(inner).find((h) => h.handler === "vars")?.["root"]).toBe("/srv/sdk");
+      expect(handlers(inner).find((h) => h.handler === "encode")?.["prefer"]).toEqual(["zstd", "gzip"]);
+      expect((handlers(inner).find((h) => h.handler === "file_server")?.["hide"] as string[]).includes(".*")).toBe(true);
+    });
+
+    it("lets a page on another origin read the files: CORS for the Cap widget's fetch of its WebAssembly, CORP for COEP pages", () => {
+      const sets = handlers(inner)
+        .filter((h) => h.handler === "headers")
+        .map((h) => (h["response"] as { set?: Record<string, string[]> }).set ?? {});
+      const unconditional = inner.filter((r) => r.match === undefined).flatMap((r) => handlers([r]).filter((h) => h.handler === "headers"));
+      expect(unconditional).toHaveLength(1);
+      expect((unconditional[0]?.["response"] as { set: Record<string, string[]> }).set).toEqual({ "Access-Control-Allow-Origin": ["*"], "Cross-Origin-Resource-Policy": ["cross-origin"] });
+      expect(sets.length).toBe(3);
+    });
+
+    it("caches a versioned file for a year as immutable and the alias for 5 minutes, and nothing else", () => {
+      expect(cacheRoutes.map((c) => c.value)).toEqual(["public, max-age=31536000, immutable", "public, max-age=300"]);
+      const [immutable, alias] = cacheRoutes;
+      // Only for a file that exists: a 404 for a version that is not deployed yet is never cached.
+      expect(immutable?.match?.["file"]).toEqual({ try_files: ["{http.request.uri.path}"] });
+      expect(alias?.match?.["file"]).toEqual({ try_files: ["{http.request.uri.path}"] });
+      expect(alias?.match?.["path"]).toEqual(["/v1.js"]);
+    });
+
+    it("treats exactly sdk-v<semver>.js, cap-v<semver>.js and the two versioned Cap wasm files as immutable", () => {
+      const pattern = new RegExp(((cacheRoutes[0]?.match?.["path_regexp"] as { pattern: string }).pattern));
+      for (const name of ["/sdk-v1.0.0.js", "/sdk-v1.12.345.js", "/cap-v0.1.62.js", "/cap-wasm-v0.0.8.wasm", "/cap-hashwx-v0.0.8.wasm"]) expect(pattern.test(name), name).toBe(true);
+      for (const name of ["/v1.js", "/sdk-v1.js", "/sdk-v1.0.0.js.map", "/sdk-v1.0.0.json", "/x/sdk-v1.0.0.js", "/sdk-v1.0.0.js/x", "/SDK-V1.0.0.JS", "/sdk-v1.0.0-beta.js", "/sdk-v1.0.0.js\n", "/cap-wasm.wasm", "/cap-wasm-v0.0.8.js", "/cap-other-v0.0.8.wasm", "/cap-wasm-v0.0.8.wasm.br", "/x/cap-wasm-v0.0.8.wasm"]) {
+        expect(pattern.test(name), name).toBe(false);
+      }
+    });
+
+    it("comes before the proxy to the public app, so the app never sees /sdk/", () => {
+      const apiRoutes = (site("api.example.test").handle ?? []).flatMap((h) => h.routes ?? []);
+      const group = apiRoutes.filter((r) => (r as Json)["group"] !== undefined);
+      const position = (test: (r: Route) => boolean): number => group.findIndex(test);
+      const sdkAt = position((r) => (r.match?.[0]?.["path"] as string[] | undefined)?.includes("/sdk/*") === true);
+      const proxyAt = position((r) => r.match === undefined && reverseProxies(r).some((h) => dials(h).includes("public-a:3000")));
+      expect(sdkAt).toBeGreaterThanOrEqual(0);
+      expect(proxyAt).toBeGreaterThan(sdkAt);
+    });
+  });
+
   it("load-balances public@a/b with an active /livez health check", () => {
     for (const host of ["play.example.test", "order.example.test", "api.example.test"]) {
       const lb = reverseProxies(site(host)).find((h) => dials(h).includes("public-a:3000"));

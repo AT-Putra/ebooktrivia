@@ -71,6 +71,13 @@
       "when": 1795153970007,
       "tag": "0009_trivia_bounds_ms",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1795173391820,
+      "tag": "0010_clickid_param_not_personal",
+      "breakpoints": true
     }
   ]
 }

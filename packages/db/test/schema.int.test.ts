@@ -203,3 +203,23 @@ describe("constraints named by the plan", () => {
     }
   });
 });
+
+describe("adnets.clickid_param (US-019)", () => {
+  const insert = (param: string) => sql`INSERT INTO adnets (slug, name, clickid_param) VALUES (${`a-${Math.random().toString(36).slice(2, 10)}`}, 'Adnet', ${param})`;
+
+  it("accepts an ordinary click-id parameter name", async () => {
+    for (const ok of ["cid", "clickid", "aff_click_id", "transaction_id", "sub.id-1", "swap_id", "shpclid", "ad_wave", "gwa", "hpid", "oauth", "username"]) {
+      await insert(ok);
+    }
+  });
+
+  it("refuses a name that has a personal-data word as a whole word, in any case: the SDK sends whatever the parameter carries", async () => {
+    for (const bad of ["email", "EMAIL", "e-mail", "phone", "phone_number", "no_hp", "no_wa", "whatsapp", "nama_lengkap", "access_token", "otp", "kode_otp", "nik", "ktp", "card_number", "kartu", "password", "pwd", "secret", "client_secret", "session_id", "nomor.hp", "user-password"]) {
+      expect(await sqlState(insert(bad)), bad).toBe("23514");
+    }
+  });
+
+  it("still refuses a name outside the plain format", async () => {
+    for (const bad of ["", "a b", "a".repeat(65), "a/b"]) expect(await sqlState(insert(bad)), bad).toBe("23514");
+  });
+});

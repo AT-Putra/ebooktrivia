@@ -6,6 +6,7 @@
 //     are checked against each vendor's id format here and must be re-checked where they are used;
 //   - domains: Owner (lp_domain.register, §10 item 18), checked by lp-domains.ts.
 import { randomBytes } from "node:crypto";
+import { SDK_PATTERNS } from "@ebooktrivia/core";
 import { type FieldKind, type Tx, withAudit } from "../audit.ts";
 import type { Sql } from "../db.ts";
 import { auditedChange } from "./audited.ts";
@@ -44,9 +45,9 @@ export interface Pixels {
 }
 
 const PIXEL_RULES: readonly { readonly key: keyof Pixels; readonly pattern: RegExp; readonly message: string }[] = [
-  { key: "meta", pattern: /^[0-9]{10,20}$/, message: "The Meta pixel id is 10 to 20 digits." },
-  { key: "tiktok", pattern: /^[A-Z0-9]{16,32}$/, message: "The TikTok pixel code is 16 to 32 capital letters and digits." },
-  { key: "gtag", pattern: /^AW-[0-9]{6,15}$/, message: "The Google Ads id looks like AW-123456789." },
+  { key: "meta", pattern: new RegExp(SDK_PATTERNS.metaPixel), message: "The Meta pixel id is 10 to 20 digits." },
+  { key: "tiktok", pattern: new RegExp(SDK_PATTERNS.tiktokPixel), message: "The TikTok pixel code is 16 to 32 capital letters and digits." },
+  { key: "gtag", pattern: new RegExp(SDK_PATTERNS.googleAds), message: "The Google Ads id looks like AW-123456789." },
   { key: "gtag_label", pattern: /^[A-Za-z0-9_-]{4,64}$/, message: "The Google Ads conversion label is 4 to 64 letters, digits, - or _." },
 ];
 

@@ -1,0 +1,20 @@
+{
+  "name": "@ebooktrivia/sdk",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@cap.js/wasm": "0.0.8",
+    "@cap.js/widget": "0.1.62",
+    "@ebooktrivia/core": "workspace:*",
+    "@ebooktrivia/i18n": "workspace:*",
+    "esbuild": "0.28.2"
+  },
+  "exports": {
+    "./build": "./scripts/build.ts"
+  }
+}
