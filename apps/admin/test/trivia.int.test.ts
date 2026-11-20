@@ -173,8 +173,8 @@ describe("sets and questions: content lock, Staff and Owner", () => {
     const lp = await one(root<Id[]>`INSERT INTO landing_pages (lp_key, name, program_id) VALUES (${`lp_${suffix()}${suffix()}`}, 'LP', ${programId}) RETURNING id`);
     const product = await one(root<{ id: string }[]>`SELECT product_id AS id FROM programs WHERE id = ${programId}`);
     await root`
-      INSERT INTO orders (public_id, order_code, landing_page_id, program_id, product_id, buyer_name, buyer_phone, buyer_email, amount_idr, expires_at, status, paid_at)
-      VALUES (${`pid${suffix()}${suffix()}`}, ${`K0C${suffix()}`.toUpperCase()}, ${lp.id}, ${programId}, ${product.id}, 'Pembeli', ${phone()}, 'b@example.invalid', 49000, now() + interval '1 day', 'paid', now())`;
+      INSERT INTO orders (public_id, order_code, landing_page_id, program_id, product_id, buyer_name, buyer_phone, buyer_email, buyer_key, amount_idr, expires_at, status, paid_at)
+      VALUES (${`pid${suffix()}${suffix()}`}, ${`K0C${suffix()}`.toUpperCase()}, ${lp.id}, ${programId}, ${product.id}, 'Pembeli', ${phone()}, 'b@example.invalid', sha256(convert_to(gen_random_uuid()::text, 'UTF8')), 49000, now() + interval '1 day', 'paid', now())`;
     expect(await refused(as(owner, () => createSet(rt.sql, programId, "Set 3")))).toMatch(/paid order/);
     expect(await refused(as(owner, () => moveSet(rt.sql, owner, programId, setId, "down")))).toMatch(/paid order/);
     expect(await refused(as(owner, () => deleteSet(rt.sql, owner, programId, setId)))).toMatch(/paid order/);

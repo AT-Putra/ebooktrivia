@@ -314,7 +314,7 @@ describe("bounds and precision as CHECKs (every writer)", () => {
     for (const key of [...Object.keys(APP_SETTING_BOUNDS), "midtrans.environment"]) {
       expect(await sqlState(asRole("admin_rw", (tx) => tx`DELETE FROM public.app_settings WHERE key = ${key}`)), key).toBe("42501");
     }
-    expect(first(await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM app_settings WHERE key = ANY (${Object.keys(APP_SETTING_BOUNDS)})`).n).toBe(8);
+    expect(first(await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM app_settings WHERE key = ANY (${Object.keys(APP_SETTING_BOUNDS)})`).n).toBe(Object.keys(APP_SETTING_BOUNDS).length);
   });
 
   it("admin_rw cannot rename a setting's key (D1), but still updates values, also by the admin's upsert", async () => {
@@ -336,6 +336,8 @@ describe("bounds and precision as CHECKs (every writer)", () => {
         expect(await sqlState(asRole("admin_rw", (tx) => tx`UPDATE public.app_settings SET value = ${String(bad)}::text::jsonb WHERE key = ${key}`)), `${key}=${String(bad)}`).toBe("23514");
       }
       expect(await sqlState(asRole("admin_rw", (tx) => tx`UPDATE public.app_settings SET value = '"300"'::jsonb WHERE key = ${key}`)), `${key} as a string`).toBe("23514");
+      // Inside the bounds but not a whole number: app_settings_positive_int_check (US-020 adds checkout.* and captcha.*).
+      expect(await sqlState(asRole("admin_rw", (tx) => tx`UPDATE public.app_settings SET value = ${`${String(min)}.5`}::text::jsonb WHERE key = ${key}`)), `${key} fractional`).toBe("23514");
       await sql.begin(async (tx) => {
         await tx.unsafe("SET LOCAL ROLE admin_rw");
         await tx`UPDATE public.app_settings SET value = ${String(min)}::text::jsonb WHERE key = ${key}`;
@@ -354,6 +356,16 @@ describe("bounds and precision as CHECKs (every writer)", () => {
       "otp.ip_window_seconds",
       "otp.cooldown_seconds",
       "orders.expiry_seconds",
+      "orders.sales_close_buffer_minutes",
+      "checkout.ip_cap",
+      "checkout.ip_window_seconds",
+      "checkout.phone_cap",
+      "checkout.phone_window_seconds",
+      "checkout.lp_cap",
+      "checkout.lp_window_seconds",
+      "captcha.ip_cap",
+      "captcha.ip_window_seconds",
+      "captcha.ip48_cap",
     ]);
   });
 });

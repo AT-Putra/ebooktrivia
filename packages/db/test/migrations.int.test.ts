@@ -5,6 +5,7 @@
 //     the whole migration on ADD CONSTRAINT.
 //   - US-013: 0003 adds the lp_domains NOTIFY trigger to a database deployed at 0002.
 //   - US-018: 0009 truncates sub-millisecond answer / finish timestamps before its CHECKs.
+//   - US-020: 0012 backfills orders.buyer_key on existing orders before making it NOT NULL.
 import { randomBytes } from "node:crypto";
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -218,6 +219,53 @@ describe("upgrading a pre-US-018 database", () => {
         await expect(check`UPDATE set_attempts SET finished_at = '2027-05-01 03:00:05.000001+00'`).rejects.toMatchObject({ code: "23514" });
         await expect(check`UPDATE programs SET default_timer_seconds = 601`).rejects.toMatchObject({ code: "23514" });
         await expect(check`UPDATE app_settings SET value = '6' WHERE key = 'otp.max_attempts'`).rejects.toMatchObject({ code: "23514" });
+        await runMigrations(databaseUrl(name)); // re-runnable
+      } finally {
+        await check.end();
+      }
+    } finally {
+      rmSync(folder, { recursive: true, force: true });
+      await admin.unsafe(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`);
+      await admin.end();
+    }
+  }, 120_000);
+});
+
+describe("upgrading a pre-US-020-review database (security review P2-D)", () => {
+  it("0012 gives every existing order a 32-byte buyer_key, then requires one, and stays re-runnable", async () => {
+    const name = `ebt_mig_${randomBytes(6).toString("hex")}`;
+    const admin = postgres(serverUrl(), { max: 1, onnotice });
+    await admin.unsafe(`CREATE DATABASE ${name}`);
+    const folder = migrationsUpTo(11);
+    try {
+      await deployOld(name, folder, async (old) => {
+        const [product] = await old<{ id: string }[]>`INSERT INTO products (title, price_idr) VALUES ('E', 49000) RETURNING id`;
+        const [program] = await old<{ id: string }[]>`
+          INSERT INTO programs (product_id, slug, name, status, sales_start_at, sales_end_at, grace_days)
+          VALUES (${product?.id ?? ""}, 'buyer-key', 'P', 'published', '2027-04-01', '2027-07-01', 30) RETURNING id`;
+        const [lp] = await old<{ id: string }[]>`INSERT INTO landing_pages (lp_key, name, program_id) VALUES (${`lp_bk${randomBytes(6).toString("hex")}`}, 'LP', ${program?.id ?? ""}) RETURNING id`;
+        for (const status of ["pending", "paid"]) {
+          await old`
+            INSERT INTO orders (public_id, order_code, landing_page_id, program_id, product_id, buyer_name, buyer_phone, buyer_email, amount_idr, expires_at, status)
+            VALUES (${randomBytes(10).toString("hex")}, ${randomBytes(5).toString("hex").toUpperCase()}, ${lp?.id ?? ""}, ${program?.id ?? ""}, ${product?.id ?? ""},
+                    'B', '+6281234567890', 'b@example.invalid', 49000, now() + interval '1 day', ${status})`;
+        }
+      });
+
+      await runMigrations(databaseUrl(name)); // applies 0012 and the sql/ files
+
+      const check = postgres(databaseUrl(name), { ...PG_CONNECTION_OPTIONS, max: 1, onnotice });
+      try {
+        const rows = await check<{ id: string; length: number; key: string }[]>`SELECT id, octet_length(buyer_key) AS length, encode(buyer_key, 'hex') AS key FROM orders ORDER BY id`;
+        expect(rows).toHaveLength(2);
+        for (const row of rows) expect(row.length).toBe(32);
+        // A key no checkout can produce: a hash of the order's own id.
+        expect(new Set(rows.map((r) => r.key)).size).toBe(2);
+        const [nullable] = await check<{ is_nullable: string }[]>`
+          SELECT is_nullable FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'orders' AND column_name = 'buyer_key'`;
+        expect(nullable?.is_nullable).toBe("NO");
+        await expect(check`UPDATE orders SET buyer_key = NULL`).rejects.toMatchObject({ code: "23502" });
+        await expect(check`UPDATE orders SET buyer_key = decode('00', 'hex')`).rejects.toMatchObject({ code: "23514" });
         await runMigrations(databaseUrl(name)); // re-runnable
       } finally {
         await check.end();

@@ -8,7 +8,8 @@
 -- schema public privileges, and role memberships, are reset by roles.sql.
 --
 -- Summary (plan M2.2):
---   public_rw   reads the catalog; writes play/player data, orders, visits, consents; never
+--   public_rw   reads the catalog; writes play/player data, orders, visits, consents (reads only
+--               the checkout columns of orders and the keys of visits / consents); never
 --               INSERTs outbox (enqueue_* only); payment secrets only via get_payment_secret();
 --               no admin_auth, audit_log, ad_spend, settings_secrets, otp_enqueues.
 --   admin_rw    everything except UPDATE/DELETE/TRUNCATE on audit_log (and no TRUNCATE at all).
@@ -71,13 +72,22 @@ GRANT UPDATE (served_at, deadline_at, answered_at, option_id, correct, points, e
 GRANT UPDATE (score, total_ms, sets_completed, finished_at, updated_at) ON public.player_program_stats
   TO public_rw;
 
-GRANT SELECT, INSERT ON public.visits, public.consents TO public_rw;
+-- visits / consents: INSERT, and SELECT of the keys only (US-020: the checkout checks that a visit_id
+-- belongs to the landing page; it never reads a visit's or a consent's IP, user agent or attribution).
+GRANT INSERT ON public.visits, public.consents TO public_rw;
+GRANT SELECT (id, landing_page_id) ON public.visits TO public_rw;
+GRANT SELECT (id, order_id, legal_page_id, consented_at) ON public.consents TO public_rw;
 
 -- orders: no paid_at/refunded_at/mo_outbox_id; status limited by the orders_status_guard trigger.
-GRANT SELECT ON public.orders TO public_rw;
+-- SELECT (US-020, US-009 carry-over) only of what the checkout's dedupe and Snap bookkeeping read:
+-- never the buyer's name, e-mail, IP, user agent or attribution. buyer_phone is the dedupe key.
+GRANT SELECT (
+  id, public_id, landing_page_id, buyer_phone, buyer_key, amount_idr, status, snap_attempt_count, snap_redirect_url,
+  snap_expires_at, expires_at, event_id, created_at
+) ON public.orders TO public_rw;
 GRANT INSERT (
   id, public_id, order_code, landing_page_id, program_id, product_id, player_id,
-  buyer_name, buyer_phone, buyer_email, amount_idr, currency, status, snap_attempt_count,
+  buyer_name, buyer_phone, buyer_email, buyer_key, amount_idr, currency, status, snap_attempt_count,
   expires_at, event_id, visit_id, adnet_id, clickid, sub_id, pub,
   utm_source, utm_medium, utm_campaign, utm_content, utm_term, fbclid, fbp, fbc, ttclid, gclid,
   ip, ua_hash
@@ -86,7 +96,9 @@ GRANT UPDATE (
   status, snap_attempt_count, snap_redirect_url, snap_expires_at, browser_mt_fired_at, updated_at
 ) ON public.orders TO public_rw;
 
-GRANT SELECT ON public.midtrans_attempts TO public_rw;
+-- midtrans_attempts: what the checkout's dedupe and bookkeeping read (US-020 security review P2-7), never
+-- another order's snap_token or redirect_url.
+GRANT SELECT (id, order_id, n, status, created_at) ON public.midtrans_attempts TO public_rw;
 GRANT INSERT (order_id, n, midtrans_order_id, status, snap_token, redirect_url, error)
   ON public.midtrans_attempts TO public_rw;
 GRANT UPDATE (status, snap_token, redirect_url, error, updated_at) ON public.midtrans_attempts TO public_rw;

@@ -1,4 +1,4 @@
-export { applyClientIp, canonicalIp, CLIENT_IP_HEADERS, type ClientIp, PROXY_ONLY_HEADERS, resolveClientIp } from "./client-ip.ts";
+export { applyClientIp, canonicalIp, CLIENT_IP_HEADERS, clientIp, type ClientIp, PROXY_ONLY_HEADERS, resolveClientIp, throttleBucket, throttleBucket48 } from "./client-ip.ts";
 export { type EdgeConfig, EdgeConfigError, type Env, loadEdgeConfig } from "./config.ts";
 export { type AppHandler, createEdgeListener, type EdgeListenerOptions, type EdgeServerOptions, type RunningEdge, startEdgeServer } from "./edge-server.ts";
 export { drainOnSignals, type SignalProcess } from "./signals.ts";

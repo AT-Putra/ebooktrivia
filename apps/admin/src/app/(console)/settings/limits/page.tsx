@@ -16,7 +16,7 @@ export default async function LimitsPage() {
   const limits = await getLimits(sql);
   return (
     <>
-      <PageHeading title="OTP and rate limits" description="Player sign-in codes (WhatsApp OTP) and checkout expiry. A shorter code validity applies to codes sent from now on. Every change is audited." />
+      <PageHeading title="OTP and rate limits" description="Player sign-in codes (WhatsApp OTP), checkout expiry and closing, and the checkout and captcha rate limits. A shorter code validity applies to codes sent from now on. Every change is audited." />
       <Card>
         <CardDescription>Each value is a whole number within the range shown under it.</CardDescription>
         <ActionForm action={saveLimitsAction} submitLabel="Save limits" testId="limits-form">

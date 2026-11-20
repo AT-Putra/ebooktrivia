@@ -132,14 +132,24 @@ describe("production Valkey ACL", () => {
     expect(await reply(worker.set("cache:public:acl", "1"))).toMatch(/NOPERM/);
     expect(await reply(worker.set("rl:acl", "1"))).toMatch(/NOPERM/);
     expect(await reply(worker.set("tother:acl", "1"))).toMatch(/NOPERM/); // another BullMQ prefix
-    expect(await reply(worker.info("server"))).toMatch(/valkey_version:9\.1\.3/);
+    expect(await reply(worker.info("server"))).toMatch(/^# Server[\s\S]*\nvalkey_version:/);
 
     expect(await reply(pub.set("rl:acl", "1"))).toBe("OK");
     expect(await reply(pub.set("cache:public:acl", "1"))).toBe("OK");
     expect(await reply(pub.get("cache:admin:acl"))).toMatch(/NOPERM/);
     expect(await reply(pub.get("cache:worker:acl"))).toMatch(/NOPERM/);
     expect(await reply(pub.get("ebt:acl"))).toMatch(/NOPERM/);
-    expect(await reply(pub.info())).toMatch(/NOPERM/);
+    // US-020: public runs an allowlist (-@all +ping +eval +incr +pttl +pexpire +set): the checkout's
+    // rate-limit script and the single-use marks of (stateless) Cap tokens. No INFO, no reads, no deletes.
+    expect(await reply(pub.info("server"))).toMatch(/NOPERM/);
+    expect(await reply(pub.eval("redis.call('INCR', KEYS[1]); return redis.call('PTTL', KEYS[1])", 1, "rl:acl-script"))).toBe("-1");
+    expect(await reply(pub.set("cache:public:acl-once", "1", "PX", 60_000, "NX"))).toBe("OK");
+    expect(await reply(pub.getdel("cache:public:acl-once"))).toMatch(/NOPERM/);
+    expect(await reply(pub.del("cache:public:acl-once"))).toMatch(/NOPERM/);
+    expect(await reply(pub.get("rl:acl"))).toMatch(/NOPERM/);
+    expect(await reply(pub.exists("rl:acl"))).toMatch(/NOPERM/);
+    expect(await reply(pub.eval("return redis.call('GET', KEYS[1])", 1, "rl:acl"))).toMatch(/NOPERM|ACL failure/);
+    expect(await reply(pub.eval("return redis.call('INCR', KEYS[1])", 1, "ebt:acl"))).toMatch(/NOPERM|ACL failure/);
 
     expect(await reply(admin.set("cache:admin:acl", "2"))).toBe("OK");
     expect(await reply(admin.get("cache:public:acl"))).toMatch(/NOPERM/);

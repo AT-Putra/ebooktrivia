@@ -11,6 +11,7 @@ import {
   expectedGrossAmount,
   getTransactionStatus,
   grossAmountMatches,
+  MIDTRANS_ENDPOINTS,
   type MidtransConfig,
   MidtransError,
   type MidtransStatus,
@@ -69,6 +70,34 @@ describe("Snap create and status re-query (against midtrans-stub)", () => {
     expect(snap.redirectUrl).toMatch(/^https:\/\/app\.sandbox\.midtrans\.com\/snap\/v4\/redirection\//);
     const status = await getTransactionStatus(config(), input.midtransOrderId);
     expect(status).toMatchObject({ orderId: input.midtransOrderId, transactionStatus: "pending", statusCode: "201", grossAmount: "50000.00" });
+  });
+
+  it("sends the order id, integer amount, expiry in minutes, enabled payments and the finish callback", async () => {
+    const bodies: unknown[] = [];
+    const recording: HttpFetch = async (url, init) => {
+      bodies.push(JSON.parse(String(init.body)));
+      return stubFetch(url, init);
+    };
+    const input = { ...snapInput(49_000), expiryMinutes: 44, enabledPayments: ["other_qris", "bca_va"] };
+    await createSnapTransaction(config({ fetch: recording }), input);
+    expect(bodies[0]).toEqual({
+      transaction_details: { order_id: input.midtransOrderId, gross_amount: 49_000 },
+      item_details: [{ id: "ebook-1", name: "Ebook Trivia Nusantara Juara", price: 49_000, quantity: 1 }],
+      customer_details: { first_name: "Budi", email: "budi@example.com", phone: "+6281234567890" },
+      expiry: { unit: "minutes", duration: 44 },
+      enabled_payments: ["other_qris", "bca_va"],
+      callbacks: { finish: "https://order.example.id/o/abc" },
+    });
+    const { finishUrl, ...withoutFinish } = snapInput();
+    expect(finishUrl).toMatch(/^https:/);
+    await createSnapTransaction(config({ fetch: recording }), withoutFinish);
+    expect(bodies[1]).not.toHaveProperty("enabled_payments");
+    expect(bodies[1]).not.toHaveProperty("callbacks");
+  });
+
+  it("has fixed Snap and API hosts per environment", () => {
+    expect(MIDTRANS_ENDPOINTS.sandbox).toEqual({ snapBaseUrl: "https://app.sandbox.midtrans.com", apiBaseUrl: "https://api.sandbox.midtrans.com" });
+    expect(MIDTRANS_ENDPOINTS.production).toEqual({ snapBaseUrl: "https://app.midtrans.com", apiBaseUrl: "https://api.midtrans.com" });
   });
 
   it("reports a settlement that the stub's control plane sets, with the amount as the signed string", async () => {

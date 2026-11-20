@@ -4,13 +4,18 @@ import { deriveKey } from "altcha-lib/algorithms/pbkdf2";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   type AltchaProviderConfig,
-  CAP_TOKEN_TTL_MS,
+  CAP_CHALLENGE_TOKEN_LENGTH,
+  CAP_MARK_MARGIN_MS,
+  CAP_TOKEN_GRACE_MS,
+  CAP_TOKEN_LENGTH,
   type CapChallenge,
   type CapProviderConfig,
+  CaptchaStoreUnavailable,
   createAltchaProvider,
   createCapProvider,
   createCaptchaVerifier,
   createMemoryReplayStore,
+  type ReplayStore,
 } from "./captcha.ts";
 
 afterEach(() => {
@@ -64,52 +69,41 @@ const reencode = (payload: string, edit: (decoded: { challenge: Challenge; solut
 
 // Low cost keeps the tests fast: 3 sub-challenges of 1 hex digit for Cap, 1 PBKDF2 iteration and a
 // counter of at most 20 for ALTCHA.
+const KEY = randomBytes(32);
+const LP_A = "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b";
+const LP_B = "0b1c2d3e-4f50-4a61-8b72-c3d4e5f60718";
 const cheapCap = (overrides: Partial<CapProviderConfig> = {}) =>
-  createCapProvider({ replay: createMemoryReplayStore(), challengeCount: 3, challengeDifficulty: 1, ...overrides });
+  createCapProvider({ key: KEY, scope: LP_A, replay: createMemoryReplayStore(), challengeCount: 3, challengeDifficulty: 1, ...overrides });
 const cheapAltcha = (overrides: Partial<AltchaProviderConfig> = {}) =>
   createAltchaProvider({ key: randomBytes(32), replay: createMemoryReplayStore(), cost: 1, maxCounter: 20, ...overrides });
 
-// Async storage hooks with a delay between read and delete, as a network store (Valkey) behaves.
-function slowStorage() {
-  const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 5));
-  const challenges = new Map<string, { challenge: { c: number; s: number; d: number }; expires: number }>();
-  const tokens = new Map<string, number>();
+/** A ReplayStore that counts its calls. */
+function countingStore(inner: ReplayStore = createMemoryReplayStore()): ReplayStore & { calls: string[] } {
+  const calls: string[] = [];
   return {
-    challenges: {
-      store: async (key: string, data: { challenge: { c: number; s: number; d: number }; expires: number }) => {
-        await tick();
-        challenges.set(key, data);
-      },
-      read: async (key: string) => {
-        await tick();
-        return challenges.get(key) ?? null;
-      },
-      delete: async (key: string) => {
-        await tick();
-        challenges.delete(key);
-      },
-      deleteExpired: () => Promise.resolve(),
-    },
-    tokens: {
-      store: async (key: string, expires: number) => {
-        await tick();
-        tokens.set(key, expires);
-      },
-      get: async (key: string) => {
-        await tick();
-        return tokens.get(key) ?? null;
-      },
-      delete: async (key: string) => {
-        await tick();
-        tokens.delete(key);
-      },
-      deleteExpired: () => Promise.resolve(),
+    calls,
+    markUsed(key, ttlMs) {
+      calls.push(key);
+      return inner.markUsed(key, ttlMs);
     },
   };
 }
 
-// ---------------------------------------------------------------------------------------------
+/** `hex` with one bit of byte `index` flipped. */
+const flipped = (hex: string, index: number): string => {
+  const bytes = Buffer.from(hex, "hex");
+  bytes[index] = (bytes[index] ?? 0) ^ 0x01;
+  return bytes.toString("hex");
+};
 
+async function redeemed(cap: ReturnType<typeof cheapCap>): Promise<{ challenge: CapChallenge; token: string; expires: number }> {
+  const challenge = await cap.challenge();
+  const result = await cap.redeem({ token: challenge.token, solutions: solveCap(challenge) });
+  if (!result.success) throw new Error("redeem failed");
+  return { challenge, token: result.token, expires: result.expires };
+}
+
+// ---------------------------------------------------------------------------------------------
 describe("memory replay store", () => {
   it("marks a key once until its ttl passes", async () => {
     let clock = 1_000_000;
@@ -144,118 +138,171 @@ describe("memory replay store", () => {
   });
 });
 
-describe("Cap provider", () => {
+describe("Cap provider (stateless, US-020)", () => {
   it("redeems a real solution for a token that verifies exactly once", async () => {
     const cap = cheapCap();
+    const { challenge, token, expires } = await redeemed(cap);
+    expect(challenge.token).toMatch(new RegExp(`^[0-9a-f]{${String(CAP_CHALLENGE_TOKEN_LENGTH)}}$`));
+    expect(CAP_CHALLENGE_TOKEN_LENGTH).toBe(172);
+    expect(token).toMatch(new RegExp(`^[0-9a-f]{${String(CAP_TOKEN_LENGTH)}}$`));
+    expect(CAP_TOKEN_LENGTH).toBe(146);
+    expect(expires).toBe(challenge.expires + CAP_TOKEN_GRACE_MS);
+    expect(await cap.verify(token)).toBe(true);
+    expect(await cap.verify(token)).toBe(false);
+  });
+
+  it("uses Cap's defaults when not configured, and signs them into the token", async () => {
+    vi.useFakeTimers({ now: 1_800_000_000_000 });
+    const challenge = await createCapProvider({ key: KEY, scope: LP_A, replay: createMemoryReplayStore() }).challenge();
+    expect(challenge.challenge).toEqual({ c: 50, s: 32, d: 4 });
+    expect(challenge.expires).toBe(1_800_000_000_000 + 10 * 60_000);
+    const payload = Buffer.from(challenge.token, "hex");
+    expect(payload.readUInt8(0)).toBe(1);
+    expect(payload.subarray(1, 17).toString("hex")).toBe(LP_A.replaceAll("-", ""));
+    expect(Number(payload.readBigUInt64BE(17))).toBe(1_800_000_000_000);
+    expect(Number(payload.readBigUInt64BE(25))).toBe(challenge.expires);
+    expect([payload.readUInt16BE(49), payload.readUInt16BE(51), payload.readUInt8(53)]).toEqual([50, 32, 4]);
+  });
+
+  it("stores nothing for a challenge or a redeem; only verify marks, once per token", async () => {
+    const store = countingStore();
+    const cap = cheapCap({ replay: store });
+    for (let i = 0; i < 20; i++) await redeemed(cap);
+    await cap.redeem({ token: (await cap.challenge()).token, solutions: [0, 0, 0] });
+    expect(store.calls).toEqual([]);
+    const { token } = await redeemed(cap);
+    await cap.verify(token);
+    expect(store.calls).toHaveLength(1);
+    expect(store.calls[0]).toMatch(/^[A-Za-z0-9_-]{22}$/);
+  });
+
+  it("redeems the same challenge to the same token every time (no redeem state), which still works only once", async () => {
+    const cap = cheapCap();
     const challenge = await cap.challenge();
-    expect(challenge.challenge).toEqual({ c: 3, s: 32, d: 1 });
-    const redeemed = await cap.redeem({ token: challenge.token, solutions: solveCap(challenge) });
-    if (!redeemed.success) throw new Error("redeem failed");
-    expect(await cap.verify(redeemed.token)).toBe(true);
-    expect(await cap.verify(redeemed.token)).toBe(false);
+    const solution = { token: challenge.token, solutions: solveCap(challenge) };
+    const answers = await Promise.all([cap.redeem(solution), cap.redeem(solution), cheapCap().redeem(solution)]);
+    const tokens = answers.map((a) => (a.success ? a.token : ""));
+    expect(new Set(tokens).size).toBe(1);
+    expect(tokens[0]).not.toBe("");
+    const verified = await Promise.all([cap.verify(tokens[0] ?? ""), cap.verify(tokens[0] ?? ""), cap.verify(tokens[0] ?? "")]);
+    expect(verified.filter(Boolean)).toHaveLength(1);
   });
 
-  it("uses Cap's defaults when not configured", async () => {
-    const cap = createCapProvider({ replay: createMemoryReplayStore() });
-    const { challenge, expires } = await cap.challenge();
-    expect(challenge).toEqual({ c: 50, s: 32, d: 4 });
-    expect(expires - Date.now()).toBeGreaterThan(9 * 60 * 1000);
-    expect(() => createCapProvider({ replay: createMemoryReplayStore(), challengeDifficulty: 0 })).toThrow(RangeError);
+  it("lets one token work exactly once across two provider instances sharing the replay store", async () => {
+    const shared = createMemoryReplayStore();
+    const [one, two] = [cheapCap({ replay: shared }), cheapCap({ replay: shared })];
+    const { token } = await redeemed(one);
+    const verified = await Promise.all([one.verify(token), two.verify(token), two.verify(token), one.verify(token)]);
+    expect(verified.filter(Boolean)).toHaveLength(1);
   });
 
-  it("redeems a challenge once and refuses wrong, malformed or unknown solutions", async () => {
+  it("binds challenges and tokens to their landing page: another scope refuses both", async () => {
+    const shared = createMemoryReplayStore();
+    const [a, b] = [cheapCap({ replay: shared }), cheapCap({ scope: LP_B, replay: shared })];
+    const challenge = await a.challenge();
+    expect(await b.redeem({ token: challenge.token, solutions: solveCap(challenge) })).toEqual({ success: false });
+    const { token } = await redeemed(a);
+    expect(await b.verify(token)).toBe(false);
+    expect(await a.verify(token)).toBe(true);
+  });
+
+  it("refuses a challenge with ANY byte changed, a lowered difficulty, another key and an expired one", async () => {
     const cap = cheapCap();
     const challenge = await cap.challenge();
     const solutions = solveCap(challenge);
+    for (let i = 0; i < CAP_CHALLENGE_TOKEN_LENGTH / 2; i++) {
+      const forged = flipped(challenge.token, i);
+      expect(await cap.redeem({ token: forged, solutions: solveCap({ ...challenge, token: forged }) }), `byte ${String(i)}`).toEqual({ success: false });
+    }
+    // d lowered to 0 with the original MAC: the MAC no longer verifies.
+    const bytes = Buffer.from(challenge.token, "hex");
+    bytes.writeUInt8(0, 53);
+    expect(await cap.redeem({ token: bytes.toString("hex"), solutions })).toEqual({ success: false });
+    expect(await cheapCap({ key: randomBytes(32) }).redeem({ token: challenge.token, solutions })).toEqual({ success: false });
+    expect(await cap.redeem({ token: challenge.token, solutions: solutions.slice(1) })).toEqual({ success: false });
     expect((await cap.redeem({ token: challenge.token, solutions })).success).toBe(true);
-    expect(await cap.redeem({ token: challenge.token, solutions })).toEqual({ success: false });
 
-    const other = await cap.challenge();
-    const wrong = solveCap(other).map((n) => n + 1_000_000);
-    expect(await cap.redeem({ token: other.token, solutions: wrong })).toEqual({ success: false });
-    // Cap deletes a challenge on the first attempt, right or wrong.
-    expect(await cap.redeem({ token: other.token, solutions: solveCap(other) })).toEqual({ success: false });
-
-    const fresh = await cap.challenge();
-    const good = solveCap(fresh);
-    for (const body of [
-      null,
-      "x",
-      {},
-      { token: fresh.token },
-      { token: fresh.token, solutions: good.slice(1) },
-      { token: fresh.token, solutions: [...good, 1] },
-      { token: fresh.token, solutions: good.map(String) },
-      { token: fresh.token.toUpperCase(), solutions: good },
-      { token: 42, solutions: good },
-      { token: "0".repeat(50), solutions: good },
-    ]) {
-      expect(await cap.redeem(body)).toEqual({ success: false });
-    }
-    expect((await cap.redeem({ token: fresh.token, solutions: good })).success).toBe(true);
-  });
-
-  it("is single-use under concurrency, even with async storage hooks", async () => {
-    const cap = cheapCap({ storage: slowStorage() });
-    const challenge = await cap.challenge();
-    const solutions = solveCap(challenge);
-    const redeems = await Promise.all([cap.redeem({ token: challenge.token, solutions }), cap.redeem({ token: challenge.token, solutions })]);
-    expect(redeems.filter((r) => r.success)).toHaveLength(1);
-    const redeemed = redeems.find((r) => r.success);
-    if (redeemed?.success !== true) throw new Error("redeem failed");
-    const verifies = await Promise.all([cap.verify(redeemed.token), cap.verify(redeemed.token), cap.verify(redeemed.token)]);
-    expect(verifies.filter(Boolean)).toHaveLength(1);
-    expect(await cap.verify(redeemed.token)).toBe(false);
-  });
-
-  it("C1: junk redeems never take replay slots, so they cannot lock out a solved challenge", async () => {
-    const cap = cheapCap({ replay: createMemoryReplayStore({ maxEntries: 50 }) });
-    const challenge = await cap.challenge();
-    const solutions = solveCap(challenge);
-    // Well-formed but unknown challenge tokens, and a real token with wrong solutions on another challenge.
-    for (let i = 0; i < 200; i++) {
-      expect(await cap.redeem({ token: randomBytes(25).toString("hex"), solutions })).toEqual({ success: false });
-    }
-    for (let i = 0; i < 60; i++) {
-      const burned = await cap.challenge();
-      expect(await cap.redeem({ token: burned.token, solutions: solutions.map((n) => n + 1_000_000) })).toEqual({ success: false });
-    }
-    const redeemed = await cap.redeem({ token: challenge.token, solutions });
-    if (!redeemed.success) throw new Error("a solved challenge was locked out by junk redeems");
-    expect(await cap.verify(redeemed.token)).toBe(true);
-  });
-
-  it("refuses an expired challenge and an expired token", async () => {
-    vi.useFakeTimers({ toFake: ["Date"] });
-    vi.setSystemTime(new Date("2027-04-01T03:00:00Z"));
-    const cap = cheapCap({ challengeTtlMs: 60_000 });
-
+    vi.useFakeTimers({ now: Date.now() });
     const late = await cap.challenge();
-    vi.setSystemTime(Date.now() + 60_001);
-    expect(await cap.redeem({ token: late.token, solutions: solveCap(late) })).toEqual({ success: false });
-
-    const challenge = await cap.challenge();
-    const redeemed = await cap.redeem({ token: challenge.token, solutions: solveCap(challenge) });
-    if (!redeemed.success) throw new Error("redeem failed");
-    expect(redeemed.expires - Date.now()).toBe(CAP_TOKEN_TTL_MS);
-    vi.setSystemTime(redeemed.expires + 1);
-    expect(await cap.verify(redeemed.token)).toBe(false);
+    const lateSolutions = solveCap(late);
+    vi.setSystemTime(late.expires);
+    expect(await cap.redeem({ token: late.token, solutions: lateSolutions })).toEqual({ success: false });
   });
 
-  it("refuses malformed and unknown tokens and fails closed when storage throws", async () => {
-    const cap = cheapCap();
-    for (const token of ["", "abc", "x:y", "0".repeat(50), `${"0".repeat(16)}:${"0".repeat(30)}`, `${"A".repeat(16)}:${"0".repeat(30)}`]) {
-      expect(await cap.verify(token)).toBe(false);
-    }
-    expect(await cap.verify(42 as unknown as string)).toBe(false);
+  it("refuses a token with ANY byte changed, another key, a challenge token and an expired one, without spending the real one", async () => {
+    vi.useFakeTimers({ now: Date.now() });
+    const store = countingStore();
+    const cap = cheapCap({ replay: store });
+    const { challenge, token, expires } = await redeemed(cap);
+    for (let i = 0; i < CAP_TOKEN_LENGTH / 2; i++) expect(await cap.verify(flipped(token, i)), `byte ${String(i)}`).toBe(false);
+    expect(await cheapCap({ key: randomBytes(32), replay: store }).verify(token)).toBe(false);
+    expect(await cap.verify(challenge.token)).toBe(false);
+    for (const bad of ["", "abc", token.toUpperCase(), `${token}00`, 42 as unknown as string]) expect(await cap.verify(bad)).toBe(false);
+    expect(store.calls).toEqual([]);
+    vi.setSystemTime(expires);
+    expect(await cap.verify(token)).toBe(false);
+    vi.setSystemTime(expires - 1);
+    expect(await cap.verify(token)).toBe(true);
+  });
 
-    const broken = slowStorage();
-    broken.tokens.get = () => Promise.reject(new Error("valkey down"));
-    broken.challenges.read = () => Promise.reject(new Error("valkey down"));
-    const down = cheapCap({ storage: broken });
-    const challenge = await down.challenge();
-    expect(await down.redeem({ token: challenge.token, solutions: solveCap(challenge) })).toEqual({ success: false });
-    expect(await down.verify(`${"0".repeat(16)}:${"0".repeat(30)}`)).toBe(false);
+  it("marks a token for its remaining life plus a minute, so a peer whose clock is ahead cannot reuse it (P2-2)", async () => {
+    vi.useFakeTimers({ now: 1_800_000_000_000 });
+    const ttls: number[] = [];
+    const cap = cheapCap({
+      replay: {
+        markUsed: (_key, ttl) => {
+          ttls.push(ttl);
+          return Promise.resolve(true);
+        },
+      },
+    });
+    const { token, expires } = await redeemed(cap);
+    vi.setSystemTime(expires - 123_456);
+    expect(await cap.verify(token)).toBe(true);
+    expect(CAP_MARK_MARGIN_MS).toBe(60_000);
+    expect(ttls).toEqual([123_456 + 60_000]);
+  });
+
+  it("refuses malformed input without touching the store, and throws CaptchaStoreUnavailable when the store fails", async () => {
+    const failing = countingStore({ markUsed: () => Promise.reject(new Error("valkey down")) });
+    const cap = cheapCap({ replay: failing });
+    for (const solution of [null, "x", {}, { token: 1 }, { token: "abc", solutions: [] }]) expect(await cap.redeem(solution)).toEqual({ success: false });
+    expect(await cap.verify("abc")).toBe(false);
+    expect(failing.calls).toEqual([]);
+    const { token } = await redeemed(cap);
+    const cause = await cap.verify(token).catch((error: unknown) => error);
+    expect(cause).toBeInstanceOf(CaptchaStoreUnavailable);
+    expect((cause as Error).cause).toEqual(new Error("valkey down"));
+  });
+
+  it("refuses a challenge signed under a weaker or longer-lived configuration by a provider sharing the key (P2-1)", async () => {
+    // The review's case: c=1, d=1 signed with the shared key, refused by Cap's defaults (c=50, d=4).
+    const weakSigner = createCapProvider({ key: KEY, scope: LP_A, replay: createMemoryReplayStore(), challengeCount: 1, challengeDifficulty: 1 });
+    const weak = await weakSigner.challenge();
+    const defaults = createCapProvider({ key: KEY, scope: LP_A, replay: createMemoryReplayStore() });
+    expect(await defaults.redeem({ token: weak.token, solutions: solveCap(weak) })).toEqual({ success: false });
+    expect((await weakSigner.redeem({ token: weak.token, solutions: solveCap(weak) })).success).toBe(true);
+    // Each parameter on its own, with real solutions (cheap configs): only the strength check refuses them.
+    const base = { challengeCount: 4, challengeSize: 16, challengeDifficulty: 2, challengeTtlMs: 600_000 };
+    const strict = createCapProvider({ key: KEY, scope: LP_A, replay: createMemoryReplayStore(), ...base });
+    for (const weaker of [{ challengeCount: 3 }, { challengeSize: 15 }, { challengeDifficulty: 1 }, { challengeTtlMs: 600_001 }]) {
+      const signer = createCapProvider({ key: KEY, scope: LP_A, replay: createMemoryReplayStore(), ...base, ...weaker });
+      const challenge = await signer.challenge();
+      expect(await strict.redeem({ token: challenge.token, solutions: solveCap(challenge) }), JSON.stringify(weaker)).toEqual({ success: false });
+    }
+    // A stronger and shorter-lived challenge is fine.
+    const lenient = cheapCap();
+    const harder = createCapProvider({ key: KEY, scope: LP_A, replay: createMemoryReplayStore(), challengeCount: 4, challengeDifficulty: 2, challengeTtlMs: 60_000 });
+    const challenge = await harder.challenge();
+    expect((await lenient.redeem({ token: challenge.token, solutions: solveCap(challenge) })).success).toBe(true);
+  });
+
+  it("validates its configuration", () => {
+    expect(() => cheapCap({ key: randomBytes(31) })).toThrow(/at least 32 bytes/);
+    for (const scope of ["lp_x", LP_A.toUpperCase(), ""]) expect(() => cheapCap({ scope }), scope).toThrow(/UUID/);
+    expect(() => cheapCap({ challengeCount: 0x10000 })).toThrow(/challengeCount/);
+    expect(() => cheapCap({ challengeDifficulty: 256 })).toThrow(/challengeDifficulty/);
+    expect(() => cheapCap({ challengeTtlMs: 0 })).toThrow(/challengeTtlMs/);
   });
 
   it("does not leave Cap's process exit handlers installed", () => {
@@ -397,5 +444,7 @@ describe("captcha verifier", () => {
     expect(await createCaptchaVerifier({}).verify({ provider: "cap", token: "t" })).toBe(false);
     const throwing = createCaptchaVerifier({ altcha: { verify: () => Promise.reject(new Error("boom")) } });
     expect(await throwing.verify({ provider: "altcha", token: "t" })).toBe(false);
+    const storeDown = createCaptchaVerifier({ altcha: { verify: () => Promise.reject(new CaptchaStoreUnavailable(new Error("valkey down"))) } });
+    await expect(storeDown.verify({ provider: "altcha", token: "t" })).rejects.toBeInstanceOf(CaptchaStoreUnavailable);
   });
 });

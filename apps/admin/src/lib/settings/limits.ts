@@ -1,4 +1,4 @@
-// OTP and rate-limit parameters (AC-A3; US-018): the otp.* and orders.* keys of app_settings
+// OTP, checkout and rate-limit parameters (AC-A3; US-018, US-020): the otp.*, orders.*, checkout.* and captcha.* keys of app_settings
 // (seeded by packages/db sql/seed.sql). Owner only (app_settings.edit, owner decision 2026-11-18),
 // each change audited with before / after values.
 //
@@ -20,6 +20,12 @@
 //                                          shorter than the code validity (checked here only:
 //                                          it spans two rows)
 //   orders.expiry_seconds     900..86400   unpaid order / Snap page expiry (86400 = 24 h, AC-S8)
+//   orders.sales_close_buffer_minutes 5..1440 checkout refused when now > sales_end - this (30, AC-S8)
+//   checkout.{ip,phone,lp}_cap / _window_seconds  the public API's checkout rate limits per client IP
+//                                          (an IPv6 /64), per phone and per landing page (100 / 600 s,
+//                                          10 / 3600 s, 600 / 60 s; AC-S4; Owner decision D2)
+//   captcha.ip_cap / ip_window_seconds     Cap challenge + redeem requests per client IP (300 / 600 s, D2)
+//   captcha.ip48_cap                       the same per IPv6 /48, per captcha window (3000)
 import { APP_SETTING_BOUNDS } from "@ebooktrivia/db";
 import type { AuditRecorder, FieldKind, Tx } from "../audit.ts";
 import type { Sql } from "../db.ts";
@@ -58,6 +64,17 @@ export const LIMITS: readonly LimitSpec[] = [
   limit("otp.ip_window_seconds", "ipWindowSeconds", "IP window", "seconds", 3600),
   limit("otp.cooldown_seconds", "cooldownSeconds", "Wait before another code", "seconds", 60),
   limit("orders.expiry_seconds", "orderExpirySeconds", "Unpaid order and payment page expiry", "seconds", 86_400),
+  // US-020 checkout: read by the public app (closing buffer, Valkey rate limits).
+  limit("orders.sales_close_buffer_minutes", "salesCloseBufferMinutes", "Checkout closes this long before sales end", "minutes", 30),
+  limit("checkout.ip_cap", "checkoutIpCap", "Checkouts per IP address per window", "checkouts", 100),
+  limit("checkout.ip_window_seconds", "checkoutIpWindowSeconds", "Checkout IP address window", "seconds", 600),
+  limit("checkout.phone_cap", "checkoutPhoneCap", "Checkouts per phone number per window", "checkouts", 10),
+  limit("checkout.phone_window_seconds", "checkoutPhoneWindowSeconds", "Checkout phone number window", "seconds", 3600),
+  limit("checkout.lp_cap", "checkoutLpCap", "Checkouts per landing page per window", "checkouts", 600),
+  limit("checkout.lp_window_seconds", "checkoutLpWindowSeconds", "Checkout landing page window", "seconds", 60),
+  limit("captcha.ip_cap", "captchaIpCap", "Captcha challenges and redeems per IP address per window", "requests", 300),
+  limit("captcha.ip_window_seconds", "captchaIpWindowSeconds", "Captcha IP address window", "seconds", 600),
+  limit("captcha.ip48_cap", "captchaIp48Cap", "Captcha challenges and redeems per IPv6 /48 network per captcha window", "requests", 3000),
 ];
 
 export const LIMIT_FIELDS: readonly string[] = LIMITS.map((l) => l.field);

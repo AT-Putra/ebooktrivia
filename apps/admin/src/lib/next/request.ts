@@ -2,7 +2,7 @@
 import { cookies, headers } from "next/headers";
 import { parseSetCookieHeader, toCookieOptions } from "better-auth/cookies";
 import type { RequestInfo } from "../auth/service.ts";
-import { clientIp } from "../client-ip.ts";
+import { clientIp } from "@ebooktrivia/edge";
 
 export async function requestInfo(): Promise<RequestInfo> {
   const h = new Headers(await headers());

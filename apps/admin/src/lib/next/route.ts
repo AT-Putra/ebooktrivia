@@ -10,7 +10,7 @@ import { runMutation } from "../audit.ts";
 import type { AuthRuntime } from "../auth/runtime.ts";
 import type { RequestInfo } from "../auth/service.ts";
 import { type AdminIdentity, loadAdminSession } from "../auth/session.ts";
-import { clientIp } from "../client-ip.ts";
+import { clientIp } from "@ebooktrivia/edge";
 import { isSafeMethod, originAllowed } from "../http-security.ts";
 import { logEvent } from "../log.ts";
 import { getRuntime } from "./runtime.ts";

@@ -240,6 +240,16 @@ describe("override reason, limits, prize tiers, legal pages", () => {
       "otp.ip_window_seconds": [600, 86_400],
       "otp.cooldown_seconds": [15, 600],
       "orders.expiry_seconds": [900, 86_400],
+      "orders.sales_close_buffer_minutes": [5, 1440],
+      "checkout.ip_cap": [1, 1000],
+      "checkout.ip_window_seconds": [60, 86_400],
+      "checkout.phone_cap": [1, 100],
+      "checkout.phone_window_seconds": [60, 86_400],
+      "checkout.lp_cap": [1, 100_000],
+      "checkout.lp_window_seconds": [60, 86_400],
+      "captcha.ip_cap": [1, 1000],
+      "captcha.ip_window_seconds": [60, 86_400],
+      "captcha.ip48_cap": [1, 100_000],
     });
     for (const l of LIMITS) {
       for (const bad of [String(l.min - 1), String(l.max + 1), "", "1.5", "-5", "1e3"]) {

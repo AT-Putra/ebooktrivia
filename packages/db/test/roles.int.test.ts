@@ -286,10 +286,28 @@ describe("public_rw denials", () => {
     ["read conversion_events", "SELECT id FROM public.conversion_events"],
     ["read adnet postback templates", "SELECT mt_url_template FROM public.adnets"],
     ["read message templates", "SELECT id FROM public.message_templates"],
+    // US-020: the checkout reads only its own columns of orders, and the keys of visits / consents.
+    ["read a buyer's name from orders", "SELECT buyer_name FROM public.orders"],
+    ["read a buyer's e-mail from orders", "SELECT buyer_email FROM public.orders"],
+    ["read a buyer's IP from orders", "SELECT ip FROM public.orders"],
+    ["read an order's attribution", "SELECT clickid, fbp, utm_source FROM public.orders"],
+    ["read orders whole", "SELECT * FROM public.orders"],
+    ["read a visit's IP", "SELECT ip FROM public.visits"],
+    ["read a visit's attribution", "SELECT clickid FROM public.visits"],
+    ["read a consent's IP", "SELECT ip FROM public.consents"],
     ["create a table", "CREATE TABLE public.intruder (id int)"],
     ["create a temp table", "CREATE TEMP TABLE intruder (id int)"],
   ])("cannot %s", async (_what, statement) => {
     expect(await sqlState(asRole("public_rw", (tx) => tx.unsafe(statement)))).toBe("42501");
+  });
+
+  it("reads the checkout columns of orders and the keys of visits / consents (US-020)", async () => {
+    await asRole("public_rw", async (tx) => {
+      await tx`SELECT id, public_id, landing_page_id, buyer_phone, amount_idr, status, snap_attempt_count, snap_redirect_url,
+                      snap_expires_at, expires_at, event_id, created_at FROM public.orders`;
+      await tx`SELECT id, landing_page_id FROM public.visits`;
+      await tx`SELECT id, order_id, legal_page_id, consented_at FROM public.consents`;
+    });
   });
 
   it("can read adnet click-id params (column grant)", async () => {

@@ -58,6 +58,24 @@ sudo infra/provision/build-images.sh              # 2. postgres-walg, public, ad
   empty one.
 - **GlitchTip token.** Copy the token from `/etc/ebooktrivia/glitchtip-hook.token` into GlitchTip's
   webhook URL, `https://api.<DOMAIN>/hooks/glitchtip/<token>`. Then delete the file.
+- **Checkout (US-020).** Add the escrowed `SECRETS_PAYMENT_PRIVATE_KEY` to `/etc/ebooktrivia/public.env` (the
+  payment key only: the public app refuses to start with another scope's private key); without it every
+  checkout answers 503. In the Midtrans dashboard (Settings, Snap preferences) set the **Unfinish** and
+  **Error** redirect URLs to `https://order.<DOMAIN>/`: the checkout sends only the per-order **finish** URL
+  `https://order.<DOMAIN>/{publicId}` in the Snap request (`callbacks.finish`, the one callback the Snap API
+  documents), and Midtrans appends `?order_id={publicId}-{n}` to the dashboard URLs (the order page, US-022,
+  maps it back). Confirm both against the real sandbox in US-005.
+- **Cap is stateless (US-020).** A Cap challenge and a redeemed token are signed by `CAPTCHA_HMAC_KEY`
+  (`/etc/ebooktrivia/public.env`, generated once, the same for public@a and public@b) and carry their landing
+  page's id; neither the challenge nor the redeem route stores anything, so a flood of them cannot fill the
+  `noeviction` Valkey the worker's queues live in. The only Cap memory is one single-use mark per token a
+  checkout verifies (`cache:public:cap:t:<nonce>`, at most 20 minutes), behind a solved proof of work and the
+  per-IP checkout limit. The routes are rate limited per client IP / IPv6 /64 (`captcha.ip_cap`) and per IPv6
+  /48 (`captcha.ip48_cap`). **Rotating the key** (there is no previous-key fallback): write the new
+  `CAPTCHA_HMAC_KEY` to `public.env`, then restart public@a and public@b TOGETHER (two instances with different
+  keys would refuse each other's challenges and tokens). Every challenge and token in flight is void from that
+  moment, for up to 20 minutes of their lifetimes: each affected buyer sees one captcha retry (the SDK solves a
+  new token). The app refuses a key that is one byte repeated (a placeholder such as 64 zeros).
 
 ### Start the stack
 
@@ -101,7 +119,7 @@ The check is read-only. It must end with `summary: N passed, 0 failed`. It cover
 - **units:** every unit active and healthy; the migrations applied;
 - **memory:** each container's podman limit and its cgroup `memory.max` equal the budget; no published port;
 - **network isolation:** Caddy reaches admin, internal and public; public cannot reach admin or internal (by name or address, on any network); Caddy cannot reach PostgreSQL or Valkey; the data-only containers have no egress; no container reaches the host's sshd;
-- **Valkey:** the default user is refused; every user is confined to its keys and its own `cache:<app>:` prefix; INFO only for `worker`; KEYS, SCAN, RANDOMKEY, FUNCTION, CONFIG and the other @dangerous / @admin commands denied; noeviction and AOF on;
+- **Valkey:** the default user is refused; every user is confined to its keys and its own `cache:<app>:` prefix; `public` runs a command allowlist (US-020); INFO only for `worker`; KEYS, SCAN, RANDOMKEY, FUNCTION, CONFIG and the other @dangerous / @admin commands denied; noeviction and AOF on;
 - **PostgreSQL:** logins in exactly one group; no PUBLIC CONNECT or TEMP on `postgres` or `template1`; the `pg_hba` rules; no superuser password in the server's environment;
 - **Caddy:** ports 80/443 held by the user's systemd; http redirects to https.
 

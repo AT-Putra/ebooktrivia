@@ -176,9 +176,9 @@ describe("tokens", () => {
   });
 });
 
-describe("a held token goes stale before the server's 20 minutes are up (C7)", () => {
-  it("uses a token up to 18 minutes old and solves a fresh one after that", async () => {
-    expect(CAP_TOKEN_LIFETIME_MS).toBe(20 * 60 * 1000);
+describe("a held token goes stale before the server's guaranteed 10 minutes are up (C7, stateless Cap)", () => {
+  it("uses a token up to 8 minutes old and solves a fresh one after that", async () => {
+    expect(CAP_TOKEN_LIFETIME_MS).toBe(10 * 60 * 1000);
     expect(CAP_TOKEN_MARGIN_MS).toBe(2 * 60 * 1000);
     const clock = { now: 1_000_000 };
     const { cap, instances } = setup({ now: () => clock.now });

@@ -152,10 +152,12 @@ Rules for the server side:
 - `consent` carries the **policy versions** the buyer accepted (the SDK sends the versions from the config it read). The API
   checks them against the newest published versions and answers `consent: outdated` if a newer one exists, and stores them with the
   order (AC-A10).
-- `event_id` is the order's `orders.event_id`. For a reused open order (same phone and landing page within 30 minutes, AC-T8) the
+- `event_id` is the order's `orders.event_id`. For a reused open order (the same buyer on the landing page within 30 minutes, AC-T8: the
+  same phone AND name AND e-mail, compared trimmed, NFC, whitespace collapsed and lowercased; Owner decision D1, US-020) the
   response carries the same `event_id`, the stored `snap_redirect_url` and `deduped: true`: the SDK fires no pixel for it.
 - `snap_redirect_url` must be an https URL on the Snap host of `midtrans_env` with a Snap payment page path; the SDK refuses anything else.
-- A Cap token is single use (the API marks it with the `ReplayStore`), so after any answer the SDK solves a fresh one.
+- A Cap token is single use (the API marks it with the `ReplayStore`) and valid only for the landing page it was solved for, so after
+  any answer the SDK solves a fresh one.
 - The SDK validates every response by hand (shape, types, lowercase-UUID `event_id`, integer `value_idr`, pixel ids in each vendor's format);
   a body that is not the contract's is "unavailable".
 
@@ -178,8 +180,10 @@ submit the form shows the loading state until it is.
 - **No server-supplied code runs.** A Cap server can ask the widget to run an "instrumentation" script in an iframe. `@cap.js/server`
   4.0.5 never does, and the SDK keeps it off: `CAP_ISOLATE = true` (such a frame would be sandboxed without same-origin access) and
   `CAP_PAKO_URL = "data:,"` (the CDN inflater that script needs is never fetched). `e2e/tests/sdk.spec.ts` checks the page has no iframe.
-- **A token goes stale.** The server's redeemed token lives 20 minutes (fixed by `@cap.js/server` 4.0.5). A token the SDK has held for
-  18 minutes or more (20 minus a 2 minute margin) is not used: a fresh one is solved before the submit goes out.
+- **A token goes stale.** The API's Cap is stateless (US-020): a challenge (172 hex characters) and a redeemed token (146) are signed by
+  the server and bound to the landing page; a token expires 10 minutes after its challenge does, so it is good for at least 10 minutes
+  after its redeem (`SDK_CAP.tokenMinLifetimeMs`). A token the SDK has held for 8 minutes or more (10 minus a 2 minute margin, on this
+  device's clock) is not used: a fresh one is solved before the submit goes out.
 
 ## Pixels (AC-T5)
 

@@ -108,6 +108,12 @@ jobs:
         run: pnpm --filter @ebooktrivia/adapters test:int
       - name: Admin auth, lockout, sessions, audit, CLI (fresh database)
         run: pnpm --filter @ebooktrivia/admin test:int
+      # US-020: checkout and Cap routes as public_rw, Valkey user `public`, midtrans-stub in-process.
+      - name: Checkout API, dedupe, Snap and MO (fresh database)
+        run: pnpm --filter @ebooktrivia/public test:int
+        env:
+          TEST_VALKEY_PUBLIC_USERNAME: public
+          TEST_VALKEY_PUBLIC_PASSWORD: public-devonly
       # Here, not in verify: the worker is mostly I/O, so its gate counts the integration tests.
       - name: Worker coverage gate (>= 95 % lines; unit + in-process integration)
         run: pnpm --filter @ebooktrivia/worker test:coverage

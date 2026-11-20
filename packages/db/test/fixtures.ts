@@ -100,6 +100,8 @@ export function orderRow(o: { landingPageId: string; programId: string; productI
     buyer_name: "Pembeli",
     buyer_phone: uniquePhone(),
     buyer_email: "buyer@example.invalid",
+    // orders.buyer_key (US-020 D1): 32 bytes, required on every order.
+    buyer_key: bytes(32),
     amount_idr: PRICE_IDR,
     status: o.status ?? "pending",
     // 23 h, inside the seeded 24 h orders.expiry_seconds even with some client/server clock skew.

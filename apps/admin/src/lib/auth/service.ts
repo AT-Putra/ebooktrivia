@@ -19,7 +19,7 @@ import { createHash } from "node:crypto";
 import { isAPIError } from "better-auth/api";
 import { renderSVG } from "uqr";
 import { type AuditChange, currentMutationScope, insertAudit, NoMutationScopeError, withAudit } from "../audit.ts";
-import { throttleBucket } from "../client-ip.ts";
+import { throttleBucket } from "@ebooktrivia/edge";
 import type { Sql } from "../db.ts";
 import { logEvent } from "../log.ts";
 import { hashSecret } from "./argon2.ts";

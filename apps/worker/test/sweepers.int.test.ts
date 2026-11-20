@@ -13,6 +13,7 @@ import {
   endGracePeriods,
   expireLeases,
   expireOrders,
+  failStaleSnapCreates,
   ORDER_EXPIRY,
   OUTBOX_UNRELAYED_ALERT_MS,
   runSweeps,
@@ -179,6 +180,40 @@ describe("order expiry sweeper", () => {
   });
 });
 
+describe("stale Snap create sweeper (US-020 crash window)", () => {
+  /** A pending order without a URL whose attempt `n` started `ageMs` ago (n = 0: no attempt row). */
+  async function orderWithAttempt(n: number, ageMs: number, url: string | null = null): Promise<string> {
+    const [id] = await createOrders(catalog, 1, { status: "pending" });
+    const orderId = id as string;
+    await sql`UPDATE orders SET snap_attempt_count = ${n}, snap_redirect_url = ${url}, created_at = ${new Date(Date.now() - ageMs)} WHERE id = ${orderId}`;
+    for (let i = 1; i <= n; i++) {
+      // midtrans_order_id is {public_id}-{n} of the order (midtrans_attempts_id_guard, ET049).
+      await sql`
+        INSERT INTO midtrans_attempts (order_id, n, midtrans_order_id, created_at)
+        SELECT id, ${i}, public_id || '-' || ${String(i)}, ${new Date(Date.now() - (i === n ? ageMs : ageMs + 60_000))} FROM orders WHERE id = ${orderId}`;
+    }
+    return orderId;
+  }
+  const statusOf = async (id: string): Promise<string> => first(await sql<{ status: string }[]>`SELECT status::text FROM orders WHERE id = ${id}`).status;
+
+  it("marks a pending order still without a URL 60 s after its latest attempt as snap_create_failed, once", async () => {
+    const stale = await orderWithAttempt(2, 61_000);
+    const noAttempt = await orderWithAttempt(0, 61_000);
+    const fresh = await orderWithAttempt(2, 20_000);
+    const withUrl = await orderWithAttempt(1, 120_000, "https://app.sandbox.midtrans.com/snap/v4/redirection/z");
+    const counts = await Promise.all([failStaleSnapCreates(workerSql), failStaleSnapCreates(workerSql)]);
+    expect(counts[0] + counts[1]).toBeGreaterThanOrEqual(2);
+    expect(await statusOf(stale)).toBe("snap_create_failed");
+    expect(await statusOf(noAttempt)).toBe("snap_create_failed");
+    // The latest attempt counts, not the order's age: a retry started 20 s ago is still in flight.
+    expect(await statusOf(fresh)).toBe("pending");
+    expect(await statusOf(withUrl)).toBe("pending");
+    expect(await failStaleSnapCreates(workerSql)).toBe(0);
+    // Every attempt row is kept for reconciliation (US-021).
+    expect(first(await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM midtrans_attempts WHERE order_id = ${stale}`).n).toBe(2);
+  });
+});
+
 describe("grace-end sweeper", () => {
   it("moves a published program past sales_end_at + grace_days to awaiting_confirmation, after the US-028 hook, once", async () => {
     const ended = await createCatalog({ salesEndAt: new Date(Date.now() - 3 * 86_400_000), graceDays: 2 });
@@ -309,7 +344,7 @@ describe("runSweeps", () => {
     const broken = postgres(inject("workerDbUrl"), { ...PG_CONNECTION_OPTIONS, max: 1, onnotice: () => undefined });
     await broken.end();
     await runSweeps({ sql: broken, log: captured.log, outboxQueues: new Map(), outboxStaleMs: 120_000 });
-    expect(captured.lines.filter((l) => l["level"] === 50).map((l) => l["sweeper"])).toEqual(["lease_expiry", "outbox", "order_expiry", "login_throttle"]);
+    expect(captured.lines.filter((l) => l["level"] === 50).map((l) => l["sweeper"])).toEqual(["lease_expiry", "outbox", "snap_create", "order_expiry", "login_throttle"]);
     await runSweeps({ sql: workerSql, log: captured.log, outboxQueues: new Map(), outboxStaleMs: 120_000 });
     expect(first(await sql<{ status: string }[]>`SELECT status::text FROM orders WHERE id = ${orderId ?? ""}`).status).toBe("expired");
   });
@@ -319,7 +354,7 @@ describe("runSweeps", () => {
     const ended = await createCatalog({ salesEndAt: new Date(Date.now() - 3 * 86_400_000), graceDays: 1 });
     const captured = captureLogger("debug");
     await runSweeps({ sql: workerSql, log: captured.log, outboxQueues: new Map(), outboxStaleMs: 120_000 });
-    expect(captured.lines.filter((l) => l["msg"] === "sweep done").map((l) => l["sweeper"])).toEqual(["lease_expiry", "outbox", "order_expiry", "login_throttle"]);
+    expect(captured.lines.filter((l) => l["msg"] === "sweep done").map((l) => l["sweeper"])).toEqual(["lease_expiry", "outbox", "snap_create", "order_expiry", "login_throttle"]);
     expect(first(await sql<{ status: string }[]>`SELECT status::text FROM programs WHERE id = ${ended.programId}`).status).toBe("published");
 
     const withPorts = captureLogger("debug");
@@ -337,6 +372,7 @@ describe("runSweeps", () => {
       "outbox",
       "due_conversions",
       "due_deliveries",
+      "snap_create",
       "order_expiry",
       "grace_end",
       "login_throttle",

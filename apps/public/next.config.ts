@@ -9,7 +9,7 @@ const nextConfig: NextConfig = {
   outputFileTracingRoot: join(__dirname, "../.."),
   poweredByHeader: false,
   reactStrictMode: true,
-  transpilePackages: ["@ebooktrivia/ui", "@ebooktrivia/i18n"],
+  transpilePackages: ["@ebooktrivia/ui", "@ebooktrivia/i18n", "@ebooktrivia/db", "@ebooktrivia/edge", "@ebooktrivia/core", "@ebooktrivia/crypto", "@ebooktrivia/adapters"],
 };
 
 export default nextConfig;

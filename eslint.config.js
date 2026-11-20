@@ -12,6 +12,8 @@ export default defineConfig(
       "**/coverage/**",
       "**/.turbo/**",
       ".omc/**",
+      // Agent git worktrees (.git/info/exclude hides them from git) hold a second copy of the repo.
+      ".claude/**",
       "**/*.d.ts",
     ],
   },

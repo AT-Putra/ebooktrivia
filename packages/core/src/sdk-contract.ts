@@ -67,9 +67,25 @@ export const SDK_PATTERNS = {
   token: "^[\\x21-\\x7e]+$",
   /** UTM values may hold any text but these (control, format incl. bidi, surrogate, private-use, unassigned); flags `u`. */
   labelForbidden: "[\\p{Cc}\\p{Cf}\\p{Cs}\\p{Co}\\p{Cn}]",
+  /**
+   * Invisible "filler" letters a name can be padded or faked with (Hangul fillers, the halfwidth Hangul
+   * filler, the blank Braille pattern); flags `gu`. A name maps them, and control / format characters, to a
+   * space before it is trimmed and its whitespace collapsed; what is left must not match `labelForbidden`
+   * (no lone surrogate, private-use or unassigned code point), or the name counts as missing (`required`).
+   */
+  nameFiller: "[\\u115F\\u1160\\u3164\\uFFA0\\u2800]",
   /** Meta's browser id cookies. */
   fbp: "^fb\\.[0-9]{1,2}\\.[0-9]{10,16}\\.[0-9]{1,24}$",
   fbc: "^fb\\.[0-9]{1,2}\\.[0-9]{10,16}\\.[\\x21-\\x7e]+$",
+} as const;
+
+/**
+ * Cap timing the API guarantees (US-020 stateless Cap): a redeemed token is valid until its challenge's
+ * expiry plus this, so it is good for at least this long after its redeem, whatever the clocks say. The
+ * SDK solves a fresh one before it would hold a token that long.
+ */
+export const SDK_CAP = {
+  tokenMinLifetimeMs: 10 * 60 * 1000,
 } as const;
 
 /** Maximum lengths (UTF-16 code units, after trimming) of every client-supplied value. */
@@ -182,7 +198,7 @@ export interface SdkCheckoutRequest {
   /** E.164, normalised by the SDK for feedback; the server normalises it again. */
   readonly phone: string;
   readonly email: string;
-  /** A solved Cap token (single use). */
+  /** A solved Cap token: single use, valid only for this landing page (stateless Cap, US-020: 146 hex characters). */
   readonly cap_token: string;
   readonly consent: SdkConsent;
   readonly attribution: SdkAttribution;
@@ -190,7 +206,11 @@ export interface SdkCheckoutRequest {
   readonly visit_id?: string;
 }
 
-/** 200. `deduped` is true when an open order for the same phone and landing page was reused (AC-T8). */
+/**
+ * 200. `deduped` is true when an open order of the same buyer on the landing page was reused (AC-T8):
+ * the same phone AND name AND e-mail, compared trimmed, NFC, whitespace collapsed and lowercased (Owner
+ * decision D1, US-020). Another buyer on the same phone gets an order of its own.
+ */
 export interface SdkCheckoutResponse {
   readonly v: 1;
   /** A lowercase UUID (`SDK_PATTERNS.uuid`), shared with the server-side conversions for dedupe; the only id the browser pixels may use. */

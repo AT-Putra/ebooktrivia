@@ -515,10 +515,12 @@ step_config_files() {
   step "Valkey (ACL users with password hashes, noeviction, AOF)"
   put_file "$ETC/valkey/valkey.conf" 640 root "$APP" <"$FILES/valkey/valkey.conf"
   restart_needed valkey.service
-  # users.acl.template: default off; public ~rl:* ~cache:public:*; admin ~cache:admin:*; worker
-  # ~ebt:* (BullMQ prefix) ~cache:worker:* plus +info (BullMQ and ioredis run INFO on connect); all
-  # three +@all -@dangerous -@admin and no pub/sub channels; public and admin also no SCAN,
-  # RANDOMKEY, SCRIPT FLUSH or FUNCTION; ops +ping only (health check). Passwords are stored as
+  # users.acl.template: default off; public ~rl:* ~cache:public:* with an explicit command
+  # allowlist (-@all +ping +eval +incr +pttl +pexpire +set: the checkout's rate limits and the single-use
+  # marks of Cap tokens; Cap itself is stateless; no INFO, no reads, no deletes; US-020); admin ~cache:admin:*;
+  # worker ~ebt:* (BullMQ prefix) ~cache:worker:* plus +info (BullMQ and ioredis run INFO on
+  # connect); admin and worker +@all -@dangerous -@admin; no pub/sub channels for any of them;
+  # admin also no SCAN, RANDOMKEY, SCRIPT FLUSH or FUNCTION; ops +ping only (health check). Passwords are stored as
   # SHA-256 hashes; the plaintext is only in the clients' env files.
   local public_pw worker_pw admin_pw ops_pw
   public_pw=$(env_value "$ETC/public.env" VALKEY_PASSWORD)

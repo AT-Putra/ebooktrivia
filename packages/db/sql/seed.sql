@@ -18,6 +18,24 @@ INSERT INTO public.app_settings (key, value) VALUES
   ('orders.expiry_seconds', '86400')
 ON CONFLICT (key) DO NOTHING;
 
+-- Checkout (US-020; AC-S4, AC-S8): checkout closes 30 minutes before sales_end_at; the public API's
+-- Valkey rate limits (Owner decision D2, 2026-11-20): 100 checkouts per client IP (an IPv6 /64) per
+-- 10 minutes (mobile carriers put many buyers behind one IPv4 address), 10 per phone per hour, 600
+-- per landing page per minute; 300 Cap challenge / redeem requests per client IP and 3000 per IPv6
+-- /48 per 10 minutes (Cap itself stores nothing: docs/runbooks/staging-provision.md).
+INSERT INTO public.app_settings (key, value) VALUES
+  ('orders.sales_close_buffer_minutes', '30'),
+  ('checkout.ip_cap', '100'),
+  ('checkout.ip_window_seconds', '600'),
+  ('checkout.phone_cap', '10'),
+  ('checkout.phone_window_seconds', '3600'),
+  ('checkout.lp_cap', '600'),
+  ('checkout.lp_window_seconds', '60'),
+  ('captcha.ip_cap', '300'),
+  ('captcha.ip_window_seconds', '600'),
+  ('captcha.ip48_cap', '3000')
+ON CONFLICT (key) DO NOTHING;
+
 -- Midtrans (AC-S10, US-017): sandbox until the Owner switches (audited, and only once the
 -- production server key is set); the methods offered in Snap; per-method fees (flat IDR + basis
 -- points, packages/core money.ts) start empty. Not secret (public_rw reads app_settings); the

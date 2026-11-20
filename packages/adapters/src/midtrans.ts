@@ -32,6 +32,15 @@ export class MidtransError extends Error {
   }
 }
 
+/**
+ * The Midtrans hosts of each environment (fixed here, never configurable per landing page; the
+ * environment itself is the deployment's app_settings midtrans.environment).
+ */
+export const MIDTRANS_ENDPOINTS = {
+  sandbox: { snapBaseUrl: "https://app.sandbox.midtrans.com", apiBaseUrl: "https://api.sandbox.midtrans.com" },
+  production: { snapBaseUrl: "https://app.midtrans.com", apiBaseUrl: "https://api.midtrans.com" },
+} as const satisfies Readonly<Record<"sandbox" | "production", { readonly snapBaseUrl: string; readonly apiBaseUrl: string }>>;
+
 export interface MidtransConfig {
   readonly serverKey: string;
   /** https://app.sandbox.midtrans.com or https://app.midtrans.com */
@@ -51,6 +60,8 @@ export interface SnapCreateInput {
   readonly customer: { readonly firstName: string; readonly email: string; readonly phone: string };
   /** Where Snap sends the buyer when done (the order status page). */
   readonly finishUrl?: string;
+  /** Snap `enabled_payments` codes (core MIDTRANS_METHODS); omitted = Snap's own default list. */
+  readonly enabledPayments?: readonly string[];
 }
 
 export interface SnapTransaction {
@@ -182,6 +193,7 @@ export async function createSnapTransaction(cfg: MidtransConfig, input: SnapCrea
     item_details: [{ id: input.item.id, name: input.item.name.slice(0, 50), price: gross, quantity: 1 }],
     customer_details: { first_name: input.customer.firstName, email: input.customer.email, phone: input.customer.phone },
     expiry: { unit: "minutes", duration: input.expiryMinutes },
+    ...(input.enabledPayments === undefined ? {} : { enabled_payments: [...input.enabledPayments] }),
     ...(input.finishUrl === undefined ? {} : { callbacks: { finish: input.finishUrl } }),
   };
   const response = await send(cfg, `${cfg.snapBaseUrl}/snap/v1/transactions`, { method: "POST", body: JSON.stringify(body) });

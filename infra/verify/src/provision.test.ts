@@ -58,10 +58,19 @@ describe("provisioning", () => {
     expect(user("public")).toMatch(/ ~rl:\* ~cache:public:\* /);
     expect(user("admin")).toMatch(/ ~cache:admin:\* /);
     expect(user("worker")).toMatch(/ ~ebt:\* ~cache:worker:\* /);
-    for (const name of ["public", "admin"]) {
-      expect(user(name), name).toMatch(/-@dangerous -@admin -scan -randomkey -script\|flush -function$/);
-      expect(user(name), name).not.toMatch(/~cache:\* /);
-    }
+    // US-020: public has an explicit allowlist (rate-limit script, Cap token marks), no INFO, no reads or deletes.
+    expect(user("public")).toMatch(/ resetchannels -@all \+ping \+eval \+incr \+pttl \+pexpire \+set$/);
+    expect(user("admin")).toMatch(/-@dangerous -@admin -scan -randomkey -script\|flush -function$/);
+    for (const name of ["public", "admin"]) expect(user(name), name).not.toMatch(/~cache:\* /);
+  });
+
+  it("gives the dev stack's public Valkey user exactly the production keys and commands (US-020)", () => {
+    const grants = (line: string) => line.split(" ").filter((part) => /^[~+-]/.test(part) || part === "resetkeys" || part === "resetchannels");
+    const publicLine = (path: string) => read(path).split("\n").find((l) => l.startsWith("user public ")) ?? "";
+    const prod = publicLine("infra/provision/files/valkey/users.acl.template");
+    const dev = publicLine("infra/dev/valkey/users.acl");
+    expect(grants(dev)).toEqual(grants(prod));
+    expect(grants(dev)).not.toContain("+info");
   });
 
   it("builds images from verified inputs only (S16)", () => {

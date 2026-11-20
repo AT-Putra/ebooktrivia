@@ -1,7 +1,7 @@
 // Login throttle in PostgreSQL (admin_auth.login_throttle), so it survives restarts and holds
 // across instances. Budget per key: MAX_FAILURES failures per WINDOW_SECONDS; the failure that
 // spends it locks the key for LOCK_SECONDS. Keys: the account (normalized e-mail at the password
-// step, the user id at the second factor) and the client address (lib/client-ip.ts
+// step, the user id at the second factor) and the client address (@ebooktrivia/edge
 // throttleBucket: IPv4, or the IPv6 /64), stored as SHA-256 so no e-mail or IP is kept here.
 //
 // An attempt is counted when it STARTS (one atomic upsert per key), before the password or code
@@ -136,7 +136,7 @@ export async function beginAttempt(sql: Sql, keys: readonly string[], consecutiv
 const pendingKey = (userId: string, bucket: string): string => throttleKey("pending_sign_in", `${userId}|${bucket}`);
 
 /**
- * Records that a password step of `userId` passed from address `bucket` (lib/client-ip.ts
+ * Records that a password step of `userId` passed from address `bucket` (@ebooktrivia/edge
  * throttleBucket) and now waits for its second factor or enrollment (security review US-016 G2).
  * Kept in login_throttle, so the worker's sweeper removes it once its window is over.
  */

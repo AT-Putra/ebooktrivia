@@ -104,6 +104,14 @@ describe("enqueue_mo", () => {
     );
   });
 
+  it("enqueues ONE MO when many transactions race for the same order (US-020: replay or race never doubles it)", async () => {
+    const orderId = await insertOrder();
+    await asRole("public_rw", (tx) => tx`UPDATE public.orders SET snap_redirect_url = 'https://app.sandbox.midtrans.com/snap/v4/redirection/y' WHERE id = ${orderId}`);
+    const ids = await Promise.all(Array.from({ length: 8 }, () => call("enqueue_mo", orderId)));
+    expect(new Set(ids).size).toBe(1);
+    expect(await outboxRows(`conversion.mo:${orderId}`)).toHaveLength(1);
+  });
+
   it("rejects an unknown order id (ET010)", async () => {
     expect(await sqlState(call("enqueue_mo", "00000000-0000-4000-8000-000000000000"))).toBe("ET010");
   });

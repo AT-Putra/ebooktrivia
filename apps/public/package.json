@@ -10,18 +10,28 @@
     "prebuild": "pnpm run sync-assets",
     "build": "next build",
     "start": "next start",
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test:int": "vitest run --config vitest.int.config.ts"
   },
   "dependencies": {
+    "@ebooktrivia/adapters": "workspace:*",
+    "@ebooktrivia/core": "workspace:*",
+    "@ebooktrivia/crypto": "workspace:*",
+    "@ebooktrivia/db": "workspace:*",
     "@ebooktrivia/edge": "workspace:*",
     "@ebooktrivia/i18n": "workspace:*",
     "@ebooktrivia/ui": "workspace:*",
     "@phosphor-icons/react": "2.1.10",
+    "ioredis": "6.0.0",
     "next": "16.4.6",
+    "postgres": "4.1.0",
     "react": "19.3.1",
-    "react-dom": "19.3.1"
+    "react-dom": "19.3.1",
+    "zod": "4.6.7"
   },
   "devDependencies": {
+    "@ebooktrivia/midtrans-stub": "workspace:*",
+    "@ebooktrivia/test-support": "workspace:*",
     "@tailwindcss/postcss": "4.3.5",
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",

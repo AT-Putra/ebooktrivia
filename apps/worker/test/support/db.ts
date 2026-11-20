@@ -60,9 +60,10 @@ export async function createCatalog(opts: { salesEndAt?: Date; graceDays?: numbe
 export async function createOrders(catalog: Catalog, n: number, opts: { status?: string; expiresAt?: Date } = {}): Promise<string[]> {
   const rows = await sql<{ id: string }[]>`
     INSERT INTO orders (public_id, order_code, landing_page_id, program_id, product_id, buyer_name, buyer_phone, buyer_email,
-                        amount_idr, status, expires_at)
+                        buyer_key, amount_idr, status, expires_at)
     SELECT replace(gen_random_uuid()::text, '-', ''), upper(substr(replace(gen_random_uuid()::text, '-', ''), 1, 16)), ${catalog.landingPageId},
-           ${catalog.programId}, ${catalog.productId}, 'Pembeli', '+6281234567890', 'buyer@example.invalid', 49000,
+           ${catalog.programId}, ${catalog.productId}, 'Pembeli', '+6281234567890', 'buyer@example.invalid',
+           sha256(convert_to(gen_random_uuid()::text, 'UTF8')), 49000,
            ${opts.status ?? "paid"}, ${opts.expiresAt ?? new Date(Date.now() + 3_600_000)}
       FROM generate_series(1, ${n}::int)
     RETURNING id`;

@@ -9,7 +9,7 @@
 //     A sandbox key must look like a sandbox key and a production key like a production key, so the
 //     two cannot be swapped by mistake.
 // None of these values is secret except the keys (public_rw reads app_settings).
-import { BPS_PER_UNIT } from "@ebooktrivia/core";
+import { BPS_PER_UNIT, MIDTRANS_METHODS, type MidtransMethod } from "@ebooktrivia/core";
 import { SECRET_NAMES } from "@ebooktrivia/db";
 import type postgres from "postgres";
 import { type AuditRecorder, type FieldKind, type Tx, withAudit } from "../audit.ts";
@@ -22,24 +22,8 @@ import { clearSecret, parseSecret, requireSealer, secretStatus, type SecretStatu
 export const MIDTRANS_ENVIRONMENTS = ["sandbox", "production"] as const;
 export type MidtransEnvironment = (typeof MIDTRANS_ENVIRONMENTS)[number];
 
-/** Snap enabled_payments codes offered in the console (to re-check against the sandbox, US-005). */
-export const MIDTRANS_METHODS = [
-  { code: "other_qris", label: "QRIS" },
-  { code: "gopay", label: "GoPay" },
-  { code: "shopeepay", label: "ShopeePay" },
-  { code: "bca_va", label: "Virtual account BCA" },
-  { code: "bni_va", label: "Virtual account BNI" },
-  { code: "bri_va", label: "Virtual account BRI" },
-  { code: "permata_va", label: "Virtual account Permata" },
-  { code: "echannel", label: "Mandiri Bill" },
-  { code: "cimb_va", label: "Virtual account CIMB Niaga" },
-  { code: "other_va", label: "Virtual account (other banks)" },
-  { code: "credit_card", label: "Credit / debit card" },
-  { code: "indomaret", label: "Indomaret" },
-  { code: "akulaku", label: "Akulaku" },
-  { code: "kredivo", label: "Kredivo" },
-] as const;
-export type MidtransMethod = (typeof MIDTRANS_METHODS)[number]["code"];
+/** Snap enabled_payments codes offered in the console: one list in @ebooktrivia/core (unverified until US-005). */
+export { MIDTRANS_METHODS, type MidtransMethod };
 const METHOD_CODES: readonly string[] = MIDTRANS_METHODS.map((m) => m.code);
 
 export const MAX_FLAT_FEE_IDR = 10_000_000;

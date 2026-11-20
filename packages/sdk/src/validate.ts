@@ -1,7 +1,7 @@
 // Client-side checks, for the visitor's benefit only: the server validates everything again and
 // stays the authority (AC-S4). The phone goes through the same normaliser as the server.
 import { normalizeIdMobile } from "@ebooktrivia/core/phone";
-import { SDK_LIMITS, type SdkFieldErrors } from "@ebooktrivia/core/sdk-contract";
+import { SDK_LIMITS, SDK_PATTERNS, type SdkFieldErrors } from "@ebooktrivia/core/sdk-contract";
 import { fill, text } from "./messages.ts";
 
 export interface FormValues {
@@ -16,11 +16,15 @@ export type Checked = { readonly ok: true; readonly name: string; readonly phone
 const CONTROL = /[\p{Cc}\p{Cf}]/gu;
 const HAS_CONTROL = /[\p{Cc}\p{Cf}]/u;
 const EMAIL = /^[^\s@]+@[^\s@.]+(?:\.[^\s@.]+)+$/;
+const NAME_FILLER = new RegExp(SDK_PATTERNS.nameFiller, "gu");
+const NOT_TEXT = new RegExp(SDK_PATTERNS.labelForbidden, "u");
 
 export function checkForm(values: FormValues): Checked {
   const errors: { -readonly [K in keyof SdkFieldErrors]: SdkFieldErrors[K] } = {};
-  const name = values.name.replace(CONTROL, " ").replace(/\s+/g, " ").trim();
-  if (name === "") errors.name = "required";
+  // The server's rule (apps/public request.ts normalizeName): fillers and control / format characters
+  // become spaces; a name that still holds a lone surrogate, private-use or unassigned code point is missing.
+  const name = values.name.replace(NAME_FILLER, " ").replace(CONTROL, " ").replace(/\s+/gu, " ").trim();
+  if (name === "" || NOT_TEXT.test(name)) errors.name = "required";
   else if (name.length > SDK_LIMITS.name) errors.name = "too_long";
 
   const phone = normalizeIdMobile(values.phone);

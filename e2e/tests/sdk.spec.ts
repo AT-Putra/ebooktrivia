@@ -260,7 +260,7 @@ test.describe("checkout", () => {
     await page.locator("#buy").click();
     await page.waitForURL(SNAP_SANDBOX_URL);
     expect(checkouts()).toHaveLength(1);
-    expect((checkouts()[0] ?? {})["cap_token"]).toMatch(/^[0-9a-f]{16}:[0-9a-f]{30}$/);
+    expect((checkouts()[0] ?? {})["cap_token"]).toMatch(/^[0-9a-f]{146}$/);
     // The module was fetched but the browser refused to compile it: the widget said so and solved in JavaScript.
     expect(stub.files).toContain("cap-wasm-v0.0.8.wasm");
     expect(state.console.some((m) => /WebAssembly|wasm/i.test(m.text))).toBe(true);
@@ -309,7 +309,7 @@ test.describe("checkout", () => {
       consent: { terms: LEGAL.terms, privacy: LEGAL.privacy },
       attribution: { adnet: "adnet-a", clickid: "abc123", sub_id: "s1", utm_source: "meta", fbp: "fb.1.1700000000000.1234567890" },
     });
-    expect(body["cap_token"]).toMatch(/^[0-9a-f]{16}:[0-9a-f]{30}$/);
+    expect(body["cap_token"]).toMatch(/^[0-9a-f]{146}$/);
     expect(body["visit_id"]).toMatch(/^[0-9a-f-]{36}$/);
     expect(Object.keys(body).sort()).toEqual(["attribution", "cap_token", "consent", "email", "name", "phone", "v", "visit_id"]);
 

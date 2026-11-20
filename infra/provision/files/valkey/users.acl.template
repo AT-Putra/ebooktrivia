@@ -1,5 +1,5 @@
 user default off resetpass resetkeys resetchannels -@all
-user public on resetpass #@PUBLIC_SHA256@ resetkeys ~rl:* ~cache:public:* resetchannels +@all -@dangerous -@admin -scan -randomkey -script|flush -function
+user public on resetpass #@PUBLIC_SHA256@ resetkeys ~rl:* ~cache:public:* resetchannels -@all +ping +eval +incr +pttl +pexpire +set
 user worker on resetpass #@WORKER_SHA256@ resetkeys ~ebt:* ~cache:worker:* resetchannels +@all -@dangerous -@admin +info
 user admin on resetpass #@ADMIN_SHA256@ resetkeys ~cache:admin:* resetchannels +@all -@dangerous -@admin -scan -randomkey -script|flush -function
 user ops on resetpass #@OPS_SHA256@ resetkeys resetchannels -@all +ping

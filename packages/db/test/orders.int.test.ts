@@ -1,7 +1,7 @@
 // orders_status_guard: public_rw may only use the checkout states; confirmed transitions
 // (paid, refunded, review, expired, ...) belong to worker_rw / admin_rw.
 import { beforeAll, describe, expect, it } from "vitest";
-import { asRole, first, sql, sqlState } from "./db.ts";
+import { asRole, bytes, first, sql, sqlState } from "./db.ts";
 import { createLandingPage, createProgram, orderRow, PRICE_IDR } from "./fixtures.ts";
 
 let base: { landingPageId: string; programId: string; productId: string };
@@ -113,5 +113,49 @@ describe("orders checkout guard (price and combination)", () => {
 
   it("admin_rw is not bound by the checkout guard (manual orders)", async () => {
     await insertAs("admin_rw", { ...valid(), amount_idr: 1 });
+  });
+});
+
+// US-020 review fixes: the checkout's buyer key (Owner decision D1) and its Midtrans attempts.
+describe("orders.buyer_key and midtrans_attempts (US-020)", () => {
+  it("requires a 32-byte buyer_key on every new order, for every writer", async () => {
+    const withoutKey = Object.fromEntries(Object.entries(orderRow(base)).filter(([column]) => column !== "buyer_key"));
+    for (const role of ["public_rw", "admin_rw"] as const) {
+      expect(await sqlState(asRole(role, (tx) => tx`INSERT INTO public.orders ${tx(withoutKey)}`)), role).toBe("23502");
+    }
+    expect(await sqlState(sql`INSERT INTO orders ${sql(withoutKey)}`)).toBe("23502");
+    expect(await sqlState(asRole("public_rw", (tx) => tx`INSERT INTO public.orders ${tx({ ...orderRow(base), buyer_key: bytes(31) })}`))).toBe("23514");
+    // public_rw may read the key back (dedupe) but never change it.
+    const id = await insertAsPublic();
+    await asRole("public_rw", (tx) => tx`SELECT buyer_key FROM public.orders WHERE id = ${id}`);
+    expect(await sqlState(asRole("public_rw", (tx) => tx`UPDATE public.orders SET buyer_key = ${bytes(32)} WHERE id = ${id}`))).toBe("42501");
+  });
+
+  it("files an attempt only under its own order's Midtrans id, {public_id}-{n} (ET049)", async () => {
+    const id = await insertAsPublic();
+    const other = await insertAsPublic();
+    const publicId = async (orderId: string) => first(await sql<{ public_id: string }[]>`SELECT public_id FROM orders WHERE id = ${orderId}`).public_id;
+    const attempt = (orderId: string, n: number, midtransOrderId: string) =>
+      asRole("public_rw", (tx) => tx`INSERT INTO public.midtrans_attempts (order_id, n, midtrans_order_id) VALUES (${orderId}, ${n}, ${midtransOrderId})`);
+    await attempt(id, 1, `${await publicId(id)}-1`);
+    for (const [n, mid] of [
+      [2, `${await publicId(other)}-2`],
+      [2, `${await publicId(id)}-3`],
+      [2, `${await publicId(id)}-02`],
+      [2, `${await publicId(id)}2`],
+    ] as const) {
+      expect(await sqlState(attempt(id, n, mid)), mid).toBe("ET049");
+    }
+    // Every writer, the superuser too, and moving an attempt is checked again.
+    expect(await sqlState(sql`UPDATE midtrans_attempts SET order_id = ${other} WHERE order_id = ${id} AND n = 1`)).toBe("ET049");
+    expect(await sqlState(sql`UPDATE midtrans_attempts SET midtrans_order_id = 'x-1' WHERE order_id = ${id} AND n = 1`)).toBe("ET049");
+  });
+
+  it("lets public_rw read only the bookkeeping columns of midtrans_attempts, no snap_token or redirect_url (42501)", async () => {
+    await asRole("public_rw", (tx) => tx`SELECT id, order_id, n, status, created_at FROM public.midtrans_attempts`);
+    for (const column of ["snap_token", "redirect_url", "midtrans_order_id", "error", "updated_at"]) {
+      expect(await sqlState(asRole("public_rw", (tx) => tx`SELECT ${tx(column)} FROM public.midtrans_attempts`)), column).toBe("42501");
+    }
+    expect(await sqlState(asRole("public_rw", (tx) => tx`SELECT * FROM public.midtrans_attempts`))).toBe("42501");
   });
 });

@@ -7,7 +7,7 @@
 //     origin is refused without them, and nothing is ever accepted with cookies.
 //   - startLpFixture: a landing page on ANOTHER origin (another port) with a strict CSP, a form bound
 //     through the data attributes, and the snippet.
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -84,7 +84,9 @@ function send(res: ServerResponse, status: number, body?: unknown, headers: Reco
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
 export async function startSdkStub(options: { readonly sdkDir: string }): Promise<SdkStub> {
-  const cap = createCapProvider({ replay: createMemoryReplayStore(), challengeCount: 8, challengeSize: 16, challengeDifficulty: 2 });
+  // The real stateless provider of apps/public (signed challenges and tokens), so the real widget proves it
+  // solves our token format: a key of this run, one landing page id.
+  const cap = createCapProvider({ key: randomBytes(32), scope: randomUUID(), replay: createMemoryReplayStore(), challengeCount: 8, challengeSize: 16, challengeDifficulty: 2 });
   const orders = new Map<string, string>();
   const requests: RecordedRequest[] = [];
   const answers: SdkCheckoutResponse[] = [];

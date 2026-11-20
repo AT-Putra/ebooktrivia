@@ -17,7 +17,7 @@
 // stake. @cap.js/server 4.0.5 sends none; `CAP_ISOLATE` would sandbox such a frame without
 // same-origin access if one ever came, and `CAP_PAKO_URL`, the CDN fallback inflater it needs,
 // is pointed at an empty data: URL, so nothing is fetched from a third party even then.
-import { SDK_LIMITS } from "@ebooktrivia/core/sdk-contract";
+import { SDK_CAP, SDK_LIMITS } from "@ebooktrivia/core/sdk-contract";
 import type { Fetch } from "./api.ts";
 import type { ScriptElement } from "./pixels.ts";
 
@@ -47,15 +47,19 @@ export interface CapUrls {
   readonly hashwx: string;
 }
 
-/** A redeemed Cap token lives 20 minutes: fixed by @cap.js/server 4.0.5 (CAP_TOKEN_TTL_MS in packages/adapters). */
-export const CAP_TOKEN_LIFETIME_MS = 20 * 60 * 1000;
+/**
+ * How long a redeemed Cap token is good for AT LEAST after its redeem: the API's stateless Cap tokens
+ * expire with their challenge plus this (SDK_CAP, US-020), and the redeem always comes before the
+ * challenge expires. Measured on this device's clock from the solve, so no clock skew matters.
+ */
+export const CAP_TOKEN_LIFETIME_MS = SDK_CAP.tokenMinLifetimeMs;
 /** A held token older than the lifetime minus this margin is not used: a fresh one is solved before submit. */
 export const CAP_TOKEN_MARGIN_MS = 2 * 60 * 1000;
 
 export interface CapSolver {
   /** Starts loading Cap and solving in the background. */
   warm(): void;
-  /** A solved Cap token no older than 18 minutes, or null when Cap cannot be loaded or fails (the next call tries again). */
+  /** A solved Cap token no older than 8 minutes, or null when Cap cannot be loaded or fails (the next call tries again). */
   token(): Promise<string | null>;
   /** The server has seen the token (and a token works once): the next `token()` solves a fresh one. */
   spent(): void;

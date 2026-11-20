@@ -343,11 +343,19 @@ ops_pw=$(env_value "$ETC/valkey.env" REDISCLI_AUTH)
 expect "default user refused" NOAUTH "$(printf 'PING\n' | as_app podman exec -i valkey env -u REDISCLI_AUTH valkey-cli 2>&1 | grep -o NOAUTH | head -1)"
 expect "ops PING" PONG "$(valkey_as ops "$ops_pw" PING)"
 check "ops: EXISTS denied" denied "$(valkey_as ops "$ops_pw" EXISTS cache:public:host-check)"
-expect "public: EXISTS rl:* allowed" 0 "$(valkey_as public "$public_pw" EXISTS rl:host-check)"
-expect "public: EXISTS cache:public:* allowed" 0 "$(valkey_as public "$public_pw" EXISTS cache:public:host-check)"
-for cmd in "EXISTS cache:admin:host-check" "EXISTS ebt:host-check" "INFO server" "KEYS host-check-none" "SCAN 0 COUNT 1" "RANDOMKEY" "FUNCTION LIST"; do
+# public: its own keys only, through its command allowlist (US-020: -@all +ping +eval +incr +pttl
+# +pexpire +set; no INFO, no reads, no deletes).
+expect "public: PTTL rl:* allowed" -2 "$(valkey_as public "$public_pw" PTTL rl:host-check)"
+expect "public: PTTL cache:public:* allowed" -2 "$(valkey_as public "$public_pw" PTTL cache:public:host-check)"
+for cmd in "PTTL cache:admin:host-check" "PTTL ebt:host-check" "INFO server" "GET rl:host-check" "GETDEL cache:public:host-check" "DEL cache:public:host-check" "EXISTS rl:host-check" "KEYS host-check-none" "SCAN 0 COUNT 1" "RANDOMKEY" "FUNCTION LIST" "SCRIPT FLUSH"; do
   check "public: $cmd denied" denied "$(valkey_as public "$public_pw" "$cmd")"
 done
+# A script run as public stays inside its prefixes too: the key ACL applies to every redis.call, whatever
+# the script declares in KEYS (security re-check, US-020 item 18). Valkey reports a refusal inside a script
+# as "ACL failure in script", not NOPERM. The first probe is the control: the same script on its own prefix.
+script_denied() { [[ $1 == *"ACL failure in script"* ]]; }
+expect "public: EVAL on rl:* allowed" -2 "$(valkey_as public "$public_pw" "EVAL \"return redis.call('PTTL','rl:host-check')\" 0")"
+check "public: EVAL reaching ebt:* denied" script_denied "$(valkey_as public "$public_pw" "EVAL \"return redis.call('PTTL','ebt:host-check')\" 0")"
 expect "admin: EXISTS cache:admin:* allowed" 0 "$(valkey_as admin "$admin_pw" EXISTS cache:admin:host-check)"
 for cmd in "EXISTS cache:public:host-check" "EXISTS rl:host-check" "INFO server" "SCAN 0 COUNT 1" "RANDOMKEY" "FUNCTION LIST"; do
   check "admin: $cmd denied" denied "$(valkey_as admin "$admin_pw" "$cmd")"
@@ -359,7 +367,8 @@ check "worker: EXISTS cache:public:* denied" denied "$(valkey_as worker "$worker
 check "worker: KEYS denied (@dangerous)" denied "$(valkey_as worker "$worker_pw" KEYS host-check-none)"
 check "worker: CONFIG GET denied (@admin)" denied "$(valkey_as worker "$worker_pw" CONFIG GET maxmemory)"
 info=$(valkey_as worker "$worker_pw" INFO)
-expect "worker: INFO allowed" "valkey_version:9.1.3" "$(grep -o '^valkey_version:[0-9.]*' <<<"$info")"
+# Any version: the image digest pins it, this only proves INFO is answered.
+check "worker: INFO allowed" grep -q '^valkey_version:' <<<"$info"
 expect "maxmemory_policy" "maxmemory_policy:noeviction" "$(grep -o '^maxmemory_policy:[a-z-]*' <<<"$info")"
 expect "aof_enabled" "aof_enabled:1" "$(grep -o '^aof_enabled:[0-9]' <<<"$info")"
 

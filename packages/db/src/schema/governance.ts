@@ -307,6 +307,20 @@ export const APP_SETTING_BOUNDS = {
   "otp.ip_window_seconds": [600, 86_400],
   "otp.cooldown_seconds": [15, 600],
   "orders.expiry_seconds": [900, 86_400],
+  // US-020 checkout (AC-S4, AC-S8): checkout closes this long before sales_end_at, and the Valkey
+  // rate limits of the public API (N requests per window, per client IP / phone / landing page;
+  // the Cap challenge + redeem routes per client IP).
+  "orders.sales_close_buffer_minutes": [5, 1440],
+  "checkout.ip_cap": [1, 1000],
+  "checkout.ip_window_seconds": [60, 86_400],
+  "checkout.phone_cap": [1, 100],
+  "checkout.phone_window_seconds": [60, 86_400],
+  "checkout.lp_cap": [1, 100_000],
+  "checkout.lp_window_seconds": [60, 86_400],
+  "captcha.ip_cap": [1, 1000],
+  "captcha.ip_window_seconds": [60, 86_400],
+  // The Cap routes per IPv6 /48 on top of the /64 bucket (Cap itself is stateless, US-020).
+  "captcha.ip48_cap": [1, 100_000],
 } as const satisfies Readonly<Record<string, readonly [number, number]>>;
 
 const boundsCase = Object.entries(APP_SETTING_BOUNDS)
@@ -323,10 +337,10 @@ export const appSettings = pgTable(
   },
   (t) => [
     check("app_settings_key_check", sql`${t.key} ~ '^[a-z0-9_]+(\\.[a-z0-9_]+)+$'`),
-    // OTP and order parameters are read by SQL as positive integers; reject anything else at write time.
+    // OTP, order, checkout and captcha parameters are read as positive integers; reject anything else at write time.
     check(
       "app_settings_positive_int_check",
-      sql`(${t.key} NOT LIKE 'otp.%' AND ${t.key} NOT LIKE 'orders.%') OR (jsonb_typeof(${t.value}) = 'number' AND (${t.value} #>> '{}')::numeric > 0 AND (${t.value} #>> '{}')::numeric = trunc((${t.value} #>> '{}')::numeric))`,
+      sql`(${t.key} NOT LIKE 'otp.%' AND ${t.key} NOT LIKE 'orders.%' AND ${t.key} NOT LIKE 'checkout.%' AND ${t.key} NOT LIKE 'captcha.%') OR (jsonb_typeof(${t.value}) = 'number' AND (${t.value} #>> '{}')::numeric > 0 AND (${t.value} #>> '{}')::numeric = trunc((${t.value} #>> '{}')::numeric))`,
     ),
     // Each bounded key within APP_SETTING_BOUNDS (CASE, so a non-number is never cast).
     check(

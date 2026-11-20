@@ -183,8 +183,8 @@ async function paidOrderFor(programId: string, productId: string): Promise<void>
   const [lp] = await root<{ id: string }[]>`INSERT INTO landing_pages (lp_key, name, program_id) VALUES (${`lp_${suffix()}${suffix()}`}, 'LP', ${programId}) RETURNING id`;
   // As the superuser (the checkout guard trusts it), then paid like the worker does.
   const [order] = await root<{ id: string }[]>`
-    INSERT INTO orders (public_id, order_code, landing_page_id, program_id, product_id, buyer_name, buyer_phone, buyer_email, amount_idr, expires_at)
-    VALUES (${`${suffix()}${suffix()}${suffix()}`}, ${suffix().toUpperCase()}, ${lp?.id ?? ""}, ${programId}, ${productId}, 'Pembeli', '+6281234567890', 'buyer@example.invalid', 49000, now() + interval '1 day')
+    INSERT INTO orders (public_id, order_code, landing_page_id, program_id, product_id, buyer_name, buyer_phone, buyer_email, buyer_key, amount_idr, expires_at)
+    VALUES (${`${suffix()}${suffix()}${suffix()}`}, ${suffix().toUpperCase()}, ${lp?.id ?? ""}, ${programId}, ${productId}, 'Pembeli', '+6281234567890', 'buyer@example.invalid', sha256(convert_to(gen_random_uuid()::text, 'UTF8')), 49000, now() + interval '1 day')
     RETURNING id`;
   await root`UPDATE orders SET status = 'paid', paid_at = now() WHERE id = ${order?.id ?? ""}`;
 }

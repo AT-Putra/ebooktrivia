@@ -184,6 +184,11 @@ export const orders = pgTable(
     buyerName: text("buyer_name").notNull(),
     buyerPhone: text("buyer_phone").notNull(),
     buyerEmail: text("buyer_email").notNull(),
+    /**
+     * The checkout's "same buyer" (Owner decision D1, US-020): SHA-256 of the normalised phone, name and
+     * e-mail (@ebooktrivia/core buyerKey). Dedupe reuses an open order only for the same buyer_key.
+     */
+    buyerKey: bytea("buyer_key").notNull(),
     /** Computed server-side (AC-S5). */
     amountIdr: idr("amount_idr").notNull(),
     currency: text("currency").notNull().default("IDR"),
@@ -214,9 +219,10 @@ export const orders = pgTable(
     e164Check("orders_buyer_phone_check", t.buyerPhone),
     check("orders_amount_idr_check", sql`${t.amountIdr} > 0`),
     check("orders_currency_check", sql`${t.currency} = 'IDR'`),
+    check("orders_buyer_key_check", sql`octet_length(${t.buyerKey}) = 32`),
     nonNegative("orders_snap_attempt_count_check", t.snapAttemptCount),
-    // Checkout dedupe: pending order for the same phone + LP within the window (AC-T8).
-    index("orders_dedupe_idx").on(t.buyerPhone, t.landingPageId, t.createdAt),
+    // Checkout dedupe: the open order of the same buyer (phone + buyer_key) on the LP within the window (AC-T8, D1).
+    index("orders_dedupe_idx").on(t.landingPageId, t.buyerPhone, t.buyerKey, t.createdAt),
     index("orders_status_created_idx").on(t.status, t.createdAt),
     index("orders_program_status_idx").on(t.programId, t.status),
     index("orders_player_idx").on(t.playerId),

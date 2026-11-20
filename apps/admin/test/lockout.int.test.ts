@@ -7,7 +7,7 @@ import { recoverAdminUser } from "../src/lib/admin-users.ts";
 import { runMutation } from "../src/lib/audit.ts";
 import { signInWithPassword, startEnrollment, verifyTotpSignIn } from "../src/lib/auth/service.ts";
 import { beginAttempt, MAX_CONSECUTIVE, MAX_FAILURES, throttleKey } from "../src/lib/auth/throttle.ts";
-import { throttleBucket } from "../src/lib/client-ip.ts";
+import { throttleBucket } from "@ebooktrivia/edge";
 import { auditRows, codeFor, CookieJar, createTestAdmin, enroll, type Enrolled, freshIp, newRuntime, password, passwordStep, root, system, wrongTotp } from "./support.ts";
 
 const rt = newRuntime();

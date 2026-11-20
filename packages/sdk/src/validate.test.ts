@@ -33,6 +33,17 @@ describe("checkForm", () => {
     expect(checkForm({ ...GOOD, name: "a".repeat(121) })).toEqual({ ok: false, errors: { name: "too_long" } });
   });
 
+  it("treats invisible fillers as spaces and refuses a name holding a lone surrogate, a private-use or an unassigned code point (the server's rule)", () => {
+    for (const filler of ["ᅟ", "ᅠ", "ㅤ", "ﾠ", "⠀"]) {
+      expect(checkForm({ ...GOOD, name: `${filler}${filler}` }), filler).toEqual({ ok: false, errors: { name: "required" } });
+      expect(checkForm({ ...GOOD, name: `Budi${filler}Santoso` }), filler).toMatchObject({ ok: true, name: "Budi Santoso" });
+    }
+    for (const bad of ["Budi \ud800", "\udc00Budi", "Budi ", "Budi \u{10ffff}", "Budi ͸"]) {
+      expect(checkForm({ ...GOOD, name: bad }), JSON.stringify(bad)).toEqual({ ok: false, errors: { name: "required" } });
+    }
+    expect(checkForm({ ...GOOD, name: "Siti Nur’aini \u{1f600}" })).toMatchObject({ ok: true });
+  });
+
   it("requires a plausible e-mail address", () => {
     expect(checkForm({ ...GOOD, email: "" })).toEqual({ ok: false, errors: { email: "required" } });
     for (const email of ["budi", "budi@", "@example.co", "budi@example", "bu di@example.co", "a@@b.co", "budi@example..co", "budi@.co"]) {

@@ -22,7 +22,8 @@
 -- the attempt's set/question, ET060 settings_secrets relabelled without re-encryption,
 -- ET061 settings_secrets id change, ET047 program field locked after its first PAID order
 -- (product, slug, sales start, trivia set count / order), ET048 reschedule of a locked program
--- that is not an extension, or of an ended program, ET062 SMTP / WAHA secret bound to another host than its endpoint.
+-- that is not an extension, or of an ended program, ET062 SMTP / WAHA secret bound to another host than its endpoint,
+-- ET049 a Midtrans attempt whose midtrans_order_id is not {public_id}-{n} of its order.
 
 SELECT pg_catalog.set_config('search_path', 'pg_catalog, pg_temp', false);
 
@@ -287,6 +288,33 @@ CREATE OR REPLACE TRIGGER orders_checkout_guard
   BEFORE INSERT OR UPDATE OF landing_page_id, program_id, product_id, amount_idr, currency, expires_at
   ON public.orders
   FOR EACH ROW EXECUTE FUNCTION public.orders_checkout_guard();
+
+-- ---------------------------------------------------------------------------------------------
+-- Midtrans attempts (US-020 security review P2-6): an attempt's Midtrans order id is always
+-- {orders.public_id}-{n} of ITS order, for every writer. midtrans_order_id is UNIQUE already
+-- (0000_init); this binds it to the order, so no writer can file attempt n of one order under another
+-- order's Midtrans id (notifications and reconciliation, US-021, map by it). SECURITY DEFINER: it
+-- reads orders.public_id whatever the caller may read; it decides nothing about the caller.
+CREATE OR REPLACE FUNCTION public.midtrans_attempts_id_guard()
+  RETURNS trigger
+  LANGUAGE plpgsql
+  SECURITY DEFINER
+  SET search_path = pg_catalog, pg_temp
+AS $fn$
+DECLARE
+  v_public_id text;
+BEGIN
+  SELECT o.public_id INTO v_public_id FROM public.orders o WHERE o.id = NEW.order_id;
+  IF v_public_id IS NULL OR NEW.midtrans_order_id IS DISTINCT FROM v_public_id || '-' || NEW.n::text THEN
+    RAISE EXCEPTION 'midtrans_order_id must be {public_id}-{n} of its order' USING ERRCODE = 'ET049';
+  END IF;
+  RETURN NEW;
+END
+$fn$;
+
+CREATE OR REPLACE TRIGGER midtrans_attempts_id_guard
+  BEFORE INSERT OR UPDATE OF order_id, n, midtrans_order_id ON public.midtrans_attempts
+  FOR EACH ROW EXECUTE FUNCTION public.midtrans_attempts_id_guard();
 
 -- ---------------------------------------------------------------------------------------------
 -- player_otps: created_at from the clock and expires_at clamped to `otp.code_ttl_seconds`, so the

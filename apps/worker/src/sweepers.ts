@@ -15,6 +15,12 @@
 //                  stalled) and rows at the attempt cap raise one `alerts` row per topic per hour.
 //   conversions    pending events with next_attempt_at <= now -> job `<id>-<attempts>`.
 //   deliveries     pending deliveries with not_before <= now -> job `<id>-<attempts>`.
+//   snap_create    the checkout's crash window (US-020, core SNAP_URL_STALE_MS): a pending order
+//                  whose Snap redirect URL is still missing 60 s after its latest attempt started
+//                  (the public app crashed, or lost PostgreSQL, between Snap and storing the URL)
+//                  -> snap_create_failed, so the next checkout of that phone + landing page retries
+//                  it with attempt n + 1 (the attempt rows stay for reconciliation, US-021). The
+//                  checkout treats such an order the same way without waiting for this sweep.
 //   order_expiry   orders past expires_at in a state core's order machine moves on `expire`
 //                  (pending -> expired; worker_rw passes orders_status_guard).
 //   grace_end      published programs past sales_end_at + grace_days -> awaiting_confirmation
@@ -37,6 +43,7 @@ import {
   expireDeliveryLease,
   ORDER_STATUSES,
   type OrderStatus,
+  SNAP_URL_STALE_MS,
   transitionOrder,
 } from "@ebooktrivia/core";
 import { LOGIN_THROTTLE_WINDOW_SECONDS } from "@ebooktrivia/db/login-throttle";
@@ -198,6 +205,24 @@ export async function expireOrders(sql: postgres.Sql): Promise<number> {
   });
 }
 
+/** Pending orders still without a Snap URL `staleMs` after their latest attempt -> snap_create_failed; returns how many. */
+export async function failStaleSnapCreates(sql: postgres.Sql, staleMs = SNAP_URL_STALE_MS): Promise<number> {
+  return sql.begin(async (tx) => {
+    const rows = await tx<{ id: string }[]>`
+      SELECT o.id FROM public.orders o
+       WHERE o.status = 'pending' AND o.snap_redirect_url IS NULL
+         AND coalesce((SELECT a.created_at FROM public.midtrans_attempts a WHERE a.order_id = o.id AND a.n = o.snap_attempt_count), o.created_at)
+             <= clock_timestamp() - ${staleMs} * interval '1 millisecond'
+       ORDER BY o.created_at LIMIT ${BATCH}
+         FOR UPDATE OF o SKIP LOCKED`;
+    if (rows.length === 0) return 0;
+    const result = await tx`
+      UPDATE public.orders SET status = 'snap_create_failed', updated_at = now()
+       WHERE id = ANY(${rows.map((r) => r.id)}::uuid[]) AND status = 'pending' AND snap_redirect_url IS NULL`;
+    return result.count;
+  });
+}
+
 /** Deletes spent admin login-throttle rows (the admin app's own window); returns how many. */
 export async function sweepLoginThrottle(sql: postgres.Sql, windowSeconds = LOGIN_THROTTLE_WINDOW_SECONDS): Promise<number> {
   const [row] = await sql<{ n: number }[]>`SELECT public.sweep_login_throttle(${windowSeconds}::integer) AS n`;
@@ -337,6 +362,7 @@ export async function runSweeps(deps: SweepDeps): Promise<void> {
   ];
   if (conversionQueue !== undefined) sweepers.push(["due_conversions", () => sweepDueConversions({ ...deps, conversionQueue })]);
   if (deliveryQueue !== undefined) sweepers.push(["due_deliveries", () => sweepDueDeliveries({ ...deps, deliveryQueue })]);
+  sweepers.push(["snap_create", () => failStaleSnapCreates(deps.sql)]);
   sweepers.push(["order_expiry", () => expireOrders(deps.sql)]);
   if (graceEnd !== undefined) sweepers.push(["grace_end", () => endGracePeriods(deps.sql, graceEnd, deps.log)]);
   sweepers.push(["login_throttle", () => sweepLoginThrottle(deps.sql)]);
