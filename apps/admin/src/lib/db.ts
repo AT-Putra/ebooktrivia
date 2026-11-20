@@ -19,8 +19,19 @@ export interface AdminDb {
   readonly close: () => Promise<void>;
 }
 
+/**
+ * The app pool also ends a transaction left idle for 60 s (US-018 review F2: the Owner's re-score holds
+ * the program's contest lock), whatever the login role's settings (infra db-roles.sh sets the same).
+ */
+export const IDLE_IN_TRANSACTION_TIMEOUT_MS = 60_000;
+
 export function createAdminDb(url: string, max = 5): AdminDb {
-  const sql = postgres(url, { ...PG_CONNECTION_OPTIONS, max, onnotice: () => undefined });
+  const sql = postgres(url, {
+    ...PG_CONNECTION_OPTIONS,
+    connection: { ...PG_CONNECTION_OPTIONS.connection, idle_in_transaction_session_timeout: IDLE_IN_TRANSACTION_TIMEOUT_MS },
+    max,
+    onnotice: () => undefined,
+  });
   const authSql = postgres(url, { ...PG_CONNECTION_OPTIONS, max: 3, onnotice: () => undefined });
   return {
     sql,

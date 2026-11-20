@@ -293,6 +293,26 @@ export const settingsSecrets = pgTable(
  * the player_otps trigger (`otp.code_ttl_seconds`) and the orders checkout guard
  * (`orders.expiry_seconds`).
  */
+/**
+ * Bounds of the OTP and rate-limit parameters (US-018): the admin limits page (apps/admin
+ * lib/settings/limits.ts) and the app_settings_bounds_check below both read this one table, so no
+ * writer (admin_rw included) can store a value outside them. Inclusive [min, max].
+ */
+export const APP_SETTING_BOUNDS = {
+  "otp.code_ttl_seconds": [60, 900],
+  "otp.max_attempts": [1, 5],
+  "otp.phone_cap": [1, 10],
+  "otp.phone_window_seconds": [3600, 86_400],
+  "otp.ip_cap": [1, 100],
+  "otp.ip_window_seconds": [600, 86_400],
+  "otp.cooldown_seconds": [15, 600],
+  "orders.expiry_seconds": [900, 86_400],
+} as const satisfies Readonly<Record<string, readonly [number, number]>>;
+
+const boundsCase = Object.entries(APP_SETTING_BOUNDS)
+  .map(([key, [min, max]]) => `WHEN '${key}' THEN (value #>> '{}')::numeric BETWEEN ${String(min)} AND ${String(max)}`)
+  .join(" ");
+
 export const appSettings = pgTable(
   "app_settings",
   {
@@ -307,6 +327,11 @@ export const appSettings = pgTable(
     check(
       "app_settings_positive_int_check",
       sql`(${t.key} NOT LIKE 'otp.%' AND ${t.key} NOT LIKE 'orders.%') OR (jsonb_typeof(${t.value}) = 'number' AND (${t.value} #>> '{}')::numeric > 0 AND (${t.value} #>> '{}')::numeric = trunc((${t.value} #>> '{}')::numeric))`,
+    ),
+    // Each bounded key within APP_SETTING_BOUNDS (CASE, so a non-number is never cast).
+    check(
+      "app_settings_bounds_check",
+      sql`CASE WHEN ${t.key} NOT IN (${sql.raw(Object.keys(APP_SETTING_BOUNDS).map((k) => `'${k}'`).join(", "))}) THEN true WHEN jsonb_typeof(${t.value}) <> 'number' THEN false ELSE CASE ${t.key} ${sql.raw(boundsCase)} END END`,
     ),
   ],
 );

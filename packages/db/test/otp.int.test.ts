@@ -194,6 +194,11 @@ describe("enqueue_otp", () => {
   // Security review item 2: now() is the transaction start time, so a transaction held open past
   // the window wrote backdated ledger rows that the next window no longer counted.
   it("counts by the clock, not the transaction start: a held transaction cannot backdate its sends", async () => {
+    // A 2 s window makes the clock observable; the admin bounds (app_settings_bounds_check, US-018:
+    // at least an hour) are lifted for this test only and restored exactly as they were.
+    const [bounds] = await sql<{ def: string }[]>`
+      SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint WHERE conname = 'app_settings_bounds_check'`;
+    await sql`ALTER TABLE app_settings DROP CONSTRAINT app_settings_bounds_check`;
     await sql`UPDATE app_settings SET value = '2' WHERE key = 'otp.phone_window_seconds'`;
     try {
       const { phone } = await createPlayer({ programId, eligible: true });
@@ -209,6 +214,7 @@ describe("enqueue_otp", () => {
       expect(Number(fresh?.n)).toBe(3);
     } finally {
       await sql`UPDATE app_settings SET value = '3600' WHERE key = 'otp.phone_window_seconds'`;
+      await sql.unsafe(`ALTER TABLE app_settings ADD CONSTRAINT app_settings_bounds_check ${bounds?.def ?? ""}`);
     }
   });
 

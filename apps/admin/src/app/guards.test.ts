@@ -11,7 +11,7 @@
 // A requirement is `permission:<policy permission>`, `enrollment` or `allowUnenrolled`; an empty
 // `{}` or a missing argument is rejected here and is a type error (lib/access.ts RequireOptions).
 import { readdirSync, readFileSync } from "node:fs";
-import { basename, join, relative } from "node:path";
+import { basename, dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { PERMISSIONS } from "../lib/policy.ts";
@@ -90,6 +90,36 @@ const GUARDS: Readonly<Record<string, string>> = {
   "uploads/pdf/init/route.ts#POST": "permission:product.content.edit",
   "uploads/pdf/chunk/route.ts#POST": "permission:product.content.edit",
   "uploads/pdf/complete/route.ts#POST": "permission:product.content.edit",
+  // Trivia content (US-018): manage trivia is Staff (AC-A1); the content lock on top is decided
+  // inside each change (Staff on a set with attempts -> 403). Scoring override, prize tiers, legal
+  // pages and OTP / rate limits are Owner-only (owner decision 2026-11-18).
+  "(console)/settings/trivia/page.tsx": "permission:trivia_set.edit",
+  "(console)/settings/trivia/[programId]/page.tsx": "permission:trivia_set.edit",
+  "(console)/settings/trivia/[programId]/[setId]/page.tsx": "permission:trivia_set.edit",
+  "(console)/settings/trivia/actions.ts#createSetAction": "permission:trivia_set.edit",
+  "(console)/settings/trivia/actions.ts#renameSetAction": "permission:trivia_set.edit",
+  "(console)/settings/trivia/actions.ts#moveSetAction": "permission:trivia_set.edit",
+  "(console)/settings/trivia/actions.ts#deleteSetAction": "permission:trivia_set.edit",
+  "(console)/settings/trivia/actions.ts#removeSetThumbnailAction": "permission:trivia_set.edit",
+  "(console)/settings/trivia/actions.ts#createQuestionAction": "permission:trivia_set.edit",
+  "(console)/settings/trivia/actions.ts#updateQuestionAction": "permission:trivia_set.edit",
+  "(console)/settings/trivia/actions.ts#deleteQuestionAction": "permission:trivia_set.edit",
+  "(console)/settings/trivia/actions.ts#removeQuestionImageAction": "permission:trivia_set.edit",
+  "(console)/settings/trivia/actions.ts#overrideScoringAction": "permission:rescore.override",
+  "uploads/image/trivia/route.ts#POST": "permission:trivia_set.edit",
+  "uploads/questions/route.ts#POST": "permission:trivia_set.edit",
+  "(console)/settings/prizes/page.tsx": "permission:prize_tier.edit",
+  "(console)/settings/prizes/actions.ts#createPrizeTierAction": "permission:prize_tier.edit",
+  "(console)/settings/prizes/actions.ts#updatePrizeTierAction": "permission:prize_tier.edit",
+  "(console)/settings/prizes/actions.ts#deletePrizeTierAction": "permission:prize_tier.edit",
+  "(console)/settings/prizes/actions.ts#removePrizeImageAction": "permission:prize_tier.edit",
+  "uploads/image/prize/route.ts#POST": "permission:prize_tier.edit",
+  "(console)/settings/legal/page.tsx": "permission:legal_page.edit",
+  "(console)/settings/legal/[programId]/page.tsx": "permission:legal_page.edit",
+  "(console)/settings/legal/actions.ts#saveLegalDraftAction": "permission:legal_page.edit",
+  "(console)/settings/legal/actions.ts#publishLegalPageAction": "permission:legal_page.edit",
+  "(console)/settings/limits/page.tsx": "permission:app_settings.edit",
+  "(console)/settings/limits/actions.ts#saveLimitsAction": "permission:app_settings.edit",
 };
 
 /** Pages / layouts reachable without a console session, with the reason. */
@@ -184,11 +214,15 @@ describe("server-action directive", () => {
       "(console)/account/actions.ts",
       "(console)/settings/adnets/actions.ts",
       "(console)/settings/landing-pages/actions.ts",
+      "(console)/settings/legal/actions.ts",
+      "(console)/settings/limits/actions.ts",
       "(console)/settings/midtrans/actions.ts",
+      "(console)/settings/prizes/actions.ts",
       "(console)/settings/products/actions.ts",
       "(console)/settings/programs/actions.ts",
       "(console)/settings/smtp/actions.ts",
       "(console)/settings/templates/actions.ts",
+      "(console)/settings/trivia/actions.ts",
       "(console)/settings/waha/actions.ts",
       "(console)/team/actions.ts",
     ]);
@@ -225,10 +259,34 @@ describe("sealed secrets (plan M2.3: the admin process cannot decrypt)", () => {
     for (const file of srcFiles) expect(file.text, file.rel).not.toMatch(/\b(?:createSecretOpener|openerFromEnv|openSecret|openOtp|SecretOpener)\b/);
   });
 
-  it("admin sources import the sealer subpath only, and the PDF-only uploads subpath (no sharp)", () => {
+  it("admin sources import the sealer subpath only; the full upload policy (sharp) only where images and imports are checked", () => {
+    // US-018: content images are re-encoded with sharp and imports go through inspectZip, both in
+    // @ebooktrivia/uploads; every other module keeps to the PDF-only subpath. Nothing imports sharp itself.
+    const fullUploads = ["lib/settings/images.ts", "lib/settings/trivia-import.ts"];
     for (const file of srcFiles) {
       expect(file.text, file.rel).not.toMatch(/from "@ebooktrivia\/crypto"|import\("@ebooktrivia\/crypto"\)/);
-      expect(file.text, file.rel).not.toMatch(/from "@ebooktrivia\/uploads"|from "sharp"/);
+      expect(file.text, file.rel).not.toMatch(/from "sharp"/);
+      if (!fullUploads.includes(file.rel)) expect(file.text, file.rel).not.toMatch(/from "@ebooktrivia\/uploads"/);
+    }
+    expect(srcFiles.filter((f) => /from "@ebooktrivia\/uploads"/.test(f.text)).map((f) => f.rel).sort()).toEqual(fullUploads);
+  });
+
+  // Code review US-018 F10: a page (with everything it imports, its server actions included) never
+  // loads the import parser or the image pipeline; only the upload route handlers do.
+  it("no page or layout loads exceljs, papaparse or sharp, directly or through what it imports", () => {
+    const HEAVY = /from "(?:exceljs|papaparse|sharp|@ebooktrivia\/uploads)"/;
+    const IMPORT = /^(?:import|export)\s+(?!type\s)[^;]*?from\s+"(\.{1,2}\/[^"]+)"/gm;
+    for (const entry of pagesAndLayouts) {
+      const seen = new Set<string>();
+      const queue = [join(appDir, entry)];
+      for (let file = queue.pop(); file !== undefined; file = queue.pop()) {
+        if (seen.has(file)) continue;
+        seen.add(file);
+        const text = readFileSync(file, "utf8");
+        expect(HEAVY.test(text), `${entry} loads ${posix(relative(srcDir, file))}`).toBe(false);
+        for (const m of text.matchAll(IMPORT)) queue.push(join(dirname(file), m[1] ?? ""));
+      }
+      expect(seen.size, entry).toBeGreaterThan(0);
     }
   });
 

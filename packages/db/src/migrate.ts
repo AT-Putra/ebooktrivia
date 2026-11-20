@@ -10,7 +10,10 @@
 //   4. drizzle migrations from ./migrations (journal in drizzle.__drizzle_migrations), with
 //      search_path = public: the generated DDL names public tables unqualified, and "$user"
 //      must never be on the path;
-//   5. sql/functions.sql, sql/triggers.sql, sql/grants.sql, sql/seed.sql.
+//   5. sql/functions.sql, sql/triggers.sql, sql/grants.sql, sql/seed.sql;
+//   6. RESET ROLE, then sql/override.sql as the connecting role: the Owner's scoring override
+//      function, owned by the NOLOGIN role trivia_override (roles.sql), which only a superuser can
+//      give it without making migrator a member of that role.
 // Every sql/ file first sets search_path = pg_catalog, pg_temp for the session. Every step is
 // re-runnable on an existing database. Each SQL file runs as one simple-protocol query, i.e. as
 // a single implicit transaction.
@@ -37,6 +40,8 @@ export async function runMigrations(databaseUrl: string): Promise<void> {
     await sql.unsafe("SET search_path = public");
     await migrate(drizzle(sql), { migrationsFolder });
     for (const file of POST_MIGRATION_SQL) await runFile(file);
+    await sql.unsafe("RESET ROLE");
+    await runFile("override.sql");
   } finally {
     await sql.end();
   }

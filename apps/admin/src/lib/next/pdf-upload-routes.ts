@@ -9,10 +9,10 @@ import { CHUNK_BYTES, completeUpload, initPdfUpload, parseInit, writeChunk } fro
 const json = (status: number, body: Record<string, unknown>): Response =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } });
 
-class TooLarge extends Error {}
+export class TooLarge extends Error {}
 
 /** The request body, refused (413) beyond `max` bytes, whatever Content-Length claims. */
-async function readCapped(request: Request, max: number): Promise<Uint8Array> {
+export async function readCapped(request: Request, max: number): Promise<Uint8Array> {
   const declared = Number(request.headers.get("content-length") ?? "0");
   if (Number.isFinite(declared) && declared > max) throw new TooLarge();
   const reader = request.body?.getReader();

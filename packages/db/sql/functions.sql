@@ -19,7 +19,10 @@
 --   ET009 setting missing or not a positive integer
 --   ET010 enqueue_*: source row not found       ET011 enqueue_mo: order has no Snap redirect URL
 --   triggers.sql: ET020/ET021 content lock, ET030/ET031 audit_log, ET040-ET044 orders,
---   ET045 winners, ET046 programs, ET050/ET051 play rows, ET060/ET061 settings_secrets;
+--   ET045 winners, ET046 programs, ET050/ET051 play rows, ET060/ET061 settings_secrets,
+--   ET071/ET072 prize tiers, ET073/ET074 legal pages;
+--   override.sql: ET022 override after the results snapshot or the end of grace, ET023 override
+--   arguments out of scope (ids, reason, actor);
 --   roles.sql: ET090 foreign-owned object.
 
 SELECT pg_catalog.set_config('search_path', 'pg_catalog, pg_temp', false);
@@ -289,7 +292,103 @@ BEGIN
 END
 $fn$;
 
+-- The per-program CONTEST LOCK (US-018): one transaction-scoped advisory lock key per program, in
+-- two modes. Held to commit, so these never interleave:
+--   EXCLUSIVE (lock_program_contest): whatever changes the rules or freezes the result:
+--     - the Owner's locked-field override and its re-score (override_question_scoring);
+--     - prize tier edits (prize_tiers_guard) and the results snapshot (leaderboard_snapshots_lock);
+--     - REQUIRED FOR M9: the grace-end finalize and snapshot sweeper, BEFORE it reads the stats it
+--       freezes.
+--   SHARED (lock_program_contest_shared): play, which only applies the current rules. Players do not
+--   block each other, and all of them wait for (and are waited for by) an exclusive holder:
+--     - REQUIRED FOR M9: attempt start, serve and the answer path call it BEFORE they read anything
+--       they score with (correctness, points, timer), in the same transaction. The answer path
+--       records answered_at (clock_timestamp(), truncated to milliseconds) BEFORE it waits for the
+--       lock, so a re-score running meanwhile never costs the player time; it then scores with the
+--       rules as they are after that re-score. Without the lock a re-score could be overwritten by
+--       an answer scored with the old rules.
+-- A hash collision between two programs only serialises them. SECURITY INVOKER (pg_catalog's
+-- advisory lock functions are executable by everyone); EXECUTE per role in grants.sql (the M9
+-- grants to public_rw / worker_rw come with M9).
+CREATE OR REPLACE FUNCTION public.lock_program_contest(p_program_id uuid)
+  RETURNS void
+  LANGUAGE plpgsql
+  VOLATILE
+  SET search_path = pg_catalog, pg_temp
+AS $fn$
+BEGIN
+  PERFORM pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended('program_contest:' || p_program_id::text, 0));
+END
+$fn$;
+
+CREATE OR REPLACE FUNCTION public.lock_program_contest_shared(p_program_id uuid)
+  RETURNS void
+  LANGUAGE plpgsql
+  VOLATILE
+  SET search_path = pg_catalog, pg_temp
+AS $fn$
+BEGIN
+  PERFORM pg_catalog.pg_advisory_xact_lock_shared(pg_catalog.hashtextextended('program_contest:' || p_program_id::text, 0));
+END
+$fn$;
+
+-- The per-answer scoring rule (US-018), THE same rule as @ebooktrivia/core rescore.ts scoreAnswer
+-- (apps/admin test/rescore-oracle.int.test.ts checks them against each other on random inputs).
+-- Used by override_question_scoring; M9's answer path and finalize must use it too. All in whole
+-- milliseconds (answer timestamps are whole ms, CHECK), with raw = answered - served (0 if
+-- negative), timer = p_timer_seconds in ms, shown = deadline - served when a deadline was shown,
+-- cap = the smaller of timer and shown:
+--   answered_at NULL                          -> (NULL, 0, NULL)  pending
+--   served_at NULL                            -> (false, 0, timer) never shown: the full timer
+--   no pick, or raw > cap + 1500 ms (late)    -> (false, 0, min(raw, cap))
+--   otherwise                                 -> (pick = correct option, points if correct, min(raw, cap))
+-- Elapsed never exceeds the deadline the player was shown, so lengthening a timer neither rewards a
+-- late pick nor adds time to a SERVED timeout; an unserved row (served_at NULL) counts the current
+-- timer, so it does gain time. IMMUTABLE: only interval arithmetic between the arguments.
+CREATE OR REPLACE FUNCTION public.score_answer(
+  p_points integer,
+  p_timer_seconds integer,
+  p_correct_option_id uuid,
+  p_option_id uuid,
+  p_served_at timestamptz,
+  p_deadline_at timestamptz,
+  p_answered_at timestamptz,
+  OUT correct boolean,
+  OUT points integer,
+  OUT elapsed_ms integer
+)
+  LANGUAGE sql
+  IMMUTABLE
+  PARALLEL SAFE
+  SET search_path = pg_catalog, pg_temp
+AS $fn$
+  SELECT
+    CASE
+      WHEN p_answered_at IS NULL THEN NULL
+      WHEN p_served_at IS NULL OR p_option_id IS NULL OR x.raw > x.cap + 1500 THEN false
+      ELSE coalesce(p_option_id = p_correct_option_id, false)
+    END,
+    CASE
+      WHEN p_answered_at IS NULL OR p_served_at IS NULL OR p_option_id IS NULL OR x.raw > x.cap + 1500 THEN 0
+      WHEN p_option_id = p_correct_option_id THEN p_points
+      ELSE 0
+    END,
+    CASE
+      WHEN p_answered_at IS NULL THEN NULL
+      WHEN p_served_at IS NULL THEN x.timer
+      ELSE LEAST(x.raw, x.cap)
+    END::integer
+  FROM (
+    SELECT p_timer_seconds::bigint * 1000 AS timer,
+           GREATEST(0, (extract(epoch FROM p_answered_at - p_served_at) * 1000)::bigint) AS raw,
+           LEAST(p_timer_seconds::bigint * 1000, (extract(epoch FROM p_deadline_at - p_served_at) * 1000)::bigint) AS cap
+  ) x
+$fn$;
+
 REVOKE ALL ON FUNCTION public.setting_positive_int(text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.score_answer(integer, integer, uuid, uuid, timestamptz, timestamptz, timestamptz) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.lock_program_contest(uuid) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.lock_program_contest_shared(uuid) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.sweep_login_throttle(integer) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.enqueue_otp(uuid) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.enqueue_notification(uuid) FROM PUBLIC;

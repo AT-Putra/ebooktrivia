@@ -63,8 +63,9 @@ export const programs = pgTable(
     check("programs_slug_check", sql`${t.slug} ~ '^[a-z0-9]+(-[a-z0-9]+)*$'`),
     check("programs_sales_window_check", sql`${t.salesEndAt} > ${t.salesStartAt}`),
     nonNegative("programs_grace_days_check", t.graceDays),
-    nonNegative("programs_default_points_check", t.defaultPoints),
-    check("programs_default_timer_check", sql`${t.defaultTimerSeconds} > 0`),
+    // The same bounds as a question's points and timer (US-018), so a default is always valid.
+    check("programs_default_points_check", sql`${t.defaultPoints} BETWEEN 0 AND 1000`),
+    check("programs_default_timer_check", sql`${t.defaultTimerSeconds} BETWEEN 5 AND 600`),
     check("programs_leaderboard_top_n_check", sql`${t.leaderboardTopN} > 0`),
   ],
 );
@@ -104,8 +105,9 @@ export const questions = pgTable(
   },
   (t) => [
     unique("questions_set_id_position_key").on(t.setId, t.position),
-    nonNegative("questions_points_check", t.points),
-    check("questions_timer_seconds_check", sql`${t.timerSeconds} > 0`),
+    // US-018: the editor's and the override's bounds, for every writer.
+    check("questions_points_check", sql`${t.points} BETWEEN 0 AND 1000`),
+    check("questions_timer_seconds_check", sql`${t.timerSeconds} BETWEEN 5 AND 600`),
   ],
 );
 

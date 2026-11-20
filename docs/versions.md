@@ -189,3 +189,14 @@ Admin gates: `pnpm --filter @ebooktrivia/admin test:int` (needs PostgreSQL: Bett
 Workspace dependencies added (no new third-party package): apps/admin gets `@ebooktrivia/core` (host normalisation, templates, phone, money), `@ebooktrivia/crypto` (the public-key-only sealer), `@ebooktrivia/adapters` (only the `./address-policy` subpath, which loads no undici / nodemailer) and `@ebooktrivia/uploads` (PDF policy); apps/worker gets `@ebooktrivia/crypto` (the messaging opener for template test-sends). `normalizeHost` moved from apps/worker to packages/core so the Caddy `ask` check and LP domain registration share one rule.
 
 Admin gates now also cover the settings: `apps/admin/test/settings.int.test.ts` and `e2e/tests/admin-settings.spec.ts` (its own `next start` on port 3203, DOMAIN `example.test`, a temporary ADMIN_DATA_DIR and per-run public sealing keys).
+
+## apps/admin trivia content, prizes, legal pages, limits (US-018, M5b) - verified 2026-11-20 (`npm view <pkg> time`)
+| Package | Version | Notes |
+|---|---|---|
+| exceljs | 4.4.0 | Planned for M5b (plan version pins); already in the lockfile as a devDependency of packages/uploads, now a runtime dependency of apps/admin. Reads the first worksheet of an imported XLSX, and only the canonical archive `inspectZip` returns (`apps/admin/src/lib/settings/trivia-import.ts`). Bundled into the admin server build. Its transitive `uuid` 8.3.2 is the one pnpm audit flags (2026-11-12 note above); the M4 audit gate carry-over now covers a production path |
+| papaparse | 5.7.0 | Planned for M5b. Published 2026-08-24; 5.7.1 (2026-11-11) is under the 2-week gate, so 5.7.0 is pinned. Parses imported CSV (delimiter detection). No types ship with it and `@types/papaparse` is not added: `apps/admin/src/types/papaparse.d.ts` declares the one call used |
+| fast-check | 4.10.2 (devDependency) | Same pin as packages/core (US-010 section above). Test-only: `apps/admin/test/rescore-oracle.int.test.ts` checks that SQL `public.score_answer` equals core `scoreAnswer` on random rules and answer facts |
+
+apps/admin now also loads the full `@ebooktrivia/uploads` entry (sharp 0.35.5, unchanged pin) in two modules only, `lib/settings/images.ts` (image re-encode) and `lib/settings/trivia-import.ts` (CSV / XLSX policy); `src/app/guards.test.ts` pins that list. Next.js keeps sharp external and traces its platform binary into the standalone output.
+
+Admin gates now also cover trivia content: `apps/admin/test/trivia.int.test.ts`, `packages/db/test/trivia-override.int.test.ts` and `e2e/tests/admin-trivia.spec.ts` (its own `next start` on port 3204, a temporary ADMIN_DATA_DIR).

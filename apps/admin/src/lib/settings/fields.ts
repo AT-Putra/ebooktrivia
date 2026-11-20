@@ -11,12 +11,60 @@ export class InvalidInput extends Error {
   }
 }
 
+/**
+ * The signed-in role may not make this change (e.g. Staff on a trivia set with attempts, policy.ts
+ * `staff_unlocked`), decided inside the change's transaction. A form shows the message (Staff may
+ * have raced the set's first attempt, code review US-018 F9; lib/next/settings-result.ts); a route
+ * handler answers 403 with it (lib/next/content-routes.ts). The message is fixed text.
+ */
+export class NotAllowed extends Error {
+  constructor(message = "Your role cannot make this change.") {
+    super(message);
+    this.name = "NotAllowed";
+  }
+}
+
 const CONTROL = /\p{Cc}/u;
 
-/** A text field of a submitted form ("" when absent), capped at 64 KiB before any parsing. */
+/**
+ * Refuses a form holding any field outside `allowed`, or one field twice (US-018: every field of a
+ * new settings form is known, so a tampered form cannot smuggle a value in). React's own
+ * `$ACTION_*` fields, which never reach the action, are ignored.
+ */
+export function onlyFields(form: FormData, allowed: readonly string[]): void {
+  const seen = new Set<string>();
+  for (const key of form.keys()) {
+    if (key.startsWith("$ACTION")) continue;
+    if (!allowed.includes(key) || seen.has(key)) throw new InvalidInput("The form has an unexpected field. Reload the page and try again.");
+    seen.add(key);
+  }
+}
+
+/** Like onlyFields, for the query of a route handler. */
+export function onlyParams(params: URLSearchParams, allowed: readonly string[]): void {
+  const seen = new Set<string>();
+  for (const key of params.keys()) {
+    if (!allowed.includes(key) || seen.has(key)) throw new InvalidInput("The request has an unexpected parameter.");
+    seen.add(key);
+  }
+}
+
+/** The longest text field any settings form accepts, in code points (each field's own limit is lower). */
+export const FIELD_MAX_CODE_POINTS = 65_536;
+
+/**
+ * A text field of a submitted form ("" when absent). Longer than FIELD_MAX_CODE_POINTS code points
+ * is REFUSED, never cut (code review US-018 F11: a cut value could pass a field's own limit, and a
+ * cut in the middle of a surrogate pair would corrupt it). Counted in code points, like every limit.
+ */
 export function formValue(form: FormData, name: string): string {
   const value = form.get(name);
-  return typeof value === "string" ? value.slice(0, 65_536) : "";
+  if (typeof value !== "string") return "";
+  // A string of n UTF-16 units has at most n code points: only a long one needs counting.
+  if (value.length > FIELD_MAX_CODE_POINTS && Array.from(value).length > FIELD_MAX_CODE_POINTS) {
+    throw new InvalidInput(`A field is longer than ${FIELD_MAX_CODE_POINTS.toLocaleString("en-US")} characters.`);
+  }
+  return value;
 }
 
 export const checkbox = (form: FormData, name: string): boolean => form.get(name) === "on" || form.get(name) === "true";

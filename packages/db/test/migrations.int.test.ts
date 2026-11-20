@@ -4,6 +4,7 @@
 //     sealed under the old 48..128-byte rule; 0001 must delete those rows first instead of failing
 //     the whole migration on ADD CONSTRAINT.
 //   - US-013: 0003 adds the lp_domains NOTIFY trigger to a database deployed at 0002.
+//   - US-018: 0009 truncates sub-millisecond answer / finish timestamps before its CHECKs.
 import { randomBytes } from "node:crypto";
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -167,6 +168,57 @@ describe("upgrading a pre-US-017 database", () => {
         ]);
         // And from now on the lock holds (triggers.sql applied after the migrations).
         await expect(check`UPDATE programs SET grace_days = 1 WHERE slug = 'sold'`).rejects.toMatchObject({ code: "ET048" });
+      } finally {
+        await check.end();
+      }
+    } finally {
+      rmSync(folder, { recursive: true, force: true });
+      await admin.unsafe(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`);
+      await admin.end();
+    }
+  }, 120_000);
+});
+
+describe("upgrading a pre-US-018 database", () => {
+  it("0009 truncates sub-millisecond answer and finish timestamps (deadline >= served still holds), then its CHECKs hold", async () => {
+    const name = `ebt_mig_${randomBytes(6).toString("hex")}`;
+    const admin = postgres(serverUrl(), { max: 1, onnotice });
+    await admin.unsafe(`CREATE DATABASE ${name}`);
+    const folder = migrationsUpTo(8);
+    try {
+      await deployOld(name, folder, async (old) => {
+        const [product] = await old<{ id: string }[]>`INSERT INTO products (title, price_idr) VALUES ('Ebook', 49000) RETURNING id`;
+        const [program] = await old<{ id: string }[]>`
+          INSERT INTO programs (product_id, slug, name, status, sales_start_at, sales_end_at, grace_days)
+          VALUES (${product?.id ?? ""}, 'ms-upgrade', 'P', 'published', '2027-04-01', '2027-07-01', 30) RETURNING id`;
+        const [set] = await old<{ id: string }[]>`INSERT INTO trivia_sets (program_id, position, title) VALUES (${program?.id ?? ""}, 1, 'S') RETURNING id`;
+        const [question] = await old<{ id: string }[]>`INSERT INTO questions (set_id, position, prompt, points, timer_seconds) VALUES (${set?.id ?? ""}, 1, 'Q', 10, 20) RETURNING id`;
+        const [player] = await old<{ id: string }[]>`INSERT INTO players (phone, name) VALUES ('+6281234567890', 'P') RETURNING id`;
+        const [attempt] = await old<{ id: string }[]>`
+          INSERT INTO set_attempts (player_id, set_id, finished_at) VALUES (${player?.id ?? ""}, ${set?.id ?? ""}, '2027-05-01 03:00:10.123999+00') RETURNING id`;
+        // served and deadline inside the same millisecond, deadline later by microseconds.
+        await old`
+          INSERT INTO attempt_questions (attempt_id, question_id, position, permutation, served_at, deadline_at, answered_at)
+          VALUES (${attempt?.id ?? ""}, ${question?.id ?? ""}, 1, '{}', '2027-05-01 03:00:00.123456+00', '2027-05-01 03:00:00.123789+00', '2027-05-01 03:00:04.567891+00')`;
+        await old`INSERT INTO player_program_stats (player_id, program_id, finished_at) VALUES (${player?.id ?? ""}, ${program?.id ?? ""}, '2027-05-01 03:00:10.123999+00')`;
+      });
+
+      await runMigrations(databaseUrl(name)); // applies 0009 and the sql/ files
+
+      const check = postgres(databaseUrl(name), { ...PG_CONNECTION_OPTIONS, max: 1, onnotice });
+      try {
+        const [row] = await check<{ served: string; deadline: string; answered: string; ordered: boolean; attempt: string; stats: string }[]>`
+          SELECT to_char(aq.served_at AT TIME ZONE 'UTC', 'HH24:MI:SS.US') AS served, to_char(aq.deadline_at AT TIME ZONE 'UTC', 'HH24:MI:SS.US') AS deadline,
+                 to_char(aq.answered_at AT TIME ZONE 'UTC', 'HH24:MI:SS.US') AS answered, aq.deadline_at >= aq.served_at AS ordered,
+                 to_char(a.finished_at AT TIME ZONE 'UTC', 'HH24:MI:SS.US') AS attempt, to_char(st.finished_at AT TIME ZONE 'UTC', 'HH24:MI:SS.US') AS stats
+            FROM attempt_questions aq JOIN set_attempts a ON a.id = aq.attempt_id JOIN player_program_stats st ON st.player_id = a.player_id`;
+        expect(row).toEqual({ served: "03:00:00.123000", deadline: "03:00:00.123000", answered: "03:00:04.567000", ordered: true, attempt: "03:00:10.123000", stats: "03:00:10.123000" });
+        // From now on every writer must store whole milliseconds, within the new bounds.
+        await expect(check`UPDATE attempt_questions SET answered_at = '2027-05-01 03:00:05.000001+00'`).rejects.toMatchObject({ code: "23514" });
+        await expect(check`UPDATE set_attempts SET finished_at = '2027-05-01 03:00:05.000001+00'`).rejects.toMatchObject({ code: "23514" });
+        await expect(check`UPDATE programs SET default_timer_seconds = 601`).rejects.toMatchObject({ code: "23514" });
+        await expect(check`UPDATE app_settings SET value = '6' WHERE key = 'otp.max_attempts'`).rejects.toMatchObject({ code: "23514" });
+        await runMigrations(databaseUrl(name)); // re-runnable
       } finally {
         await check.end();
       }

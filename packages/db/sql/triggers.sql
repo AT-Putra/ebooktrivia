@@ -10,7 +10,10 @@
 -- Every trigger here is ENABLE ALWAYS (end of file), so it also fires under
 -- session_replication_role = replica; roles.sql revokes any SET privilege on that parameter.
 --
--- SQLSTATEs: ET020 content locked, ET021 content-lock edit outside READ COMMITTED,
+-- SQLSTATEs: ET020 content locked, ET021 content-lock or prize-tier edit outside READ COMMITTED,
+-- ET071 prize tier ranks overlap another tier of the program (or the tier moves to another program),
+-- ET072 prize tiers of a program with its results snapshot, ET073 legal page version changed
+-- (published versions are immutable; a draft only gets published), ET074 legal page deleted,
 -- ET030 audit_log append-only, ET031 worker audit entry not actor_kind 'system' / names an admin,
 -- ET040 order status change, ET041 order amount != product price, ET042 order LP / program /
 -- product mismatch, ET043 program not on sale, ET044 order expiry too far out,
@@ -75,9 +78,22 @@ CREATE OR REPLACE TRIGGER audit_log_stamp
 -- no INSERT/DELETE of its questions or options, and no change to points, timer, which option
 -- is correct, positions, or moving a question/option to another set/question. Text stays
 -- editable (prompt, explanation, image, option label) for typo fixes.
+--
+-- The one exception (US-018, plan §10 item 21): the Owner's override, public.override_question_scoring
+-- (sql/override.sql), may change points, timer and which option is correct of a locked set's
+-- question, because it re-scores every affected attempt in the same transaction and refuses once
+-- the program's results snapshot exists. That function is SECURITY DEFINER owned by the NOLOGIN,
+-- member-less role trivia_override, so `current_user = 'trivia_override'` is true inside it and in
+-- no other session or function (no role can SET ROLE to it; a set_config GUC would not do, any
+-- admin_rw session could set one). The two lock triggers are therefore SECURITY INVOKER: they must
+-- see the caller as current_user (inside a SECURITY DEFINER trigger it would be the trigger's
+-- owner). The lock check itself, assert_trivia_set_unlocked, stays SECURITY DEFINER so it reads
+-- set_attempts and locks the set with owner rights whoever edits; its EXECUTE is granted to the
+-- roles that may edit questions (grants.sql).
 CREATE OR REPLACE FUNCTION public.assert_trivia_set_unlocked(p_set_id uuid)
   RETURNS void
   LANGUAGE plpgsql
+  SECURITY DEFINER
   SET search_path = pg_catalog, pg_temp
 AS $fn$
 BEGIN
@@ -100,15 +116,19 @@ BEGIN
 END
 $fn$;
 
--- SECURITY DEFINER so the lock check runs with owner rights whoever edits; trigger functions are
+-- SECURITY INVOKER (see above): current_user is whoever runs the statement. Trigger functions are
 -- never called directly (EXECUTE is revoked from PUBLIC in grants.sql).
 CREATE OR REPLACE FUNCTION public.questions_content_lock()
   RETURNS trigger
   LANGUAGE plpgsql
-  SECURITY DEFINER
   SET search_path = pg_catalog, pg_temp
 AS $fn$
 BEGIN
+  -- The Owner override: points / timer only, never a move, a reorder, an insert or a delete.
+  IF TG_OP = 'UPDATE' AND current_user = 'trivia_override'
+     AND NEW.set_id IS NOT DISTINCT FROM OLD.set_id AND NEW.position IS NOT DISTINCT FROM OLD.position THEN
+    RETURN NEW;
+  END IF;
   IF TG_OP = 'INSERT' THEN
     PERFORM public.assert_trivia_set_unlocked(NEW.set_id);
     RETURN NEW;
@@ -136,13 +156,17 @@ CREATE OR REPLACE TRIGGER questions_content_lock
 CREATE OR REPLACE FUNCTION public.question_options_content_lock()
   RETURNS trigger
   LANGUAGE plpgsql
-  SECURITY DEFINER
   SET search_path = pg_catalog, pg_temp
 AS $fn$
 DECLARE
   v_old_set uuid;
   v_new_set uuid;
 BEGIN
+  -- The Owner override: which option is correct only, never a move, a reorder, an insert or a delete.
+  IF TG_OP = 'UPDATE' AND current_user = 'trivia_override'
+     AND NEW.question_id IS NOT DISTINCT FROM OLD.question_id AND NEW.position IS NOT DISTINCT FROM OLD.position THEN
+    RETURN NEW;
+  END IF;
   IF TG_OP IN ('UPDATE', 'DELETE') THEN
     SELECT q.set_id INTO v_old_set FROM public.questions q WHERE q.id = OLD.question_id;
   END IF;
@@ -344,7 +368,8 @@ CREATE OR REPLACE TRIGGER programs_status_guard
 -- ---------------------------------------------------------------------------------------------
 -- Play rows written by the public app: only for a player eligible (paid, not refunded) for the
 -- set's program, on a published program; questions/options must belong to the attempt's set.
--- Trusted writers are exempt (the worker finalizes attempts of players refunded meanwhile).
+-- Trusted writers are exempt (the worker finalizes attempts of players refunded meanwhile; the
+-- Owner override's re-score, running as trivia_override, rewrites the scores of every affected player).
 -- These checks bound WHO may write play rows, not WHAT score: finalize and re-score must
 -- recompute from attempt_questions.option_id joined to question_options.is_correct and
 -- questions.points, never trust set_attempts.score / player_program_stats.score.
@@ -356,7 +381,8 @@ AS $fn$
 BEGIN
   IF pg_has_role(current_user, 'worker_rw', 'USAGE')
      OR pg_has_role(current_user, 'admin_rw', 'USAGE')
-     OR pg_has_role(current_user, 'migrator', 'USAGE') THEN
+     OR pg_has_role(current_user, 'migrator', 'USAGE')
+     OR current_user = 'trivia_override' THEN
     RETURN NEW;
   END IF;
   IF NOT EXISTS (
@@ -387,7 +413,8 @@ DECLARE
 BEGIN
   IF pg_has_role(current_user, 'worker_rw', 'USAGE')
      OR pg_has_role(current_user, 'admin_rw', 'USAGE')
-     OR pg_has_role(current_user, 'migrator', 'USAGE') THEN
+     OR pg_has_role(current_user, 'migrator', 'USAGE')
+     OR current_user = 'trivia_override' THEN
     RETURN NEW;
   END IF;
   SELECT a.player_id, a.set_id INTO v_player, v_set FROM public.set_attempts a WHERE a.id = NEW.attempt_id;
@@ -421,7 +448,8 @@ AS $fn$
 BEGIN
   IF pg_has_role(current_user, 'worker_rw', 'USAGE')
      OR pg_has_role(current_user, 'admin_rw', 'USAGE')
-     OR pg_has_role(current_user, 'migrator', 'USAGE') THEN
+     OR pg_has_role(current_user, 'migrator', 'USAGE')
+     OR current_user = 'trivia_override' THEN
     RETURN NEW;
   END IF;
   IF NOT EXISTS (
@@ -652,6 +680,9 @@ BEGIN
     PERFORM public.assert_program_unlocked(OLD.program_id);
     IF NEW.program_id IS DISTINCT FROM OLD.program_id THEN
       PERFORM public.assert_program_unlocked(NEW.program_id);
+      -- A set with attempts never moves to another program (security review US-018 L1): its attempts
+      -- would then score in a program their players never paid for (ET020).
+      PERFORM public.assert_trivia_set_unlocked(OLD.id);
     END IF;
   END IF;
   RETURN NEW;
@@ -718,6 +749,129 @@ $fn$;
 CREATE OR REPLACE TRIGGER smtp_settings_clear_bound_secrets
   AFTER UPDATE OR DELETE ON public.smtp_settings
   FOR EACH ROW EXECUTE FUNCTION public.smtp_settings_clear_bound_secrets();
+
+-- ---------------------------------------------------------------------------------------------
+-- Prize tiers (AC-A3, US-018). For every writer: the rank ranges of one program never overlap
+-- (ET071; a trigger rather than an exclusion constraint, which would need the btree_gist
+-- extension), a tier never moves to another program (ET071), and once the program's results
+-- snapshot exists its tiers are final (ET072): the grace-end sweeper awards prizes from them.
+-- The check runs under the program's contest lock (functions.sql lock_program_contest), which
+-- the snapshot insert takes too, so a tier edit and the snapshot cannot interleave, and two
+-- overlapping inserts cannot both pass: the second waits, then (READ COMMITTED, so each statement
+-- sees what committed meanwhile; ET021 otherwise) sees the first. Rows inserted earlier by the same
+-- statement are visible too (a clone copies all tiers in one INSERT). SECURITY DEFINER: the checks
+-- read with owner rights whoever writes.
+-- Owner decision (US-018 review, security I5): tiers stay editable until the results snapshot,
+-- even while the contest runs; every change is audited (apps/admin lib/settings/prizes.ts).
+CREATE OR REPLACE FUNCTION public.prize_tiers_guard()
+  RETURNS trigger
+  LANGUAGE plpgsql
+  SECURITY DEFINER
+  SET search_path = pg_catalog, pg_temp
+AS $fn$
+DECLARE
+  v_program uuid;
+BEGIN
+  IF current_setting('transaction_isolation') <> 'read committed' THEN
+    RAISE EXCEPTION 'prize tier edits must run under READ COMMITTED' USING ERRCODE = 'ET021';
+  END IF;
+  IF TG_OP = 'DELETE' THEN
+    v_program := OLD.program_id;
+  ELSE
+    v_program := NEW.program_id;
+  END IF;
+  IF TG_OP = 'UPDATE' AND NEW.program_id IS DISTINCT FROM OLD.program_id THEN
+    RAISE EXCEPTION 'a prize tier cannot move to another program' USING ERRCODE = 'ET071';
+  END IF;
+  PERFORM public.lock_program_contest(v_program);
+  IF EXISTS (SELECT 1 FROM public.leaderboard_snapshots s WHERE s.program_id = v_program) THEN
+    RAISE EXCEPTION 'program % has its results snapshot: its prize tiers are final', v_program USING ERRCODE = 'ET072';
+  END IF;
+  IF TG_OP = 'DELETE' THEN
+    RETURN OLD;
+  END IF;
+  IF EXISTS (
+    SELECT 1 FROM public.prize_tiers t
+     WHERE t.program_id = NEW.program_id AND t.id <> NEW.id
+       AND t.rank_from <= NEW.rank_to AND NEW.rank_from <= t.rank_to
+  ) THEN
+    RAISE EXCEPTION 'prize tier ranks % to % overlap another tier of program %', NEW.rank_from, NEW.rank_to, NEW.program_id
+      USING ERRCODE = 'ET071';
+  END IF;
+  RETURN NEW;
+END
+$fn$;
+
+CREATE OR REPLACE TRIGGER prize_tiers_guard
+  BEFORE INSERT OR UPDATE OR DELETE ON public.prize_tiers
+  FOR EACH ROW EXECUTE FUNCTION public.prize_tiers_guard();
+
+-- The results snapshot takes the program's contest lock (functions.sql): it waits for a running
+-- override re-score or prize tier edit to commit, and none starts until it has committed (they
+-- then see the snapshot and refuse, ET022 / ET072). The grace-end sweeper (M9) must also take the
+-- lock BEFORE it reads the stats it freezes. SECURITY DEFINER: the lock is taken whoever inserts.
+CREATE OR REPLACE FUNCTION public.leaderboard_snapshots_lock()
+  RETURNS trigger
+  LANGUAGE plpgsql
+  SECURITY DEFINER
+  SET search_path = pg_catalog, pg_temp
+AS $fn$
+BEGIN
+  PERFORM public.lock_program_contest(NEW.program_id);
+  RETURN NEW;
+END
+$fn$;
+
+CREATE OR REPLACE TRIGGER leaderboard_snapshots_lock
+  BEFORE INSERT ON public.leaderboard_snapshots
+  FOR EACH ROW EXECUTE FUNCTION public.leaderboard_snapshots_lock();
+
+-- ---------------------------------------------------------------------------------------------
+-- Legal pages (AC-A10, US-018): versioned per program and kind (terms = S&K, privacy). Every save
+-- is a new draft version; publishing stamps published_at from the clock. For every writer:
+--   - a version is inserted as a draft (ET073);
+--   - a saved version never changes, except a draft being published (ET073); a published version
+--     never changes at all (ET073);
+--   - a version is never deleted or truncated (ET074): consents reference the exact version a
+--     buyer accepted (consents.legal_page_id).
+CREATE OR REPLACE FUNCTION public.legal_pages_guard()
+  RETURNS trigger
+  LANGUAGE plpgsql
+  SET search_path = pg_catalog, pg_temp
+AS $fn$
+BEGIN
+  IF TG_OP IN ('DELETE', 'TRUNCATE') THEN
+    RAISE EXCEPTION 'legal page versions are never deleted' USING ERRCODE = 'ET074';
+  END IF;
+  IF TG_OP = 'INSERT' THEN
+    IF NEW.published_at IS NOT NULL THEN
+      RAISE EXCEPTION 'a legal page version is saved as a draft and published afterwards' USING ERRCODE = 'ET073';
+    END IF;
+    RETURN NEW;
+  END IF;
+  IF OLD.published_at IS NOT NULL THEN
+    RAISE EXCEPTION 'legal page version % is published: it is immutable', OLD.id USING ERRCODE = 'ET073';
+  END IF;
+  IF NEW.id IS DISTINCT FROM OLD.id OR NEW.program_id IS DISTINCT FROM OLD.program_id
+     OR NEW.kind IS DISTINCT FROM OLD.kind OR NEW.version IS DISTINCT FROM OLD.version
+     OR NEW.title IS DISTINCT FROM OLD.title OR NEW.body IS DISTINCT FROM OLD.body
+     OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
+    RAISE EXCEPTION 'a saved legal page version never changes: save a new version' USING ERRCODE = 'ET073';
+  END IF;
+  IF NEW.published_at IS NOT NULL THEN
+    NEW.published_at := clock_timestamp();
+  END IF;
+  RETURN NEW;
+END
+$fn$;
+
+CREATE OR REPLACE TRIGGER legal_pages_guard
+  BEFORE INSERT OR UPDATE OR DELETE ON public.legal_pages
+  FOR EACH ROW EXECUTE FUNCTION public.legal_pages_guard();
+
+CREATE OR REPLACE TRIGGER legal_pages_guard_truncate
+  BEFORE TRUNCATE ON public.legal_pages
+  FOR EACH STATEMENT EXECUTE FUNCTION public.legal_pages_guard();
 
 -- ---------------------------------------------------------------------------------------------
 -- Fire every trigger on our tables in ALL session_replication_role modes. The default (ENABLE,

@@ -14,6 +14,12 @@
 -- exactly one group: public@a/b -> public_rw, admin -> admin_rw, worker -> worker_rw,
 -- internal -> internal_rw, the migrate job -> migrator (preflight.sql refuses a login in two).
 -- Object privileges live in grants.sql.
+--
+-- trivia_override (US-018) is not a group: it only OWNS the SECURITY DEFINER function
+-- public.override_question_scoring (sql/override.sql), so `current_user = 'trivia_override'` holds
+-- inside that function and nowhere else. The question content lock triggers let exactly that
+-- caller change points, timers and the correct option of a set with attempts. It is NOLOGIN, has
+-- no members (every membership in it is revoked below on every run) and is a member of nothing.
 
 SELECT pg_catalog.set_config('search_path', 'pg_catalog, pg_temp', false);
 
@@ -23,7 +29,7 @@ DECLARE
   m record;
   p record;
 BEGIN
-  FOREACH r IN ARRAY ARRAY['migrator', 'public_rw', 'admin_rw', 'worker_rw', 'internal_rw'] LOOP
+  FOREACH r IN ARRAY ARRAY['migrator', 'public_rw', 'admin_rw', 'worker_rw', 'internal_rw', 'trivia_override'] LOOP
     IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = r) THEN
       BEGIN
         EXECUTE pg_catalog.format('CREATE ROLE %I NOLOGIN', r);
@@ -53,7 +59,10 @@ BEGIN
       JOIN pg_catalog.pg_roles g ON g.oid = am.roleid
       JOIN pg_catalog.pg_roles u ON u.oid = am.member
       JOIN pg_catalog.pg_roles gr ON gr.oid = am.grantor
-     WHERE u.rolname IN ('migrator', 'public_rw', 'admin_rw', 'worker_rw', 'internal_rw')
+     WHERE u.rolname IN ('migrator', 'public_rw', 'admin_rw', 'worker_rw', 'internal_rw', 'trivia_override')
+        -- Nobody may be a member of trivia_override: a member could SET ROLE to it and pass the
+        -- content lock's override check outside the override function.
+        OR g.rolname = 'trivia_override'
   LOOP
     EXECUTE pg_catalog.format('REVOKE %I FROM %I GRANTED BY %I CASCADE', m.grp, m.member, m.grantor);
   END LOOP;
@@ -62,7 +71,7 @@ BEGIN
   -- session_replication_role, which would switch off ENABLE ORIGIN triggers.
   FOR p IN SELECT parname FROM pg_catalog.pg_parameter_acl LOOP
     EXECUTE pg_catalog.format(
-      'REVOKE ALL ON PARAMETER %I FROM public_rw, admin_rw, worker_rw, internal_rw, migrator CASCADE', p.parname);
+      'REVOKE ALL ON PARAMETER %I FROM public_rw, admin_rw, worker_rw, internal_rw, migrator, trivia_override CASCADE', p.parname);
   END LOOP;
 END
 $roles$;
@@ -74,7 +83,7 @@ $roles$;
 DO $db$
 BEGIN
   EXECUTE pg_catalog.format(
-    'REVOKE ALL ON DATABASE %I FROM PUBLIC, public_rw, admin_rw, worker_rw, internal_rw, migrator',
+    'REVOKE ALL ON DATABASE %I FROM PUBLIC, public_rw, admin_rw, worker_rw, internal_rw, migrator, trivia_override',
     pg_catalog.current_database());
   EXECUTE pg_catalog.format('GRANT CONNECT ON DATABASE %I TO public_rw, admin_rw, worker_rw, internal_rw',
     pg_catalog.current_database());
@@ -84,10 +93,29 @@ BEGIN
 END
 $db$;
 
--- Schema public: owned by migrator; USAGE only for the app roles, nothing for PUBLIC.
+-- The Owner's scoring override function is owned by trivia_override, not migrator, so migrator
+-- could not revoke its privileges in grants.sql and preflight.sql would refuse it as foreign-owned
+-- (ET090). It is dropped here on every run and created again, with its owner and grants, by
+-- sql/override.sql at the very end (src/migrate.ts). Until then no override can run (fail closed).
+-- Every signature it ever had is dropped (it changed in the US-018 review), whoever owns it.
+DO $override$
+DECLARE
+  f record;
+BEGIN
+  FOR f IN
+    SELECT p.oid::pg_catalog.regprocedure AS sig FROM pg_catalog.pg_proc p
+     WHERE p.pronamespace = 'public'::pg_catalog.regnamespace AND p.proname = 'override_question_scoring'
+  LOOP
+    EXECUTE pg_catalog.format('DROP FUNCTION %s', f.sig);
+  END LOOP;
+END
+$override$;
+
+-- Schema public: owned by migrator; USAGE only for the app roles (and trivia_override, whose
+-- function names public tables), nothing for PUBLIC.
 ALTER SCHEMA public OWNER TO migrator;
-REVOKE ALL ON SCHEMA public FROM PUBLIC, public_rw, admin_rw, worker_rw, internal_rw;
-GRANT USAGE ON SCHEMA public TO public_rw, admin_rw, worker_rw, internal_rw;
+REVOKE ALL ON SCHEMA public FROM PUBLIC, public_rw, admin_rw, worker_rw, internal_rw, trivia_override;
+GRANT USAGE ON SCHEMA public TO public_rw, admin_rw, worker_rw, internal_rw, trivia_override;
 
 -- Objects migrator creates later get no PUBLIC privileges (functions would otherwise get
 -- EXECUTE to PUBLIC), and no app-role grants: every grant is explicit in grants.sql.

@@ -1,6 +1,9 @@
 import { defineConfig } from "vitest/config";
 
 export default defineConfig({
+  // apps/admin's .tsx components keep tsconfig `jsx: preserve` (Next.js compiles them); a unit test
+  // that renders one (e.g. the legal page preview's XSS test) needs JSX compiled for React.
+  oxc: { jsx: { runtime: "automatic" } },
   test: {
     include: [
       "scripts/**/*.test.ts",

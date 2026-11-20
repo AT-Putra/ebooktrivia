@@ -65,11 +65,41 @@ export function TextField({
   );
 }
 
-export function TextArea({ id, name, label, defaultValue, rows = 6, hint, maxLength }: { id: string; name: string; label: string; defaultValue?: string | null | undefined; rows?: number | undefined; hint?: string | undefined; maxLength?: number }) {
+export function TextArea({
+  id,
+  name,
+  label,
+  defaultValue,
+  rows = 6,
+  hint,
+  maxLength,
+  minLength,
+  required = false,
+}: {
+  id: string;
+  name: string;
+  label: string;
+  defaultValue?: string | null | undefined;
+  rows?: number | undefined;
+  hint?: string | undefined;
+  maxLength?: number;
+  minLength?: number;
+  required?: boolean;
+}) {
   return (
     <div className="flex flex-col gap-1.5">
       <Label htmlFor={id}>{label}</Label>
-      <textarea id={id} name={name} rows={rows} defaultValue={defaultValue ?? ""} maxLength={maxLength} className={`${CONTROL} font-mono text-sm`} aria-describedby={hint === undefined ? undefined : `${id}-hint`} />
+      <textarea
+        id={id}
+        name={name}
+        rows={rows}
+        defaultValue={defaultValue ?? ""}
+        maxLength={maxLength}
+        minLength={minLength}
+        required={required}
+        className={`${CONTROL} font-mono text-sm`}
+        aria-describedby={hint === undefined ? undefined : `${id}-hint`}
+      />
       {hint === undefined ? null : (
         <p id={`${id}-hint`} className="text-xs text-muted-foreground">
           {hint}
@@ -142,5 +172,15 @@ export function PageHeading({ title, description }: { title: string; description
       <h1 className="text-xl font-semibold">{title}</h1>
       <p className="text-xs text-muted-foreground">{description}</p>
     </div>
+  );
+}
+
+/** A one-line state banner of a settings page (US-018): locked content, final results. */
+export function Notice({ tone, children, testId }: { tone: "warning" | "info"; children: ReactNode; testId?: string }) {
+  const colors = tone === "warning" ? "border-warning/60 bg-warning-soft text-warning-soft-foreground" : "border-info/60 bg-info-soft text-info-soft-foreground";
+  return (
+    <p className={`flex items-start gap-2 rounded-md border px-3 py-2 text-sm ${colors}`} data-testid={testId}>
+      {children}
+    </p>
   );
 }

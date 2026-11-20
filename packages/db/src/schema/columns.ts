@@ -30,4 +30,7 @@ export const inCheck = (name: string, column: AnyPgColumn, values: readonly stri
 
 export const nonNegative = (name: string, column: AnyPgColumn) => check(name, sql`${column} >= 0`);
 
+/** A timestamp holding whole milliseconds only (NULL allowed). */
+export const wholeMilliseconds = (name: string, column: AnyPgColumn) => check(name, sql`${column} = date_trunc('milliseconds', ${column})`);
+
 export const jsonObject = (name: string, column: AnyPgColumn) => check(name, sql`jsonb_typeof(${column}) = 'object'`);

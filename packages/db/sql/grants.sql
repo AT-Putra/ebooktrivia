@@ -15,19 +15,27 @@
 --   worker_rw   what jobs need: outbox, deliveries, conversions, waha_*, payments and order state,
 --               eligibility, finalize/snapshot, alerts, heartbeats.
 --   internal_rw SELECT lp_domains, INSERT alerts. Nothing else.
+--   trivia_override (not a group, owns override_question_scoring only; sql/override.sql): the
+--               columns that function reads and writes, nothing more.
+-- admin_rw writes no play rows and no results snapshot (US-018): deleting or moving an attempt
+-- would unlock a set's questions, and deleting the snapshot would re-open the override. It changes
+-- scores only through override_question_scoring, which derives every score it writes from the
+-- answer rows (it takes no scores from the caller) and is refused after the snapshot / grace.
 -- No app role may choose audit_log.id (OVERRIDING SYSTEM VALUE) or occurred_at: INSERT on
 -- audit_log is granted per column.
 
 SELECT pg_catalog.set_config('search_path', 'pg_catalog, pg_temp', false);
 
 REVOKE ALL ON ALL TABLES IN SCHEMA public, player_auth, admin_auth
-  FROM PUBLIC, public_rw, admin_rw, worker_rw, internal_rw;
+  FROM PUBLIC, public_rw, admin_rw, worker_rw, internal_rw, trivia_override;
 REVOKE ALL ON ALL SEQUENCES IN SCHEMA public, player_auth, admin_auth
-  FROM PUBLIC, public_rw, admin_rw, worker_rw, internal_rw;
+  FROM PUBLIC, public_rw, admin_rw, worker_rw, internal_rw, trivia_override;
+-- override_question_scoring does not exist at this point (roles.sql drops it; sql/override.sql, run
+-- last, creates it with its owner trivia_override and its privileges).
 REVOKE ALL ON ALL FUNCTIONS IN SCHEMA public
-  FROM PUBLIC, public_rw, admin_rw, worker_rw, internal_rw;
+  FROM PUBLIC, public_rw, admin_rw, worker_rw, internal_rw, trivia_override;
 REVOKE ALL ON SCHEMA player_auth, admin_auth, drizzle
-  FROM PUBLIC, public_rw, admin_rw, worker_rw, internal_rw;
+  FROM PUBLIC, public_rw, admin_rw, worker_rw, internal_rw, trivia_override;
 
 GRANT USAGE ON SCHEMA player_auth TO public_rw, admin_rw;
 GRANT USAGE ON SCHEMA admin_auth TO admin_rw;
@@ -104,6 +112,18 @@ GRANT EXECUTE ON FUNCTION public.setting_positive_int(text) TO public_rw;
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO admin_rw;
 REVOKE INSERT, UPDATE, DELETE ON public.audit_log FROM admin_rw;
+-- Play rows and the results snapshot: read only (US-018, see the summary above).
+REVOKE INSERT, UPDATE, DELETE ON public.set_attempts, public.attempt_questions, public.player_program_stats,
+  public.leaderboard_snapshots FROM admin_rw;
+-- Settings are edited, never deleted or renamed (security review US-018 N3 / D1: a missing or renamed
+-- otp.phone_cap would break OTP sending and the checkout guard for everyone). The admin writers
+-- (lib/settings/limits.ts, midtrans.ts) upsert only value, updated_by_admin_user_id and updated_at;
+-- a column UPDATE grant also covers their SELECT ... FOR UPDATE.
+REVOKE DELETE, UPDATE ON public.app_settings FROM admin_rw;
+GRANT UPDATE (value, updated_by_admin_user_id, updated_at) ON public.app_settings TO admin_rw;
+-- Question edits run the content lock check (triggers.sql, SECURITY DEFINER) as the caller; the
+-- override re-score and its pre-read take the program's contest lock.
+GRANT EXECUTE ON FUNCTION public.assert_trivia_set_unlocked(uuid), public.lock_program_contest(uuid) TO admin_rw;
 GRANT INSERT (actor_kind, actor_admin_user_id, action, entity_type, entity_id, changes, pii_refs, request_id, ip)
   ON public.audit_log TO admin_rw;
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA admin_auth TO admin_rw;
@@ -169,6 +189,32 @@ GRANT INSERT (actor_kind, actor_admin_user_id, action, entity_type, entity_id, c
 GRANT EXECUTE ON FUNCTION public.get_payment_secret() TO worker_rw;
 -- Deletes spent admin login-throttle rows only (functions.sql); no other admin_auth access.
 GRANT EXECUTE ON FUNCTION public.sweep_login_throttle(integer) TO worker_rw;
+
+-- ---------------------------------------------------------------------------------------------
+-- trivia_override: the owner of public.override_question_scoring (sql/override.sql), which runs as
+-- it. Reads what the override checks and scores with (program, sets, question, options, snapshot,
+-- attempts, answers, stats, the actor's admin profile) and writes only: points / timer of the
+-- question, which option is correct, the affected players' re-scored answers (correct, points,
+-- elapsed), their attempts' score / total_ms / finished_at and per-program stats (a missing stats
+-- row is inserted), and its own audit row. It scores through public.score_answer.
+-- UPDATE (updated_at) on trivia_sets is only for the FOR UPDATE row lock (no attempt starts meanwhile).
+GRANT SELECT ON
+  public.programs, public.trivia_sets, public.questions, public.question_options, public.set_attempts,
+  public.attempt_questions, public.player_program_stats, public.leaderboard_snapshots
+  TO trivia_override;
+GRANT SELECT (auth_user_id, role, disabled_at) ON public.admin_profiles TO trivia_override;
+GRANT UPDATE (updated_at) ON public.trivia_sets TO trivia_override;
+GRANT UPDATE (points, timer_seconds, updated_at) ON public.questions TO trivia_override;
+GRANT UPDATE (is_correct, updated_at) ON public.question_options TO trivia_override;
+GRANT UPDATE (correct, points, elapsed_ms) ON public.attempt_questions TO trivia_override;
+GRANT UPDATE (score, total_ms, finished_at) ON public.set_attempts TO trivia_override;
+GRANT INSERT (player_id, program_id, score, total_ms, sets_completed, finished_at, updated_at),
+  UPDATE (score, total_ms, sets_completed, finished_at, updated_at)
+  ON public.player_program_stats TO trivia_override;
+GRANT INSERT (actor_kind, actor_admin_user_id, action, entity_type, entity_id, changes, pii_refs, request_id, ip)
+  ON public.audit_log TO trivia_override;
+GRANT EXECUTE ON FUNCTION public.lock_program_contest(uuid),
+  public.score_answer(integer, integer, uuid, uuid, timestamptz, timestamptz, timestamptz) TO trivia_override;
 
 -- ---------------------------------------------------------------------------------------------
 -- internal_rw (apps/worker --role=internal: Caddy ask, GlitchTip hook). No keys.

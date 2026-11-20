@@ -27,7 +27,7 @@ describe("play rows (public_rw)", () => {
       "public_rw",
       (tx) => tx`
         INSERT INTO public.attempt_questions (attempt_id, question_id, position, permutation, served_at, deadline_at)
-        VALUES (${attemptId}, ${question.id}, 1, ${question.options}::uuid[], now(), now() + interval '20 seconds')`,
+        VALUES (${attemptId}, ${question.id}, 1, ${question.options}::uuid[], date_trunc('milliseconds', now()), date_trunc('milliseconds', now()) + interval '20 seconds')`,
     );
 
   it("lets an eligible player play a published program", async () => {
@@ -35,9 +35,9 @@ describe("play rows (public_rw)", () => {
     const attemptId = await startAttempt(playerId, setId);
     await serve(attemptId, q1);
     await asRole("public_rw", async (tx) => {
-      await tx`UPDATE public.attempt_questions SET answered_at = now(), option_id = ${q1.options[0]}, correct = true, points = 10
+      await tx`UPDATE public.attempt_questions SET answered_at = date_trunc('milliseconds', now()), option_id = ${q1.options[0]}, correct = true, points = 10
                WHERE attempt_id = ${attemptId}`;
-      await tx`UPDATE public.set_attempts SET score = 10, finished_at = now() WHERE id = ${attemptId}`;
+      await tx`UPDATE public.set_attempts SET score = 10, finished_at = date_trunc('milliseconds', now()) WHERE id = ${attemptId}`;
       await tx`INSERT INTO public.player_program_stats (player_id, program_id, score, total_ms) VALUES (${playerId}, ${programId}, 10, 1200)`;
     });
   });
@@ -114,14 +114,15 @@ describe("winners and program finalization", () => {
   let tierId: string;
   beforeAll(async () => {
     ({ programId } = await createProgram());
-    snapshotId = first(
-      await sql<Id[]>`
-        INSERT INTO leaderboard_snapshots (program_id, frozen_at, entries) VALUES (${programId}, now(), '[]') RETURNING id`,
-    ).id;
+    // Tiers first: once the snapshot exists they are final (prize_tiers_guard, ET072).
     tierId = first(
       await sql<Id[]>`
         INSERT INTO prize_tiers (program_id, rank_from, rank_to, name, value_idr)
         VALUES (${programId}, 1, 10, 'Juara', 1000000) RETURNING id`,
+    ).id;
+    snapshotId = first(
+      await sql<Id[]>`
+        INSERT INTO leaderboard_snapshots (program_id, frozen_at, entries) VALUES (${programId}, now(), '[]') RETURNING id`,
     ).id;
   });
 

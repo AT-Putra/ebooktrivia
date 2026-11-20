@@ -5,6 +5,10 @@
 // correct and total_ms are still written by the internet-facing app. Finalize and re-score MUST
 // recompute from attempt_questions.option_id joined to question_options.is_correct and
 // questions.points (and the server timestamps), never trust the stored score.
+//
+// Answer and finish timestamps are whole milliseconds (CHECK, US-018): scores and the ranking
+// tie-break are computed in milliseconds by @ebooktrivia/core and by SQL alike, so a re-score can
+// never flip a tie on a sub-millisecond difference. Writers truncate: date_trunc('milliseconds', ...).
 import { sql } from "drizzle-orm";
 import {
   bigint,
@@ -22,7 +26,7 @@ import {
   uuid,
 } from "drizzle-orm/pg-core";
 import { programs, questionOptions, questions, triviaSets } from "./catalog.ts";
-import { bytea, createdAt, id, idr, nonNegative, tstz, updatedAt } from "./columns.ts";
+import { bytea, createdAt, id, idr, nonNegative, tstz, updatedAt, wholeMilliseconds } from "./columns.ts";
 import { uploads } from "./governance.ts";
 import { players } from "./player.ts";
 
@@ -48,6 +52,7 @@ export const setAttempts = pgTable(
     index("set_attempts_set_id_idx").on(t.setId),
     nonNegative("set_attempts_score_check", t.score),
     nonNegative("set_attempts_total_ms_check", t.totalMs),
+    wholeMilliseconds("set_attempts_finished_at_ms_check", t.finishedAt),
   ],
 );
 
@@ -82,6 +87,9 @@ export const attemptQuestions = pgTable(
     check("attempt_questions_deadline_check", sql`${t.deadlineAt} IS NULL OR ${t.deadlineAt} >= ${t.servedAt}`),
     nonNegative("attempt_questions_points_check", t.points),
     check("attempt_questions_elapsed_ms_check", sql`${t.elapsedMs} IS NULL OR ${t.elapsedMs} >= 0`),
+    wholeMilliseconds("attempt_questions_served_at_ms_check", t.servedAt),
+    wholeMilliseconds("attempt_questions_deadline_at_ms_check", t.deadlineAt),
+    wholeMilliseconds("attempt_questions_answered_at_ms_check", t.answeredAt),
   ],
 );
 
@@ -103,6 +111,10 @@ export const playerProgramStats = pgTable(
   },
   (t) => [
     primaryKey({ name: "player_program_stats_pkey", columns: [t.playerId, t.programId] }),
+    nonNegative("player_program_stats_score_check", t.score),
+    nonNegative("player_program_stats_total_ms_check", t.totalMs),
+    nonNegative("player_program_stats_sets_completed_check", t.setsCompleted),
+    wholeMilliseconds("player_program_stats_finished_at_ms_check", t.finishedAt),
     index("player_program_stats_ranking_idx").on(
       t.programId,
       t.score.desc(),

@@ -42,6 +42,10 @@ describe("provisioning", () => {
     expect(code("infra/provision/provision.sh")).toMatch(/includepkgs=fail2ban\*/);
   });
 
+  it("ends an idle-in-transaction admin session after 60 s, so the Owner's re-score lock is released (US-018 review F2)", () => {
+    expect(code("infra/provision/db-roles.sh")).toMatch(/login = 'ebt_admin'[\s\S]*ALTER ROLE %I SET idle_in_transaction_session_timeout = %L', login, '60s'/);
+  });
+
   it("sends no plaintext password on a command line (S12)", () => {
     const dbRoles = code("infra/provision/db-roles.sh");
     expect(dbRoles).not.toMatch(/scram "\$password"/);

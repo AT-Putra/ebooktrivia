@@ -149,6 +149,15 @@ BEGIN
       EXECUTE format('GRANT %I TO %I WITH INHERIT TRUE, SET TRUE', grp, login);
       RAISE NOTICE 'CHANGED login % is a member of %', login, grp;
     END IF;
+    -- The admin app never leaves a transaction idle (US-018 review: the Owner's re-score holds the
+    -- program's contest lock); a stuck one is ended after 60 s so the lock is released.
+    IF login = 'ebt_admin' AND NOT EXISTS (
+      SELECT 1 FROM pg_db_role_setting s
+       WHERE s.setrole = (SELECT oid FROM pg_roles WHERE rolname = login) AND s.setdatabase = 0
+         AND 'idle_in_transaction_session_timeout=60s' = ANY (s.setconfig)) THEN
+      EXECUTE format('ALTER ROLE %I SET idle_in_transaction_session_timeout = %L', login, '60s');
+      RAISE NOTICE 'CHANGED login % idle_in_transaction_session_timeout set to 60s', login;
+    END IF;
   END LOOP;
   -- No connections or temp tables for PUBLIC outside the app database.
   FOR r IN
