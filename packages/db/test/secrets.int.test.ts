@@ -118,15 +118,18 @@ describe("settings_secrets relabel guard (ET060 / ET061)", () => {
     ] as (keyof typeof fresh)[][]) {
       expect(await sqlState(asRole("admin_rw", (tx) => partial(tx, columns)))).toBe("ET060");
     }
-    // Writing the same bytes back is no re-encryption either.
-    const same = asRole(
-      "admin_rw",
-      (tx) => tx`
-        UPDATE public.settings_secrets
-           SET scope = 'conversions', ciphertext = ciphertext, nonce = nonce, sealed_dek = sealed_dek
-         WHERE id = ${id}`,
-    );
-    expect(await sqlState(same)).toBe("ET060");
+    // Writing the same bytes back is no re-encryption either. admin_rw cannot even read the sealed
+    // columns to copy them (US-017: no decryptable form is readable by admin_rw); the owner can.
+    const same = (role: "admin_rw" | "migrator") =>
+      asRole(
+        role,
+        (tx) => tx`
+          UPDATE public.settings_secrets
+             SET scope = 'conversions', ciphertext = ciphertext, nonce = nonce, sealed_dek = sealed_dek
+           WHERE id = ${id}`,
+      );
+    expect(await sqlState(same("admin_rw"))).toBe("42501");
+    expect(await sqlState(same("migrator"))).toBe("ET060");
   });
 
   it("allows a relabel together with a full re-encryption, and a plain value rotation", async () => {

@@ -50,6 +50,20 @@
       "when": 1795061970901,
       "tag": "0006_sweep_login_throttle_window",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1795069670427,
+      "tag": "0007_settings_admin",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1795080947146,
+      "tag": "0008_settings_review_fixes",
+      "breakpoints": true
     }
   ]
 }

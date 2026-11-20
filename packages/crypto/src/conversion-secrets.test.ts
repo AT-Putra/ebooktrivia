@@ -5,7 +5,8 @@ import { postbackSecretNames, renderPostbackUrl, TemplateError } from "@ebooktri
 import { describe, expect, it } from "vitest";
 import { type ConversionSecretQuery, type ConversionSecretStore, loadConversionSecretResolver } from "./conversion-secrets.ts";
 import { CryptoError, generateScopeKeyPair } from "./sealed-box.ts";
-import { createSecretOpener, createSecretSealer, type StoredSecretRow } from "./secrets.ts";
+import { createSecretOpener } from "./opener.ts";
+import { createSecretSealer, type StoredSecretRow } from "./secrets.ts";
 
 const keys = generateScopeKeyPair();
 const payment = generateScopeKeyPair();

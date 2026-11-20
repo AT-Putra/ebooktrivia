@@ -1,10 +1,11 @@
 // Infra & governance: outbox, admin profiles, audit log, ad spend, templates, legal pages,
 // consents, deletion requests, secrets, settings, uploads, alerts, heartbeats.
 import { sql } from "drizzle-orm";
-import { bigint, check, date, index, inet, integer, jsonb, pgTable, text, unique, uuid } from "drizzle-orm/pg-core";
+import { bigint, boolean, check, date, index, inet, integer, jsonb, pgTable, text, unique, uuid } from "drizzle-orm/pg-core";
 import { adminAuthUser } from "./auth.ts";
-import { programs } from "./catalog.ts";
-import { bytea, createdAt, id, idr, inCheck, jsonObject, nonNegative, tstz, updatedAt } from "./columns.ts";
+import { products, programs } from "./catalog.ts";
+import { bytea, createdAt, e164Check, id, idr, inCheck, jsonObject, nonNegative, tstz, updatedAt } from "./columns.ts";
+import { wahaSessions } from "./delivery.ts";
 import { landingPages, orders } from "./funnel.ts";
 import { players } from "./player.ts";
 import { adnets } from "./tracking.ts";
@@ -125,6 +126,62 @@ export const messageTemplates = pgTable(
     inCheck("message_templates_channel_check", t.channel, ["whatsapp", "email"]),
     unique("message_templates_key_channel_locale_key").on(t.key, t.channel, t.locale),
   ],
+);
+
+/**
+ * Template test-sends (AC-A10). The admin app never sends: it inserts this row and an outbox row
+ * (topic `template.test_send`, payload `{test_send_id}`) in one transaction, and the worker claims
+ * the row (`pending -> sending`), renders the template with sample values and sends it, then
+ * records `sent` or `failed`. A crash after the claim leaves it `sending` (never re-sent).
+ * `recipient` is PII (E.164 phone for WhatsApp, an address for e-mail): the audit log gets a
+ * reference only.
+ */
+export const templateTestSends = pgTable(
+  "template_test_sends",
+  {
+    id: id(),
+    templateId: uuid("template_id")
+      .notNull()
+      .references(() => messageTemplates.id, { onDelete: "cascade" }),
+    channel: text("channel").notNull(),
+    recipient: text("recipient").notNull(),
+    /** The WhatsApp session to send from (whatsapp only). */
+    wahaSessionId: uuid("waha_session_id").references(() => wahaSessions.id, { onDelete: "cascade" }),
+    status: text("status").notNull().default("pending"),
+    requestedByAdminUserId: text("requested_by_admin_user_id").notNull(),
+    /** A short error code from the worker (no PII, no provider text). */
+    error: text("error"),
+    sentAt: tstz("sent_at"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    inCheck("template_test_sends_channel_check", t.channel, ["whatsapp", "email"]),
+    inCheck("template_test_sends_status_check", t.status, ["pending", "sending", "sent", "failed"]),
+    check(
+      "template_test_sends_target_check",
+      sql`(${t.channel} = 'whatsapp' AND ${t.recipient} ~ '^\\+[1-9][0-9]{7,14}$') OR (${t.channel} = 'email' AND ${t.wahaSessionId} IS NULL AND char_length(${t.recipient}) <= 254 AND ${t.recipient} ~ '^[^@[:space:]]+@[^@[:space:]]+$')`,
+    ),
+    check("template_test_sends_error_check", sql`${t.error} IS NULL OR ${t.error} ~ '^[a-z_]{1,64}$'`),
+    index("template_test_sends_template_idx").on(t.templateId, t.createdAt),
+  ],
+);
+
+/**
+ * WhatsApp numbers template test-sends may go to (security review US-017 S4: the test-send button is
+ * not a relay to arbitrary numbers). Owner-managed, at most 5 (apps/admin lib/settings/templates.ts),
+ * audited; admin only (no other role has access).
+ */
+export const testRecipients = pgTable(
+  "test_recipients",
+  {
+    id: id(),
+    phone: text("phone").notNull().unique("test_recipients_phone_key"),
+    label: text("label").notNull(),
+    createdByAdminUserId: text("created_by_admin_user_id").notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [e164Check("test_recipients_phone_check", t.phone), check("test_recipients_label_check", sql`char_length(${t.label}) BETWEEN 1 AND 60`)],
 );
 
 /** Versioned per-program S&K (terms) and privacy pages; consents reference the exact version. */
@@ -259,12 +316,14 @@ export const uploads = pgTable(
   {
     id: id(),
     kind: text("kind").notNull(),
-    /** Path under /srv/data/uploads. */
+    /** Path relative to the data directory /srv/data, e.g. "deliverables/<id>.pdf". */
     storagePath: text("storage_path").notNull().unique("uploads_storage_path_key"),
     originalFilename: text("original_filename"),
     contentType: text("content_type").notNull(),
     sizeBytes: bigint("size_bytes", { mode: "number" }).notNull(),
     sha256: bytea("sha256").notNull(),
+    /** Set when a product's PDF is replaced by another; the upload sweeper deletes it after a grace period. */
+    supersededAt: tstz("superseded_at"),
     createdByAdminUserId: text("created_by_admin_user_id"),
     createdAt: createdAt(),
   },
@@ -272,6 +331,47 @@ export const uploads = pgTable(
     inCheck("uploads_kind_check", t.kind, ["pdf", "image", "lp_zip", "import", "proof"]),
     nonNegative("uploads_size_bytes_check", t.sizeBytes),
     check("uploads_sha256_check", sql`octet_length(${t.sha256}) = 32`),
+  ],
+);
+
+/**
+ * Chunked (resumable) admin uploads (US-017). Caddy's read_body timeout is global (30 s), so a
+ * large PDF goes up in small chunks: each chunk is hash-checked and written at its offset into a
+ * staging file under /srv/data, and `complete` checks the assembled file against the upload
+ * policy (packages/uploads) and its declared SHA-256 before it becomes an `uploads` row. Admin
+ * only (no other role has access).
+ */
+export const uploadSessions = pgTable(
+  "upload_sessions",
+  {
+    id: id(),
+    kind: text("kind").notNull(),
+    productId: uuid("product_id")
+      .notNull()
+      .references(() => products.id, { onDelete: "cascade" }),
+    filename: text("filename").notNull(),
+    sizeBytes: bigint("size_bytes", { mode: "number" }).notNull(),
+    sha256: bytea("sha256").notNull(),
+    chunkBytes: integer("chunk_bytes").notNull(),
+    receivedChunks: integer("received_chunks")
+      .array()
+      .notNull()
+      .default(sql`'{}'::integer[]`),
+    /** The Owner / Staff confirmed the large-PDF warning (> 20 MiB) before the upload started. */
+    largeConfirmed: boolean("large_confirmed").notNull().default(false),
+    createdByAdminUserId: text("created_by_admin_user_id").notNull(),
+    uploadId: uuid("upload_id").references(() => uploads.id, { onDelete: "set null" }),
+    expiresAt: tstz("expires_at").notNull(),
+    /** Set by `complete` when it claims the session; chunk writes are refused from then on. */
+    completingAt: tstz("completing_at"),
+    completedAt: tstz("completed_at"),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    inCheck("upload_sessions_kind_check", t.kind, ["pdf"]),
+    check("upload_sessions_size_bytes_check", sql`${t.sizeBytes} > 0`),
+    check("upload_sessions_sha256_check", sql`octet_length(${t.sha256}) = 32`),
+    check("upload_sessions_chunk_bytes_check", sql`${t.chunkBytes} > 0`),
   ],
 );
 

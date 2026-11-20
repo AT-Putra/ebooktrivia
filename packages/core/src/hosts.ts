@@ -1,3 +1,7 @@
+// The stored form of a landing-page host (lp_domains.host), shared by the internal process's Caddy
+// `ask` check (apps/worker) and the admin's LP domain registration (apps/admin), so both accept
+// exactly the same names (moved here from apps/worker in US-017).
+//
 // Host check for Caddy's on-demand TLS `ask` (internal process). Caddy asks with the SNI name of
 // a TLS handshake that anyone on the internet can start, so the input is hostile. Only the exact
 // form lp_domains stores is approved: lowercase ASCII (punycode A-labels for IDN), at least two

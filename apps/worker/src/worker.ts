@@ -10,6 +10,9 @@
 //                    exists and the conversions sweeper enqueues nothing.
 //   deliverDelivery  the delivery consumer (US-025). Without it no delivery.send queue exists and
 //                    the deliveries sweeper does not run.
+//   testSend         the senders of admin template test-sends (US-017, template-test-send.ts).
+//                    runWorker wires the real SMTP / WAHA senders when worker.env holds
+//                    SECRETS_MESSAGING_PRIVATE_KEY; without it template.test_send is not relayed.
 //   graceEnd         finalize / snapshot / winners (US-028), run before a program moves to
 //                    awaiting_confirmation. Without it the grace-end sweeper does not run: the worker
 //                    cannot move a program back, so it never ends a grace period it cannot finish.
@@ -31,6 +34,8 @@ import { createOutboxProcessor, type OutboxConsumer } from "./outbox-consumer.ts
 import { createQueue, JOB_RETENTION, redisOptions } from "./queues.ts";
 import { relayOnce } from "./relay.ts";
 import { onShutdown } from "./shutdown.ts";
+import { createTemplateTestSendConsumer, type TestSender } from "./template-test-send.ts";
+import { testSendFromEnv } from "./test-send-senders.ts";
 import { type GraceEndHook, runSweeps } from "./sweepers.ts";
 import { loadWorkerConfig, type WorkerConfig } from "./worker-config.ts";
 
@@ -44,6 +49,8 @@ export interface WorkerPorts {
   /** US-025: processes one delivery.send job ({ id: deliveries.id }); claim and lease per core delivery-machine. */
   readonly deliverDelivery?: (data: unknown) => Promise<string>;
   readonly graceEnd?: GraceEndHook;
+  /** US-017: the senders of template.test_send (given the worker's pool). */
+  readonly testSend?: (sql: postgres.Sql) => TestSender;
 }
 
 export interface RunningWorker {
@@ -51,14 +58,14 @@ export interface RunningWorker {
 }
 
 export async function startWorker(config: WorkerConfig, ports: WorkerPorts, log: Logger): Promise<RunningWorker> {
-  const consumers = ports.outboxConsumers ?? [];
-  const topics = consumers.map((c) => c.topic);
+  const consumers = [...(ports.outboxConsumers ?? [])];
+  const topics = [...consumers.map((c) => c.topic), ...(ports.testSend === undefined ? [] : ["template.test_send"])];
   if (new Set(topics).size !== topics.length) throw new Error("two outbox consumers registered for one topic");
 
   // One connection per job that can run at once (each BullMQ Worker runs `concurrency` jobs, and a
   // job holds at most one connection at a time), plus the relay, sweeper and heartbeat loops and
   // one spare.
-  const jobQueues = consumers.length + (ports.fireConversion === undefined ? 0 : 1) + (ports.deliverDelivery === undefined ? 0 : 1);
+  const jobQueues = topics.length + (ports.fireConversion === undefined ? 0 : 1) + (ports.deliverDelivery === undefined ? 0 : 1);
   const sql = postgres(config.databaseUrl, {
     ...PG_CONNECTION_OPTIONS,
     connection: { ...PG_CONNECTION_OPTIONS.connection, application_name: "ebt-worker" },
@@ -106,6 +113,7 @@ export async function startWorker(config: WorkerConfig, ports: WorkerPorts, log:
     return queue;
   };
 
+  if (ports.testSend !== undefined) consumers.push(createTemplateTestSendConsumer({ sql, sender: ports.testSend(sql) }));
   const outboxQueues = new Map<string, Queue>();
   for (const consumer of consumers) {
     outboxQueues.set(consumer.topic, consume(consumer.topic, createOutboxProcessor(consumer, { sql, failpoint, log })));
@@ -183,6 +191,8 @@ export async function startWorker(config: WorkerConfig, ports: WorkerPorts, log:
 export async function runWorker(env: Env, ports: WorkerPorts = {}): Promise<void> {
   const config = loadWorkerConfig(env);
   const log = createLogger({ level: config.logLevel, role: "worker" });
-  const running = await startWorker(config, ports, log);
+  // Template test-sends need the messaging private key (to open the SMTP password / WAHA key).
+  const testSend = ports.testSend ?? testSendFromEnv(env, config.dev);
+  const running = await startWorker(config, testSend === undefined ? ports : { ...ports, testSend }, log);
   onShutdown(() => running.stop(), log);
 }

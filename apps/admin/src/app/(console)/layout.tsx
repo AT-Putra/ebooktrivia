@@ -9,6 +9,14 @@ import { can, type Permission, type QuestionPermission } from "../../lib/policy.
 
 const NAV: readonly (NavItem & { readonly permission: Exclude<Permission, QuestionPermission> })[] = [
   { href: "/", label: "Overview", icon: "overview", permission: "dashboard.view" },
+  { href: "/settings/programs", label: "Programs", icon: "programs", permission: "program.edit" },
+  { href: "/settings/products", label: "Products", icon: "products", permission: "product.content.edit" },
+  { href: "/settings/landing-pages", label: "Landing pages", icon: "landing", permission: "landing_page.content.edit" },
+  { href: "/settings/adnets", label: "Adnets", icon: "adnets", permission: "adnet.edit" },
+  { href: "/settings/midtrans", label: "Midtrans", icon: "midtrans", permission: "midtrans.edit" },
+  { href: "/settings/waha", label: "WhatsApp", icon: "waha", permission: "waha.edit" },
+  { href: "/settings/smtp", label: "SMTP", icon: "smtp", permission: "smtp.edit" },
+  { href: "/settings/templates", label: "Templates", icon: "templates", permission: "message_template.edit" },
   { href: "/team", label: "Team", icon: "team", permission: "admin_user.manage" },
   { href: "/audit", label: "Audit log", icon: "audit", permission: "audit.view" },
   { href: "/account", label: "Account", icon: "account", permission: "account.manage_own" },

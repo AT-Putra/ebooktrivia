@@ -2,9 +2,35 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { ClipboardTextIcon, GaugeIcon, UserCircleIcon, UsersThreeIcon } from "@phosphor-icons/react";
+import {
+  BookOpenIcon,
+  BrowserIcon,
+  ChatCircleDotsIcon,
+  ChatTextIcon,
+  ClipboardTextIcon,
+  CreditCardIcon,
+  EnvelopeIcon,
+  GaugeIcon,
+  MegaphoneIcon,
+  TrophyIcon,
+  UserCircleIcon,
+  UsersThreeIcon,
+} from "@phosphor-icons/react";
 
-const ICONS = { overview: GaugeIcon, team: UsersThreeIcon, audit: ClipboardTextIcon, account: UserCircleIcon } as const;
+const ICONS = {
+  overview: GaugeIcon,
+  programs: TrophyIcon,
+  products: BookOpenIcon,
+  landing: BrowserIcon,
+  adnets: MegaphoneIcon,
+  midtrans: CreditCardIcon,
+  waha: ChatCircleDotsIcon,
+  smtp: EnvelopeIcon,
+  templates: ChatTextIcon,
+  team: UsersThreeIcon,
+  audit: ClipboardTextIcon,
+  account: UserCircleIcon,
+} as const;
 export type NavIcon = keyof typeof ICONS;
 export interface NavItem {
   readonly href: string;

@@ -25,8 +25,10 @@
 //     TEST-NETs, benchmarking 198.18/15, multicast, reserved, broadcast, IPv4-mapped/-compatible
 //     and SIIT (::ffff:0:0:0/96) IPv6, NAT64 64:ff9b::/96 and /48, 6to4 2002::/16, Teredo
 //     2001::/32, discard 100::/64, documentation 2001:db8::/32 and 3fff::/20, benchmarking
-//     2001:2::/48, ORCHID 2001:10::/28 and 2001:20::/28, SRv6 SIDs 5f00::/16, site-local fec0::/10.
-//     Beyond that, IPv6 must be global unicast 2000::/3 (ULA only via the private allowlist).
+//     2001:2::/48, ORCHID 2001:10::/28 and 2001:20::/28, SRv6 SIDs 5f00::/16, site-local fec0::/10,
+//     and the cloud metadata addresses inside private ranges: 100.100.100.200 (Alibaba) and
+//     fd00:ec2::/32 (AWS IMDS IPv6), even for an allowlisted host. Beyond that, IPv6 must be global
+//     unicast 2000::/3 (ULA only via the private allowlist). The lists live in address-policy.ts.
 //   PRIVATE networks (RFC 1918, CGNAT 100.64/10, IPv6 ULA fc00::/7): blocked unless the URL host
 //     is on the caller's allowPrivateHosts list - the explicit, audited admin allowlist for a WAHA
 //     host on a private IP (waha_servers.allow_private_ip; changes are audit-logged by the admin).
@@ -34,8 +36,11 @@
 //     local WAHA mock / Midtrans stub.
 
 import { lookup as dnsLookup } from "node:dns";
-import { BlockList, isIP } from "node:net";
+import { isIP } from "node:net";
 import { Agent, fetch as undiciFetch, type RequestInit, type Response } from "undici";
+import { type AddressPolicy, isBlockedAddress } from "./address-policy.ts";
+
+export { type AddressPolicy, isBlockedAddress };
 
 export type SafeFetchErrorCode =
   | "invalid_url"
@@ -57,89 +62,6 @@ export class SafeFetchError extends Error {
     this.code = code;
     this.httpStatus = options?.httpStatus;
   }
-}
-
-const ALWAYS_BLOCKED = new BlockList();
-for (const [network, prefix] of [
-  ["0.0.0.0", 8],
-  ["127.0.0.0", 8],
-  ["169.254.0.0", 16],
-  ["192.0.0.0", 24],
-  ["192.0.2.0", 24],
-  ["192.88.99.0", 24],
-  ["198.18.0.0", 15],
-  ["198.51.100.0", 24],
-  ["203.0.113.0", 24],
-  ["224.0.0.0", 4],
-  ["240.0.0.0", 4],
-] as const) {
-  ALWAYS_BLOCKED.addSubnet(network, prefix, "ipv4");
-}
-for (const [network, prefix] of [
-  ["64:ff9b::", 96], // NAT64
-  ["64:ff9b:1::", 48], // local-use NAT64
-  ["100::", 64], // discard
-  ["2001::", 32], // Teredo
-  ["2001:2::", 48], // benchmarking
-  ["2001:10::", 28], // ORCHID (deprecated)
-  ["2001:20::", 28], // ORCHIDv2
-  ["2001:db8::", 32], // documentation
-  ["3fff::", 20], // documentation (RFC 9637)
-  ["5f00::", 16], // SRv6 SIDs
-  ["2002::", 16], // 6to4
-  ["fe80::", 10], // link-local
-  ["fec0::", 10], // site-local (deprecated)
-  ["ff00::", 8], // multicast
-] as const) {
-  ALWAYS_BLOCKED.addSubnet(network, prefix, "ipv6");
-}
-
-// IPv4-mapped (::ffff:0:0/96) and IPv4-compatible/unspecified/loopback (::/96) IPv6. Kept apart
-// and consulted only for IPv6 input: node:net BlockList treats an IPv4 address and its mapped IPv6
-// form as the same, so in ALWAYS_BLOCKED the ::ffff:0:0/96 rule would block every IPv4 address.
-const EMBEDDED_IPV4 = new BlockList();
-EMBEDDED_IPV4.addSubnet("::", 96, "ipv6");
-EMBEDDED_IPV4.addSubnet("::ffff:0:0", 96, "ipv6");
-EMBEDDED_IPV4.addSubnet("::ffff:0:0:0", 96, "ipv6"); // SIIT (RFC 6052 / 7915)
-
-/** IPv6 global unicast; everything outside it (and not allowlisted ULA) is refused. */
-const GLOBAL_UNICAST = new BlockList();
-GLOBAL_UNICAST.addSubnet("2000::", 3, "ipv6");
-
-const PRIVATE_NETWORKS = new BlockList();
-for (const [network, prefix] of [
-  ["10.0.0.0", 8],
-  ["100.64.0.0", 10],
-  ["172.16.0.0", 12],
-  ["192.168.0.0", 16],
-] as const) {
-  PRIVATE_NETWORKS.addSubnet(network, prefix, "ipv4");
-}
-PRIVATE_NETWORKS.addSubnet("fc00::", 7, "ipv6");
-
-const LOOPBACK = new BlockList();
-LOOPBACK.addSubnet("127.0.0.0", 8, "ipv4");
-LOOPBACK.addAddress("::1", "ipv6");
-
-export interface AddressPolicy {
-  /** The URL host is on the audited private-IP allowlist. */
-  readonly allowPrivate: boolean;
-  /** Dev/test only: loopback is allowed too (local stubs). */
-  readonly allowLoopback: boolean;
-}
-
-/** True when a connection to `address` must be refused under `policy`. Non-IP input is refused. */
-export function isBlockedAddress(address: string, policy: AddressPolicy = { allowPrivate: false, allowLoopback: false }): boolean {
-  const family = isIP(address);
-  if (family === 0) return true;
-  const type = family === 4 ? "ipv4" : "ipv6";
-  // Embedded-IPv4 IPv6 forms are always refused (even ::1 and ::ffff:127.0.0.1 in dev): a
-  // connection should use the plain IPv4 address instead.
-  if (family === 6 && EMBEDDED_IPV4.check(address, "ipv6")) return !(policy.allowLoopback && address === "::1");
-  if (policy.allowLoopback && LOOPBACK.check(address, type)) return false;
-  if (ALWAYS_BLOCKED.check(address, type)) return true;
-  if (PRIVATE_NETWORKS.check(address, type)) return !policy.allowPrivate;
-  return family === 6 && !GLOBAL_UNICAST.check(address, "ipv6");
 }
 
 export interface ResolvedAddress {

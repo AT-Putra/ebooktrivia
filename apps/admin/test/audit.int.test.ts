@@ -135,11 +135,11 @@ describe("admin user changes in the audit log", () => {
 
 describe("least privilege", () => {
   it("refuses a database login that is not in admin_rw only (a superuser here)", async () => {
-    const { sql } = createAdminDb(inject("dbUrl"), 1);
+    const { sql, close } = createAdminDb(inject("dbUrl"), 1);
     try {
       await expect(assertAdminLogin(sql)).rejects.toThrow(LoginRoleError);
     } finally {
-      await sql.end({ timeout: 5 });
+      await close();
     }
     await expect(assertAdminLogin(rt.sql)).resolves.toBeUndefined();
   });

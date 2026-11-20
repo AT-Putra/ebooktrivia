@@ -109,6 +109,18 @@ describe("isBlockedAddress", () => {
     expect(isBlockedAddress("127.0.0.1", allowlisted)).toBe(true);
     expect(isBlockedAddress("::ffff:10.0.0.7", allowlisted)).toBe(true);
   });
+
+  // US-017: cloud metadata services that sit inside a PRIVATE range stay refused for the WAHA
+  // private-IP allowlist too; their neighbours in the same private range do not.
+  it.each(["fd00:ec2::254", "fd00:ec2::23", "fd00:ec2:ffff::1", "100.100.100.200"])("refuses metadata address %s even for an allowlisted host", (address) => {
+    expect(isBlockedAddress(address, { allowPrivate: true, allowLoopback: false })).toBe(true);
+    expect(isBlockedAddress(address, { allowPrivate: true, allowLoopback: true })).toBe(true);
+  });
+
+  it.each(["fd00:ec3::254", "fd00::ec2", "100.100.100.199", "100.100.100.201"])("keeps the private neighbour %s allowlistable", (address) => {
+    expect(isBlockedAddress(address, { allowPrivate: true, allowLoopback: false })).toBe(false);
+    expect(isBlockedAddress(address)).toBe(true);
+  });
 });
 
 describe("URL checks (no socket is opened)", () => {

@@ -5,7 +5,7 @@
 import { describe, expect, it } from "vitest";
 import { otpAad, secretAad } from "./aad.ts";
 import { gcmEncrypt, keyIdOf, open, privateKeyObject, rawPublicKey, sealWithEphemeral } from "./sealed-box.ts";
-import { createSecretOpener } from "./secrets.ts";
+import { createSecretOpener } from "./opener.ts";
 
 const hex = (s: string): Buffer => Buffer.from(s, "hex");
 

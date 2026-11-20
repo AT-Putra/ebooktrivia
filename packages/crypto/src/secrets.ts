@@ -12,31 +12,27 @@
 // Two separate capabilities:
 //   SecretSealer  built from PUBLIC keys only (admin.env: all scopes; public.env: messaging, to
 //                 seal OTPs). It has no method that decrypts.
-//   SecretOpener  built from PRIVATE keys (public.env: payment; worker.env: payment, messaging,
+//   SecretOpener  (opener.ts) built from PRIVATE keys (public.env: payment; worker.env: payment, messaging,
 //                 conversions). It picks the key by the ROW's scope and requires the row's key_id
 //                 to equal that key's id; anything else fails closed.
 // Env: SECRETS_<SCOPE>_PUBLIC_KEY / SECRETS_<SCOPE>_PRIVATE_KEY, raw 32-byte X25519 keys as
 // base64url (decodeSecretKey). The opener reads only *_PRIVATE_KEY, the sealer only *_PUBLIC_KEY.
 
-import { randomBytes, randomUUID, type KeyObject } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { decodeSecretKey } from "@ebooktrivia/core";
 import { isSecretScope, otpAad, SECRET_SCOPES, secretAad, type SecretLabels, type SecretScope } from "./aad.ts";
 import {
   CryptoError,
   GCM_NONCE_BYTES,
-  gcmDecrypt,
   gcmEncrypt,
   keyIdOf,
-  open,
-  privateKeyObject,
   publicKeyObject,
-  rawPublicKey,
   seal,
   SEALED_BOX_OVERHEAD,
   X25519_KEY_BYTES,
 } from "./sealed-box.ts";
 
-const DEK_BYTES = 32;
+export const DEK_BYTES = 32;
 const OTP_CODE = /^[0-9]{6}$/;
 export const SEALED_OTP_BYTES = 6 + SEALED_BOX_OVERHEAD;
 
@@ -120,14 +116,14 @@ export function assertOtpCode(code: string): string {
   return code;
 }
 
-function configuredScopes(keys: ScopeKeys): SecretScope[] {
+export function configuredScopes(keys: ScopeKeys): SecretScope[] {
   for (const scope of Object.keys(keys)) {
     if (!isSecretScope(scope)) throw new CryptoError("invalid_key", `unknown secret scope ${scope}`);
   }
   return SECRET_SCOPES.filter((scope) => keys[scope] !== undefined);
 }
 
-function scopeUnavailable(scope: string, what: string): CryptoError {
+export function scopeUnavailable(scope: string, what: string): CryptoError {
   return new CryptoError("scope_unavailable", `no ${what} key configured for scope ${scope}`);
 }
 
@@ -190,50 +186,7 @@ export function createSecretSealer(publicKeys: ScopeKeys): SecretSealer {
   });
 }
 
-export function createSecretOpener(privateKeys: ScopeKeys): SecretOpener {
-  const scopes = configuredScopes(privateKeys);
-  if (scopes.length === 0) throw new CryptoError("invalid_key", "an opener needs at least one scope private key");
-  const keys = new Map<SecretScope, { key: KeyObject; keyId: string }>();
-  for (const scope of scopes) {
-    const key = privateKeyObject(privateKeys[scope] ?? new Uint8Array());
-    keys.set(scope, { key, keyId: keyIdOf(rawPublicKey(key)) });
-  }
-  const keyFor = (scope: SecretScope) => {
-    const key = keys.get(scope);
-    if (key === undefined) throw scopeUnavailable(scope, "private");
-    return key;
-  };
-
-  return Object.freeze({
-    scopes: Object.freeze([...scopes]),
-    openSecret(row: StoredSecretRow): string {
-      const scope = row.scope;
-      // The key is picked by the ROW's scope, and must be the very key the row was sealed to.
-      if (!isSecretScope(scope)) throw scopeUnavailable(scope, "private");
-      const { key, keyId } = keyFor(scope);
-      if (row.keyId !== keyId) {
-        throw new CryptoError("key_mismatch", `secret key_id does not match the configured ${scope} key`);
-      }
-      const { id, name, adnetId, boundHost } = row;
-      const aad = secretAad({ id, scope, name, adnetId, boundHost, keyId: row.keyId });
-      const dek = open(key, row.sealedDek, aad);
-      try {
-        if (dek.length !== DEK_BYTES) throw new CryptoError("decrypt_failed", "decryption failed");
-        return gcmDecrypt(dek, row.nonce, row.ciphertext, aad).toString("utf8");
-      } finally {
-        dek.fill(0);
-      }
-    },
-    openOtp(input: OtpInput & { readonly sealed: Uint8Array }): string {
-      const { key } = keyFor("messaging");
-      const aad = otpAad(input.otpId, input.phone);
-      if (input.sealed.length !== SEALED_OTP_BYTES) throw new CryptoError("decrypt_failed", "decryption failed");
-      return assertOtpCode(open(key, input.sealed, aad).toString("latin1"));
-    },
-  });
-}
-
-function scopeKeysFromEnv(env: Env, kind: "PUBLIC" | "PRIVATE"): ScopeKeys {
+export function scopeKeysFromEnv(env: Env, kind: "PUBLIC" | "PRIVATE"): ScopeKeys {
   const keys: Partial<Record<SecretScope, Uint8Array>> = {};
   for (const scope of SECRET_SCOPES) {
     const name = `SECRETS_${scope.toUpperCase()}_${kind}_KEY`;
@@ -254,9 +207,4 @@ function scopeKeysFromEnv(env: Env, kind: "PUBLIC" | "PRIVATE"): ScopeKeys {
 /** Sealer from SECRETS_<SCOPE>_PUBLIC_KEY (admin.env, public.env). */
 export function sealerFromEnv(env: Env): SecretSealer {
   return createSecretSealer(scopeKeysFromEnv(env, "PUBLIC"));
-}
-
-/** Opener from SECRETS_<SCOPE>_PRIVATE_KEY only; throws when none is set (e.g. admin.env). */
-export function openerFromEnv(env: Env): SecretOpener {
-  return createSecretOpener(scopeKeysFromEnv(env, "PRIVATE"));
 }

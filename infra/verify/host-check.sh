@@ -242,6 +242,13 @@ if grep -qE '^[[:space:]]*ADMIN_ALLOW_INSECURE_LOOPBACK=' "$ETC/admin.env" 2>/de
 else
   pass "$ETC/admin.env does not set ADMIN_ALLOW_INSECURE_LOOPBACK"
 fi
+# The admin app only seals secrets (plan M2.3): no private key may be in its environment (it also
+# refuses to start with one, apps/admin/src/lib/settings/env.ts).
+if grep -qiE '^[[:space:]]*SECRETS_[A-Z0-9_]*PRIVATE_KEY' "$ETC/admin.env" 2>/dev/null; then
+  fail "$ETC/admin.env holds a SECRETS_*_PRIVATE_KEY"
+else
+  pass "$ETC/admin.env holds no private key"
+fi
 for file in caddy/Caddyfile valkey/valkey.conf valkey/users.acl postgres/pg_hba.conf postgres/superuser.pass; do
   expect "$ETC/$file mode/owner" "640 root $APP" "$(stat -c '%a %U %G' "$ETC/$file" 2>/dev/null)"
 done

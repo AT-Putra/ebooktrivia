@@ -21,6 +21,7 @@
 //   - A9: devAllowPlaintext is dev-only. The worker config loader refuses its dev flags when
 //     NODE_ENV=production (apps/worker/src/worker-config.ts); every other caller must do the same.
 
+import { isPlainAddress, isSafeDisplayName, isSafeFileName } from "@ebooktrivia/core";
 import { createTransport } from "nodemailer";
 import { isRecord } from "./http.ts";
 import { isBlockedAddress, type Resolver, systemResolver } from "./safe-fetch.ts";
@@ -95,22 +96,10 @@ export function classifySmtpError(error: unknown, stage: SmtpStage = { dataWritt
 
 // --- addresses ---------------------------------------------------------------------------------
 
-const LOCAL_PART = /^[A-Za-z0-9!#$%&*+/=?^_`{|}~-]+(?:\.[A-Za-z0-9!#$%&*+/=?^_`{|}~-]+)*$/;
-const DOMAIN = /^(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$/;
-const CONTROL = /\p{Cc}/u;
-const DISPLAY_NAME = /^[^<>"\\,;:@()[\]]{1,64}$/u;
-const FILENAME = /^[^"'\\/<>:*?|]{1,128}$/u;
 const CONTENT_TYPE = /^[a-z0-9][a-z0-9!#$&^_.+-]{0,63}\/[a-z0-9][a-z0-9!#$&^_.+-]{0,63}$/i;
 
-/** True for one plain ASCII addr-spec ("local@domain.tld"): no display name, quotes, comma or CR/LF. */
-export function isPlainAddress(value: string): boolean {
-  if (value.length > 254) return false;
-  const at = value.indexOf("@");
-  if (at < 1 || at !== value.lastIndexOf("@")) return false;
-  const local = value.slice(0, at);
-  const domain = value.slice(at + 1);
-  return local.length <= 64 && LOCAL_PART.test(local) && DOMAIN.test(domain);
-}
+// The address / name rules are core's (shared with the admin console, code review US-017 L5).
+export { isPlainAddress };
 
 /** `from` as "addr" or "Display Name <addr>"; the name goes to nodemailer as data, never as header text. */
 function parseFrom(from: string): { readonly name: string | undefined; readonly address: string } {
@@ -118,14 +107,14 @@ function parseFrom(from: string): { readonly name: string | undefined; readonly 
   const name = named?.[1]?.trim();
   const address = named?.[2] ?? from;
   if (!isPlainAddress(address)) throw new RangeError("from must be a plain address, optionally with a display name");
-  if (name !== undefined && (!DISPLAY_NAME.test(name) || CONTROL.test(name))) throw new RangeError("from has an unsafe display name");
+  if (name !== undefined && !isSafeDisplayName(name)) throw new RangeError("from has an unsafe display name");
   return { name, address };
 }
 
 function assertMessage(message: MailMessage): { readonly name: string | undefined; readonly address: string } {
   if (!isPlainAddress(message.to)) throw new RangeError("to must be exactly one plain address");
   for (const a of message.attachments ?? []) {
-    if (!FILENAME.test(a.filename) || CONTROL.test(a.filename) || a.filename.startsWith(".")) throw new RangeError("attachment filename is unsafe");
+    if (!isSafeFileName(a.filename)) throw new RangeError("attachment filename is unsafe");
     if (!CONTENT_TYPE.test(a.contentType)) throw new RangeError("attachment contentType must be type/subtype");
   }
   return parseFrom(message.from);

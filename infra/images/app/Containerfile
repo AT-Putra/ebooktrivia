@@ -50,7 +50,8 @@ RUN test -n "$ADMIN_ORIGIN" || { echo "build-arg ADMIN_ORIGIN is required" >&2; 
 
 # The worker runs its TypeScript directly (Node type stripping). Node refuses to strip types under
 # node_modules, so the workspace layout is kept: workspace packages stay in packages/ and pnpm's
-# node_modules links point there.
+# node_modules links point there. This package list and build-admin-cli's must hold every runtime
+# workspace dependency of the app, transitively (infra/verify/src/images.test.ts).
 FROM deps AS build-worker
 RUN pnpm install --frozen-lockfile --prod --filter "@ebooktrivia/worker..."
 COPY . .
@@ -58,7 +59,7 @@ RUN mkdir -p /out \
  && cp -a package.json pnpm-workspace.yaml node_modules /out/ \
  && mkdir -p /out/apps /out/packages \
  && cp -a apps/worker /out/apps/ \
- && for p in core db adapters; do cp -a "packages/$p" /out/packages/; done \
+ && for p in adapters core crypto db; do cp -a "packages/$p" /out/packages/; done \
  && rm -rf /out/apps/worker/test /out/apps/worker/coverage \
  && find /out/apps /out/packages -name '*.test.ts' -delete
 
@@ -104,7 +105,7 @@ COPY . .
 RUN mkdir -p /out/apps/admin /out/packages \
  && cp -a package.json pnpm-workspace.yaml node_modules /out/ \
  && cp -a apps/admin/package.json apps/admin/node_modules apps/admin/src /out/apps/admin/ \
- && for p in db edge; do cp -a "packages/$p" /out/packages/; done \
+ && for p in adapters core crypto db edge ui uploads; do cp -a "packages/$p" /out/packages/; done \
  && find /out/apps /out/packages -name '*.test.ts' -delete
 
 FROM ${NODE_IMAGE} AS admin-cli

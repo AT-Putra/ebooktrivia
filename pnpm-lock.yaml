@@ -166,6 +166,7 @@ overrides:
   better-auth>vitest: '-'
   better-auth>drizzle-kit: '-'
   next>@playwright/test: '-'
+  tldts>tldts-core: 7.4.19
 
 importers:
 
@@ -204,6 +205,15 @@ importers:
 
   apps/admin:
     dependencies:
+      '@ebooktrivia/adapters':
+        specifier: workspace:*
+        version: link:../../packages/adapters
+      '@ebooktrivia/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@ebooktrivia/crypto':
+        specifier: workspace:*
+        version: link:../../packages/crypto
       '@ebooktrivia/db':
         specifier: workspace:*
         version: link:../../packages/db
@@ -213,6 +223,9 @@ importers:
       '@ebooktrivia/ui':
         specifier: workspace:*
         version: link:../../packages/ui
+      '@ebooktrivia/uploads':
+        specifier: workspace:*
+        version: link:../../packages/uploads
       '@node-rs/argon2':
         specifier: 2.2.2
         version: 2.2.2
@@ -237,6 +250,9 @@ importers:
       react-dom:
         specifier: 19.3.1
         version: 19.3.1(react@19.3.1)
+      tldts:
+        specifier: 7.4.19
+        version: 7.4.19
       uqr:
         specifier: 0.1.3
         version: 0.1.3
@@ -314,6 +330,9 @@ importers:
       '@ebooktrivia/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@ebooktrivia/crypto':
+        specifier: workspace:*
+        version: link:../../packages/crypto
       '@ebooktrivia/db':
         specifier: workspace:*
         version: link:../../packages/db
@@ -5352,12 +5371,19 @@ packages:
     resolution: {integrity: sha512-LgO3D9yZJjApUiuUfl9iFAwrtaX4+lok3wJIqttGoKCHlWUqHqbQpnxCf82L8FjgKsh4iGo78hqJwgL8F6To2A==}
     engines: {node: '>=14.0.0'}
 
+  tldts-core@7.4.19:
+    resolution: {integrity: sha512-goNXV6Ho9TIOfpJZanTd6CKG5DyYgYAL+k+22T0SLh8l6+KHIfBUPFuePuSZv05UttIaaLmI9tb7TmGIdK5AkQ==}
+
   tldts-core@7.4.20:
     resolution: {integrity: sha512-C630TWXZCZmLq0F2bW4QqwnaaxCQ/svpAqvJwnC4JvgEM5ohhBnGsEzTLSOXcN+xjz+kEaHS5uoWIw2klnqd0A==}
     deprecated: Partial release, see https://github.com/remusao/tldts/issues/2735. Use >=7.4.22.
 
   tldts-icann@7.4.19:
     resolution: {integrity: sha512-lnGUR5BZm5UpNDYMBFGAr9pxS2RTUr/euXuJ9o1irR+zKhsBAFUn7quHoZt8UP/eIwykp4ye5f56bCjMBytbTg==}
+
+  tldts@7.4.19:
+    resolution: {integrity: sha512-48dH6aSpQnpbzDUc4vIQZ1VjB8tkK+e8c1yx05/SZK+rkssgjEOlxDd/yU8/a4vGYQ9vRgJr9dwMq9TJ0b3X2Q==}
+    hasBin: true
 
   tmp@0.2.7:
     resolution: {integrity: sha512-e0votIpp4Uo2AJYSzVHV6xCcawuiez3DzqDAbrTc3YxBkplN6e+dM13ZeIcZnDg/QpSuU2zfZ3rzwY8ukEnaXw==}
@@ -10236,11 +10262,17 @@ snapshots:
 
   tinyrainbow@3.2.0: {}
 
+  tldts-core@7.4.19: {}
+
   tldts-core@7.4.20: {}
 
   tldts-icann@7.4.19:
     dependencies:
       tldts-core: 7.4.20
+
+  tldts@7.4.19:
+    dependencies:
+      tldts-core: 7.4.19
 
   tmp@0.2.7: {}
 

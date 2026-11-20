@@ -180,3 +180,12 @@ No package outside this file or the plan. Added to apps/admin: better-auth, @nod
 - **`@ebooktrivia/test-support`** (tools/test-support, workspace, test code only): the throwaway-database helper and the RFC 6238 TOTP generator shared by apps/admin integration tests and the e2e suite. No new package.
 
 Admin gates: `pnpm --filter @ebooktrivia/admin test:int` (needs PostgreSQL: Better Auth flows, lockout, sessions, audit, CLI) and the Playwright spec `e2e/tests/admin-auth.spec.ts` (builds and starts its own `next start` on port 3202 with a throwaway database).
+
+## apps/admin settings (US-017, M5a-2) - verified 2026-11-19 (`npm view <pkg> time`)
+| Package | Version | Notes |
+|---|---|---|
+| tldts | 7.4.19 | Owner-approved 2026-11-19. MIT. Published 2026-10-20 (past the 2-week gate); npm `latest` is 7.5.4 (2026-11-15, under the gate). Registrable-domain (eTLD+1, Public Suffix List incl. private suffixes) check of landing-page domains (`apps/admin/src/lib/settings/lp-domains.ts`). Its one dependency `tldts-core` is pinned to the same 7.4.19 by a pnpm override (`tldts>tldts-core`), since `^7.4.19` would resolve to a release under the age gate. `tldts-core@7.4.20` in the lockfile is lighthouse's (e2e only, pre-existing) and is marked deprecated upstream ("partial release"); 7.4.19 is not |
+
+Workspace dependencies added (no new third-party package): apps/admin gets `@ebooktrivia/core` (host normalisation, templates, phone, money), `@ebooktrivia/crypto` (the public-key-only sealer), `@ebooktrivia/adapters` (only the `./address-policy` subpath, which loads no undici / nodemailer) and `@ebooktrivia/uploads` (PDF policy); apps/worker gets `@ebooktrivia/crypto` (the messaging opener for template test-sends). `normalizeHost` moved from apps/worker to packages/core so the Caddy `ask` check and LP domain registration share one rule.
+
+Admin gates now also cover the settings: `apps/admin/test/settings.int.test.ts` and `e2e/tests/admin-settings.spec.ts` (its own `next start` on port 3203, DOMAIN `example.test`, a temporary ADMIN_DATA_DIR and per-run public sealing keys).

@@ -61,6 +61,11 @@ const PLAN_TABLES = {
     "uploads",
     "alerts",
     "heartbeats",
+    // admin settings (US-017)
+    "smtp_settings",
+    "template_test_sends",
+    "upload_sessions",
+    "test_recipients",
   ],
   player_auth: ["account", "session", "user", "verification"],
   admin_auth: ["account", "login_throttle", "recovery_code", "session", "session_state", "totp_used", "twoFactor", "user", "verification"],

@@ -8,12 +8,10 @@ export {
 export { CryptoError, type CryptoErrorCode, generateScopeKeyPair, keyIdOf, SEALED_BOX_OVERHEAD } from "./sealed-box.ts";
 export {
   assertOtpCode,
-  createSecretOpener,
   createSecretSealer,
   type Env,
   last4,
   type OtpInput,
-  openerFromEnv,
   type ScopeKeys,
   SEALED_OTP_BYTES,
   type SealedSecret,
@@ -23,4 +21,5 @@ export {
   type SecretSealer,
   type StoredSecretRow,
 } from "./secrets.ts";
+export { createSecretOpener, openerFromEnv } from "./opener.ts";
 export { assertWahaTarget, type WahaSecretBinding, type WahaServerTarget } from "./waha-target.ts";

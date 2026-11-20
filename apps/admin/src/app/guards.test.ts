@@ -41,6 +41,55 @@ const GUARDS: Readonly<Record<string, string>> = {
   "(console)/team/actions.ts#resetAccessAction": "permission:admin_user.manage",
   "(console)/account/actions.ts#regenerateRecoveryCodesAction": "permission:account.manage_own",
   "auth/sign-out/route.ts#POST": "allowUnenrolled",
+  // Settings (US-017): Staff = AC-A1 content only (products, landing-page name, templates);
+  // everything else Owner-only.
+  "(console)/settings/programs/page.tsx": "permission:program.edit",
+  "(console)/settings/products/page.tsx": "permission:product.content.edit",
+  "(console)/settings/landing-pages/page.tsx": "permission:landing_page.content.edit",
+  "(console)/settings/adnets/page.tsx": "permission:adnet.edit",
+  "(console)/settings/midtrans/page.tsx": "permission:midtrans.edit",
+  "(console)/settings/waha/page.tsx": "permission:waha.edit",
+  "(console)/settings/smtp/page.tsx": "permission:smtp.edit",
+  "(console)/settings/templates/page.tsx": "permission:message_template.edit",
+  "(console)/settings/programs/actions.ts#createProgramAction": "permission:program.edit",
+  "(console)/settings/programs/actions.ts#updateProgramAction": "permission:program.edit",
+  "(console)/settings/programs/actions.ts#rescheduleProgramAction": "permission:program.reschedule",
+  "(console)/settings/programs/actions.ts#setProgramStatusAction": "permission:program.edit",
+  "(console)/settings/programs/actions.ts#cloneProgramAction": "permission:program.edit",
+  "(console)/settings/products/actions.ts#createProductAction": "permission:product.price.edit",
+  "(console)/settings/products/actions.ts#renameProductAction": "permission:product.content.edit",
+  "(console)/settings/products/actions.ts#updateProductCommerceAction": "permission:product.price.edit",
+  "(console)/settings/landing-pages/actions.ts#createLandingPageAction": "permission:landing_page.settings.edit",
+  "(console)/settings/landing-pages/actions.ts#renameLandingPageAction": "permission:landing_page.content.edit",
+  "(console)/settings/landing-pages/actions.ts#updateLandingPageSettingsAction": "permission:landing_page.settings.edit",
+  "(console)/settings/landing-pages/actions.ts#updatePixelsAction": "permission:pixel.edit",
+  "(console)/settings/landing-pages/actions.ts#registerDomainAction": "permission:lp_domain.register",
+  "(console)/settings/landing-pages/actions.ts#removeDomainAction": "permission:lp_domain.register",
+  "(console)/settings/adnets/actions.ts#createAdnetAction": "permission:adnet.edit",
+  "(console)/settings/adnets/actions.ts#updateAdnetAction": "permission:adnet.edit",
+  "(console)/settings/adnets/actions.ts#setAdnetSecretAction": "permission:adnet.edit",
+  "(console)/settings/adnets/actions.ts#clearAdnetSecretAction": "permission:adnet.edit",
+  "(console)/settings/midtrans/actions.ts#updateMidtransMethodsAction": "permission:midtrans.edit",
+  "(console)/settings/midtrans/actions.ts#setMidtransEnvironmentAction": "permission:midtrans.edit",
+  "(console)/settings/midtrans/actions.ts#setMidtransKeyAction": "permission:midtrans.edit",
+  "(console)/settings/midtrans/actions.ts#clearMidtransKeyAction": "permission:midtrans.edit",
+  "(console)/settings/waha/actions.ts#createWahaServerAction": "permission:waha.edit",
+  "(console)/settings/waha/actions.ts#updateWahaServerAction": "permission:waha.edit",
+  "(console)/settings/waha/actions.ts#setWahaApiKeyAction": "permission:waha.edit",
+  "(console)/settings/waha/actions.ts#clearWahaApiKeyAction": "permission:waha.edit",
+  "(console)/settings/waha/actions.ts#createWahaSessionAction": "permission:waha.edit",
+  "(console)/settings/waha/actions.ts#updateWahaSessionAction": "permission:waha.edit",
+  "(console)/settings/smtp/actions.ts#saveSmtpAction": "permission:smtp.edit",
+  "(console)/settings/smtp/actions.ts#setSmtpPasswordAction": "permission:smtp.edit",
+  "(console)/settings/smtp/actions.ts#clearSmtpPasswordAction": "permission:smtp.edit",
+  "(console)/settings/templates/actions.ts#updateTemplateAction": "permission:message_template.edit",
+  "(console)/settings/templates/actions.ts#previewTemplateAction": "permission:message_template.edit",
+  "(console)/settings/templates/actions.ts#testSendTemplateAction": "permission:message_template.test_send",
+  "(console)/settings/templates/actions.ts#addTestRecipientAction": "permission:test_recipient.manage",
+  "(console)/settings/templates/actions.ts#removeTestRecipientAction": "permission:test_recipient.manage",
+  "uploads/pdf/init/route.ts#POST": "permission:product.content.edit",
+  "uploads/pdf/chunk/route.ts#POST": "permission:product.content.edit",
+  "uploads/pdf/complete/route.ts#POST": "permission:product.content.edit",
 };
 
 /** Pages / layouts reachable without a console session, with the reason. */
@@ -129,7 +178,20 @@ describe("guards", () => {
 
 describe("server-action directive", () => {
   it("is found in every server-action module", () => {
-    expect(serverFiles.sort()).toEqual(["(auth)/enroll/actions.ts", "(auth)/login/actions.ts", "(console)/account/actions.ts", "(console)/team/actions.ts"]);
+    expect(serverFiles.sort()).toEqual([
+      "(auth)/enroll/actions.ts",
+      "(auth)/login/actions.ts",
+      "(console)/account/actions.ts",
+      "(console)/settings/adnets/actions.ts",
+      "(console)/settings/landing-pages/actions.ts",
+      "(console)/settings/midtrans/actions.ts",
+      "(console)/settings/products/actions.ts",
+      "(console)/settings/programs/actions.ts",
+      "(console)/settings/smtp/actions.ts",
+      "(console)/settings/templates/actions.ts",
+      "(console)/settings/waha/actions.ts",
+      "(console)/team/actions.ts",
+    ]);
   });
 
   it.each(srcFiles.filter((f) => (f.text.match(DIRECTIVE) ?? []).length > 0).map((f) => f.rel))("%s has it once, as the first statement (no inline server functions)", (rel) => {
@@ -155,5 +217,22 @@ describe("Better Auth", () => {
   it("only lib/auth/service.ts and lib/auth/session.ts call auth.api", () => {
     const callers = srcFiles.filter((f) => /\.auth\.api\./.test(f.text)).map((f) => f.rel);
     expect(callers.sort()).toEqual(["lib/auth/service.ts", "lib/auth/session.ts"]);
+  });
+});
+
+describe("sealed secrets (plan M2.3: the admin process cannot decrypt)", () => {
+  it("no admin source uses the opener side of @ebooktrivia/crypto", () => {
+    for (const file of srcFiles) expect(file.text, file.rel).not.toMatch(/\b(?:createSecretOpener|openerFromEnv|openSecret|openOtp|SecretOpener)\b/);
+  });
+
+  it("admin sources import the sealer subpath only, and the PDF-only uploads subpath (no sharp)", () => {
+    for (const file of srcFiles) {
+      expect(file.text, file.rel).not.toMatch(/from "@ebooktrivia\/crypto"|import\("@ebooktrivia\/crypto"\)/);
+      expect(file.text, file.rel).not.toMatch(/from "@ebooktrivia\/uploads"|from "sharp"/);
+    }
+  });
+
+  it("no admin source reads a sealed column", () => {
+    for (const file of srcFiles) expect(file.text, file.rel).not.toMatch(/SELECT[^`]*\b(?:ciphertext|sealed_dek|sealed_code|sealed)\b[^`]*FROM/is);
   });
 });

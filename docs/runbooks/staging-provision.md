@@ -144,6 +144,19 @@ sudo journalctl CONTAINER_NAME=caddy -o cat | grep remote_ip | tail -3
   ```
   Fix `provision.env` and run `provision.sh` again; it puts both back.
 - **Stop or remove the stack:** `sudo $A systemctl --user stop caddy.socket caddy.service public@a public@b admin worker internal valkey postgres`. To remove it for good: `sudo $A systemctl --user disable caddy.socket`, delete the unit files as the app user (`sudo runuser -u ebt -- rm -r /home/ebt/.config/containers/systemd /home/ebt/.config/systemd/user/caddy.socket`), then `sudo $A systemctl --user daemon-reload`. Volumes stay until `sudo $A podman volume rm ebt-pgdata ebt-valkeydata ebt-caddy-data ebt-caddy-config`.
+- **Migrations 0007 / 0008 refuse non-conforming rows (US-017).** They add CHECKs to existing tables, so `migrate.service` fails (and changes nothing) on a database holding a row that breaks one. Fix the rows, then start `migrate.service` again:
+  - `waha_sessions_session_name_check`: a session name of 1-64 letters, digits, `_` or `-` (as WAHA names sessions). Find them with `SELECT id, session_name FROM waha_sessions WHERE session_name !~ '^[A-Za-z0-9_-]{1,64}$'` and rename the session in WAHA and here;
+  - `smtp_settings_security_port_check` (TLS with port 465, STARTTLS with any other) and `*_allow_private_ip_check` (the private-IP flag on an IPv4 address only, in `smtp_settings` and `waha_servers`): correct the row, or turn the flag off.
+
+  Pre-check before deploying 0008 (each must return no row; `ebt_migrate` or any admin_rw login):
+  ```sql
+  SELECT id, base_url_host FROM waha_servers
+   WHERE allow_private_ip AND base_url_host !~ '^[0-9]{1,3}(\.[0-9]{1,3}){3}(:[0-9]{1,5})?$';
+  SELECT host FROM smtp_settings WHERE allow_private_ip AND host !~ '^[0-9]{1,3}(\.[0-9]{1,3}){3}$';
+  SELECT host, port, security FROM smtp_settings WHERE (security = 'tls') <> (port = 465);
+  SELECT id, session_name FROM waha_sessions WHERE session_name !~ '^[A-Za-z0-9_-]{1,64}$';
+  ```
+  0007 also locks every program that already has a paid order (`locked_at` = its first `paid_at`).
 - **A failed first PostgreSQL start** (initdb stopped half-way, wrong superuser password file): `sudo $A systemctl --user stop postgres.service`, `sudo $A podman volume rm ebt-pgdata`, start it again, then `db-roles.sh` and `migrate.service`. This deletes the database: only before real data exists.
 - **The client-ip probe did not stop** (`client-ip-probe.sh stop` failed half-way): `sudo runuser -u ebt -- rm -f /home/ebt/.config/containers/systemd/public@b.container.d/90-client-ip-probe.conf`, `sudo rm -rf /etc/ebooktrivia/probe`, `sudo $A systemctl --user daemon-reload`, `sudo $A systemctl --user restart public@b.service`. host-check fails while the drop-in exists.
 - **Undo a provisioning run:** it only adds files under `/etc` and the app user's home and changes firewalld, sshd and SELinux settings; the lockout steps above undo the access changes. Uninstalling the packages is not needed for a retry: every step is idempotent.

@@ -17,3 +17,26 @@ INSERT INTO public.app_settings (key, value) VALUES
   ('otp.cooldown_seconds', '60'),
   ('orders.expiry_seconds', '86400')
 ON CONFLICT (key) DO NOTHING;
+
+-- Midtrans (AC-S10, US-017): sandbox until the Owner switches (audited, and only once the
+-- production server key is set); the methods offered in Snap; per-method fees (flat IDR + basis
+-- points, packages/core money.ts) start empty. Not secret (public_rw reads app_settings); the
+-- server keys are sealed payment secrets.
+INSERT INTO public.app_settings (key, value) VALUES
+  ('midtrans.environment', '"sandbox"'),
+  ('midtrans.enabled_methods', '["other_qris", "gopay", "shopeepay", "bca_va", "bni_va", "bri_va", "permata_va", "echannel"]'),
+  ('midtrans.fees', '{}')
+ON CONFLICT (key) DO NOTHING;
+
+-- Default message templates (AC-A10, Bahasa Indonesia), editable in the admin console. Keys and
+-- the variables each may use: apps/admin/src/lib/settings/templates.ts.
+INSERT INTO public.message_templates (key, channel, locale, subject, body) VALUES
+  ('delivery', 'whatsapp', 'id', NULL,
+   E'Halo {nama}, terima kasih sudah membeli *{judul_ebook}*.\n\nEbook terlampir di pesan ini. Masuk ke trivia lewat tautan ini: {link_trivia}\n\nKode pesanan: {order_id}'),
+  ('delivery', 'email', 'id', 'Ebook {judul_ebook} untuk {nama}',
+   E'<p>Halo {nama},</p>\n<p>Terima kasih sudah membeli <strong>{judul_ebook}</strong>. Ebook terlampir di email ini.</p>\n<p><a href="{link_trivia}">Masuk ke trivia</a></p>\n<p>Kode pesanan: {order_id}</p>'),
+  ('delivery_without_link', 'whatsapp', 'id', NULL,
+   E'Halo {nama}, berikut ebook *{judul_ebook}* untuk pesanan {order_id}. Tautan masuk trivia kami kirim lewat email.'),
+  ('otp', 'whatsapp', 'id', NULL,
+   E'Kode masuk trivia Anda: {kode_otp}. Berlaku 5 menit. Jangan berikan kode ini kepada siapa pun.')
+ON CONFLICT (key, channel, locale) DO NOTHING;

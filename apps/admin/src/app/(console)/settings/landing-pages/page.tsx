@@ -1,0 +1,131 @@
+import type { Metadata } from "next";
+import { Badge } from "@ebooktrivia/ui/components/badge";
+import { Card, CardDescription, CardTitle } from "@ebooktrivia/ui/components/card";
+import { ActionForm } from "../../../../components/settings/action-form.tsx";
+import { CheckboxField, PageHeading, SelectField, TextField } from "../../../../components/settings/fields.tsx";
+import { requireAdmin } from "../../../../lib/next/require-admin.ts";
+import { getRuntime } from "../../../../lib/next/runtime.ts";
+import { can } from "../../../../lib/policy.ts";
+import { listLandingPages, snippet } from "../../../../lib/settings/landing-pages.ts";
+import {
+  createLandingPageAction,
+  registerDomainAction,
+  removeDomainAction,
+  renameLandingPageAction,
+  updateLandingPageSettingsAction,
+  updatePixelsAction,
+} from "./actions.ts";
+
+export const metadata: Metadata = { title: "Landing pages | Admin Console" };
+
+/**
+ * Landing pages: everyone with content rights sees the pages and their snippets and may rename
+ * them; program / adnets / pixels / domains are Owner-only and their controls are not rendered for
+ * Staff (the actions refuse them too).
+ */
+export default async function LandingPagesPage() {
+  const admin = await requireAdmin({ permission: "landing_page.content.edit" });
+  const rt = await getRuntime();
+  const [pages, programs, adnets] = await Promise.all([
+    listLandingPages(rt.sql),
+    rt.sql<{ id: string; name: string }[]>`SELECT id, name FROM public.programs ORDER BY created_at DESC`,
+    rt.sql<{ id: string; name: string }[]>`SELECT id, name FROM public.adnets ORDER BY name`,
+  ]);
+  const settings = can(admin.role, "landing_page.settings.edit");
+  const pixels = can(admin.role, "pixel.edit");
+  const domains = can(admin.role, "lp_domain.register");
+  const programOptions = programs.map((p) => ({ value: p.id, label: p.name }));
+  const domain = rt.settings.domain;
+  return (
+    <>
+      <PageHeading title="Landing pages" description="External landing pages load the SDK snippet; their domains get TLS only once registered here (Owner)." />
+      {settings ? (
+        <Card>
+          <CardTitle className="text-base">New landing page</CardTitle>
+          {programOptions.length === 0 ? (
+            <CardDescription>Create a program first.</CardDescription>
+          ) : (
+            <ActionForm action={createLandingPageAction} submitLabel="Create landing page" className="grid gap-3 sm:grid-cols-2" testId="lp-create">
+              <TextField id="new-lp-name" name="name" label="Name" maxLength={120} />
+              <SelectField id="new-lp-program" name="programId" label="Program" options={programOptions} />
+            </ActionForm>
+          )}
+        </Card>
+      ) : null}
+      {pages.map((page) => (
+        <Card key={page.id} data-testid={`lp-${page.lpKey}`}>
+          <div className="flex flex-wrap items-center gap-2">
+            <CardTitle className="text-base">{page.name}</CardTitle>
+            <Badge variant="secondary">{page.programName}</Badge>
+            {page.active ? <Badge variant="success">Active</Badge> : <Badge variant="warning">Inactive</Badge>}
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <span className="text-sm font-medium">Snippet</span>
+            {domain === null ? (
+              <CardDescription>The snippet needs DOMAIN, which is not configured on the server.</CardDescription>
+            ) : (
+              <code data-testid="lp-snippet" className="rounded-md bg-muted px-3 py-2 font-mono text-xs break-all">
+                {snippet(domain, page.lpKey)}
+              </code>
+            )}
+          </div>
+          <div className="grid gap-4 lg:grid-cols-2">
+            <ActionForm action={renameLandingPageAction} submitLabel="Save name" variant="secondary">
+              <input type="hidden" name="landingPageId" value={page.id} />
+              <TextField id={`lp-name-${page.id}`} name="name" label="Name" defaultValue={page.name} maxLength={120} />
+            </ActionForm>
+            {settings ? (
+              <ActionForm action={updateLandingPageSettingsAction} submitLabel="Save settings" variant="secondary">
+                <input type="hidden" name="landingPageId" value={page.id} />
+                <SelectField id={`lp-program-${page.id}`} name="programId" label="Program" options={programOptions} defaultValue={page.programId} />
+                <CheckboxField id={`lp-active-${page.id}`} name="active" label="Active (checkout open)" defaultChecked={page.active} />
+                <fieldset className="flex flex-col gap-1">
+                  <legend className="text-sm font-medium">Allowed adnets</legend>
+                  {adnets.length === 0 ? <span className="text-xs text-muted-foreground">No adnets yet.</span> : null}
+                  {adnets.map((a) => (
+                    <label key={a.id} className="flex items-center gap-2 text-sm">
+                      <input type="checkbox" name="adnetId" value={a.id} defaultChecked={page.adnetIds.includes(a.id)} className="size-4 accent-primary" />
+                      {a.name}
+                    </label>
+                  ))}
+                </fieldset>
+              </ActionForm>
+            ) : null}
+          </div>
+          {pixels ? (
+            <ActionForm action={updatePixelsAction} submitLabel="Save pixel ids" variant="secondary" className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <input type="hidden" name="landingPageId" value={page.id} />
+              <TextField id={`px-meta-${page.id}`} name="meta" label="Meta pixel id" defaultValue={page.pixels.meta} required={false} inputMode="numeric" maxLength={20} />
+              <TextField id={`px-tiktok-${page.id}`} name="tiktok" label="TikTok pixel code" defaultValue={page.pixels.tiktok} required={false} maxLength={32} />
+              <TextField id={`px-gtag-${page.id}`} name="gtag" label="Google Ads id (AW-...)" defaultValue={page.pixels.gtag} required={false} maxLength={18} />
+              <TextField id={`px-label-${page.id}`} name="gtag_label" label="Google Ads conversion label" defaultValue={page.pixels.gtag_label} required={false} maxLength={64} />
+            </ActionForm>
+          ) : null}
+          <div className="flex flex-col gap-2 border-t pt-4" data-testid="lp-domains">
+            <span className="text-sm font-medium">Domains</span>
+            {page.domains.length === 0 ? <span className="text-xs text-muted-foreground">No domain registered.</span> : null}
+            <ul className="flex flex-col gap-2">
+              {page.domains.map((d) => (
+                <li key={d.id} className="flex flex-wrap items-center gap-3">
+                  <span className="font-mono text-sm">{d.host}</span>
+                  {domains ? (
+                    <ActionForm action={removeDomainAction} submitLabel="Remove" variant="ghost" className="flex items-center gap-2">
+                      <input type="hidden" name="landingPageId" value={page.id} />
+                      <input type="hidden" name="domainId" value={d.id} />
+                    </ActionForm>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+            {domains ? (
+              <ActionForm action={registerDomainAction} submitLabel="Register domain" variant="secondary" testId="lp-domain-register" className="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
+                <input type="hidden" name="landingPageId" value={page.id} />
+                <TextField id={`lp-host-${page.id}`} name="host" label="Domain" placeholder="shop.example.id" maxLength={253} hint="Not the app's own domain; IDN in xn-- form." />
+              </ActionForm>
+            ) : null}
+          </div>
+        </Card>
+      ))}
+    </>
+  );
+}

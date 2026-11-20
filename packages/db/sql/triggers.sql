@@ -17,7 +17,9 @@
 -- ET045 winner confirmation reserved for admin, ET046 program status change reserved for admin,
 -- ET050 play row for a player not eligible on a published program, ET051 question/option not in
 -- the attempt's set/question, ET060 settings_secrets relabelled without re-encryption,
--- ET061 settings_secrets id change.
+-- ET061 settings_secrets id change, ET047 program field locked after its first PAID order
+-- (product, slug, sales start, trivia set count / order), ET048 reschedule of a locked program
+-- that is not an extension, or of an ended program, ET062 SMTP / WAHA secret bound to another host than its endpoint.
 
 SELECT pg_catalog.set_config('search_path', 'pg_catalog, pg_temp', false);
 
@@ -485,8 +487,9 @@ CREATE OR REPLACE TRIGGER settings_secrets_guard
 --     that host are deleted even if another server uses it too: that server's key must be
 --     entered again. Since migration 0002 the CHECK waha_servers_base_url_check also ties
 --     base_url to base_url_host on INSERT and UPDATE (security review US-011 #1).
---   NOT YET COVERED: SMTP and CAPI endpoints have no host column. The story that adds one (M3)
---     must add the same clear-on-change trigger and an INSERT-time consistency CHECK.
+--   smtp_settings.host: smtp_settings_clear_bound_secrets below (US-017).
+--   NOT YET COVERED: CAPI endpoints have no host column. The story that adds one (M7) must add the
+--     same clear-on-change trigger and an INSERT-time consistency check.
 CREATE OR REPLACE FUNCTION public.adnets_clear_bound_secrets()
   RETURNS trigger
   LANGUAGE plpgsql
@@ -529,6 +532,192 @@ $fn$;
 CREATE OR REPLACE TRIGGER waha_servers_clear_bound_secrets
   AFTER UPDATE ON public.waha_servers
   FOR EACH ROW EXECUTE FUNCTION public.waha_servers_clear_bound_secrets();
+
+-- ---------------------------------------------------------------------------------------------
+-- Program field lock (plan §10 item 10, AC-A3; US-017). A program locks at its first PAID order:
+-- orders_lock_program stamps programs.locked_at in the transaction that sets orders.paid_at
+-- (worker). From then on, for EVERY writer (the admin app checks first, this is the guarantee):
+--   - product_id, slug and sales_start_at never change, and locked_at never changes again (ET047);
+--   - reschedule is extend-only: sales_end_at and grace_days may only grow, so the end of grace
+--     only moves later (ET048);
+--   - the trivia set count and order are frozen: no set is added, removed, moved to another
+--     program or re-positioned (ET047), because the unlock schedule of buyers who already paid
+--     depends on them (AC-Q4);
+--   - the status never goes back to draft (ET047, security review US-017 S5: a draft program is off
+--     sale and closed to play for buyers who already paid).
+-- And for every program, locked or not (code review US-017 CM4): once the contest has ended
+-- (awaiting_confirmation / finalized: the grace-end snapshot exists) sales end and grace never
+-- change (ET048), so the snapshot stays the result of the schedule it was taken under.
+-- A paid order is also checked directly (not only locked_at), so a program locks even if a stamp
+-- were missed. SECURITY DEFINER: the checks read orders with owner rights whoever writes.
+CREATE OR REPLACE FUNCTION public.orders_lock_program()
+  RETURNS trigger
+  LANGUAGE plpgsql
+  SECURITY DEFINER
+  SET search_path = pg_catalog, pg_temp
+AS $fn$
+BEGIN
+  UPDATE public.programs SET locked_at = clock_timestamp() WHERE id = NEW.program_id AND locked_at IS NULL;
+  RETURN NULL;
+END
+$fn$;
+
+CREATE OR REPLACE TRIGGER orders_lock_program
+  AFTER INSERT OR UPDATE OF paid_at ON public.orders
+  FOR EACH ROW WHEN (NEW.paid_at IS NOT NULL)
+  EXECUTE FUNCTION public.orders_lock_program();
+
+CREATE OR REPLACE FUNCTION public.programs_field_lock()
+  RETURNS trigger
+  LANGUAGE plpgsql
+  SECURITY DEFINER
+  SET search_path = pg_catalog, pg_temp
+AS $fn$
+BEGIN
+  IF OLD.locked_at IS NOT NULL AND NEW.locked_at IS DISTINCT FROM OLD.locked_at THEN
+    RAISE EXCEPTION 'programs.locked_at cannot change once set' USING ERRCODE = 'ET047';
+  END IF;
+  IF OLD.status NOT IN ('draft', 'published')
+     AND (NEW.sales_end_at IS DISTINCT FROM OLD.sales_end_at OR NEW.grace_days IS DISTINCT FROM OLD.grace_days) THEN
+    RAISE EXCEPTION 'program % has ended (%): its sales end and grace cannot change', OLD.id, OLD.status
+      USING ERRCODE = 'ET048';
+  END IF;
+  IF OLD.locked_at IS NULL
+     AND NOT EXISTS (SELECT 1 FROM public.orders o WHERE o.program_id = OLD.id AND o.paid_at IS NOT NULL) THEN
+    RETURN NEW;
+  END IF;
+  NEW.locked_at := coalesce(NEW.locked_at, OLD.locked_at, clock_timestamp());
+  IF NEW.product_id IS DISTINCT FROM OLD.product_id
+     OR NEW.slug IS DISTINCT FROM OLD.slug
+     OR NEW.sales_start_at IS DISTINCT FROM OLD.sales_start_at THEN
+    RAISE EXCEPTION 'program % is locked after its first paid order: product, slug and sales start cannot change', OLD.id
+      USING ERRCODE = 'ET047';
+  END IF;
+  IF NEW.sales_end_at < OLD.sales_end_at OR NEW.grace_days < OLD.grace_days THEN
+    RAISE EXCEPTION 'program % is locked after its first paid order: sales end and grace can only be extended', OLD.id
+      USING ERRCODE = 'ET048';
+  END IF;
+  IF NEW.status = 'draft' AND OLD.status IS DISTINCT FROM 'draft' THEN
+    RAISE EXCEPTION 'program % is locked after its first paid order: it cannot go back to draft', OLD.id
+      USING ERRCODE = 'ET047';
+  END IF;
+  RETURN NEW;
+END
+$fn$;
+
+CREATE OR REPLACE TRIGGER programs_field_lock
+  BEFORE UPDATE ON public.programs
+  FOR EACH ROW EXECUTE FUNCTION public.programs_field_lock();
+
+-- FOR UPDATE on the program row conflicts with the UPDATE orders_lock_program makes, so adding a
+-- set and the first payment cannot interleave (under READ COMMITTED the lock wait re-reads the
+-- row; under REPEATABLE READ / SERIALIZABLE a concurrent stamp is a serialization failure). A
+-- program deleted in the same statement (cascade) is gone and has nothing to protect.
+CREATE OR REPLACE FUNCTION public.assert_program_unlocked(p_program_id uuid)
+  RETURNS void
+  LANGUAGE plpgsql
+  SECURITY DEFINER
+  SET search_path = pg_catalog, pg_temp
+AS $fn$
+DECLARE
+  v_locked_at timestamptz;
+BEGIN
+  SELECT p.locked_at INTO v_locked_at FROM public.programs p WHERE p.id = p_program_id FOR UPDATE;
+  IF NOT FOUND THEN
+    RETURN;
+  END IF;
+  IF v_locked_at IS NOT NULL
+     OR EXISTS (SELECT 1 FROM public.orders o WHERE o.program_id = p_program_id AND o.paid_at IS NOT NULL) THEN
+    RAISE EXCEPTION 'program % is locked after its first paid order: its trivia sets cannot be added, removed or reordered', p_program_id
+      USING ERRCODE = 'ET047';
+  END IF;
+END
+$fn$;
+
+CREATE OR REPLACE FUNCTION public.trivia_sets_program_lock()
+  RETURNS trigger
+  LANGUAGE plpgsql
+  SECURITY DEFINER
+  SET search_path = pg_catalog, pg_temp
+AS $fn$
+BEGIN
+  IF TG_OP = 'INSERT' THEN
+    PERFORM public.assert_program_unlocked(NEW.program_id);
+    RETURN NEW;
+  ELSIF TG_OP = 'DELETE' THEN
+    PERFORM public.assert_program_unlocked(OLD.program_id);
+    RETURN OLD;
+  END IF;
+  IF NEW.program_id IS DISTINCT FROM OLD.program_id OR NEW.position IS DISTINCT FROM OLD.position THEN
+    PERFORM public.assert_program_unlocked(OLD.program_id);
+    IF NEW.program_id IS DISTINCT FROM OLD.program_id THEN
+      PERFORM public.assert_program_unlocked(NEW.program_id);
+    END IF;
+  END IF;
+  RETURN NEW;
+END
+$fn$;
+
+CREATE OR REPLACE TRIGGER trivia_sets_program_lock
+  BEFORE INSERT OR UPDATE OR DELETE ON public.trivia_sets
+  FOR EACH ROW EXECUTE FUNCTION public.trivia_sets_program_lock();
+
+-- ---------------------------------------------------------------------------------------------
+-- SMTP / WAHA secret endpoint binding (plan M2.3; the M3 carry-over for SMTP). The worker sends
+-- `smtp.password` only to smtp_settings.host and `waha.<server id hex>.api_key` only to that
+-- server's base_url (assertWahaTarget). These names may only be written bound to exactly that
+-- endpoint host (ET062), and the SMTP password is deleted when the host, port or TLS mode changes
+-- (security review US-017 INFO 6: another port may be another service) or the settings row is
+-- deleted (the WAHA one by waha_servers_clear_bound_secrets above). Names outside these
+-- two forms are not read by the worker and are left alone. SECURITY DEFINER: no caller check.
+CREATE OR REPLACE FUNCTION public.settings_secrets_endpoint_binding()
+  RETURNS trigger
+  LANGUAGE plpgsql
+  SECURITY DEFINER
+  SET search_path = pg_catalog, pg_temp
+AS $fn$
+DECLARE
+  v_server_hex text := substring(NEW.name from '^waha\.([0-9a-f]{32})\.api_key$');
+BEGIN
+  IF NEW.name = 'smtp.password' THEN
+    IF NEW.scope <> 'messaging'
+       OR NOT EXISTS (SELECT 1 FROM public.smtp_settings m WHERE m.host = NEW.bound_host) THEN
+      RAISE EXCEPTION 'smtp.password must be a messaging secret bound to the SMTP host' USING ERRCODE = 'ET062';
+    END IF;
+  ELSIF v_server_hex IS NOT NULL THEN
+    IF NEW.scope <> 'messaging'
+       OR NOT EXISTS (
+         SELECT 1 FROM public.waha_servers w
+          WHERE pg_catalog.replace(w.id::text, '-', '') = v_server_hex AND w.base_url_host = NEW.bound_host) THEN
+      RAISE EXCEPTION 'a WAHA API key must be a messaging secret bound to its server''s base_url_host' USING ERRCODE = 'ET062';
+    END IF;
+  END IF;
+  RETURN NEW;
+END
+$fn$;
+
+CREATE OR REPLACE TRIGGER settings_secrets_endpoint_binding
+  BEFORE INSERT OR UPDATE ON public.settings_secrets
+  FOR EACH ROW EXECUTE FUNCTION public.settings_secrets_endpoint_binding();
+
+CREATE OR REPLACE FUNCTION public.smtp_settings_clear_bound_secrets()
+  RETURNS trigger
+  LANGUAGE plpgsql
+  SECURITY DEFINER
+  SET search_path = pg_catalog, pg_temp
+AS $fn$
+BEGIN
+  IF TG_OP = 'DELETE' OR NEW.host IS DISTINCT FROM OLD.host OR NEW.port IS DISTINCT FROM OLD.port
+     OR NEW.security IS DISTINCT FROM OLD.security THEN
+    DELETE FROM public.settings_secrets s WHERE s.name = 'smtp.password';
+  END IF;
+  RETURN NULL;
+END
+$fn$;
+
+CREATE OR REPLACE TRIGGER smtp_settings_clear_bound_secrets
+  AFTER UPDATE OR DELETE ON public.smtp_settings
+  FOR EACH ROW EXECUTE FUNCTION public.smtp_settings_clear_bound_secrets();
 
 -- ---------------------------------------------------------------------------------------------
 -- Fire every trigger on our tables in ALL session_replication_role modes. The default (ENABLE,

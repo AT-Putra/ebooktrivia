@@ -25,18 +25,27 @@ export interface AdminEnv {
   stop(): Promise<void>;
 }
 
-export async function startAdminEnv(): Promise<AdminEnv> {
+/**
+ * A database and an admin server of its own. `port` / `extraEnv` let a second spec run its own
+ * server next to admin-auth.spec.ts (the build's allowedOrigins name port 3202, but Next.js also
+ * accepts an Origin equal to the request's own host, and the app's exact check reads ADMIN_ORIGIN
+ * at runtime).
+ */
+export async function startAdminEnv(options: { readonly port?: number; readonly extraEnv?: Readonly<Record<string, string>> } = {}): Promise<AdminEnv> {
+  const port = options.port ?? ADMIN_AUTH_PORT;
+  const origin = `http://127.0.0.1:${String(port)}`;
   const db = await createTestDatabase("ebt_e2e", ["admin_rw"]);
   const env = {
     NODE_ENV: "production",
-    ADMIN_ORIGIN: ADMIN_AUTH_URL,
+    ADMIN_ORIGIN: origin,
     ADMIN_ALLOW_INSECURE_LOOPBACK: "1",
     ADMIN_AUTH_SECRETS: `1:${randomBytes(32).toString("hex")}`,
     DATABASE_URL_ADMIN: db.logins.admin_rw ?? "",
+    ...options.extraEnv,
   };
   const sql = postgres(db.url, { max: 2, onnotice: () => undefined });
   const nextBin = createRequire(`${adminDir}package.json`).resolve("next/dist/bin/next");
-  const child: ChildProcess = spawn(process.execPath, [nextBin, "start", "-p", String(ADMIN_AUTH_PORT)], {
+  const child: ChildProcess = spawn(process.execPath, [nextBin, "start", "-p", String(port)], {
     cwd: adminDir,
     env: { PATH: process.env["PATH"] ?? "", SYSTEMROOT: process.env["SYSTEMROOT"] ?? "", ...env },
     stdio: "ignore",
@@ -44,7 +53,7 @@ export async function startAdminEnv(): Promise<AdminEnv> {
   const deadline = Date.now() + 60_000;
   for (;;) {
     try {
-      await fetch(`${ADMIN_AUTH_URL}/login`);
+      await fetch(`${origin}/login`);
       break;
     } catch {
       if (Date.now() > deadline) throw new Error("admin did not start");

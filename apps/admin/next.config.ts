@@ -41,7 +41,7 @@ export default function config(phase: string): NextConfig {
     outputFileTracingRoot: join(__dirname, "../.."),
     poweredByHeader: false,
     reactStrictMode: true,
-    transpilePackages: ["@ebooktrivia/ui", "@ebooktrivia/db", "@ebooktrivia/edge"],
+    transpilePackages: ["@ebooktrivia/ui", "@ebooktrivia/db", "@ebooktrivia/edge", "@ebooktrivia/core", "@ebooktrivia/crypto", "@ebooktrivia/adapters", "@ebooktrivia/uploads"],
     // Native binding: loaded by Node at runtime, never bundled.
     serverExternalPackages: ["@node-rs/argon2"],
     experimental: {

@@ -42,3 +42,19 @@ export function formText(form: FormData, name: string, max = 1024): string {
 }
 
 export const minutes = (seconds: number): number => Math.max(1, Math.ceil(seconds / 60));
+
+/** What a settings form shows after its server action (US-017): a confirmation or one error. */
+export type SaveState =
+  | { readonly status: "idle" }
+  | { readonly status: "saved"; readonly at: number; readonly message: string }
+  | { readonly status: "error"; readonly at: number; readonly error: string };
+
+export const INITIAL_SAVE: SaveState = { status: "idle" };
+
+/** The template preview (US-017): WhatsApp text, or an e-mail document for a sandboxed iframe. */
+export type PreviewState =
+  | { readonly status: "idle" }
+  | { readonly status: "preview"; readonly at: number; readonly channel: "whatsapp" | "email"; readonly subject: string | null; readonly body: string }
+  | { readonly status: "error"; readonly at: number; readonly error: string };
+
+export const INITIAL_PREVIEW: PreviewState = { status: "idle" };

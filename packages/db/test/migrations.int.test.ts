@@ -120,3 +120,60 @@ describe("upgrading a pre-US-013 database", () => {
     }
   }, 120_000);
 });
+
+describe("upgrading a pre-US-017 database", () => {
+  it("0007 locks programs that already have a paid order at their first paid_at, and stays put on re-runs", async () => {
+    const name = `ebt_mig_${randomBytes(6).toString("hex")}`;
+    const admin = postgres(serverUrl(), { max: 1, onnotice });
+    await admin.unsafe(`CREATE DATABASE ${name}`);
+    const folder = migrationsUpTo(6);
+    const first = new Date("2027-04-02T03:00:00.000Z");
+    const later = new Date("2027-04-05T09:30:00.000Z");
+    try {
+      // deployOld's connection went through drizzle, which leaves Date parameters unserialised:
+      // timestamps are passed as ISO strings.
+      await deployOld(name, folder, async (old) => {
+        const [product] = await old<{ id: string }[]>`INSERT INTO products (title, price_idr) VALUES ('E', 49000) RETURNING id`;
+        for (const slug of ["sold", "unsold"]) {
+          const [program] = await old<{ id: string }[]>`
+            INSERT INTO programs (product_id, slug, name, status, sales_start_at, sales_end_at, grace_days)
+            VALUES (${product?.id ?? ""}, ${slug}, ${slug}, 'published', '2027-04-01', '2027-07-01', 30) RETURNING id`;
+          const [lp] = await old<{ id: string }[]>`INSERT INTO landing_pages (lp_key, name, program_id) VALUES (${`lp_${slug}${randomBytes(6).toString("hex")}`}, 'LP', ${program?.id ?? ""}) RETURNING id`;
+          const orders: [string, Date | null][] = slug === "sold" ? [["paid", later], ["paid", first], ["pending", null]] : [["pending", null]];
+          for (const [status, paidAt] of orders) {
+            await old`
+              INSERT INTO orders (public_id, order_code, landing_page_id, program_id, product_id, buyer_name, buyer_phone, buyer_email, amount_idr, expires_at, status, paid_at)
+              VALUES (${randomBytes(10).toString("hex")}, ${randomBytes(5).toString("hex").toUpperCase()}, ${lp?.id ?? ""}, ${program?.id ?? ""}, ${product?.id ?? ""},
+                      'B', '+6281234567890', 'b@example.invalid', 49000, now() + interval '1 day', ${status}, ${paidAt?.toISOString() ?? null})`;
+          }
+        }
+      });
+      const check = postgres(databaseUrl(name), { ...PG_CONNECTION_OPTIONS, max: 1, onnotice });
+      const locks = () => check<{ slug: string; locked_at: Date | null }[]>`SELECT slug, locked_at FROM programs ORDER BY slug`;
+      try {
+        expect(await locks()).toEqual([
+          { slug: "sold", locked_at: null },
+          { slug: "unsold", locked_at: null },
+        ]);
+        await runMigrations(databaseUrl(name)); // applies 0007, 0008 and the sql/ files
+        expect(await locks()).toEqual([
+          { slug: "sold", locked_at: first },
+          { slug: "unsold", locked_at: null },
+        ]);
+        await runMigrations(databaseUrl(name));
+        expect(await locks()).toEqual([
+          { slug: "sold", locked_at: first },
+          { slug: "unsold", locked_at: null },
+        ]);
+        // And from now on the lock holds (triggers.sql applied after the migrations).
+        await expect(check`UPDATE programs SET grace_days = 1 WHERE slug = 'sold'`).rejects.toMatchObject({ code: "ET048" });
+      } finally {
+        await check.end();
+      }
+    } finally {
+      rmSync(folder, { recursive: true, force: true });
+      await admin.unsafe(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`);
+      await admin.end();
+    }
+  }, 120_000);
+});

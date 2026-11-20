@@ -122,7 +122,7 @@ async function main(argv: readonly string[]): Promise<number> {
         return 2;
     }
   } finally {
-    await rt.sql.end({ timeout: 5 });
+    await rt.close();
   }
 }
 

@@ -37,3 +37,17 @@ export function conversionSecretStore(sql: postgres.ISql) {
     },
   };
 }
+
+/**
+ * Names of the sealed secrets the admin app writes and the worker / public app read (US-017).
+ * sql/triggers.sql settings_secrets_endpoint_binding refuses the SMTP and WAHA ones unless they are
+ * bound to exactly their endpoint host. Payment secrets carry no bound host: the Midtrans hosts are
+ * fixed per environment in the adapter.
+ */
+export const SECRET_NAMES = {
+  smtpPassword: "smtp.password",
+  /** The WAHA API key of one server (messaging scope, bound to waha_servers.base_url_host). */
+  wahaApiKey: (serverId: string): string => `waha.${serverId.replaceAll("-", "").toLowerCase()}.api_key`,
+  /** The Midtrans server key of one environment (payment scope). */
+  midtransServerKey: (environment: "sandbox" | "production"): string => `midtrans.${environment}.server_key`,
+} as const;

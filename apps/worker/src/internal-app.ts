@@ -11,7 +11,8 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { Hono } from "hono";
 import { type AlertRow, alertFromGlitchtip, readLimitedBody } from "./glitchtip.ts";
-import { normalizeHost } from "./hosts.ts";
+// The subpath only: the internal process must not load the rest of core (test/internal.int.test.ts).
+import { normalizeHost } from "@ebooktrivia/core/hosts";
 import type { Logger } from "./log.ts";
 
 export const HOOK_BODY_LIMIT = 64 * 1024;

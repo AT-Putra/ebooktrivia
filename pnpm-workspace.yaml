@@ -12,6 +12,9 @@ overrides:
   better-auth>vitest: "-"
   better-auth>drizzle-kit: "-"
   next>@playwright/test: "-"
+  # tldts (US-017, approved 2026-11-19) asks for tldts-core ^7.4.19; newer cores are inside the
+  # 2-week release-age window (docs/versions.md), so the core is pinned to the same release.
+  tldts>tldts-core: "7.4.19"
 allowBuilds:
   esbuild: true
   # bullmq -> msgpackr: optional native decoder; msgpackr falls back to pure JS, so no install script runs.

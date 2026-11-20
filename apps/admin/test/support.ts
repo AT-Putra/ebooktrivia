@@ -14,6 +14,7 @@ import { completeEnrollment, type RequestInfo, signInWithPassword, startEnrollme
 import type { AdminConfig, AuthSecret } from "../src/lib/config.ts";
 import { createAdminDb } from "../src/lib/db.ts";
 import type { Role } from "../src/lib/policy.ts";
+import { NO_SETTINGS, type SettingsConfig } from "../src/lib/settings/env.ts";
 
 export { totp, wrongTotp } from "@ebooktrivia/test-support/totp";
 
@@ -30,15 +31,14 @@ export const TEST_CONFIG: AdminConfig = {
 
 const runtimes: AuthRuntime[] = [];
 /** A runtime on its own pool (a second instance of the app, or the app after a restart). */
-export function newRuntime(config: AdminConfig = TEST_CONFIG): AuthRuntime {
-  const { sql, db } = createAdminDb(config.databaseUrl, 8);
-  const rt = runtimeFor(config, sql, db);
+export function newRuntime(config: AdminConfig = TEST_CONFIG, settings: SettingsConfig = NO_SETTINGS): AuthRuntime {
+  const rt = runtimeFor(config, createAdminDb(config.databaseUrl, 8), settings);
   runtimes.push(rt);
   return rt;
 }
 
 afterAll(async () => {
-  await Promise.all(runtimes.map((rt) => rt.sql.end({ timeout: 5 })));
+  await Promise.all(runtimes.map((rt) => rt.close()));
   await root.end({ timeout: 5 });
 });
 

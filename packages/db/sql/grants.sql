@@ -108,6 +108,16 @@ GRANT INSERT (actor_kind, actor_admin_user_id, action, entity_type, entity_id, c
   ON public.audit_log TO admin_rw;
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA admin_auth TO admin_rw;
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA player_auth TO admin_rw;
+-- No decryptable form is readable by admin_rw (US-017, plan M2.3 "admin cannot decrypt"): it
+-- writes sealed secrets and outbox rows but never reads back a ciphertext, sealed DEK or sealed
+-- OTP code, only the labels it needs to find, show (`last4`) and replace a row. Writes need no
+-- SELECT on these columns (no RETURNING / upsert of them).
+REVOKE SELECT ON public.settings_secrets, public.outbox, public.player_otps FROM admin_rw;
+GRANT SELECT (id, scope, name, adnet_id, bound_host, key_id, last4, created_at, updated_at)
+  ON public.settings_secrets TO admin_rw;
+GRANT SELECT (id, topic, dedupe_key, payload, available_at, relayed_at, processed_at, attempts, last_error, created_at)
+  ON public.outbox TO admin_rw;
+GRANT SELECT (id, phone, expires_at, attempts, created_at) ON public.player_otps TO admin_rw;
 
 -- ---------------------------------------------------------------------------------------------
 -- worker_rw (apps/worker: relay, consumers, sweepers, heartbeat). Holds payment, messaging and
@@ -140,6 +150,13 @@ GRANT UPDATE (status, player_id, paid_at, refunded_at, updated_at) ON public.ord
 
 GRANT SELECT ON public.waha_sessions TO worker_rw;
 GRANT UPDATE (status, status_at, updated_at) ON public.waha_sessions TO worker_rw;
+
+-- SMTP settings (e-mail delivery) and admin template test-sends (US-017): the worker claims a
+-- test-send (pending -> sending), sends it and records the outcome; it cannot change what or to
+-- whom.
+GRANT SELECT ON public.smtp_settings TO worker_rw;
+GRANT SELECT ON public.template_test_sends TO worker_rw;
+GRANT UPDATE (status, error, sent_at, updated_at) ON public.template_test_sends TO worker_rw;
 
 GRANT SELECT ON public.payment_notifications, public.waha_inbound TO worker_rw;
 GRANT UPDATE (processed_at) ON public.payment_notifications, public.waha_inbound TO worker_rw;

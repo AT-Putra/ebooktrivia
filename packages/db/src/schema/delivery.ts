@@ -20,6 +20,9 @@ export const wahaServers = pgTable(
   },
   (t) => [
     check("waha_servers_base_url_host_check", sql`${t.baseUrlHost} = lower(${t.baseUrlHost})`),
+    // Security review US-017 S3: the private-IP allowlist is valid for an IPv4 literal only. A DNS
+    // name flagged as private could later resolve to any internal address.
+    check("waha_servers_allow_private_ip_check", sql`NOT ${t.allowPrivateIp} OR ${t.baseUrlHost} ~ '^[0-9]{1,3}(\\.[0-9]{1,3}){3}(:[0-9]{1,5})?$'`),
     // Security review US-011 #1: the WAHA key is sealed with bound_host = base_url_host, but the
     // client sends to base_url, so the two must be one fact. One strict grammar: https only,
     // lowercase ASCII host (punycode for IDN), optional non-default port 1..65535 without leading
@@ -57,9 +60,51 @@ export const wahaSessions = pgTable(
   },
   (t) => [
     unique("waha_sessions_server_id_session_name_key").on(t.serverId, t.sessionName),
+    // Same grammar as the WAHA adapter's session check (US-011 carry-over): the name becomes a
+    // URL path segment of every WAHA call.
+    check("waha_sessions_session_name_check", sql`${t.sessionName} ~ '^[A-Za-z0-9_-]{1,64}$'`),
     e164Check("waha_sessions_phone_check", t.phone),
     check("waha_sessions_weight_check", sql`${t.weight} > 0`),
     nonNegative("waha_sessions_daily_cap_check", t.dailyCap),
+  ],
+);
+
+/**
+ * The SMTP server for e-mail delivery (one row; AC-A3). The messaging-scope secret
+ * `smtp.password` is bound to `host` (bound_host): sql/triggers.sql refuses a password bound to
+ * another host (ET062) and deletes it when the host changes or the row is deleted, like the WAHA
+ * and adnet endpoint bindings. Mail goes out from the worker only (packages/adapters smtp.ts,
+ * TLS required: implicit on `tls`, STARTTLS with requireTLS on `starttls`).
+ */
+export const smtpSettings = pgTable(
+  "smtp_settings",
+  {
+    /** Always true: at most one row. */
+    id: boolean("id").primaryKey().default(true),
+    /** Lowercase ASCII hostname (punycode for IDN) or dotted-quad IPv4; what the password is bound to. */
+    host: text("host").notNull(),
+    port: integer("port").notNull(),
+    security: text("security").notNull(),
+    username: text("username"),
+    fromAddress: text("from_address").notNull(),
+    fromName: text("from_name"),
+    /** Explicit, audited allowlist entry for an SMTP host on a private network (safe-fetch policy). */
+    allowPrivateIp: boolean("allow_private_ip").notNull().default(false),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    check("smtp_settings_singleton_check", sql`${t.id}`),
+    check(
+      "smtp_settings_host_check",
+      sql`${t.host} ~ '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$' AND char_length(${t.host}) <= 253`,
+    ),
+    check("smtp_settings_port_check", sql`${t.port} BETWEEN 1 AND 65535`),
+    inCheck("smtp_settings_security_check", t.security, ["starttls", "tls"]),
+    // The SMTP adapter uses implicit TLS on 465 and STARTTLS (required) on any other port (US-017 L6).
+    check("smtp_settings_security_port_check", sql`(${t.security} = 'tls') = (${t.port} = 465)`),
+    // Security review US-017 S3, as for WAHA servers.
+    check("smtp_settings_allow_private_ip_check", sql`NOT ${t.allowPrivateIp} OR ${t.host} ~ '^[0-9]{1,3}(\\.[0-9]{1,3}){3}$'`),
   ],
 );
 

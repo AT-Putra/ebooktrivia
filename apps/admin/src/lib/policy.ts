@@ -26,6 +26,8 @@ const RULES = {
   "landing_page.content.edit": "staff",
   "message_template.edit": "staff",
   "message_template.test_send": "staff",
+  // Who test-sends may reach (security review US-017 S4): the Owner's list, not content.
+  "test_recipient.manage": "owner",
   // Manage trivia (AC-A1); locked sets are Owner-only (§10 item 18).
   "trivia_set.edit": "staff",
   "question.content.edit": "staff_unlocked",
@@ -46,6 +48,9 @@ const RULES = {
   "winners.export": "owner",
   // LP domain registration (§10 item 18).
   "lp_domain.register": "owner",
+  // Creating a landing page and binding it to a program / gateway / allowed adnets (US-017): not
+  // content, so Owner-only. Staff may rename it (landing_page.content.edit).
+  "landing_page.settings.edit": "owner",
   // Not granted to Staff by AC-A1, so Owner-only.
   "program.edit": "owner",
   "program.reschedule": "owner",

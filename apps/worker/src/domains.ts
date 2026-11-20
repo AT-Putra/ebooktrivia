@@ -8,7 +8,8 @@
 // and every request for a reload is answered by a load that started after it. A failed reload
 // keeps the previous set (logged), so a database hiccup does not take TLS issuance down.
 import type postgres from "postgres";
-import { normalizeHost } from "./hosts.ts";
+// The subpath only: the internal process must not load the rest of core (test/internal.int.test.ts).
+import { normalizeHost } from "@ebooktrivia/core/hosts";
 import type { Logger } from "./log.ts";
 
 export const LP_DOMAINS_CHANNEL = "lp_domains_changed";

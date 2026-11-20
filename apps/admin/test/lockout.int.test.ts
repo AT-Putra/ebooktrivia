@@ -76,7 +76,7 @@ describe("password lockout", () => {
     const b = newRuntime();
     for (let i = 0; i < 3; i++) await attempt(admin.email, WRONG, freshIp(), a);
     for (let i = 0; i < 2; i++) await attempt(admin.email, WRONG, freshIp(), b);
-    await a.sql.end({ timeout: 5 });
+    await a.close();
     const restarted = newRuntime();
     expect((await attempt(admin.email, admin.password, ip, restarted)).kind).toBe("locked");
   });

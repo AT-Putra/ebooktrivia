@@ -2,12 +2,11 @@ import { randomUUID } from "node:crypto";
 import { describe, expect, expectTypeOf, it } from "vitest";
 import { canonicalAad, secretAad, type SecretLabels } from "./aad.ts";
 import { CryptoError, gcmDecrypt, generateScopeKeyPair, keyIdOf, open, privateKeyObject, seal } from "./sealed-box.ts";
+import { createSecretOpener, openerFromEnv } from "./opener.ts";
 import {
   assertOtpCode,
-  createSecretOpener,
   createSecretSealer,
   last4,
-  openerFromEnv,
   SEALED_OTP_BYTES,
   type SealedSecret,
   sealerFromEnv,
