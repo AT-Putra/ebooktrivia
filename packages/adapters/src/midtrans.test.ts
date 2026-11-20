@@ -11,10 +11,14 @@ import {
   expectedGrossAmount,
   getTransactionStatus,
   grossAmountMatches,
+  isMidtransOrderId,
+  isSignatureShape,
   MIDTRANS_ENDPOINTS,
+  MIDTRANS_TRANSACTION_STATUSES,
   type MidtransConfig,
   MidtransError,
   type MidtransStatus,
+  parseNotification,
   signedFields,
   verifySignature,
 } from "./midtrans.ts";
@@ -299,10 +303,64 @@ describe("notification signature (constant-time, gross_amount as the signed stri
     expect(verifySignature({ ...fields, gross_amount: "50000.0" }, SERVER_KEY)).toBe(false);
   });
 
+  it("P1-1: accepts only 128 hex digits, so no character aliases a hex digit", () => {
+    const fields = signedFields(signed);
+    if (fields === undefined) throw new Error("fixture");
+    const good = fields.signature_key;
+    // U+0239 keeps 0x39 ("9") as its low byte: an "ascii" Buffer used to read it as "9".
+    const alias = good.replace(/9/, "\u0239");
+    expect(alias).not.toBe(good);
+    expect(verifySignature({ ...fields, signature_key: alias }, SERVER_KEY)).toBe(false);
+    expect(isSignatureShape(alias)).toBe(false);
+    expect(verifySignature({ ...fields, signature_key: `${good} ` }, SERVER_KEY)).toBe(false);
+    expect(verifySignature({ ...fields, signature_key: good.slice(0, 127) }, SERVER_KEY)).toBe(false);
+    expect(verifySignature({ ...fields, signature_key: `${good.slice(0, 127)}g` }, SERVER_KEY)).toBe(false);
+    expect(isSignatureShape(good)).toBe(true);
+    expect(isSignatureShape(good.toUpperCase())).toBe(true);
+  });
+
   it("needs every signed field to be a non-empty string", () => {
     expect(signedFields({ ...signed, gross_amount: 50_000 })).toBeUndefined();
     expect(signedFields({ ...signed, signature_key: "" })).toBeUndefined();
     expect(signedFields("not an object")).toBeUndefined();
+  });
+
+  it("parseNotification: the signed fields, a known status label and a short whitelisted copy, nothing else", () => {
+    const body = {
+      ...signed,
+      fraud_status: "accept",
+      payment_type: "qris",
+      transaction_id: "tx-1",
+      customer_details: { first_name: "Budi", email: "budi@example.com" },
+      va_numbers: [{ bank: "bca", va_number: "12345678901" }],
+      transaction_time: "x".repeat(500),
+    };
+    const parsed = parseNotification(body);
+    expect(parsed?.signed).toEqual(signedFields(signed));
+    expect(parsed?.transactionStatus).toBe("settlement");
+    expect(parsed?.summary).toEqual({
+      order_id: settlement.order_id,
+      status_code: "200",
+      gross_amount: "50000.00",
+      transaction_status: "settlement",
+      fraud_status: "accept",
+      payment_type: "qris",
+      transaction_id: "tx-1",
+      transaction_time: "x".repeat(64),
+    });
+    // The label is not signed: anything outside the known list collapses to one value.
+    expect(parseNotification({ ...signed, transaction_status: "settlement2" })?.transactionStatus).toBe("unknown");
+    expect(parseNotification({ ...signed, transaction_status: 1 })?.transactionStatus).toBe("unknown");
+    for (const status of MIDTRANS_TRANSACTION_STATUSES) expect(parseNotification({ ...signed, transaction_status: status })?.transactionStatus).toBe(status);
+    expect(parseNotification({ ...signed, status_code: 200 })).toBeUndefined();
+    expect(parseNotification(["not", "an", "object"])).toBeUndefined();
+  });
+
+  it("isMidtransOrderId accepts what getTransactionStatus can re-query", () => {
+    expect(isMidtransOrderId("AbC012defGHI345jkl678m-12")).toBe(true);
+    expect(isMidtransOrderId("..")).toBe(false);
+    expect(isMidtransOrderId("a/b")).toBe(false);
+    expect(isMidtransOrderId("a".repeat(51))).toBe(false);
   });
 
   it("compares order amounts against the signed string only", () => {

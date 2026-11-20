@@ -5,6 +5,8 @@ import {
   type AnyPgColumn,
   boolean,
   check,
+  date,
+  foreignKey,
   index,
   inet,
   integer,
@@ -243,6 +245,15 @@ export const midtransAttempts = pgTable(
     snapToken: text("snap_token"),
     redirectUrl: text("redirect_url"),
     error: text("error"),
+    /**
+     * The attempt's last RE-QUERIED Midtrans status (US-021, written by the worker only): transaction_status
+     * and fraud_status as the signed status answer gave them, and when the re-query was made (a re-query
+     * older than this one is never applied). NULL until the first re-query. The order machine counts
+     * the order's other settled attempts from these (double payments).
+     */
+    gatewayStatus: text("gateway_status"),
+    gatewayFraudStatus: text("gateway_fraud_status"),
+    gatewayCheckedAt: tstz("gateway_checked_at"),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -251,6 +262,10 @@ export const midtransAttempts = pgTable(
     check("midtrans_attempts_n_check", sql`${t.n} >= 1`),
     check("midtrans_attempts_midtrans_order_id_check", sql`char_length(${t.midtransOrderId}) <= 50`),
     inCheck("midtrans_attempts_status_check", t.status, ["requested", "created", "failed"]),
+    check(
+      "midtrans_attempts_gateway_check",
+      sql`(${t.gatewayStatus} IS NULL) = (${t.gatewayCheckedAt} IS NULL) AND char_length(${t.gatewayStatus}) <= 64 AND char_length(${t.gatewayFraudStatus}) <= 64`,
+    ),
   ],
 );
 
@@ -301,5 +316,61 @@ export const payments = pgTable(
     check("payments_fee_idr_check", sql`${t.feeIdr} IS NULL OR ${t.feeIdr} >= 0`),
     check("payments_currency_check", sql`${t.currency} = 'IDR'`),
     index("payments_order_idx").on(t.orderId),
+  ],
+);
+
+/**
+ * The nightly payment reconciliation (US-021, plan M6.5): one run per WIB day (@ebooktrivia/core
+ * reconciliationDay), claimed by one worker. It re-queries EVERY midtrans_attempts row of the orders
+ * active in the last 7 days.
+ */
+export const paymentReconciliationRuns = pgTable(
+  "payment_reconciliation_runs",
+  {
+    id: id(),
+    runDate: date("run_date", { mode: "string" }).notNull().unique("payment_reconciliation_runs_run_date_key"),
+    startedAt: tstz("started_at").notNull().defaultNow(),
+    /** Refreshed while the run makes progress; a run whose heartbeat is stale is claimed again. */
+    heartbeatAt: tstz("heartbeat_at").notNull().defaultNow(),
+    finishedAt: tstz("finished_at"),
+    attemptsChecked: integer("attempts_checked").notNull().default(0),
+    findings: integer("findings").notNull().default(0),
+    /** Re-queries that failed (the attempt was not checked). */
+    errors: integer("errors").notNull().default(0),
+  },
+  (t) => [
+    nonNegative("payment_reconciliation_runs_attempts_checked_check", t.attemptsChecked),
+    nonNegative("payment_reconciliation_runs_findings_check", t.findings),
+    nonNegative("payment_reconciliation_runs_errors_check", t.errors),
+  ],
+);
+
+/** @ebooktrivia/core RECONCILE_FINDINGS (a core test pins them equal). */
+export const RECONCILE_FINDING_KINDS = ["settled_not_paid", "paid_not_settled", "double_settlement", "settlement_review", "refunded_but_settled", "requery_refused"] as const;
+
+/**
+ * The report rows of a reconciliation: one per run, order and kind of mismatch, each also raised as an
+ * alert. `attempts` = what Midtrans said about each attempt ([{n, verdict, transaction_status}]); no PII.
+ */
+export const paymentReconciliationFindings = pgTable(
+  "payment_reconciliation_findings",
+  {
+    id: id(),
+    runId: uuid("run_id").notNull(),
+    orderId: uuid("order_id").notNull(),
+    kind: text("kind").notNull(),
+    /** Our order status before the reconciliation applied anything. */
+    orderStatus: orderStatus("order_status").notNull(),
+    attempts: jsonb("attempts").notNull().default([]),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    // Named here: the generated names would pass PostgreSQL's 63-byte identifier limit.
+    foreignKey({ name: "payment_reconciliation_findings_run_id_fk", columns: [t.runId], foreignColumns: [paymentReconciliationRuns.id] }).onDelete("restrict"),
+    foreignKey({ name: "payment_reconciliation_findings_order_id_fk", columns: [t.orderId], foreignColumns: [orders.id] }).onDelete("restrict"),
+    unique("payment_reconciliation_findings_run_id_order_id_kind_key").on(t.runId, t.orderId, t.kind),
+    inCheck("payment_reconciliation_findings_kind_check", t.kind, [...RECONCILE_FINDING_KINDS]),
+    check("payment_reconciliation_findings_attempts_check", sql`jsonb_typeof(${t.attempts}) = 'array'`),
+    index("payment_reconciliation_findings_order_idx").on(t.orderId),
   ],
 );

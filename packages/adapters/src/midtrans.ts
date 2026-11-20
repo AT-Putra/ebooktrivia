@@ -93,6 +93,9 @@ export interface SignedPayload {
 /** Unreserved URL characters, but never "." or ".." (they would rewrite the /v2/{id}/status path). */
 const MIDTRANS_ORDER_ID = /^(?!\.{1,2}$)[A-Za-z0-9._~-]{1,50}$/;
 
+/** An order id this adapter can re-query (getTransactionStatus refuses anything else). */
+export const isMidtransOrderId = (value: string): boolean => MIDTRANS_ORDER_ID.test(value);
+
 function authHeader(serverKey: string): string {
   return `Basic ${Buffer.from(`${serverKey}:`).toString("base64")}`;
 }
@@ -102,14 +105,23 @@ function headers(serverKey: string): Record<string, string> {
 }
 
 function signatureOf(orderId: string, statusCode: string, grossAmount: string, serverKey: string): Buffer {
-  return Buffer.from(createHash("sha512").update(orderId + statusCode + grossAmount + serverKey).digest("hex"), "ascii");
+  return createHash("sha512").update(orderId + statusCode + grossAmount + serverKey).digest();
 }
+
+const SIGNATURE_HEX = /^[0-9a-f]{128}$/i;
+
+/**
+ * A signature_key of the only shape Midtrans sends: 128 hex digits (SHA-512). Anything else is refused
+ * before any other work (security review US-021 P1-1: an "ascii" Buffer keeps only the low byte of each
+ * character, so U+0239 used to pass for "9").
+ */
+export const isSignatureShape = (signatureKey: string): boolean => SIGNATURE_HEX.test(signatureKey);
 
 /** Constant-time check of a Midtrans signature_key; gross_amount is taken as the signed string. */
 export function verifySignature(payload: SignedPayload, serverKey: string): boolean {
+  if (!isSignatureShape(payload.signature_key)) return false;
   const expected = signatureOf(payload.order_id, payload.status_code, payload.gross_amount, serverKey);
-  const given = Buffer.from(payload.signature_key.toLowerCase(), "ascii");
-  return given.length === expected.length && timingSafeEqual(given, expected);
+  return timingSafeEqual(Buffer.from(payload.signature_key, "hex"), expected);
 }
 
 /** What Midtrans reports as gross_amount for an integer IDR amount. */
@@ -132,6 +144,71 @@ export function signedFields(body: unknown): SignedPayload | undefined {
   const signature = stringField(body, "signature_key");
   if (orderId === undefined || statusCode === undefined || grossAmount === undefined || signature === undefined) return undefined;
   return { order_id: orderId, status_code: statusCode, gross_amount: grossAmount, signature_key: signature };
+}
+
+/**
+ * Midtrans transaction_status values (public docs; PROVISIONAL until US-005 records the sandbox).
+ * A notification's label outside this list is kept as "unknown".
+ */
+export const MIDTRANS_TRANSACTION_STATUSES = [
+  "authorize",
+  "capture",
+  "settlement",
+  "pending",
+  "deny",
+  "cancel",
+  "expire",
+  "failure",
+  "refund",
+  "partial_refund",
+  "chargeback",
+  "partial_chargeback",
+] as const;
+
+/** The body fields copied into the inbox (payment_notifications.raw), each cut to 64 characters. */
+const NOTIFICATION_SUMMARY_FIELDS = [
+  "order_id",
+  "status_code",
+  "gross_amount",
+  "transaction_status",
+  "fraud_status",
+  "payment_type",
+  "transaction_id",
+  "transaction_time",
+  "currency",
+] as const;
+
+export interface MidtransNotification {
+  /** What the signature covers (order_id + status_code + gross_amount). */
+  readonly signed: SignedPayload;
+  /**
+   * transaction_status, which the signature does NOT cover: a known value or "unknown". It only
+   * dedupes the inbox (so a replayed body with edited labels adds at most one row per value); the
+   * status itself always comes from the re-query.
+   */
+  readonly transactionStatus: string;
+  /** A whitelisted copy of the body's string fields, for operators only, never trusted. */
+  readonly summary: Readonly<Record<string, string>>;
+}
+
+/**
+ * Parses an UNTRUSTED notification body (the one place notification shapes are read). Undefined when
+ * a signed field is missing; the signature itself is checked by verifySignature.
+ */
+export function parseNotification(body: unknown): MidtransNotification | undefined {
+  const signed = signedFields(body);
+  if (signed === undefined || !isRecord(body)) return undefined;
+  const label = stringField(body, "transaction_status");
+  const summary: Record<string, string> = {};
+  for (const field of NOTIFICATION_SUMMARY_FIELDS) {
+    const value = stringField(body, field);
+    if (value !== undefined) summary[field] = value.slice(0, 64);
+  }
+  return {
+    signed,
+    transactionStatus: label !== undefined && (MIDTRANS_TRANSACTION_STATUSES as readonly string[]).includes(label) ? label : "unknown",
+    summary,
+  };
 }
 
 async function send(cfg: MidtransConfig, url: string, init: { method: string; body?: string }): Promise<HttpResponse> {

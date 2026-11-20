@@ -24,6 +24,8 @@
 -- (product, slug, sales start, trivia set count / order), ET048 reschedule of a locked program
 -- that is not an extension, or of an ended program, ET062 SMTP / WAHA secret bound to another host than its endpoint,
 -- ET049 a Midtrans attempt whose midtrans_order_id is not {public_id}-{n} of its order.
+-- ET080 a delivery / MT conversion row of an unpaid order, ET081 orders.paid_at / refunded_at changed
+-- once set, ET082 a fulfillment change of a flagged or revoked winner (US-021).
 
 SELECT pg_catalog.set_config('search_path', 'pg_catalog, pg_temp', false);
 
@@ -900,6 +902,99 @@ CREATE OR REPLACE TRIGGER legal_pages_guard
 CREATE OR REPLACE TRIGGER legal_pages_guard_truncate
   BEFORE TRUNCATE ON public.legal_pages
   FOR EACH STATEMENT EXECUTE FUNCTION public.legal_pages_guard();
+
+-- ---------------------------------------------------------------------------------------------
+-- US-021 payments (AC-S7, AC-T4, plan §10 item 17). The worker applies each re-queried Midtrans
+-- status in one transaction under the order's row lock, and creates the PAID effects with
+-- INSERT ... ON CONFLICT DO NOTHING on their unique keys (deliveries_order_id_channel_key,
+-- conversion_events_order_id_sink_kind_key, outbox_dedupe_key_key, player_programs_pkey). These
+-- guards hold for EVERY writer (no caller check), so no code path can break them:
+--   ET080 a delivery, or an MT conversion row, for an order that is not paid (AC-T4: unpaid orders
+--         never fire MT; nothing is delivered before PAID), or one moved to pending / sending while its
+--         order is not paid (no retry, claim or re-fire after a refund, chargeback or review);
+--   ET081 orders.paid_at / refunded_at, once set, never change (the first PAID is stamped once);
+--   ET082 a fulfillment of a flagged or revoked winner (a chargeback after confirmation flags the
+--         winner, which halts fulfillment until the Owner decides): no new fulfillment row, no status,
+--         proof or winner change; notes stay editable.
+-- SECURITY DEFINER where the guard reads another table (it decides nothing about the caller).
+CREATE OR REPLACE FUNCTION public.paid_effects_guard()
+  RETURNS trigger
+  LANGUAGE plpgsql
+  SECURITY DEFINER
+  SET search_path = pg_catalog, pg_temp
+AS $fn$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM public.orders o WHERE o.id = NEW.order_id AND o.status = 'paid') THEN
+    RAISE EXCEPTION '% rows are created for paid orders only', TG_TABLE_NAME USING ERRCODE = 'ET080';
+  END IF;
+  RETURN NEW;
+END
+$fn$;
+
+CREATE OR REPLACE TRIGGER deliveries_paid_guard
+  BEFORE INSERT OR UPDATE OF order_id ON public.deliveries
+  FOR EACH ROW EXECUTE FUNCTION public.paid_effects_guard();
+
+CREATE OR REPLACE TRIGGER conversion_events_mt_paid_guard
+  BEFORE INSERT OR UPDATE OF order_id, kind ON public.conversion_events
+  FOR EACH ROW WHEN (NEW.kind = 'mt') EXECUTE FUNCTION public.paid_effects_guard();
+
+-- Security review US-021 P2-A: nothing of an order that left PAID goes (back) into the send path. A
+-- delivery or an MT row moves to pending (due again) or sending (claimed) only while its order is paid:
+-- no lease-expiry retry, no consumer claim (US-024 / US-025) and no manual re-fire of a refunded order.
+CREATE OR REPLACE TRIGGER deliveries_paid_status_guard
+  BEFORE UPDATE OF status ON public.deliveries
+  FOR EACH ROW WHEN (NEW.status IN ('pending', 'sending')) EXECUTE FUNCTION public.paid_effects_guard();
+
+CREATE OR REPLACE TRIGGER conversion_events_mt_paid_status_guard
+  BEFORE UPDATE OF status ON public.conversion_events
+  FOR EACH ROW WHEN (NEW.kind = 'mt' AND NEW.status IN ('pending', 'sending')) EXECUTE FUNCTION public.paid_effects_guard();
+
+CREATE OR REPLACE FUNCTION public.orders_payment_stamps_guard()
+  RETURNS trigger
+  LANGUAGE plpgsql
+  SET search_path = pg_catalog, pg_temp
+AS $fn$
+BEGIN
+  IF (OLD.paid_at IS NOT NULL AND NEW.paid_at IS DISTINCT FROM OLD.paid_at)
+     OR (OLD.refunded_at IS NOT NULL AND NEW.refunded_at IS DISTINCT FROM OLD.refunded_at) THEN
+    RAISE EXCEPTION 'orders.paid_at and refunded_at are set once' USING ERRCODE = 'ET081';
+  END IF;
+  RETURN NEW;
+END
+$fn$;
+
+CREATE OR REPLACE TRIGGER orders_payment_stamps_guard
+  BEFORE UPDATE OF paid_at, refunded_at ON public.orders
+  FOR EACH ROW EXECUTE FUNCTION public.orders_payment_stamps_guard();
+
+CREATE OR REPLACE FUNCTION public.fulfillments_halt_guard()
+  RETURNS trigger
+  LANGUAGE plpgsql
+  SECURITY DEFINER
+  SET search_path = pg_catalog, pg_temp
+AS $fn$
+BEGIN
+  IF TG_OP = 'UPDATE'
+     AND NEW.status IS NOT DISTINCT FROM OLD.status
+     AND NEW.proof_upload_id IS NOT DISTINCT FROM OLD.proof_upload_id
+     AND NEW.winner_id IS NOT DISTINCT FROM OLD.winner_id THEN
+    RETURN NEW;
+  END IF;
+  IF EXISTS (
+    SELECT 1 FROM public.winners w
+     WHERE w.id IN (NEW.winner_id, CASE WHEN TG_OP = 'UPDATE' THEN OLD.winner_id END)
+       AND w.status IN ('flagged', 'revoked')
+  ) THEN
+    RAISE EXCEPTION 'fulfillment is halted: the winner is flagged or revoked' USING ERRCODE = 'ET082';
+  END IF;
+  RETURN NEW;
+END
+$fn$;
+
+CREATE OR REPLACE TRIGGER fulfillments_halt_guard
+  BEFORE INSERT OR UPDATE ON public.fulfillments
+  FOR EACH ROW EXECUTE FUNCTION public.fulfillments_halt_guard();
 
 -- ---------------------------------------------------------------------------------------------
 -- Fire every trigger on our tables in ALL session_replication_role modes. The default (ENABLE,

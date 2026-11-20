@@ -46,6 +46,12 @@ export type FinalizeWrites = (tx: postgres.TransactionSql) => Promise<void>;
 export interface OutboxConsumer {
   readonly topic: string;
   readonly leaseMs: number;
+  /**
+   * Claims stop after this many attempts (default OUTBOX_MAX_ATTEMPTS); the outbox sweeper then alerts.
+   * With the backoff (30 s doubling up to 1 h) 10 attempts span about 4.4 h; a consumer that must keep
+   * trying for longer (the Midtrans re-query: 24 h, US-021) raises it.
+   */
+  readonly maxAttempts?: number;
   /** Errors thrown here must carry no payload values or PII: they reach last_error and the logs. */
   perform(row: ClaimedOutboxRow, signal: AbortSignal): Promise<FinalizeWrites | undefined>;
 }
@@ -67,7 +73,7 @@ export function createOutboxProcessor(
       UPDATE public.outbox
          SET attempts = attempts + 1, available_at = now() + ${consumer.leaseMs} * interval '1 millisecond'
        WHERE id = ${id} AND topic = ${consumer.topic} AND processed_at IS NULL AND available_at <= now()
-         AND attempts < ${OUTBOX_MAX_ATTEMPTS}
+         AND attempts < ${consumer.maxAttempts ?? OUTBOX_MAX_ATTEMPTS}
       RETURNING id, topic, payload, sealed, attempts`;
     if (row === undefined) return "skipped";
     deps.failpoint("after_claim_before_effect");

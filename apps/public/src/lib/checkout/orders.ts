@@ -227,6 +227,9 @@ export async function openOrder(sql: Sql, o: OpenOrderInput): Promise<OpenResult
 /** tx2. True when the URL was stored and the MO enqueued; false when attempt n was superseded meanwhile. */
 export async function snapCreated(sql: Sql, order: OrderRef, n: number, snap: { readonly token: string; readonly redirectUrl: string; readonly expiresAt: Date }): Promise<boolean> {
   return sql.begin(async (tx) => {
+    // The order first, then its attempt: the worker's payment transaction (US-021 applyRequery) takes
+    // them in the same order, so the two can never deadlock.
+    await tx`SELECT 1 FROM public.orders WHERE id = ${order.id} FOR UPDATE`;
     await tx`
       UPDATE public.midtrans_attempts SET status = 'created', snap_token = ${snap.token}, redirect_url = ${snap.redirectUrl}, error = NULL, updated_at = now()
        WHERE order_id = ${order.id} AND n = ${n}`;
@@ -243,6 +246,7 @@ export async function snapCreated(sql: Sql, order: OrderRef, n: number, snap: { 
 /** Snap failed for attempt n: `definite` = Midtrans refused it (failed), else its outcome is unknown (stays requested). */
 export async function snapFailed(sql: Sql, order: OrderRef, n: number, error: string, definite: boolean): Promise<void> {
   await sql.begin(async (tx) => {
+    await tx`SELECT 1 FROM public.orders WHERE id = ${order.id} FOR UPDATE`;
     await tx`
       UPDATE public.midtrans_attempts SET status = ${definite ? "failed" : "requested"}, error = ${error.slice(0, 200)}, updated_at = now()
        WHERE order_id = ${order.id} AND n = ${n} AND status = 'requested'`;

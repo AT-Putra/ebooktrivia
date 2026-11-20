@@ -78,4 +78,15 @@ describe("midtrans-stub", () => {
     expect(forged["signature_key"]).not.toBe(expected);
     expect(forged["order_id"]).toBe("ORDER-3");
   });
+
+  it("state control can settle another amount or currency, signed, and mint a new transaction id (a Snap retry)", async () => {
+    const app = make();
+    await create(app, "ORDER-4");
+    const before = (await (await app.request("/v2/ORDER-4/status", { headers })).json()) as Record<string, string>;
+    await app.request("/__stub/transactions/ORDER-4/state", json({ transaction_status: "settlement", gross_amount: "50001.00", currency: "USD", new_transaction: true }));
+    const after = (await (await app.request("/v2/ORDER-4/status", { headers })).json()) as Record<string, string>;
+    expect(after).toMatchObject({ transaction_status: "settlement", gross_amount: "50001.00", currency: "USD" });
+    expect(after["transaction_id"]).not.toBe(before["transaction_id"]);
+    expect(after["signature_key"]).toBe(expectedSig("ORDER-4", "200", "50001.00"));
+  });
 });

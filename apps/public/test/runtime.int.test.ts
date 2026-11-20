@@ -27,6 +27,9 @@ describe("public runtime", () => {
     try {
       expect(rt.checkout.domain).toBe(DOMAIN);
       expect(rt.checkout.opener.scopes).toEqual(["payment"]);
+      // The notification inbox (US-021) shares the pool, Valkey and the payment key.
+      expect(rt.webhooks.opener.scopes).toEqual(["payment"]);
+      expect(rt.webhooks.sql).toBe(rt.checkout.sql);
       expect(await rt.checkout.valkey.ping()).toBe("PONG");
     } finally {
       await rt.close();

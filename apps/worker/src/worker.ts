@@ -16,8 +16,12 @@
 //   graceEnd         finalize / snapshot / winners (US-028), run before a program moves to
 //                    awaiting_confirmation. Without it the grace-end sweeper does not run: the worker
 //                    cannot move a program back, so it never ends a grace period it cannot finish.
-// The production entry (main.ts) passes no ports yet; test/support/worker-harness.ts runs this
-// same composition with test ports for the chaos tests.
+//   payments         Midtrans access (US-021, payments.ts, reconciliation.ts): the payment.notification
+//                    consumer and the nightly reconciliation loop. runWorker wires it when worker.env
+//                    holds SECRETS_PAYMENT_PRIVATE_KEY (midtrans-access.ts); without it neither runs.
+// The production entry (main.ts) passes no ports: runWorker wires the ones worker.env enables
+// (template test-sends, payments); test/support/worker-harness.ts runs this same composition with
+// test ports for the chaos tests.
 import { PG_CONNECTION_OPTIONS } from "@ebooktrivia/db/connection";
 import { type Queue, Worker } from "bullmq";
 import { Redis } from "ioredis";
@@ -38,6 +42,9 @@ import { createTemplateTestSendConsumer, type TestSender } from "./template-test
 import { testSendFromEnv } from "./test-send-senders.ts";
 import { type GraceEndHook, runSweeps } from "./sweepers.ts";
 import { loadWorkerConfig, type WorkerConfig } from "./worker-config.ts";
+import { type PaymentPort, paymentsFromEnv } from "./midtrans-access.ts";
+import { createPaymentNotificationConsumer, PAYMENT_TOPIC } from "./payments.ts";
+import { reconcileIfDue } from "./reconciliation.ts";
 
 export const RELAY_BATCH = 200;
 export const DELIVERY_QUEUE = "delivery.send";
@@ -51,6 +58,8 @@ export interface WorkerPorts {
   readonly graceEnd?: GraceEndHook;
   /** US-017: the senders of template.test_send (given the worker's pool). */
   readonly testSend?: (sql: postgres.Sql) => TestSender;
+  /** US-021: Midtrans re-queries (payment.notification consumer, nightly reconciliation). */
+  readonly payments?: PaymentPort;
 }
 
 export interface RunningWorker {
@@ -59,7 +68,11 @@ export interface RunningWorker {
 
 export async function startWorker(config: WorkerConfig, ports: WorkerPorts, log: Logger): Promise<RunningWorker> {
   const consumers = [...(ports.outboxConsumers ?? [])];
-  const topics = [...consumers.map((c) => c.topic), ...(ports.testSend === undefined ? [] : ["template.test_send"])];
+  const topics = [
+    ...consumers.map((c) => c.topic),
+    ...(ports.testSend === undefined ? [] : ["template.test_send"]),
+    ...(ports.payments === undefined ? [] : [PAYMENT_TOPIC]),
+  ];
   if (new Set(topics).size !== topics.length) throw new Error("two outbox consumers registered for one topic");
 
   // One connection per job that can run at once (each BullMQ Worker runs `concurrency` jobs, and a
@@ -69,7 +82,7 @@ export async function startWorker(config: WorkerConfig, ports: WorkerPorts, log:
   const sql = postgres(config.databaseUrl, {
     ...PG_CONNECTION_OPTIONS,
     connection: { ...PG_CONNECTION_OPTIONS.connection, application_name: "ebt-worker" },
-    max: jobQueues * config.concurrency + 4,
+    max: jobQueues * config.concurrency + 4 + (ports.payments === undefined ? 0 : 1),
     onnotice: () => undefined,
   });
   try {
@@ -114,6 +127,9 @@ export async function startWorker(config: WorkerConfig, ports: WorkerPorts, log:
   };
 
   if (ports.testSend !== undefined) consumers.push(createTemplateTestSendConsumer({ sql, sender: ports.testSend(sql) }));
+  const { payments } = ports;
+  if (payments !== undefined) consumers.push(createPaymentNotificationConsumer({ sql, midtrans: payments.midtrans, log, waDelayMs: payments.waDelayMs }));
+  const outboxMaxAttempts = new Map(consumers.flatMap((c): [string, number][] => (c.maxAttempts === undefined ? [] : [[c.topic, c.maxAttempts]])));
   const outboxQueues = new Map<string, Queue>();
   for (const consumer of consumers) {
     outboxQueues.set(consumer.topic, consume(consumer.topic, createOutboxProcessor(consumer, { sql, failpoint, log })));
@@ -145,6 +161,7 @@ export async function startWorker(config: WorkerConfig, ports: WorkerPorts, log:
         sql,
         log,
         outboxQueues,
+        outboxMaxAttempts,
         outboxStaleMs: config.outboxStaleMs,
         ...(ports.graceEnd === undefined ? {} : { graceEnd: ports.graceEnd }),
         ...(conversionQueue === undefined ? {} : { conversionQueue }),
@@ -164,8 +181,24 @@ export async function startWorker(config: WorkerConfig, ports: WorkerPorts, log:
       return false;
     }),
   ];
+  if (payments !== undefined) {
+    // Nightly, once per WIB day across all workers (the run's claim is a row); checked every interval.
+    loops.push(
+      startLoop({ name: "reconciliation", intervalMs: config.reconcileIntervalMs, log }, async () => {
+        await reconcileIfDue({ sql, midtrans: payments.midtrans, log, waDelayMs: payments.waDelayMs, ...(payments.clock === undefined ? {} : { clock: payments.clock }) });
+        return false;
+      }),
+    );
+  }
   log.info(
-    { topics, conversions: conversionQueue !== undefined, deliveries: deliveryQueue !== undefined, graceEnd: ports.graceEnd !== undefined, prefix: config.prefix },
+    {
+      topics,
+      conversions: conversionQueue !== undefined,
+      deliveries: deliveryQueue !== undefined,
+      graceEnd: ports.graceEnd !== undefined,
+      payments: payments !== undefined,
+      prefix: config.prefix,
+    },
     "worker started",
   );
 
@@ -183,7 +216,7 @@ export async function startWorker(config: WorkerConfig, ports: WorkerPorts, log:
       await Promise.all(queues.map((q) => q.close()));
       redis.disconnect();
       await sql.end({ timeout: 5 });
-      await Promise.all([safeFetch.close(), heartbeatFetch.close()]);
+      await Promise.all([safeFetch.close(), heartbeatFetch.close(), payments?.close?.()]);
     },
   };
 }
@@ -191,8 +224,16 @@ export async function startWorker(config: WorkerConfig, ports: WorkerPorts, log:
 export async function runWorker(env: Env, ports: WorkerPorts = {}): Promise<void> {
   const config = loadWorkerConfig(env);
   const log = createLogger({ level: config.logLevel, role: "worker" });
-  // Template test-sends need the messaging private key (to open the SMTP password / WAHA key).
+  // Template test-sends need the messaging private key (to open the SMTP password / WAHA key), the
+  // Midtrans re-queries the payment private key (to open the server key).
   const testSend = ports.testSend ?? testSendFromEnv(env, config.dev);
-  const running = await startWorker(config, testSend === undefined ? ports : { ...ports, testSend }, log);
+  const payments = ports.payments ?? paymentsFromEnv(env, config);
+  // Code review m7: say it at start, not only through the hourly "no consumer" alert.
+  if (payments === undefined) log.warn("SECRETS_PAYMENT_PRIVATE_KEY is not set: Midtrans notifications are not processed and no order can become PAID");
+  const running = await startWorker(
+    config,
+    { ...ports, ...(testSend === undefined ? {} : { testSend }), ...(payments === undefined ? {} : { payments }) },
+    log,
+  );
   onShutdown(() => running.stop(), log);
 }

@@ -143,6 +143,13 @@ export async function loadCheckoutSettings(sql: Sql): Promise<CheckoutSettings> 
 
 export const loadCaptchaSettings = (sql: Sql): Promise<IntSettings<(typeof CAPTCHA_KEYS)[number]>> => intSettings(sql, CAPTCHA_KEYS);
 
+/** The deployment's Midtrans environment alone (the notification route, US-021: it needs nothing else). */
+export async function midtransEnvironment(sql: Sql): Promise<MidtransEnvironment> {
+  const [row] = await sql<{ value: unknown }[]>`SELECT value FROM public.app_settings WHERE key = 'midtrans.environment'`;
+  if (row?.value !== "sandbox" && row?.value !== "production") throw new SettingsUnavailable("midtrans.environment");
+  return row.value;
+}
+
 // ---------------------------------------------------------------------------------------------
 // Legal pages, adnets, visits
 
@@ -186,21 +193,64 @@ export class ServerKeyUnavailable extends Error {
   }
 }
 
-/**
- * The server key of `environment`, opened with the payment private key (public.env). Only the
- * payment-scope rows are visible (get_payment_secret()). The key never leaves this process except
- * in Midtrans' Basic auth header; it is never logged and never part of an error.
- */
-export async function midtransServerKey(sql: Sql, opener: SecretOpener, environment: MidtransEnvironment): Promise<string> {
-  const name = SECRET_NAMES.midtransServerKey(environment);
-  const rows = await sql<{ id: string; name: string; ciphertext: Uint8Array; nonce: Uint8Array; sealed_dek: Uint8Array; key_id: string; bound_host: string | null }[]>`
-    SELECT id, name, ciphertext, nonce, sealed_dek, key_id, bound_host FROM public.get_payment_secret() WHERE name = ${name}`;
+interface PaymentSecretRow {
+  id: string;
+  name: string;
+  ciphertext: Uint8Array;
+  nonce: Uint8Array;
+  sealed_dek: Uint8Array;
+  key_id: string;
+  bound_host: string | null;
+  updated_at: Date;
+}
+
+async function serverKeyRow(sql: Sql, environment: MidtransEnvironment): Promise<PaymentSecretRow> {
+  const rows = await sql<PaymentSecretRow[]>`
+    SELECT id, name, ciphertext, nonce, sealed_dek, key_id, bound_host, updated_at FROM public.get_payment_secret()
+     WHERE name = ${SECRET_NAMES.midtransServerKey(environment)}`;
   const row = rows[0];
   if (row === undefined) throw new ServerKeyUnavailable("missing");
+  return row;
+}
+
+function openServerKey(opener: SecretOpener, row: PaymentSecretRow): string {
   try {
     return opener.openSecret({ id: row.id, scope: "payment", name: row.name, adnetId: null, boundHost: row.bound_host, keyId: row.key_id, ciphertext: row.ciphertext, nonce: row.nonce, sealedDek: row.sealed_dek });
   } catch (error) {
     if (error instanceof CryptoError) throw new ServerKeyUnavailable("unreadable");
     throw error;
   }
+}
+
+/**
+ * The server key of `environment`, opened with the payment private key (public.env). Only the
+ * payment-scope rows are visible (get_payment_secret()). The key never leaves this process except
+ * in Midtrans' Basic auth header; it is never logged and never part of an error.
+ */
+export async function midtransServerKey(sql: Sql, opener: SecretOpener, environment: MidtransEnvironment): Promise<string> {
+  return openServerKey(opener, await serverKeyRow(sql, environment));
+}
+
+/** The deployment's server key, from a MidtransKeyCache. */
+export type MidtransKeyCache = (sql: Sql, opener: SecretOpener) => Promise<string>;
+
+/**
+ * The deployment's server key for the notification route (security review US-021 P2-1: a forged
+ * notification must cost no database read and no decryption): kept for `ttlMs`; after that the
+ * environment and the secret's version (get_payment_secret() id + updated_at) are read again, and the
+ * key is opened again only when they changed (an Owner rotation or an environment switch). The version
+ * also holds key_id and the nonce, which every encryption draws anew, so a re-encryption is detected even
+ * if updated_at was not bumped (security review US-021 P2-B). A failure is never cached.
+ */
+export function createMidtransKeyCache(ttlMs = 60_000, now: () => number = Date.now): MidtransKeyCache {
+  let cached: { readonly checkedAt: number; readonly version: string; readonly key: string } | undefined;
+  return async (sql, opener) => {
+    if (cached !== undefined && now() - cached.checkedAt < ttlMs) return cached.key;
+    const environment = await midtransEnvironment(sql);
+    const row = await serverKeyRow(sql, environment);
+    const version = [environment, row.id, String(row.updated_at.getTime()), row.key_id, Buffer.from(row.nonce).toString("hex")].join("|");
+    const key = cached?.version === version ? cached.key : openServerKey(opener, row);
+    cached = { checkedAt: now(), version, key };
+    return key;
+  };
 }

@@ -15,6 +15,7 @@ interface Txn {
   transactionStatus: string;
   fraudStatus: string;
   transactionTime: string;
+  currency: string;
 }
 
 const isRecord = (v: unknown): v is Record<string, unknown> =>
@@ -55,7 +56,7 @@ export function createMidtransStubApp(opts: MidtransStubOptions): Hono {
       transaction_id: t.transactionId,
       order_id: t.orderId,
       gross_amount: t.grossAmount,
-      currency: "IDR",
+      currency: t.currency,
       payment_type: t.paymentType,
       transaction_status: t.transactionStatus,
       fraud_status: t.fraudStatus,
@@ -100,6 +101,7 @@ export function createMidtransStubApp(opts: MidtransStubOptions): Hono {
       transactionStatus: "pending",
       fraudStatus: "accept",
       transactionTime: formatTime(new Date()),
+      currency: "IDR",
     });
     const token = randomUUID();
     return c.json(
@@ -124,6 +126,12 @@ export function createMidtransStubApp(opts: MidtransStubOptions): Hono {
     t.transactionStatus = ts;
     t.fraudStatus = str(body["fraud_status"]) ?? t.fraudStatus;
     t.paymentType = str(body["payment_type"]) ?? t.paymentType;
+    // Test controls beyond Midtrans' own fields: a settlement of another amount or currency (the
+    // amount-mismatch cases), and a retry inside Snap with another method, which Midtrans records
+    // as a new transaction of the same order_id.
+    t.grossAmount = str(body["gross_amount"]) ?? t.grossAmount;
+    t.currency = str(body["currency"]) ?? t.currency;
+    if (body["new_transaction"] === true) t.transactionId = randomUUID();
     return c.json(statusBody(t));
   });
 

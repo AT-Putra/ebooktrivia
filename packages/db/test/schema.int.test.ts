@@ -66,6 +66,9 @@ const PLAN_TABLES = {
     "template_test_sends",
     "upload_sessions",
     "test_recipients",
+    // payment reconciliation (US-021)
+    "payment_reconciliation_runs",
+    "payment_reconciliation_findings",
   ],
   player_auth: ["account", "session", "user", "verification"],
   admin_auth: ["account", "login_throttle", "recovery_code", "session", "session_state", "totp_used", "twoFactor", "user", "verification"],

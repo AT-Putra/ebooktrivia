@@ -65,6 +65,10 @@ sudo infra/provision/build-images.sh              # 2. postgres-walg, public, ad
   `https://order.<DOMAIN>/{publicId}` in the Snap request (`callbacks.finish`, the one callback the Snap API
   documents), and Midtrans appends `?order_id={publicId}-{n}` to the dashboard URLs (the order page, US-022,
   maps it back). Confirm both against the real sandbox in US-005.
+- **Payment notifications (US-021).** Add the same escrowed `SECRETS_PAYMENT_PRIVATE_KEY` to
+  `/etc/ebooktrivia/worker.env`: the worker re-queries Midtrans for every notification and runs the nightly
+  reconciliation (02:00 WIB); without it no order is ever confirmed PAID. In the Midtrans dashboard (Settings,
+  Payment, Notification URL) set the **Payment Notification URL** to `https://api.<DOMAIN>/api/v1/webhooks/midtrans`.
 - **Cap is stateless (US-020).** A Cap challenge and a redeemed token are signed by `CAPTCHA_HMAC_KEY`
   (`/etc/ebooktrivia/public.env`, generated once, the same for public@a and public@b) and carry their landing
   page's id; neither the challenge nor the redeem route stores anything, so a flood of them cannot fill the

@@ -20,7 +20,8 @@
 --   ET010 enqueue_*: source row not found       ET011 enqueue_mo: order has no Snap redirect URL
 --   triggers.sql: ET020/ET021 content lock, ET030/ET031 audit_log, ET040-ET044 orders,
 --   ET045 winners, ET046 programs, ET050/ET051 play rows, ET060/ET061 settings_secrets,
---   ET071/ET072 prize tiers, ET073/ET074 legal pages;
+--   ET071/ET072 prize tiers, ET073/ET074 legal pages, ET080-ET082 payment effects and the fulfillment
+--   halt (US-021);
 --   override.sql: ET022 override after the results snapshot or the end of grace, ET023 override
 --   arguments out of scope (ids, reason, actor);
 --   roles.sql: ET090 foreign-owned object.

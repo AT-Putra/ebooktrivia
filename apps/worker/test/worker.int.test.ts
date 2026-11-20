@@ -10,8 +10,9 @@ import { loadWorkerConfig } from "../src/worker-config.ts";
 import { type Catalog, createCatalog, createConversionEvents, createOrders, createOutboxRows, first, sleep, sql, waitFor } from "./support/db.ts";
 import { PROBE_TOPIC } from "./support/probe.ts";
 import { captureLogger } from "./support/log.ts";
-import { workerEnv } from "./support/processes.ts";
+import { kill, MAIN, spawnNode, waitForLine, workerEnv } from "./support/processes.ts";
 import { uniquePrefix } from "./support/valkey.ts";
+import { createOrder, createShop, effectsOf, midtransStub, notification, retireEffects } from "./support/midtrans.ts";
 
 const log = createLogger({ level: "silent", role: "worker" });
 const workerUser = new URL(inject("workerDbUrl")).username;
@@ -121,6 +122,44 @@ describe("startWorker", () => {
     for (const url of [inject("internalDbUrl"), inject("dbUrl")]) {
       const config = loadWorkerConfig(workerEnv(uniquePrefix(), { DATABASE_URL_WORKER: url }));
       await expect(startWorker(config, {}, log)).rejects.toThrow("DATABASE_URL_WORKER must be a worker_rw login");
+    }
+  });
+
+  it("US-021: with the payment port, relays payment.notification through BullMQ to its consumer", async () => {
+    const stub = midtransStub();
+    const shop = await createShop();
+    const order = await createOrder(shop);
+    await stub.create(order.midtransId());
+    await stub.setState(order.midtransId(), { transaction_status: "settlement" });
+    const outboxId = await notification(order.midtransId());
+    const { log: captured, lines } = captureLogger("info");
+    // The reconciliation loop runs, but its clock says 01:00 WIB: never due, so only the consumer can
+    // process the notification (code review m4: no dependence on the wall clock).
+    const config = loadWorkerConfig(workerEnv(uniquePrefix(), { WORKER_RECONCILE_INTERVAL_MS: "1000" }));
+    const beforeTwo = () => new Date("2030-01-01T18:00:00.000Z");
+    const running = await startWorker(config, { payments: { midtrans: stub.source, waDelayMs: 0, clock: beforeTwo } }, captured);
+    try {
+      await waitFor(
+        "notification processed by the consumer",
+        async () => first(await sql<{ processed: boolean }[]>`SELECT processed_at IS NOT NULL AS processed FROM outbox WHERE id = ${outboxId}`).processed,
+        20_000,
+      );
+    } finally {
+      await running.stop();
+    }
+    expect(await effectsOf(order.id)).toMatchObject({ deliveries: 2, paid_transitions: 1, order_paid_outbox: 1 });
+    expect(lines.find((l) => l["msg"] === "worker started")).toMatchObject({ payments: true, topics: ["payment.notification"] });
+    expect(await sql`SELECT 1 FROM payment_reconciliation_runs WHERE run_date = '2030-01-02'`).toEqual([]);
+    await retireEffects(shop);
+  });
+
+  it("m7: the production entry warns at start when worker.env has no payment key", async () => {
+    const child = spawnNode([MAIN], workerEnv(uniquePrefix()));
+    try {
+      const warned = await waitForLine(child, (l) => typeof l["msg"] === "string" && l["msg"].startsWith("SECRETS_PAYMENT_PRIVATE_KEY is not set"));
+      expect(warned["level"]).toBe(40);
+    } finally {
+      await kill(child);
     }
   });
 

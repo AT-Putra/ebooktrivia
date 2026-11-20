@@ -14,7 +14,8 @@
 --               no admin_auth, audit_log, ad_spend, settings_secrets, otp_enqueues.
 --   admin_rw    everything except UPDATE/DELETE/TRUNCATE on audit_log (and no TRUNCATE at all).
 --   worker_rw   what jobs need: outbox, deliveries, conversions, waha_*, payments and order state,
---               eligibility, finalize/snapshot, alerts, heartbeats.
+--               eligibility, finalize/snapshot, alerts, heartbeats, each Midtrans attempt's
+--               re-queried status and the payment reconciliation (US-021).
 --   internal_rw SELECT lp_domains, INSERT alerts. Nothing else.
 --   trivia_override (not a group, owns override_question_scoring only; sql/override.sql): the
 --               columns that function reads and writes, nothing more.
@@ -201,6 +202,23 @@ GRANT INSERT (actor_kind, actor_admin_user_id, action, entity_type, entity_id, c
 GRANT EXECUTE ON FUNCTION public.get_payment_secret() TO worker_rw;
 -- Deletes spent admin login-throttle rows only (functions.sql); no other admin_auth access.
 GRANT EXECUTE ON FUNCTION public.sweep_login_throttle(integer) TO worker_rw;
+
+-- --- US-021 (Midtrans notifications, processing, reconciliation) ----------------------------------
+-- The worker records each attempt's last re-queried status (never which order or Midtrans id it is,
+-- nor its Snap fields, nor updated_at: the reconciliation's "active in 7 days" reads the checkout's
+-- activity, and its own nightly re-query must not keep every order active forever), and the nightly
+-- reconciliation's runs and report rows (append-only findings).
+-- public_rw reaches none of these: its midtrans_attempts SELECT stays the US-020 column list, and the
+-- notification route needs no orders read at all (payment_notifications + enqueue_notification).
+GRANT UPDATE (gateway_status, gateway_fraud_status, gateway_checked_at) ON public.midtrans_attempts TO worker_rw;
+-- A run is claimed by INSERT (or by re-stamping a stale one) and then only reports its progress.
+GRANT SELECT, INSERT ON public.payment_reconciliation_runs TO worker_rw;
+GRANT UPDATE (started_at, heartbeat_at, finished_at, attempts_checked, findings, errors) ON public.payment_reconciliation_runs TO worker_rw;
+GRANT SELECT, INSERT ON public.payment_reconciliation_findings TO worker_rw;
+-- admin_rw (every table by design, above) reads the reconciliation for its reports but cannot write
+-- or delete what the reconciliation found.
+REVOKE INSERT, UPDATE, DELETE ON public.payment_reconciliation_runs, public.payment_reconciliation_findings FROM admin_rw;
+-- --- end US-021 -------------------------------------------------------------------------------------
 
 -- ---------------------------------------------------------------------------------------------
 -- trivia_override: the owner of public.override_question_scoring (sql/override.sql), which runs as

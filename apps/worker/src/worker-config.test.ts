@@ -150,8 +150,22 @@ describe("loadWorkerConfig", () => {
         "WORKER_DEV_ALLOW_HTTP",
         "WORKER_DEV_ALLOW_LOOPBACK",
         "WORKER_DEV_ALLOW_PLAINTEXT_SMTP",
+        "WORKER_DEV_MIDTRANS_STUB_URL",
         "WORKER_FAILPOINT",
       ]);
+    });
+
+    it("US-021: the WhatsApp delay (default 3 min, 0 allowed), the reconciliation check interval and the dev-only stub URL", () => {
+      expect(loadWorkerConfig(BASE)).toMatchObject({ waDelayMs: 180_000, reconcileIntervalMs: 300_000, midtransStubUrl: null });
+      expect(loadWorkerConfig({ ...BASE, WORKER_WA_DELAY_MS: "0", WORKER_RECONCILE_INTERVAL_MS: "1000", WORKER_DEV_MIDTRANS_STUB_URL: "http://127.0.0.1:53001" })).toMatchObject({
+        waDelayMs: 0,
+        reconcileIntervalMs: 1000,
+        midtransStubUrl: "http://127.0.0.1:53001",
+      });
+      for (const bad of ["https://api.sandbox.midtrans.com", "http://127.0.0.1:53001/", "ftp://127.0.0.1:1", "not a url"]) {
+        expect(configError({ ...BASE, WORKER_DEV_MIDTRANS_STUB_URL: bad })).toMatch(/WORKER_DEV_MIDTRANS_STUB_URL must be/);
+      }
+      expect(configError({ ...BASE, WORKER_WA_DELAY_MS: "-1" })).toMatch(/WORKER_WA_DELAY_MS/);
     });
 
     it("lets an http push URL through only with the dev http flag, outside production", () => {

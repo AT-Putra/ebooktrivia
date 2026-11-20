@@ -7,7 +7,8 @@
 //   lease_expiry   deliveries / conversion_events still `sending` after lease_until: core
 //                  expireDeliveryLease (-> unknown: the send may have happened) and
 //                  expireConversionLease (-> failed for a manual re-fire, or a retry when the sink
-//                  dedupes by txid). Never a blind resend.
+//                  dedupes by txid; never a retry of the MT of an order no longer paid, US-021). Never a
+//                  blind resend.
 //   outbox         rows relayed more than outboxStaleMs ago and still unprocessed (lost from
 //                  Valkey, or a failed / crashed attempt whose lease or backoff passed) are
 //                  re-enqueued (job id per outboxJobId: a crashed claim's job may still look active);
@@ -36,6 +37,7 @@
 // nothing is moved that the worker cannot finish (the worker cannot move a program back).
 import {
   type ConversionStatus,
+  EFFECT_CANCELLED,
   type DeliveryPatch,
   type DeliveryRow,
   type DeliveryStatus,
@@ -66,6 +68,8 @@ export interface SweepDeps {
   readonly log: Logger;
   /** Queue per outbox topic that has a consumer. */
   readonly outboxQueues: ReadonlyMap<string, Queue>;
+  /** Topics whose consumer claims more often than OUTBOX_MAX_ATTEMPTS (OutboxConsumer.maxAttempts). */
+  readonly outboxMaxAttempts?: ReadonlyMap<string, number>;
   readonly outboxStaleMs: number;
   /** Present only with a fire port (US-024). */
   readonly conversionQueue?: Queue;
@@ -76,7 +80,8 @@ export interface SweepDeps {
   readonly sinkDedupesByTxid?: SinkDedupePolicy;
 }
 
-interface Alert {
+/** An alerts row of the worker. No PII in the message or the payload. */
+export interface Alert {
   readonly kind: string;
   readonly severity: "warning" | "critical";
   readonly dedupeKey: string;
@@ -84,35 +89,46 @@ interface Alert {
   readonly payload: Record<string, unknown>;
 }
 
-/** Inserts an alerts row unless an unresolved one with the same dedupe key is under an hour old. */
-async function raiseAlert(sql: postgres.Sql, alert: Alert): Promise<boolean> {
-  return sql.begin(async (tx) => {
-    await tx`SELECT pg_advisory_xact_lock(hashtextextended(${alert.dedupeKey}, 0))`;
-    const inserted = await tx`
-      INSERT INTO public.alerts (source, kind, severity, dedupe_key, message, payload)
-      SELECT 'worker', ${alert.kind}, ${alert.severity}, ${alert.dedupeKey}, ${alert.message}, ${JSON.stringify(alert.payload)}::text::jsonb
-       WHERE NOT EXISTS (
-         SELECT 1 FROM public.alerts a
-          WHERE a.dedupe_key = ${alert.dedupeKey} AND a.resolved_at IS NULL
-            AND a.created_at > now() - ${ALERT_DEDUPE_WINDOW}::interval)`;
-    return inserted.count === 1;
-  });
+/**
+ * Inserts an alerts row in `tx` unless an unresolved one with the same dedupe key is under an hour
+ * old; the dedupe key's advisory lock is held to the end of `tx`. Used inside the transaction whose
+ * change the alert reports (payments.ts), so the alert commits with it or not at all.
+ */
+export async function raiseAlertIn(tx: postgres.TransactionSql, alert: Alert): Promise<boolean> {
+  await tx`SELECT pg_advisory_xact_lock(hashtextextended(${alert.dedupeKey}, 0))`;
+  const inserted = await tx`
+    INSERT INTO public.alerts (source, kind, severity, dedupe_key, message, payload)
+    SELECT 'worker', ${alert.kind}, ${alert.severity}, ${alert.dedupeKey}, ${alert.message}, ${JSON.stringify(alert.payload)}::text::jsonb
+     WHERE NOT EXISTS (
+       SELECT 1 FROM public.alerts a
+        WHERE a.dedupe_key = ${alert.dedupeKey} AND a.resolved_at IS NULL
+          AND a.created_at > now() - ${ALERT_DEDUPE_WINDOW}::interval)`;
+  return inserted.count === 1;
 }
 
-export async function sweepOutbox(deps: Pick<SweepDeps, "sql" | "log" | "outboxQueues" | "outboxStaleMs">): Promise<{ rerelayed: number; alerts: number }> {
+/** raiseAlertIn in a transaction of its own. */
+export async function raiseAlert(sql: postgres.Sql, alert: Alert): Promise<boolean> {
+  return sql.begin((tx) => raiseAlertIn(tx, alert));
+}
+
+export async function sweepOutbox(
+  deps: Pick<SweepDeps, "sql" | "log" | "outboxQueues" | "outboxStaleMs" | "outboxMaxAttempts">,
+): Promise<{ rerelayed: number; alerts: number }> {
   const { sql } = deps;
   const topics = [...deps.outboxQueues.keys()];
+  const capOf = (topic: string): number => deps.outboxMaxAttempts?.get(topic) ?? OUTBOX_MAX_ATTEMPTS;
   const rerelayed =
     topics.length === 0
       ? 0
       : await sql.begin(async (tx) => {
           const rows = await tx<{ id: string; topic: string; attempts: number }[]>`
-            SELECT id, topic, attempts FROM public.outbox
-             WHERE processed_at IS NULL AND relayed_at < now() - ${deps.outboxStaleMs} * interval '1 millisecond'
-               AND available_at <= now() AND attempts < ${OUTBOX_MAX_ATTEMPTS} AND topic = ANY(${topics}::text[])
-             ORDER BY relayed_at
+            SELECT o.id, o.topic, o.attempts FROM public.outbox o
+              JOIN unnest(${topics}::text[], ${topics.map(capOf)}::int[]) AS t(topic, cap) ON t.topic = o.topic
+             WHERE o.processed_at IS NULL AND o.relayed_at < now() - ${deps.outboxStaleMs} * interval '1 millisecond'
+               AND o.available_at <= now() AND o.attempts < t.cap
+             ORDER BY o.relayed_at
              LIMIT ${BATCH}
-               FOR UPDATE SKIP LOCKED`;
+               FOR UPDATE OF o SKIP LOCKED`;
           for (const [topic, queue] of deps.outboxQueues) {
             const jobs = rows.filter((r) => r.topic === topic).map((r) => ({ jobId: outboxJobId(r.id, r.attempts), data: { id: r.id } }));
             if (jobs.length > 0) await enqueueFresh(queue, jobs);
@@ -140,16 +156,19 @@ export async function sweepOutbox(deps: Pick<SweepDeps, "sql" | "log" | "outboxQ
     });
     if (raised) alerts++;
   }
-  const stuck = await sql<{ topic: string; count: number }[]>`
-    SELECT topic, count(*)::int AS count FROM public.outbox
-     WHERE processed_at IS NULL AND attempts >= ${OUTBOX_MAX_ATTEMPTS}
-     GROUP BY topic ORDER BY topic`;
-  for (const { topic, count } of stuck) {
+  // A topic without a raised cap (or without a consumer in this worker) has the default one.
+  const capped = [...(deps.outboxMaxAttempts ?? new Map<string, number>())];
+  const stuck = await sql<{ topic: string; count: number; cap: number }[]>`
+    SELECT o.topic, count(*)::int AS count, coalesce(t.cap, ${OUTBOX_MAX_ATTEMPTS}) AS cap FROM public.outbox o
+      LEFT JOIN unnest(${capped.map(([topic]) => topic)}::text[], ${capped.map(([, cap]) => cap)}::int[]) AS t(topic, cap) ON t.topic = o.topic
+     WHERE o.processed_at IS NULL AND o.attempts >= coalesce(t.cap, ${OUTBOX_MAX_ATTEMPTS})
+     GROUP BY o.topic, t.cap ORDER BY o.topic`;
+  for (const { topic, count, cap } of stuck) {
     const raised = await raiseAlert(sql, {
       kind: "outbox_stuck",
       severity: "critical",
       dedupeKey: `outbox_stuck:${topic}`,
-      message: `${String(count)} outbox row(s) of ${topic} failed ${String(OUTBOX_MAX_ATTEMPTS)} times and are no longer retried`,
+      message: `${String(count)} outbox row(s) of ${topic} failed ${String(cap)} times and are no longer retried`,
       payload: { topic, count },
     });
     if (raised) alerts++;
@@ -298,13 +317,25 @@ export function deliveryColumns(set: DeliveryPatch, now: Date): Record<string, s
 export async function expireLeases(sql: postgres.Sql, sinkDedupesByTxid: SinkDedupePolicy = NO_SINK_DEDUPES): Promise<{ conversions: number; deliveries: number }> {
   const conversions = await sql.begin(async (tx) => {
     const rows = await tx<
-      { id: string; sink: string; adnet_id: string | null; status: ConversionStatus; attempts: number; lease_until: Date | null; next_attempt_at: Date; now: Date }[]
+      {
+        id: string;
+        sink: string;
+        adnet_id: string | null;
+        status: ConversionStatus;
+        attempts: number;
+        lease_until: Date | null;
+        next_attempt_at: Date;
+        may_retry: boolean;
+        now: Date;
+      }[]
     >`
-      SELECT id, sink, adnet_id, status, attempts, lease_until, next_attempt_at, clock_timestamp() AS now
-        FROM public.conversion_events
-       WHERE status = 'sending' AND (lease_until IS NULL OR lease_until < now())
-       ORDER BY lease_until NULLS FIRST LIMIT ${BATCH}
-         FOR UPDATE SKIP LOCKED`;
+      SELECT c.id, c.sink, c.adnet_id, c.status, c.attempts, c.lease_until, c.next_attempt_at,
+             c.kind <> 'mt' OR EXISTS (SELECT 1 FROM public.orders o WHERE o.id = c.order_id AND o.status = 'paid') AS may_retry,
+             clock_timestamp() AS now
+        FROM public.conversion_events c
+       WHERE c.status = 'sending' AND (c.lease_until IS NULL OR c.lease_until < now())
+       ORDER BY c.lease_until NULLS FIRST LIMIT ${BATCH}
+         FOR UPDATE OF c SKIP LOCKED`;
     let n = 0;
     for (const row of rows) {
       const decision = expireConversionLease(
@@ -313,7 +344,14 @@ export async function expireLeases(sql: postgres.Sql, sinkDedupesByTxid: SinkDed
         { sinkDedupesByTxid: sinkDedupesByTxid({ sink: row.sink, adnetId: row.adnet_id }) },
       );
       if (!decision.ok) continue;
-      await applyConversionDecision(tx, row.id, decision, row.now);
+      if (decision.set.status === "pending" && !row.may_retry) {
+        // The MT of an order no longer paid never goes back to pending (the DB refuses it, ET080,
+        // security review US-021 P2-A): it fails, for the Owner, like every uncertain send.
+        await tx`
+          UPDATE public.conversion_events
+             SET status = 'failed', failed_at = ${row.now}, lease_until = NULL, last_error = ${EFFECT_CANCELLED}, updated_at = ${row.now}
+           WHERE id = ${row.id} AND status = 'sending' AND attempts = ${row.attempts}`;
+      } else await applyConversionDecision(tx, row.id, decision, row.now);
       n++;
     }
     return n;
