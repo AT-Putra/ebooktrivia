@@ -123,6 +123,8 @@ describe("email_html sentinel (parse5)", () => {
     "<title>{judul_ebook}</title><textarea><b>{nama}</b></textarea>",
     '<!-- note --><!--><!---><p title="t" data-x=1>{nama}</p>',
     "<p>a < b {nama} </p><br/><img src=x alt='y'>",
+    "<p>{nama}</></p>", // "</>" is no tag (HTML ignores it); a fixed case, not only a random one, keeps that branch covered
+
     '<A HREF = "{link_trivia}">x</A>',
     // Layout tables stay allowed: table modes hand <title> / <textarea> / <style> to the
     // "in body" / "in head" rules, so the tokenizer switches as the scanner assumes.

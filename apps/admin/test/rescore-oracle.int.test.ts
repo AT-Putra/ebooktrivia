@@ -37,9 +37,9 @@ async function load(): Promise<RescoreInput> {
   const attempts = await root<{ id: string; playerId: string; setId: string; score: number; totalMs: number; finishedAt: Date | null }[]>`
     SELECT a.id, a.player_id AS "playerId", a.set_id AS "setId", a.score, a.total_ms::float8 AS "totalMs", a.finished_at AS "finishedAt"
       FROM set_attempts a JOIN trivia_sets s ON s.id = a.set_id WHERE s.program_id = ${programId}`;
-  const answers = await root<{ id: string; attemptId: string; questionId: string; optionId: string | null; servedAt: Date | null; deadlineAt: Date | null; answeredAt: Date | null; correct: boolean | null; points: number; elapsedMs: number | null }[]>`
+  const answers = await root<{ id: string; attemptId: string; questionId: string; optionId: string | null; servedAt: Date | null; deadlineAt: Date | null; answeredAt: Date | null; extensionMs: number; correct: boolean | null; points: number; elapsedMs: number | null }[]>`
     SELECT aq.id, aq.attempt_id AS "attemptId", aq.question_id AS "questionId", aq.option_id AS "optionId", aq.served_at AS "servedAt",
-           aq.deadline_at AS "deadlineAt", aq.answered_at AS "answeredAt", aq.correct, aq.points, aq.elapsed_ms AS "elapsedMs"
+           aq.deadline_at AS "deadlineAt", aq.answered_at AS "answeredAt", aq.deadline_extension_ms AS "extensionMs", aq.correct, aq.points, aq.elapsed_ms AS "elapsedMs"
       FROM attempt_questions aq JOIN set_attempts a ON a.id = aq.attempt_id JOIN trivia_sets s ON s.id = a.set_id WHERE s.program_id = ${programId}`;
   const stats = await root<PlayerStats[]>`
     SELECT player_id AS "playerId", score, total_ms::float8 AS "totalMs", sets_completed AS "setsCompleted", finished_at AS "finishedAt"
@@ -96,21 +96,29 @@ const at = (seconds: number | null): Date | null => (seconds === null ? null : n
  * answer facts: [question key, picked position or null, served s, answered s, deadline s]. The
  * deadline defaults to served + 20 s (the timer shown); null = no deadline recorded.
  */
-type Facts = readonly [string, number | null, number | null, number | null, (number | null)?];
+type Facts = readonly [string, number | null, number | null, number | null, (number | null | undefined)?, number?];
 
 async function seedPlayer(name: string, attempts: Readonly<Partial<Record<"A" | "B", readonly Facts[]>>>): Promise<string> {
   const player = await one(root<Id[]>`INSERT INTO players (phone, name) VALUES (${`+62813${String(Math.floor(10_000_000 + Math.random() * 89_999_999))}`}, ${name}) RETURNING id`);
   await root`INSERT INTO player_programs (player_id, program_id, first_paid_at, eligible) VALUES (${player.id}, ${programId}, now(), true)`;
   for (const [set, facts] of Object.entries(attempts) as ["A" | "B", readonly Facts[]][]) {
     const attempt = await one(root<Id[]>`INSERT INTO set_attempts (player_id, set_id) VALUES (${player.id}, ${sets[set]}) RETURNING id`);
-    for (const [i, [key, pick, served, answered, deadline]] of facts.entries()) {
+    for (const [i, [key, pick, served, answered, deadline, extension]] of facts.entries()) {
       const question = q[key];
       if (question === undefined) throw new Error(key);
       const shown = deadline === undefined ? (served === null ? null : served + 20) : deadline;
-      await root`
+      const row = await one(root<Id[]>`
         INSERT INTO attempt_questions (attempt_id, question_id, position, permutation, served_at, deadline_at, answered_at, option_id)
         VALUES (${attempt.id}, ${question.id}, ${i + 1}, ${question.options}::uuid[], ${at(served)}, ${at(shown)}, ${at(answered)},
-                ${pick === null ? null : (question.options[pick - 1] ?? null)})`;
+                ${pick === null ? null : (question.options[pick - 1] ?? null)})
+        RETURNING id`);
+      // An Owner's outage extension (US-028) of `extension` seconds, written as only its tool may (ET106 otherwise).
+      if (extension !== undefined) {
+        await root.begin(async (tx) => {
+          await tx.unsafe("SET LOCAL ROLE contest_results");
+          await tx`UPDATE public.attempt_questions SET deadline_at = deadline_at + ${extension} * interval '1 second', deadline_extension_ms = ${extension * 1000} WHERE id = ${row.id}`;
+        });
+      }
     }
   }
   return player.id;
@@ -163,6 +171,8 @@ beforeAll(async () => {
   await seedPlayer("exactly at the grace (21.5 s)", { A: [["a1", 1, 0, 21.5], ["a2", 1, 30, 51.5], ["a3", 1, 60, 61.5]] });
   await seedPlayer("1 ms past the grace (21.501 s)", { A: [["a1", 1, 0, 21.501], ["a2", 1, 30, 51.501], ["a3", 1, 60, 81.501]] });
   await seedPlayer("sub-second (3.456 s), no deadline shown", { A: [["a1", 1, 0, 3.456], ["a2", 2, 30, 34.567, null], ["a3", null, 60, 85, null]] });
+  // An outage extension (US-028): a1 answered 5 minutes in, inside its 10-minute extension; a3 open, extended 2 minutes.
+  await seedPlayer("extended after an outage", { A: [["a1", 1, 0, 300, undefined, 600], ["a2", 2, 30, 34], ["a3", null, 60, null, undefined, 120]] });
   await storeCoreScores();
 });
 
@@ -193,7 +203,7 @@ describe("override_question_scoring equals core rescorePlayers (the oracle)", ()
   it("the seed is consistent: re-scoring it under its own rules changes nothing", async () => {
     const input = await load();
     expect(rescorePlayers(input)).toMatchObject({ answers: [], attempts: [], stats: [] });
-    expect(input.stats).toHaveLength(12);
+    expect(input.stats).toHaveLength(13);
   });
 
   it.each(SCENARIOS)("%s: every answer, attempt and stats row, the summary and the ranks", async (_name, scenario) => {
@@ -252,7 +262,7 @@ describe("override_question_scoring equals core rescorePlayers (the oracle)", ()
 });
 
 describe("public.score_answer equals core scoreAnswer (property, whole milliseconds)", () => {
-  it("on random rules and answer facts", async () => {
+  it("on random rules and answer facts, with and without an outage extension (US-028)", async () => {
     const OPTION = { right: "00000000-0000-4000-8000-000000000001", wrong: "00000000-0000-4000-8000-000000000002" } as const;
     const base = T0;
     await fc.assert(
@@ -263,23 +273,26 @@ describe("public.score_answer equals core scoreAnswer (property, whole milliseco
         fc.option(fc.constantFrom<"right" | "wrong">("right", "wrong")),
         fc.option(fc.integer({ min: 0, max: 600_000 }), { freq: 6 }), // served offset
         fc.option(fc.integer({ min: 0, max: 700_000 }), { freq: 3 }), // shown deadline - served
-        // answered - served: anywhere, or anchored at the grace edge cap + 1500 ms + {-1, 0, +1}.
+        fc.oneof({ weight: 2, arbitrary: fc.constant(0) }, { weight: 1, arbitrary: fc.integer({ min: 1, max: 7_200_000 }) }), // the extension inside the deadline
+        // answered - served: anywhere, or anchored at the grace edge cap + extension + 1500 ms + {-1, 0, +1}.
         fc.oneof(
-          fc.option(fc.integer({ min: -5_000, max: 700_000 }), { freq: 6 }).map((ms) => ({ kind: "free" as const, ms })),
+          fc.option(fc.integer({ min: -5_000, max: 8_000_000 }), { freq: 6 }).map((ms) => ({ kind: "free" as const, ms })),
           fc.constantFrom(-1, 0, 1).map((delta) => ({ kind: "edge" as const, delta })),
         ),
-        async (points, timerSeconds, hasCorrect, pick, served, shown, answered) => {
+        async (points, timerSeconds, hasCorrect, pick, served, shown, extension, answered) => {
           const servedAt = served === null ? null : new Date(base + served);
-          const deadlineAt = servedAt === null || shown === null ? null : new Date(servedAt.getTime() + shown);
+          // An extension only exists on a shown deadline (CHECK), which then holds it.
+          const extensionMs = servedAt === null || shown === null ? 0 : extension;
+          const deadlineAt = servedAt === null || shown === null ? null : new Date(servedAt.getTime() + shown + extensionMs);
           const cap = shown === null ? timerSeconds * 1000 : Math.min(timerSeconds * 1000, shown);
-          const answerOffset = answered.kind === "edge" ? cap + ANSWER_LATENCY_GRACE_MS + answered.delta : answered.ms;
+          const answerOffset = answered.kind === "edge" ? cap + extensionMs + ANSWER_LATENCY_GRACE_MS + answered.delta : answered.ms;
           const answeredAt = answerOffset === null ? null : new Date((servedAt ?? new Date(base)).getTime() + answerOffset);
           const correctOptionId = hasCorrect ? OPTION.right : null;
           const optionId = pick === null ? null : OPTION[pick];
-          const core = scoreAnswer({ points, timerSeconds, correctOptionId }, { optionId, servedAt, deadlineAt, answeredAt });
+          const core = scoreAnswer({ points, timerSeconds, correctOptionId }, { optionId, servedAt, deadlineAt, answeredAt, extensionMs });
           const [sql] = await root<{ correct: boolean | null; points: number; elapsedMs: number | null }[]>`
             SELECT correct, points, elapsed_ms AS "elapsedMs"
-              FROM public.score_answer(${points}, ${timerSeconds}, ${correctOptionId}::uuid, ${optionId}::uuid, ${servedAt}, ${deadlineAt}, ${answeredAt})`;
+              FROM public.score_answer(${points}, ${timerSeconds}, ${correctOptionId}::uuid, ${optionId}::uuid, ${servedAt}, ${deadlineAt}, ${answeredAt}, ${extensionMs})`;
           expect(sql).toEqual(core);
         },
       ),
@@ -297,10 +310,10 @@ describe("public.score_answer equals core scoreAnswer (property, whole milliseco
       [25_000, 20_000, 600, { correct: false, points: 0, elapsedMs: 20_000 }],
       [25_000, null, 600, { correct: true, points: 10, elapsedMs: 25_000 }],
     ] as const) {
-      const facts = { optionId: right, servedAt, deadlineAt: deadlineMs === null ? null : new Date(T0 + deadlineMs), answeredAt: new Date(T0 + answeredMs) };
+      const facts = { optionId: right, servedAt, deadlineAt: deadlineMs === null ? null : new Date(T0 + deadlineMs), answeredAt: new Date(T0 + answeredMs), extensionMs: 0 };
       expect(scoreAnswer({ points: 10, timerSeconds: timer, correctOptionId: right }, facts)).toEqual(expected);
       const [sql] = await root<{ correct: boolean | null; points: number; elapsedMs: number | null }[]>`
-        SELECT correct, points, elapsed_ms AS "elapsedMs" FROM public.score_answer(10, ${timer}, ${right}::uuid, ${right}::uuid, ${facts.servedAt}, ${facts.deadlineAt}, ${facts.answeredAt})`;
+        SELECT correct, points, elapsed_ms AS "elapsedMs" FROM public.score_answer(10, ${timer}, ${right}::uuid, ${right}::uuid, ${facts.servedAt}, ${facts.deadlineAt}, ${facts.answeredAt}, 0)`;
       expect(sql).toEqual(expected);
     }
   });

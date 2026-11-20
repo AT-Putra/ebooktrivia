@@ -36,6 +36,11 @@ export default async function TriviaSetsPage({ params }: { params: Promise<{ pro
         title={`${program.name}: trivia sets`}
         description={`Sets unlock in this order. New questions default to ${String(program.defaultPoints)} points and ${String(program.defaultTimerSeconds)} seconds (the program's defaults).`}
       />
+      <p className="text-sm">
+        <Link href={`/settings/trivia/${program.id}/results`} className="underline underline-offset-4" data-testid="contest-results-link">
+          Contest results: winners, anti-cheat flags, deadline extension
+        </Link>
+      </p>
       {program.paid ? (
         <Notice tone="warning" testId="program-paid">
           <LockIcon aria-hidden="true" className="mt-0.5 shrink-0" />

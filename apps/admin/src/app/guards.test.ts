@@ -106,6 +106,11 @@ const GUARDS: Readonly<Record<string, string>> = {
   "(console)/settings/trivia/actions.ts#deleteQuestionAction": "permission:trivia_set.edit",
   "(console)/settings/trivia/actions.ts#removeQuestionImageAction": "permission:trivia_set.edit",
   "(console)/settings/trivia/actions.ts#overrideScoringAction": "permission:rescore.override",
+  // Contest results (US-028): the page is a report (Staff see it); confirming winners and the
+  // deadline extension are Owner-only.
+  "(console)/settings/trivia/[programId]/results/page.tsx": "permission:reports.view",
+  "(console)/settings/trivia/actions.ts#confirmWinnersAction": "permission:winners.confirm",
+  "(console)/settings/trivia/actions.ts#extendDeadlinesAction": "permission:contest.extend_deadlines",
   "uploads/image/trivia/route.ts#POST": "permission:trivia_set.edit",
   "uploads/questions/route.ts#POST": "permission:trivia_set.edit",
   "(console)/settings/prizes/page.tsx": "permission:prize_tier.edit",

@@ -2,11 +2,11 @@
 // time asc, then earliest finish asc with NULLS LAST (same order as the
 // player_program_stats_ranking_idx index).
 //
-// Exact ties (equal score, total_ms and finished_at) share a rank, standard competition
-// ranking "1224": the spec defines no fourth key, so core never splits a tie arbitrarily. A tie
-// across a prize-tier boundary yields more candidates than slots and goes to the Owner, who
-// confirms winners before they are published (AC-A9). Eligibility filtering (refunded players
-// are excluded, AC-Q11) is the caller's job: pass only eligible entries.
+// Exact ties (equal score, total_ms and finished_at) share a rank here, standard competition
+// ranking "1224" (the live leaderboard). The frozen results snapshot (US-028, contest.ts
+// compareFinal) breaks such ties with two stable final keys, first payment then player id, so its
+// ranks are unique and a prize tier never gets more candidates than places. Eligibility
+// filtering (refunded players are excluded, AC-Q11) is the caller's job: pass only eligible entries.
 
 export interface RankingEntry {
   readonly score: number;

@@ -24,6 +24,14 @@
 --   halt (US-021);
 --   override.sql: ET022 override after the results snapshot or the end of grace, ET023 override
 --   arguments out of scope (ids, reason, actor);
+--   contest.sql (US-028): ET100 not READ COMMITTED, ET101 arguments out of scope (ids, outage
+--   start, reason, actor), ET102 the contest is not in the state the call needs (no snapshot yet,
+--   already confirmed, ended), ET103 the grace end (+ settle) has not passed yet or a question is
+--   still running, ET107 a winner is no longer eligible (refunded since the snapshot) or flagged;
+--   triggers.sql ET104 the results snapshot is immutable, ET105 winners are immutable (and
+--   consistent with their snapshot), ET106 a deadline extension written outside the Owner's tool,
+--   ET108-ET110 play timestamps (set by the database; a pick after the deadline; play after the
+--   grace end), ET111 the deadline extension ledger is append-only;
 --   roles.sql: ET090 foreign-owned object.
 
 SELECT pg_catalog.set_config('search_path', 'pg_catalog, pg_temp', false);
@@ -298,19 +306,20 @@ $fn$;
 --   EXCLUSIVE (lock_program_contest): whatever changes the rules or freezes the result:
 --     - the Owner's locked-field override and its re-score (override_question_scoring);
 --     - prize tier edits (prize_tiers_guard) and the results snapshot (leaderboard_snapshots_lock);
---     - REQUIRED FOR M9: the grace-end finalize and snapshot sweeper, BEFORE it reads the stats it
---       freezes.
+--     - the grace-end finalize and snapshot (contest.sql create_leaderboard_snapshot, US-028), the
+--       Owner's winner confirmation and deadline extension (confirm_program_winners,
+--       extend_open_question_deadlines), each BEFORE it reads what it decides on.
 --   SHARED (lock_program_contest_shared): play, which only applies the current rules. Players do not
 --   block each other, and all of them wait for (and are waited for by) an exclusive holder:
---     - REQUIRED FOR M9: attempt start, serve and the answer path call it BEFORE they read anything
---       they score with (correctness, points, timer), in the same transaction. The answer path
---       records answered_at (clock_timestamp(), truncated to milliseconds) BEFORE it waits for the
---       lock, so a re-score running meanwhile never costs the player time; it then scores with the
---       rules as they are after that re-score. Without the lock a re-score could be overwritten by
---       an answer scored with the old rules.
+--     - attempt start, serve and the answer path: the play guards (triggers.sql) take it for every
+--       public_rw write of a play row (US-028), BEFORE they read anything they decide on. US-027's
+--       paths must ALSO call it FIRST in their transaction, before any row lock (else a play row
+--       locked first and the snapshot's row locks can deadlock; PostgreSQL then aborts one). The
+--       answer path records answered_at (clock_timestamp(), truncated to milliseconds) BEFORE it
+--       waits for the lock, so a re-score running meanwhile never costs the player time; it then
+--       scores with the rules as they are after that re-score.
 -- A hash collision between two programs only serialises them. SECURITY INVOKER (pg_catalog's
--- advisory lock functions are executable by everyone); EXECUTE per role in grants.sql (the M9
--- grants to public_rw / worker_rw come with M9).
+-- advisory lock functions are executable by everyone); EXECUTE per role in grants.sql.
 CREATE OR REPLACE FUNCTION public.lock_program_contest(p_program_id uuid)
   RETURNS void
   LANGUAGE plpgsql
@@ -335,17 +344,20 @@ $fn$;
 
 -- The per-answer scoring rule (US-018), THE same rule as @ebooktrivia/core rescore.ts scoreAnswer
 -- (apps/admin test/rescore-oracle.int.test.ts checks them against each other on random inputs).
--- Used by override_question_scoring; M9's answer path and finalize must use it too. All in whole
--- milliseconds (answer timestamps are whole ms, CHECK), with raw = answered - served (0 if
--- negative), timer = p_timer_seconds in ms, shown = deadline - served when a deadline was shown,
--- cap = the smaller of timer and shown:
---   answered_at NULL                          -> (NULL, 0, NULL)  pending
---   served_at NULL                            -> (false, 0, timer) never shown: the full timer
---   no pick, or raw > cap + 1500 ms (late)    -> (false, 0, min(raw, cap))
---   otherwise                                 -> (pick = correct option, points if correct, min(raw, cap))
--- Elapsed never exceeds the deadline the player was shown, so lengthening a timer neither rewards a
--- late pick nor adds time to a SERVED timeout; an unserved row (served_at NULL) counts the current
--- timer, so it does gain time. IMMUTABLE: only interval arithmetic between the arguments.
+-- Used by override_question_scoring and the grace-end finalize (contest.sql); M9's answer path must
+-- use it too. All in whole milliseconds (answer timestamps are whole ms, CHECK), with raw =
+-- answered - served (0 if negative), timer = p_timer_seconds in ms, ext = p_extension_ms (what the
+-- Owner's outage extension added to the deadline, attempt_questions.deadline_extension_ms, US-028),
+-- shown = deadline - served - ext when a deadline was shown, cap = the smaller of timer and shown:
+--   answered_at NULL                               -> (NULL, 0, NULL)  pending
+--   served_at NULL                                 -> (false, 0, timer) never shown: the full timer
+--   no pick, or raw > cap + ext + 1500 ms (late)   -> (false, 0, min(raw, cap))
+--   otherwise                                      -> (pick = correct option, points if correct, min(raw, cap))
+-- Elapsed never exceeds the deadline the player was served with, so lengthening a timer neither
+-- rewards a late pick nor adds time to a SERVED timeout, and an extension lets a pick count without
+-- lowering the time charged; an unserved row (served_at NULL) counts the current timer, so it does
+-- gain time. IMMUTABLE: only interval arithmetic between the arguments. US-028's migration dropped
+-- the 7-argument version (no extension), so every caller passes the extension.
 CREATE OR REPLACE FUNCTION public.score_answer(
   p_points integer,
   p_timer_seconds integer,
@@ -354,6 +366,7 @@ CREATE OR REPLACE FUNCTION public.score_answer(
   p_served_at timestamptz,
   p_deadline_at timestamptz,
   p_answered_at timestamptz,
+  p_extension_ms integer,
   OUT correct boolean,
   OUT points integer,
   OUT elapsed_ms integer
@@ -366,11 +379,11 @@ AS $fn$
   SELECT
     CASE
       WHEN p_answered_at IS NULL THEN NULL
-      WHEN p_served_at IS NULL OR p_option_id IS NULL OR x.raw > x.cap + 1500 THEN false
+      WHEN p_served_at IS NULL OR p_option_id IS NULL OR x.raw > x.cap + x.ext + 1500 THEN false
       ELSE coalesce(p_option_id = p_correct_option_id, false)
     END,
     CASE
-      WHEN p_answered_at IS NULL OR p_served_at IS NULL OR p_option_id IS NULL OR x.raw > x.cap + 1500 THEN 0
+      WHEN p_answered_at IS NULL OR p_served_at IS NULL OR p_option_id IS NULL OR x.raw > x.cap + x.ext + 1500 THEN 0
       WHEN p_option_id = p_correct_option_id THEN p_points
       ELSE 0
     END,
@@ -380,14 +393,48 @@ AS $fn$
       ELSE LEAST(x.raw, x.cap)
     END::integer
   FROM (
-    SELECT p_timer_seconds::bigint * 1000 AS timer,
-           GREATEST(0, (extract(epoch FROM p_answered_at - p_served_at) * 1000)::bigint) AS raw,
-           LEAST(p_timer_seconds::bigint * 1000, (extract(epoch FROM p_deadline_at - p_served_at) * 1000)::bigint) AS cap
+    SELECT y.timer, y.raw, y.ext,
+           LEAST(y.timer, (extract(epoch FROM p_deadline_at - p_served_at) * 1000)::bigint - y.ext) AS cap
+      FROM (
+        SELECT p_timer_seconds::bigint * 1000 AS timer,
+               GREATEST(0, (extract(epoch FROM p_answered_at - p_served_at) * 1000)::bigint) AS raw,
+               coalesce(p_extension_ms, 0)::bigint AS ext
+      ) y
   ) x
 $fn$;
 
+-- Masking (AC-Q2, AC-A9), THE same rules as @ebooktrivia/core contest.ts maskName / maskPhone
+-- (apps/admin test/contest-oracle.int.test.ts checks them against each other): every word of a name
+-- (split on ASCII whitespace) keeps its first character, then "***" ("***" when there is no word);
+-- a phone shows "****" and its last 3 digits (NULL stays NULL: an anonymized player). Fixed-length
+-- masks. Used by the banner read path (contest.sql program_winners_banner), which therefore never
+-- returns a raw name or phone.
+CREATE OR REPLACE FUNCTION public.mask_name(p_name text)
+  RETURNS text
+  LANGUAGE sql
+  IMMUTABLE
+  PARALLEL SAFE
+  SET search_path = pg_catalog, pg_temp
+AS $fn$
+  SELECT coalesce(string_agg(left(t.w, 1) || '***', ' ' ORDER BY t.n), '***')
+    FROM regexp_split_to_table(coalesce(p_name, ''), '[\t\n\v\f\r ]+') WITH ORDINALITY AS t(w, n)
+   WHERE t.w <> ''
+$fn$;
+
+CREATE OR REPLACE FUNCTION public.mask_phone(p_phone text)
+  RETURNS text
+  LANGUAGE sql
+  IMMUTABLE
+  PARALLEL SAFE
+  SET search_path = pg_catalog, pg_temp
+AS $fn$
+  SELECT CASE WHEN p_phone IS NULL THEN NULL ELSE '****' || right(regexp_replace(p_phone, '[^0-9]', '', 'g'), 3) END
+$fn$;
+
 REVOKE ALL ON FUNCTION public.setting_positive_int(text) FROM PUBLIC;
-REVOKE ALL ON FUNCTION public.score_answer(integer, integer, uuid, uuid, timestamptz, timestamptz, timestamptz) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.score_answer(integer, integer, uuid, uuid, timestamptz, timestamptz, timestamptz, integer) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.mask_name(text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.mask_phone(text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.lock_program_contest(uuid) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.lock_program_contest_shared(uuid) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.sweep_login_throttle(integer) FROM PUBLIC;

@@ -22,7 +22,7 @@ import {
   sweepLoginThrottle,
   sweepOutbox,
 } from "../src/sweepers.ts";
-import { type Catalog, createCatalog, createConversionEvents, createOrders, createOutboxRows, first, letters, sql } from "./support/db.ts";
+import { type Catalog, createCatalog, createConversionEvents, createOrders, createOutboxRows, first, letters, sql, suffix } from "./support/db.ts";
 import { captureLogger } from "./support/log.ts";
 import { obliterate, testValkey, uniquePrefix } from "./support/valkey.ts";
 
@@ -48,7 +48,15 @@ beforeAll(async () => {
   catalog = await createCatalog();
 });
 
-const noHook = (): Promise<void> => Promise.resolve();
+/** SQLSTATE of the error `p` rejects with (throws if it resolves). */
+async function sqlStateOf(p: Promise<unknown>): Promise<string> {
+  try {
+    await p;
+  } catch (e) {
+    return (e as { code?: string }).code ?? "no code";
+  }
+  throw new Error("expected the statement to fail");
+}
 
 /** Processes the next job of `queue` with a processor that throws, so it lands in the failed set. */
 async function failNextJob(queue: Queue): Promise<void> {
@@ -214,46 +222,91 @@ describe("stale Snap create sweeper (US-020 crash window)", () => {
   });
 });
 
-describe("grace-end sweeper", () => {
-  it("moves a published program past sales_end_at + grace_days to awaiting_confirmation, after the US-028 hook, once", async () => {
-    const ended = await createCatalog({ salesEndAt: new Date(Date.now() - 3 * 86_400_000), graceDays: 2 });
-    const inGrace = await createCatalog({ salesEndAt: new Date(Date.now() - 86_400_000), graceDays: 2 });
-    const draft = await createCatalog({ salesEndAt: new Date(Date.now() - 10 * 86_400_000), graceDays: 1, status: "draft" });
-    const calls: { programId: string; statusInTx: string }[] = [];
-    const hook = async (tx: postgres.TransactionSql, program: { programId: string; graceEndedAt: Date }) => {
-      const [row] = await tx<{ status: string }[]>`SELECT status::text FROM public.programs WHERE id = ${program.programId}`;
-      calls.push({ programId: program.programId, statusInTx: row?.status ?? "" });
-      expect(program.graceEndedAt.getTime()).toBeLessThan(Date.now());
-    };
-    await Promise.all([endGracePeriods(workerSql, hook, log), endGracePeriods(workerSql, hook, log)]);
-    await endGracePeriods(workerSql, hook, log);
-    expect(calls.filter((c) => c.programId === ended.programId)).toEqual([{ programId: ended.programId, statusInTx: "published" }]);
-    const rows = await sql<{ id: string; status: string }[]>`
-      SELECT id, status::text FROM programs WHERE id IN (${ended.programId}, ${inGrace.programId}, ${draft.programId})`;
-    expect(Object.fromEntries(rows.map((r) => [r.id, r.status]))).toEqual({
-      [ended.programId]: "awaiting_confirmation",
-      [inGrace.programId]: "published",
-      [draft.programId]: "draft",
+describe("grace-end sweeper (US-028: public.create_leaderboard_snapshot)", () => {
+  const DAY = 86_400_000;
+  const status = async (programId: string) => first(await sql<{ status: string }[]>`SELECT status::text FROM programs WHERE id = ${programId}`).status;
+  const snapshots = async (programId: string) => (await sql`SELECT 1 FROM leaderboard_snapshots WHERE program_id = ${programId}`).length;
+  /** An eligible player of the program (a roster entry, so the finalize writes a stats row for it). */
+  async function eligiblePlayer(programId: string): Promise<string> {
+    const player = first(await sql<{ id: string }[]>`INSERT INTO players (phone, name) VALUES (${`+62815${String(Math.floor(10_000_000 + Math.random() * 89_999_999))}`}, 'Pemain') RETURNING id`);
+    await sql`INSERT INTO player_programs (player_id, program_id, first_paid_at, eligible) VALUES (${player.id}, ${programId}, now() - interval '20 days', true)`;
+    return player.id;
+  }
+
+  it("snapshots each published program GRACE_END_SETTLE_MS past its grace end exactly once, also with two workers at once", async () => {
+    const ended = await createCatalog({ salesEndAt: new Date(Date.now() - 3 * DAY), graceDays: 2 });
+    await eligiblePlayer(ended.programId);
+    const settling = await createCatalog({ salesEndAt: new Date(Date.now() - 2 * DAY - 20_000), graceDays: 2 });
+    const inGrace = await createCatalog({ salesEndAt: new Date(Date.now() - DAY), graceDays: 2 });
+    const draft = await createCatalog({ salesEndAt: new Date(Date.now() - 10 * DAY), graceDays: 1, status: "draft" });
+    const captured = captureLogger("info");
+    await Promise.all([endGracePeriods(workerSql, captured.log), endGracePeriods(workerSql, captured.log)]);
+    await endGracePeriods(workerSql, captured.log);
+    expect(await snapshots(ended.programId)).toBe(1);
+    expect(captured.lines.filter((l) => l["programId"] === ended.programId && l["msg"] === "grace period ended: results snapshot written")).toHaveLength(1);
+    expect(first(await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM audit_log WHERE action = 'contest.snapshot' AND entity_id = ${ended.programId}`).n).toBe(1);
+    expect(first(await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM player_program_stats WHERE program_id = ${ended.programId}`).n).toBe(1);
+    expect({ ended: await status(ended.programId), settling: await status(settling.programId), inGrace: await status(inGrace.programId), draft: await status(draft.programId) }).toEqual({
+      ended: "awaiting_confirmation",
+      settling: "published",
+      inGrace: "published",
+      draft: "draft",
     });
+    expect(await snapshots(settling.programId)).toBe(0);
+    // worker_rw writes no snapshot or program status itself.
+    expect(await sqlStateOf(workerSql`INSERT INTO public.leaderboard_snapshots (program_id, frozen_at, entries) VALUES (${inGrace.programId}, now(), '[]')`)).toBe("42501");
+    expect(await sqlStateOf(workerSql`UPDATE public.programs SET status = 'awaiting_confirmation' WHERE id = ${inGrace.programId}`)).toBe("42501");
+  });
+
+  it("skips a program whose contest lock stays busy (no alert), and snapshots it on the next sweep", async () => {
+    const busy = await createCatalog({ salesEndAt: new Date(Date.now() - 4 * DAY), graceDays: 1 });
+    let release = (): void => undefined;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    let held = (): void => undefined;
+    const holding = new Promise<void>((resolve) => (held = resolve));
+    const holder = sql.begin(async (tx) => {
+      await tx`SELECT public.lock_program_contest(${busy.programId})`;
+      held();
+      await gate;
+    });
+    await holding;
+    const captured = captureLogger("info");
+    try {
+      await endGracePeriods(workerSql, captured.log);
+    } finally {
+      release();
+      await holder;
+    }
+    expect(captured.lines.filter((l) => l["programId"] === busy.programId).map((l) => [l["msg"], l["code"]])).toEqual([["grace-end skipped; the next sweep looks again", "55P03"]]);
+    expect(await sql`SELECT 1 FROM alerts WHERE dedupe_key = ${`grace_end_failed:${busy.programId}`}`).toHaveLength(0);
+    expect(await status(busy.programId)).toBe("published");
+    await endGracePeriods(workerSql, captured.log);
+    expect(await status(busy.programId)).toBe("awaiting_confirmation");
   });
 
   // Code review US-013 #4: one failing program must not hold back the programs after it.
-  it("keeps a program whose hook fails published (one transaction), alerts once, and still ends the next ones", async () => {
-    const failing = await createCatalog({ salesEndAt: new Date(Date.now() - 4 * 86_400_000), graceDays: 1 });
-    const next = await createCatalog({ salesEndAt: new Date(Date.now() - 3 * 86_400_000), graceDays: 1 });
-    const hook = (_tx: postgres.TransactionSql, program: { programId: string }) =>
-      program.programId === failing.programId ? Promise.reject(new Error("snapshot failed")) : noHook();
+  it("keeps a program whose snapshot fails published (one transaction), alerts once, and still ends the next ones", async () => {
+    const failing = await createCatalog({ salesEndAt: new Date(Date.now() - 6 * DAY), graceDays: 1 });
+    await eligiblePlayer(failing.programId);
+    const next = await createCatalog({ salesEndAt: new Date(Date.now() - 5 * DAY), graceDays: 1 });
+    // A failure inside the function for this program only: its stats row cannot be written.
+    const constraint = `test_fail_${failing.programId.replaceAll("-", "")}`;
+    await sql.unsafe(`ALTER TABLE player_program_stats ADD CONSTRAINT ${constraint} CHECK (program_id <> '${failing.programId}') NOT VALID`);
     const captured = captureLogger();
-    expect(await endGracePeriods(workerSql, hook, captured.log)).toBeGreaterThanOrEqual(1);
-    await endGracePeriods(workerSql, hook, captured.log);
-    const status = async (programId: string) => first(await sql<{ status: string }[]>`SELECT status::text FROM programs WHERE id = ${programId}`).status;
+    try {
+      expect(await endGracePeriods(workerSql, captured.log)).toBeGreaterThanOrEqual(1);
+      await endGracePeriods(workerSql, captured.log);
+    } finally {
+      await sql.unsafe(`ALTER TABLE player_program_stats DROP CONSTRAINT ${constraint}`);
+    }
     expect(await status(failing.programId)).toBe("published");
+    expect(await snapshots(failing.programId)).toBe(0);
     expect(await status(next.programId)).toBe("awaiting_confirmation");
     expect(captured.lines.filter((l) => l["programId"] === failing.programId && l["level"] === 50)).toHaveLength(2);
     const alerts = await sql<{ kind: string; severity: string }[]>`
       SELECT kind, severity FROM alerts WHERE dedupe_key = ${`grace_end_failed:${failing.programId}`}`;
     expect(alerts).toEqual([{ kind: "grace_end_failed", severity: "critical" }]);
-    await endGracePeriods(workerSql, noHook, captured.log);
+    await endGracePeriods(workerSql, captured.log);
     expect(await status(failing.programId)).toBe("awaiting_confirmation");
   });
 });
@@ -303,7 +356,8 @@ describe("lease expiry sweeper", () => {
 
 describe("admin login throttle sweeper (US-016)", () => {
   it("deletes spent rows only: an active window, an active lock, consecutive failures and a hard lock stay", async () => {
-    const key = () => `${letters()}${letters()}`.replace(/[g-z]/g, "e").padEnd(64, "0");
+    // 16 random hex characters (mapping letters g-z to "e" made two of these six keys collide ~10% of runs).
+    const key = () => `${suffix()}${suffix()}`.padEnd(64, "0");
     const keys = { spent: key(), lockSpent: key(), window: key(), locked: key(), consecutive: key(), hard: key() };
     await sql`
       INSERT INTO admin_auth.login_throttle (key, failures, window_started_at, locked_until, consecutive, hard_locked_at) VALUES
@@ -344,18 +398,19 @@ describe("runSweeps", () => {
     const broken = postgres(inject("workerDbUrl"), { ...PG_CONNECTION_OPTIONS, max: 1, onnotice: () => undefined });
     await broken.end();
     await runSweeps({ sql: broken, log: captured.log, outboxQueues: new Map(), outboxStaleMs: 120_000 });
-    expect(captured.lines.filter((l) => l["level"] === 50).map((l) => l["sweeper"])).toEqual(["lease_expiry", "outbox", "snap_create", "order_expiry", "login_throttle"]);
+    expect(captured.lines.filter((l) => l["level"] === 50).map((l) => l["sweeper"])).toEqual(["lease_expiry", "outbox", "snap_create", "order_expiry", "grace_end", "login_throttle"]);
     await runSweeps({ sql: workerSql, log: captured.log, outboxQueues: new Map(), outboxStaleMs: 120_000 });
     expect(first(await sql<{ status: string }[]>`SELECT status::text FROM orders WHERE id = ${orderId ?? ""}`).status).toBe("expired");
   });
 
-  // Code review US-013 #1: a sweeper whose work needs a port does not run without it.
-  it("runs grace_end, due_conversions and due_deliveries only when their port is registered", async () => {
+  // Code review US-013 #1: a sweeper whose work needs a port does not run without it. The grace end
+  // needs none (US-028: its work is the SQL function), so it always runs.
+  it("runs due_conversions and due_deliveries only when their port is registered; grace_end always", async () => {
     const ended = await createCatalog({ salesEndAt: new Date(Date.now() - 3 * 86_400_000), graceDays: 1 });
     const captured = captureLogger("debug");
     await runSweeps({ sql: workerSql, log: captured.log, outboxQueues: new Map(), outboxStaleMs: 120_000 });
-    expect(captured.lines.filter((l) => l["msg"] === "sweep done").map((l) => l["sweeper"])).toEqual(["lease_expiry", "outbox", "snap_create", "order_expiry", "login_throttle"]);
-    expect(first(await sql<{ status: string }[]>`SELECT status::text FROM programs WHERE id = ${ended.programId}`).status).toBe("published");
+    expect(captured.lines.filter((l) => l["msg"] === "sweep done").map((l) => l["sweeper"])).toEqual(["lease_expiry", "outbox", "snap_create", "order_expiry", "grace_end", "login_throttle"]);
+    expect(first(await sql<{ status: string }[]>`SELECT status::text FROM programs WHERE id = ${ended.programId}`).status).toBe("awaiting_confirmation");
 
     const withPorts = captureLogger("debug");
     await runSweeps({
@@ -363,7 +418,6 @@ describe("runSweeps", () => {
       log: withPorts.log,
       outboxQueues: new Map(),
       outboxStaleMs: 120_000,
-      graceEnd: noHook,
       conversionQueue: queueFor("conversion.fire"),
       deliveryQueue: queueFor("delivery.send"),
     });
@@ -377,6 +431,5 @@ describe("runSweeps", () => {
       "grace_end",
       "login_throttle",
     ]);
-    expect(first(await sql<{ status: string }[]>`SELECT status::text FROM programs WHERE id = ${ended.programId}`).status).toBe("awaiting_confirmation");
   });
 });

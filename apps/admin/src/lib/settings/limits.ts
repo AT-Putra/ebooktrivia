@@ -26,6 +26,9 @@
 //                                          10 / 3600 s, 600 / 60 s; AC-S4; Owner decision D2)
 //   captcha.ip_cap / ip_window_seconds     Cap challenge + redeem requests per client IP (300 / 600 s, D2)
 //   captcha.ip48_cap                       the same per IPv6 /48, per captcha window (3000)
+//   trivia.extension_max_minutes 1..1440   the longest outage the Owner's deadline-extension tool
+//                                          covers: its outage start lies at most this far back (60;
+//                                          US-028, read by extend_open_question_deadlines)
 import { APP_SETTING_BOUNDS } from "@ebooktrivia/db";
 import type { AuditRecorder, FieldKind, Tx } from "../audit.ts";
 import type { Sql } from "../db.ts";
@@ -75,6 +78,8 @@ export const LIMITS: readonly LimitSpec[] = [
   limit("captcha.ip_cap", "captchaIpCap", "Captcha challenges and redeems per IP address per window", "requests", 300),
   limit("captcha.ip_window_seconds", "captchaIpWindowSeconds", "Captcha IP address window", "seconds", 600),
   limit("captcha.ip48_cap", "captchaIp48Cap", "Captcha challenges and redeems per IPv6 /48 network per captcha window", "requests", 3000),
+  // US-028: the longest outage the trivia deadline-extension tool covers (its outage start lies at most this far back).
+  limit("trivia.extension_max_minutes", "extensionMaxMinutes", "Longest outage the trivia deadline extension covers", "minutes", 60),
 ];
 
 export const LIMIT_FIELDS: readonly string[] = LIMITS.map((l) => l.field);

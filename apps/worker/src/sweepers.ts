@@ -24,17 +24,23 @@
 //                  checkout treats such an order the same way without waiting for this sweep.
 //   order_expiry   orders past expires_at in a state core's order machine moves on `expire`
 //                  (pending -> expired; worker_rw passes orders_status_guard).
-//   grace_end      published programs past sales_end_at + grace_days -> awaiting_confirmation
-//                  (the only change programs_status_guard allows the worker), in one transaction
-//                  per program after the GraceEndHook: US-028 plugs the finalize / snapshot /
-//                  winners work in there, so the status only moves once that work committed with
-//                  it. A failing program is logged and alerted and does not hold back the others.
+//   grace_end      published programs at least GRACE_END_SETTLE_MS past their grace end
+//                  (sales_end_at + grace_days): one transaction per program calling the SECURITY
+//                  DEFINER public.create_leaderboard_snapshot (packages/db sql/contest.sql, US-028),
+//                  which closes play, finalizes every open answer as a timeout, writes the stats,
+//                  the results snapshot and the winners and moves the program to
+//                  awaiting_confirmation, all derived in SQL. It takes the program's exclusive
+//                  contest lock and returns an existing snapshot unchanged, so two workers (or a
+//                  repeated sweep) never write two. A program whose lock is busy (lock_timeout), or
+//                  with a question served before the grace end still running (ET103), is left for
+//                  the next sweep; a failing program is logged and alerted, goes to the back of the
+//                  next batches, and does not hold back the others.
 //   login_throttle admin login-throttle rows whose window and lock are over (US-016), through the
 //                  SECURITY DEFINER public.sweep_login_throttle(): worker_rw has no other access
 //                  to admin_auth. Consecutive second-factor counts and hard locks are kept.
-// conversions, deliveries and grace_end need a port (the fire port US-024, the delivery consumer
-// US-025, the grace-end hook US-028): runSweeps skips each one until its port is registered, so
-// nothing is moved that the worker cannot finish (the worker cannot move a program back).
+// conversions and deliveries need a port (the fire port US-024, the delivery consumer US-025):
+// runSweeps skips each one until its port is registered, so nothing is moved that the worker
+// cannot finish.
 import {
   type ConversionStatus,
   EFFECT_CANCELLED,
@@ -43,6 +49,7 @@ import {
   type DeliveryStatus,
   expireConversionLease,
   expireDeliveryLease,
+  GRACE_END_SETTLE_MS,
   ORDER_STATUSES,
   type OrderStatus,
   SNAP_URL_STALE_MS,
@@ -60,8 +67,9 @@ export const OUTBOX_UNRELAYED_ALERT_MS = 10 * 60_000;
 const ALERT_DEDUPE_WINDOW = "1 hour";
 const BATCH = 500;
 
-/** US-028: finalize play, write the snapshot and winners, in the transaction that ends the grace period. */
-export type GraceEndHook = (tx: postgres.TransactionSql, program: { readonly programId: string; readonly graceEndedAt: Date }) => Promise<void>;
+/** Bounds of one grace-end transaction: wait this long for the contest lock, run this long at most. */
+export const GRACE_END_LOCK_TIMEOUT = "5s";
+export const GRACE_END_STATEMENT_TIMEOUT = "300s";
 
 export interface SweepDeps {
   readonly sql: postgres.Sql;
@@ -75,8 +83,6 @@ export interface SweepDeps {
   readonly conversionQueue?: Queue;
   /** Present only with a delivery consumer (US-025). */
   readonly deliveryQueue?: Queue;
-  /** US-028; without it no grace period is ended. */
-  readonly graceEnd?: GraceEndHook;
   readonly sinkDedupesByTxid?: SinkDedupePolicy;
 }
 
@@ -248,26 +254,57 @@ export async function sweepLoginThrottle(sql: postgres.Sql, windowSeconds = LOGI
   return row?.n ?? 0;
 }
 
-export async function endGracePeriods(sql: postgres.Sql, hook: GraceEndHook, log: Logger): Promise<number> {
+/** What public.create_leaderboard_snapshot returns (counts only, no player data). */
+interface SnapshotSummary {
+  readonly created: boolean;
+  readonly snapshot_id: string;
+  readonly players_ranked?: number;
+  readonly winners?: number;
+}
+
+/**
+ * Not failures, so no alert: the contest lock is busy (55P03: another worker is writing this
+ * snapshot, or an Owner action holds the lock), the program is not due yet (ET102 its status
+ * changed; ET103 its grace was extended meanwhile, or a question served before the grace end is
+ * still running), or the transaction lost a race (40P01 deadlock, 40001). The next sweep looks again.
+ */
+const GRACE_END_SKIPS: ReadonlySet<string> = new Set(["55P03", "ET102", "ET103", "40P01", "40001"]);
+
+const errorCode = (err: unknown): string | undefined => {
+  if (typeof err !== "object" || err === null) return undefined;
+  const code = (err as { code?: unknown }).code;
+  return typeof code === "string" ? code : undefined;
+};
+
+export async function endGracePeriods(sql: postgres.Sql, log: Logger): Promise<number> {
+  // Programs that failed lately go last (oldest failure first), so a failing program cannot starve
+  // the others out of the batch (code review MINOR-8).
   const due = await sql<{ id: string }[]>`
-    SELECT id FROM public.programs
-     WHERE status = 'published' AND sales_end_at + make_interval(days => grace_days) <= now()
-     ORDER BY sales_end_at LIMIT 50`;
+    SELECT p.id FROM public.programs p
+     WHERE p.status = 'published'
+       AND p.sales_end_at + make_interval(days => p.grace_days) + ${GRACE_END_SETTLE_MS} * interval '1 millisecond' <= clock_timestamp()
+     ORDER BY (SELECT max(a.created_at) FROM public.alerts a WHERE a.dedupe_key = 'grace_end_failed:' || p.id::text) ASC NULLS FIRST,
+              p.sales_end_at
+     LIMIT 50`;
   let ended = 0;
   for (const { id } of due) {
     try {
-      const moved = await sql.begin(async (tx) => {
-        const [program] = await tx<{ id: string; grace_ended_at: Date }[]>`
-          SELECT id, sales_end_at + make_interval(days => grace_days) AS grace_ended_at FROM public.programs
-           WHERE id = ${id} AND status = 'published' AND sales_end_at + make_interval(days => grace_days) <= now()
-             FOR UPDATE SKIP LOCKED`;
-        if (program === undefined) return false;
-        await hook(tx, { programId: program.id, graceEndedAt: program.grace_ended_at });
-        await tx`UPDATE public.programs SET status = 'awaiting_confirmation', updated_at = now() WHERE id = ${id} AND status = 'published'`;
-        return true;
+      const summary = await sql.begin(async (tx) => {
+        await tx.unsafe(`SET LOCAL lock_timeout = '${GRACE_END_LOCK_TIMEOUT}'`);
+        await tx.unsafe(`SET LOCAL statement_timeout = '${GRACE_END_STATEMENT_TIMEOUT}'`);
+        const [row] = await tx<{ summary: SnapshotSummary }[]>`SELECT public.create_leaderboard_snapshot(${id}::uuid) AS summary`;
+        return row?.summary;
       });
-      if (moved) ended++;
+      if (summary?.created === true) {
+        ended++;
+        log.info({ programId: id, snapshotId: summary.snapshot_id, playersRanked: summary.players_ranked, winners: summary.winners }, "grace period ended: results snapshot written");
+      }
     } catch (err) {
+      const code = errorCode(err);
+      if (code !== undefined && GRACE_END_SKIPS.has(code)) {
+        log.warn({ programId: id, code }, "grace-end skipped; the next sweep looks again");
+        continue;
+      }
       // The program stays published (its transaction rolled back) and is retried next sweep.
       log.error({ programId: id, err }, "grace-end work failed; program stays published");
       await raiseAlert(sql, {
@@ -393,7 +430,7 @@ export async function expireLeases(sql: postgres.Sql, sinkDedupesByTxid: SinkDed
 
 /** One sweep of everything; a failing sweeper is logged and does not stop the others. */
 export async function runSweeps(deps: SweepDeps): Promise<void> {
-  const { conversionQueue, deliveryQueue, graceEnd } = deps;
+  const { conversionQueue, deliveryQueue } = deps;
   const sweepers: [string, () => Promise<unknown>][] = [
     ["lease_expiry", () => expireLeases(deps.sql, deps.sinkDedupesByTxid)],
     ["outbox", () => sweepOutbox(deps)],
@@ -402,7 +439,7 @@ export async function runSweeps(deps: SweepDeps): Promise<void> {
   if (deliveryQueue !== undefined) sweepers.push(["due_deliveries", () => sweepDueDeliveries({ ...deps, deliveryQueue })]);
   sweepers.push(["snap_create", () => failStaleSnapCreates(deps.sql)]);
   sweepers.push(["order_expiry", () => expireOrders(deps.sql)]);
-  if (graceEnd !== undefined) sweepers.push(["grace_end", () => endGracePeriods(deps.sql, graceEnd, deps.log)]);
+  sweepers.push(["grace_end", () => endGracePeriods(deps.sql, deps.log)]);
   sweepers.push(["login_throttle", () => sweepLoginThrottle(deps.sql)]);
   for (const [sweeper, run] of sweepers) {
     try {

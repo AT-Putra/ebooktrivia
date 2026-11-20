@@ -33,6 +33,7 @@ const STAFF_EXPECTED: Readonly<Record<Permission, boolean | "unlocked">> = {
   "prize_tier.edit": false,
   "legal_page.edit": false,
   "winners.confirm": false,
+  "contest.extend_deadlines": false,
   "prize_fulfillment.update": false,
   "rescore.override": false,
   "deletion_request.process": false,

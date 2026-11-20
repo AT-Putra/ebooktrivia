@@ -366,6 +366,7 @@ describe("bounds and precision as CHECKs (every writer)", () => {
       "captcha.ip_cap",
       "captcha.ip_window_seconds",
       "captcha.ip48_cap",
+      "trivia.extension_max_minutes",
     ]);
   });
 });
@@ -410,7 +411,8 @@ describe("the contest lock (exclusive / shared)", () => {
     const { programId } = await createProgram();
     const holder = await hold("lock_program_contest", programId);
     let inserted = false;
-    const snapshot = asRole("worker_rw", (tx) => tx`INSERT INTO public.leaderboard_snapshots (program_id, frozen_at, entries) VALUES (${programId}, now(), '[]')`).then(() => {
+    // US-028: only create_leaderboard_snapshot (contest.int.test.ts) writes a snapshot; any insert waits.
+    const snapshot = sql`INSERT INTO leaderboard_snapshots (program_id, frozen_at, entries) VALUES (${programId}, now(), '[]')`.then(() => {
       inserted = true;
     });
     await new Promise((r) => setTimeout(r, 400));
@@ -421,9 +423,10 @@ describe("the contest lock (exclusive / shared)", () => {
     expect(inserted).toBe(true);
   });
 
-  it("no app role may take the shared lock before M9 grants it (42501)", async () => {
+  it("only public_rw (play, US-028) may take the shared lock (42501 for the others)", async () => {
     const { programId } = await createProgram();
-    for (const role of ["public_rw", "worker_rw", "admin_rw", "internal_rw"] as const) {
+    await asRole("public_rw", (tx) => tx`SELECT public.lock_program_contest_shared(${programId})`);
+    for (const role of ["worker_rw", "admin_rw", "internal_rw"] as const) {
       expect(await sqlState(asRole(role, (tx) => tx`SELECT public.lock_program_contest_shared(${programId})`)), role).toBe("42501");
     }
   });

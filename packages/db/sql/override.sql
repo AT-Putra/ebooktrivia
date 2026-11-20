@@ -161,7 +161,7 @@ BEGIN
       CROSS JOIN LATERAL public.score_answer(
         q.points, q.timer_seconds,
         (SELECT o.id FROM public.question_options o WHERE o.question_id = q.id AND o.is_correct),
-        aq.option_id, aq.served_at, aq.deadline_at, aq.answered_at) r
+        aq.option_id, aq.served_at, aq.deadline_at, aq.answered_at, aq.deadline_extension_ms) r
   )
   UPDATE public.attempt_questions aq
      SET correct = s.correct, points = s.points, elapsed_ms = s.elapsed_ms

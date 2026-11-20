@@ -10,6 +10,14 @@ import { createAttempt, createLandingPage, createPlayer, createProgram, createTr
 const GROUP_ROLES = ["admin_rw", "internal_rw", "migrator", "public_rw", "worker_rw"];
 /** The one object not owned by migrator (US-018): the Owner's scoring override, owned by trivia_override. */
 const OVERRIDE_FUNCTION = "public.override_question_scoring(p_program_id uuid, p_set_id uuid, p_question_id uuid, p_points integer, p_timer_seconds integer, p_correct_option_id uuid, p_reason text, p_actor_admin_user_id text, p_request_id text, p_ip inet)";
+/** US-028: the contest's functions (sql/contest.sql), owned by contest_results. */
+const CONTEST_FUNCTIONS = [
+  "public.confirm_program_winners(p_program_id uuid, p_actor_admin_user_id text, p_request_id text, p_ip inet)",
+  "public.create_leaderboard_snapshot(p_program_id uuid)",
+  "public.extend_open_question_deadlines(p_program_id uuid, p_outage_started_at timestamp with time zone, p_outage_ended_at timestamp with time zone, p_reason text, p_actor_admin_user_id text, p_request_id text, p_ip inet)",
+  "public.program_winners_banner(p_program_id uuid)",
+];
+const ownerOf = (sig: string): string => (sig === OVERRIDE_FUNCTION ? "trivia_override" : CONTEST_FUNCTIONS.includes(sig) ? "contest_results" : "migrator");
 const DEFINER_FUNCTIONS = [
   "public.enqueue_mo(p_order_id uuid)",
   "public.enqueue_notification(p_inbox_id uuid)",
@@ -141,26 +149,26 @@ describe("group roles (roles.sql)", () => {
     expect(await groupMemberships()).toEqual([]);
   });
 
-  it("creates trivia_override NOLOGIN, with no members and a member of nothing (US-018)", async () => {
+  it.each(["trivia_override", "contest_results"])("creates %s NOLOGIN, with no members and a member of nothing (US-018, US-028)", async (name) => {
     const [role] = await sql`
       SELECT rolcanlogin, rolsuper, rolcreatedb, rolcreaterole, rolreplication, rolbypassrls,
              (SELECT count(*)::int FROM pg_auth_members am WHERE am.roleid = r.oid OR am.member = r.oid) AS memberships
-      FROM pg_roles r WHERE rolname = 'trivia_override'`;
+      FROM pg_roles r WHERE rolname = ${name}`;
     expect(role).toEqual({ rolcanlogin: false, rolsuper: false, rolcreatedb: false, rolcreaterole: false, rolreplication: false, rolbypassrls: false, memberships: 0 });
   });
 
-  it("removes any membership in trivia_override on a re-run (a member could SET ROLE to it)", async () => {
-    await sql`GRANT trivia_override TO admin_rw`;
+  it.each(["trivia_override", "contest_results"])("removes any membership in %s on a re-run (a member could SET ROLE to it)", async (name) => {
+    await sql.unsafe(`GRANT ${name} TO admin_rw`);
     try {
       await runMigrations(inject("dbUrl"));
-      const rows = await sql`SELECT 1 FROM pg_auth_members am JOIN pg_roles g ON g.oid = am.roleid WHERE g.rolname = 'trivia_override'`;
+      const rows = await sql`SELECT 1 FROM pg_auth_members am JOIN pg_roles g ON g.oid = am.roleid WHERE g.rolname = ${name}`;
       expect(rows).toEqual([]);
     } finally {
-      await sql`REVOKE trivia_override FROM admin_rw`.catch(() => undefined);
+      await sql.unsafe(`REVOKE ${name} FROM admin_rw`).catch(() => undefined);
     }
   });
 
-  it("makes migrator the owner of every object but the override function, which trivia_override owns", async () => {
+  it("makes migrator the owner of every object but the override function (trivia_override) and the contest functions (contest_results)", async () => {
     const rows = await sql`
       SELECT n.nspname, c.relname, pg_get_userbyid(c.relowner) AS owner
       FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -172,7 +180,16 @@ describe("group roles (roles.sql)", () => {
       UNION ALL
       SELECT nspname, '(schema)', pg_get_userbyid(nspowner) FROM pg_namespace
       WHERE nspname IN ('public', 'player_auth', 'admin_auth', 'drizzle') AND pg_get_userbyid(nspowner) <> 'migrator'`;
-    expect(rows).toEqual([{ nspname: "public", relname: "override_question_scoring", owner: "trivia_override" }]);
+    expect(rows).toEqual(
+      expect.arrayContaining([
+        { nspname: "public", relname: "override_question_scoring", owner: "trivia_override" },
+        { nspname: "public", relname: "confirm_program_winners", owner: "contest_results" },
+        { nspname: "public", relname: "create_leaderboard_snapshot", owner: "contest_results" },
+        { nspname: "public", relname: "extend_open_question_deadlines", owner: "contest_results" },
+        { nspname: "public", relname: "program_winners_banner", owner: "contest_results" },
+      ]),
+    );
+    expect(rows).toHaveLength(5);
   });
 });
 
@@ -194,16 +211,16 @@ describe("SECURITY DEFINER functions (functions.sql, triggers.sql)", () => {
   // Security review item 3: `public` on the search_path let a planted, better-matching function
   // win an unqualified call (see otp.int.test.ts). Every function now pins pg_catalog, pg_temp
   // (pg_temp last; it is never searched for functions or operators).
-  it("pins search_path = pg_catalog, pg_temp, is owned by migrator (the override: trivia_override) and is not executable by PUBLIC", async () => {
+  it("pins search_path = pg_catalog, pg_temp, is owned by migrator (the override: trivia_override; the contest: contest_results) and is not executable by PUBLIC", async () => {
     for (const f of (await functions()).filter((fn) => fn.definer)) {
       expect({ sig: f.sig, config: f.config, owner: f.owner, publicExecute: f.public_exec }).toEqual({
         sig: f.sig,
         config: ["search_path=pg_catalog, pg_temp"],
-        owner: f.sig === OVERRIDE_FUNCTION ? "trivia_override" : "migrator",
+        owner: ownerOf(f.sig),
         publicExecute: false,
       });
     }
-    expect((await functions()).filter((fn) => fn.definer).map((fn) => fn.sig)).toContain(OVERRIDE_FUNCTION);
+    expect((await functions()).filter((fn) => fn.definer).map((fn) => fn.sig)).toEqual(expect.arrayContaining([OVERRIDE_FUNCTION, ...CONTEST_FUNCTIONS]));
   });
 
   it("pins search_path = pg_catalog, pg_temp on every other function in public too", async () => {
@@ -229,19 +246,32 @@ describe("SECURITY DEFINER functions (functions.sql, triggers.sql)", () => {
         "public.lock_program_contest(uuid)",
         "public.lock_program_contest_shared(uuid)",
         "public.override_question_scoring(uuid, uuid, uuid, integer, integer, uuid, text, text, text, inet)",
+        "public.score_answer(integer, integer, uuid, uuid, timestamptz, timestamptz, timestamptz, integer)",
+        "public.mask_name(text)",
+        "public.mask_phone(text)",
+        "public.create_leaderboard_snapshot(uuid)",
+        "public.confirm_program_winners(uuid, text, text, inet)",
+        "public.extend_open_question_deadlines(uuid, timestamptz, timestamptz, text, text, text, inet)",
+        "public.program_winners_banner(uuid)",
       ]}::text[]) fn
       CROSS JOIN unnest(${[...APP_ROLES]}::text[]) r
       WHERE has_function_privilege(r, fn, 'EXECUTE') ORDER BY 1, 2`;
     expect(rows.map((r) => `${r.role} ${r.fn}`)).toEqual([
       "admin_rw public.assert_trivia_set_unlocked(uuid)",
+      "admin_rw public.confirm_program_winners(uuid, text, text, inet)",
+      "worker_rw public.create_leaderboard_snapshot(uuid)",
       "public_rw public.enqueue_mo(uuid)",
       "public_rw public.enqueue_notification(uuid)",
       "public_rw public.enqueue_otp(uuid)",
       "public_rw public.enqueue_waha_inbound(uuid)",
+      "admin_rw public.extend_open_question_deadlines(uuid, timestamptz, timestamptz, text, text, text, inet)",
       "public_rw public.get_payment_secret()",
       "worker_rw public.get_payment_secret()",
+      "public_rw public.lock_program_contest_shared(uuid)",
       "admin_rw public.lock_program_contest(uuid)",
       "admin_rw public.override_question_scoring(uuid, uuid, uuid, integer, integer, uuid, text, text, text, inet)",
+      "admin_rw public.program_winners_banner(uuid)",
+      "public_rw public.program_winners_banner(uuid)",
       "worker_rw public.sweep_login_throttle(integer)",
     ]);
   });

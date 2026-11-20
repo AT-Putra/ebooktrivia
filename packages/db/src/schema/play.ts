@@ -80,16 +80,55 @@ export const attemptQuestions = pgTable(
     elapsedMs: integer("elapsed_ms"),
     ip: inet("ip"),
     uaHash: bytea("ua_hash"),
+    /**
+     * What the Owner's deadline-extension tool (US-028, outages) added to deadline_at; written only by
+     * public.extend_open_question_deadlines. Scoring keeps charging at most the window the question
+     * was served with (deadline_at - served_at - this), see core rescore.ts.
+     */
+    deadlineExtensionMs: integer("deadline_extension_ms").notNull().default(0),
   },
   (t) => [
     unique("attempt_questions_attempt_id_question_id_key").on(t.attemptId, t.questionId),
     unique("attempt_questions_attempt_id_position_key").on(t.attemptId, t.position),
     check("attempt_questions_deadline_check", sql`${t.deadlineAt} IS NULL OR ${t.deadlineAt} >= ${t.servedAt}`),
+    // At most 7 days in total, and always inside the deadline it extended.
+    check(
+      "attempt_questions_deadline_extension_check",
+      sql`${t.deadlineExtensionMs} BETWEEN 0 AND 604800000 AND (${t.deadlineExtensionMs} = 0 OR ${t.deadlineAt} - ${t.servedAt} >= ${t.deadlineExtensionMs} * interval '1 millisecond')`,
+    ),
     nonNegative("attempt_questions_points_check", t.points),
     check("attempt_questions_elapsed_ms_check", sql`${t.elapsedMs} IS NULL OR ${t.elapsedMs} >= 0`),
     wholeMilliseconds("attempt_questions_served_at_ms_check", t.servedAt),
     wholeMilliseconds("attempt_questions_deadline_at_ms_check", t.deadlineAt),
     wholeMilliseconds("attempt_questions_answered_at_ms_check", t.answeredAt),
+  ],
+);
+
+/**
+ * The Owner's deadline extensions (US-028, outages): one row per extended answer, so an answer is
+ * extended at most once (primary key). Written only by public.extend_open_question_deadlines, which
+ * puts extension_id (one per use of the tool) into its audit row; append-only (sql/triggers.sql).
+ */
+export const deadlineExtensions = pgTable(
+  "deadline_extensions",
+  {
+    attemptQuestionId: uuid("attempt_question_id")
+      .primaryKey()
+      .references(() => attemptQuestions.id, { onDelete: "restrict" }),
+    extensionId: uuid("extension_id").notNull(),
+    programId: uuid("program_id")
+      .notNull()
+      .references(() => programs.id, { onDelete: "restrict" }),
+    /** The deadline the outage cut short. */
+    originalDeadlineAt: tstz("original_deadline_at").notNull(),
+    /** The time the answer lost to the outage, given back from the moment of the extension. */
+    grantedMs: integer("granted_ms").notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    index("deadline_extensions_extension_id_idx").on(t.extensionId),
+    check("deadline_extensions_granted_ms_check", sql`${t.grantedMs} > 0`),
+    wholeMilliseconds("deadline_extensions_original_deadline_at_ms_check", t.originalDeadlineAt),
   ],
 );
 

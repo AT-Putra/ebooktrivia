@@ -1,0 +1,26 @@
+-- US-028 (grace end, snapshot, winners, deadline extension): the Owner's outage extension per answer
+-- row and its ledger (one row per extended answer), its bounded setting (a whole positive number,
+-- like the otp / orders / checkout ones), and
+-- score_answer's new signature (sql/functions.sql creates the 8-argument one, taking the extension;
+-- the 7-argument one is dropped here so no caller can skip it).
+CREATE TABLE "deadline_extensions" (
+	"attempt_question_id" uuid PRIMARY KEY NOT NULL,
+	"extension_id" uuid NOT NULL,
+	"program_id" uuid NOT NULL,
+	"original_deadline_at" timestamp with time zone NOT NULL,
+	"granted_ms" integer NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "deadline_extensions_granted_ms_check" CHECK ("deadline_extensions"."granted_ms" > 0),
+	CONSTRAINT "deadline_extensions_original_deadline_at_ms_check" CHECK ("deadline_extensions"."original_deadline_at" = date_trunc('milliseconds', "deadline_extensions"."original_deadline_at"))
+);
+--> statement-breakpoint
+ALTER TABLE "app_settings" DROP CONSTRAINT "app_settings_positive_int_check";--> statement-breakpoint
+ALTER TABLE "app_settings" DROP CONSTRAINT "app_settings_bounds_check";--> statement-breakpoint
+ALTER TABLE "attempt_questions" ADD COLUMN "deadline_extension_ms" integer DEFAULT 0 NOT NULL;--> statement-breakpoint
+ALTER TABLE "deadline_extensions" ADD CONSTRAINT "deadline_extensions_attempt_question_id_attempt_questions_id_fk" FOREIGN KEY ("attempt_question_id") REFERENCES "public"."attempt_questions"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "deadline_extensions" ADD CONSTRAINT "deadline_extensions_program_id_programs_id_fk" FOREIGN KEY ("program_id") REFERENCES "public"."programs"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
+CREATE INDEX "deadline_extensions_extension_id_idx" ON "deadline_extensions" USING btree ("extension_id");--> statement-breakpoint
+ALTER TABLE "app_settings" ADD CONSTRAINT "app_settings_positive_int_check" CHECK (("app_settings"."key" NOT LIKE 'otp.%' AND "app_settings"."key" NOT LIKE 'orders.%' AND "app_settings"."key" NOT LIKE 'checkout.%' AND "app_settings"."key" NOT LIKE 'captcha.%' AND "app_settings"."key" <> 'trivia.extension_max_minutes') OR (jsonb_typeof("app_settings"."value") = 'number' AND ("app_settings"."value" #>> '{}')::numeric > 0 AND ("app_settings"."value" #>> '{}')::numeric = trunc(("app_settings"."value" #>> '{}')::numeric)));--> statement-breakpoint
+ALTER TABLE "app_settings" ADD CONSTRAINT "app_settings_bounds_check" CHECK (CASE WHEN "app_settings"."key" NOT IN ('otp.code_ttl_seconds', 'otp.max_attempts', 'otp.phone_cap', 'otp.phone_window_seconds', 'otp.ip_cap', 'otp.ip_window_seconds', 'otp.cooldown_seconds', 'orders.expiry_seconds', 'orders.sales_close_buffer_minutes', 'checkout.ip_cap', 'checkout.ip_window_seconds', 'checkout.phone_cap', 'checkout.phone_window_seconds', 'checkout.lp_cap', 'checkout.lp_window_seconds', 'captcha.ip_cap', 'captcha.ip_window_seconds', 'captcha.ip48_cap', 'trivia.extension_max_minutes') THEN true WHEN jsonb_typeof("app_settings"."value") <> 'number' THEN false ELSE CASE "app_settings"."key" WHEN 'otp.code_ttl_seconds' THEN (value #>> '{}')::numeric BETWEEN 60 AND 900 WHEN 'otp.max_attempts' THEN (value #>> '{}')::numeric BETWEEN 1 AND 5 WHEN 'otp.phone_cap' THEN (value #>> '{}')::numeric BETWEEN 1 AND 10 WHEN 'otp.phone_window_seconds' THEN (value #>> '{}')::numeric BETWEEN 3600 AND 86400 WHEN 'otp.ip_cap' THEN (value #>> '{}')::numeric BETWEEN 1 AND 100 WHEN 'otp.ip_window_seconds' THEN (value #>> '{}')::numeric BETWEEN 600 AND 86400 WHEN 'otp.cooldown_seconds' THEN (value #>> '{}')::numeric BETWEEN 15 AND 600 WHEN 'orders.expiry_seconds' THEN (value #>> '{}')::numeric BETWEEN 900 AND 86400 WHEN 'orders.sales_close_buffer_minutes' THEN (value #>> '{}')::numeric BETWEEN 5 AND 1440 WHEN 'checkout.ip_cap' THEN (value #>> '{}')::numeric BETWEEN 1 AND 1000 WHEN 'checkout.ip_window_seconds' THEN (value #>> '{}')::numeric BETWEEN 60 AND 86400 WHEN 'checkout.phone_cap' THEN (value #>> '{}')::numeric BETWEEN 1 AND 100 WHEN 'checkout.phone_window_seconds' THEN (value #>> '{}')::numeric BETWEEN 60 AND 86400 WHEN 'checkout.lp_cap' THEN (value #>> '{}')::numeric BETWEEN 1 AND 100000 WHEN 'checkout.lp_window_seconds' THEN (value #>> '{}')::numeric BETWEEN 60 AND 86400 WHEN 'captcha.ip_cap' THEN (value #>> '{}')::numeric BETWEEN 1 AND 1000 WHEN 'captcha.ip_window_seconds' THEN (value #>> '{}')::numeric BETWEEN 60 AND 86400 WHEN 'captcha.ip48_cap' THEN (value #>> '{}')::numeric BETWEEN 1 AND 100000 WHEN 'trivia.extension_max_minutes' THEN (value #>> '{}')::numeric BETWEEN 1 AND 1440 END END);--> statement-breakpoint
+ALTER TABLE "attempt_questions" ADD CONSTRAINT "attempt_questions_deadline_extension_check" CHECK ("attempt_questions"."deadline_extension_ms" BETWEEN 0 AND 604800000 AND ("attempt_questions"."deadline_extension_ms" = 0 OR "attempt_questions"."deadline_at" - "attempt_questions"."served_at" >= "attempt_questions"."deadline_extension_ms" * interval '1 millisecond'));--> statement-breakpoint
+DROP FUNCTION IF EXISTS public.score_answer(integer, integer, uuid, uuid, timestamptz, timestamptz, timestamptz);

@@ -13,12 +13,11 @@
 //   testSend         the senders of admin template test-sends (US-017, template-test-send.ts).
 //                    runWorker wires the real SMTP / WAHA senders when worker.env holds
 //                    SECRETS_MESSAGING_PRIVATE_KEY; without it template.test_send is not relayed.
-//   graceEnd         finalize / snapshot / winners (US-028), run before a program moves to
-//                    awaiting_confirmation. Without it the grace-end sweeper does not run: the worker
-//                    cannot move a program back, so it never ends a grace period it cannot finish.
 //   payments         Midtrans access (US-021, payments.ts, reconciliation.ts): the payment.notification
 //                    consumer and the nightly reconciliation loop. runWorker wires it when worker.env
 //                    holds SECRETS_PAYMENT_PRIVATE_KEY (midtrans-access.ts); without it neither runs.
+// The grace-end sweeper needs no port: its work is the SECURITY DEFINER SQL function
+// public.create_leaderboard_snapshot (US-028, sweepers.ts), so it always runs.
 // The production entry (main.ts) passes no ports: runWorker wires the ones worker.env enables
 // (template test-sends, payments); test/support/worker-harness.ts runs this same composition with
 // test ports for the chaos tests.
@@ -40,7 +39,7 @@ import { relayOnce } from "./relay.ts";
 import { onShutdown } from "./shutdown.ts";
 import { createTemplateTestSendConsumer, type TestSender } from "./template-test-send.ts";
 import { testSendFromEnv } from "./test-send-senders.ts";
-import { type GraceEndHook, runSweeps } from "./sweepers.ts";
+import { runSweeps } from "./sweepers.ts";
 import { loadWorkerConfig, type WorkerConfig } from "./worker-config.ts";
 import { type PaymentPort, paymentsFromEnv } from "./midtrans-access.ts";
 import { createPaymentNotificationConsumer, PAYMENT_TOPIC } from "./payments.ts";
@@ -55,7 +54,6 @@ export interface WorkerPorts {
   readonly sinkDedupesByTxid?: SinkDedupePolicy;
   /** US-025: processes one delivery.send job ({ id: deliveries.id }); claim and lease per core delivery-machine. */
   readonly deliverDelivery?: (data: unknown) => Promise<string>;
-  readonly graceEnd?: GraceEndHook;
   /** US-017: the senders of template.test_send (given the worker's pool). */
   readonly testSend?: (sql: postgres.Sql) => TestSender;
   /** US-021: Midtrans re-queries (payment.notification consumer, nightly reconciliation). */
@@ -163,7 +161,6 @@ export async function startWorker(config: WorkerConfig, ports: WorkerPorts, log:
         outboxQueues,
         outboxMaxAttempts,
         outboxStaleMs: config.outboxStaleMs,
-        ...(ports.graceEnd === undefined ? {} : { graceEnd: ports.graceEnd }),
         ...(conversionQueue === undefined ? {} : { conversionQueue }),
         ...(deliveryQueue === undefined ? {} : { deliveryQueue }),
         ...(ports.sinkDedupesByTxid === undefined ? {} : { sinkDedupesByTxid: ports.sinkDedupesByTxid }),
@@ -195,7 +192,6 @@ export async function startWorker(config: WorkerConfig, ports: WorkerPorts, log:
       topics,
       conversions: conversionQueue !== undefined,
       deliveries: deliveryQueue !== undefined,
-      graceEnd: ports.graceEnd !== undefined,
       payments: payments !== undefined,
       prefix: config.prefix,
     },

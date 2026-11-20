@@ -32,6 +32,7 @@ const answer = (id: string, attemptId: string, questionId: string, optionId: str
   servedAt: served === null ? null : at(served),
   // The deadline the player was shown: served + the 20 s timer every seeded question had.
   deadlineAt: served === null ? null : at(served + 20),
+  extensionMs: 0,
   answeredAt: answered === null ? null : at(answered),
   stored,
 });
@@ -184,7 +185,7 @@ describe("rescorePlayers with seeded attempt rows", () => {
     expect(result).toMatchObject({ answers: [], attempts: [], stats: [] });
     expect(result.after.totalMs).toBe(result.before.totalMs);
     // A never-served row has no deadline: it counts the current timer (the documented asymmetry).
-    expect(scoreAnswer({ points: 10, timerSeconds: 600, correctOptionId: "x" }, { optionId: null, servedAt: null, deadlineAt: null, answeredAt: at(1) })).toEqual({ correct: false, points: 0, elapsedMs: 600_000 });
+    expect(scoreAnswer({ points: 10, timerSeconds: 600, correctOptionId: "x" }, { extensionMs: 0, optionId: null, servedAt: null, deadlineAt: null, answeredAt: at(1) })).toEqual({ correct: false, points: 0, elapsedMs: 600_000 });
   });
 
   it("restoring the timer restores the original scores (the pick is never rewritten)", () => {
@@ -261,18 +262,33 @@ describe("scoreAnswer", () => {
   const rule = { points: 10, timerSeconds: 20, correctOptionId: "right" };
 
   it("pending, never served, timeout, late, inside the grace, right and wrong", () => {
-    expect(scoreAnswer(rule, { optionId: null, servedAt: at(0), deadlineAt: null, answeredAt: null })).toEqual({ correct: null, points: 0, elapsedMs: null });
-    expect(scoreAnswer(rule, { optionId: null, servedAt: null, deadlineAt: null, answeredAt: at(99) })).toEqual({ correct: false, points: 0, elapsedMs: 20000 });
-    expect(scoreAnswer(rule, { optionId: null, servedAt: at(0), deadlineAt: at(20), answeredAt: at(20) })).toEqual({ correct: false, points: 0, elapsedMs: 20000 });
-    expect(scoreAnswer(rule, { optionId: "right", servedAt: at(0), deadlineAt: null, answeredAt: new Date(T0 + 20000 + ANSWER_LATENCY_GRACE_MS + 1) })).toEqual({ correct: false, points: 0, elapsedMs: 20000 });
-    expect(scoreAnswer(rule, { optionId: "right", servedAt: at(0), deadlineAt: null, answeredAt: new Date(T0 + 20000 + ANSWER_LATENCY_GRACE_MS) })).toEqual({ correct: true, points: 10, elapsedMs: 20000 });
-    expect(scoreAnswer(rule, { optionId: "right", servedAt: at(0), deadlineAt: at(20), answeredAt: at(4) })).toEqual({ correct: true, points: 10, elapsedMs: 4000 });
-    expect(scoreAnswer(rule, { optionId: "wrong", servedAt: at(0), deadlineAt: at(20), answeredAt: at(4) })).toEqual({ correct: false, points: 0, elapsedMs: 4000 });
+    expect(scoreAnswer(rule, { extensionMs: 0, optionId: null, servedAt: at(0), deadlineAt: null, answeredAt: null })).toEqual({ correct: null, points: 0, elapsedMs: null });
+    expect(scoreAnswer(rule, { extensionMs: 0, optionId: null, servedAt: null, deadlineAt: null, answeredAt: at(99) })).toEqual({ correct: false, points: 0, elapsedMs: 20000 });
+    expect(scoreAnswer(rule, { extensionMs: 0, optionId: null, servedAt: at(0), deadlineAt: at(20), answeredAt: at(20) })).toEqual({ correct: false, points: 0, elapsedMs: 20000 });
+    expect(scoreAnswer(rule, { extensionMs: 0, optionId: "right", servedAt: at(0), deadlineAt: null, answeredAt: new Date(T0 + 20000 + ANSWER_LATENCY_GRACE_MS + 1) })).toEqual({ correct: false, points: 0, elapsedMs: 20000 });
+    expect(scoreAnswer(rule, { extensionMs: 0, optionId: "right", servedAt: at(0), deadlineAt: null, answeredAt: new Date(T0 + 20000 + ANSWER_LATENCY_GRACE_MS) })).toEqual({ correct: true, points: 10, elapsedMs: 20000 });
+    expect(scoreAnswer(rule, { extensionMs: 0, optionId: "right", servedAt: at(0), deadlineAt: at(20), answeredAt: at(4) })).toEqual({ correct: true, points: 10, elapsedMs: 4000 });
+    expect(scoreAnswer(rule, { extensionMs: 0, optionId: "wrong", servedAt: at(0), deadlineAt: at(20), answeredAt: at(4) })).toEqual({ correct: false, points: 0, elapsedMs: 4000 });
   });
 
   it("counts a clock-skewed answer (answered before served) as 0 ms, and a question without a correct option as wrong", () => {
-    expect(scoreAnswer(rule, { optionId: "right", servedAt: at(5), deadlineAt: null, answeredAt: at(4) })).toEqual({ correct: true, points: 10, elapsedMs: 0 });
-    expect(scoreAnswer({ ...rule, correctOptionId: null }, { optionId: "right", servedAt: at(0), deadlineAt: null, answeredAt: at(1) })).toEqual({ correct: false, points: 0, elapsedMs: 1000 });
+    expect(scoreAnswer(rule, { extensionMs: 0, optionId: "right", servedAt: at(5), deadlineAt: null, answeredAt: at(4) })).toEqual({ correct: true, points: 10, elapsedMs: 0 });
+    expect(scoreAnswer({ ...rule, correctOptionId: null }, { extensionMs: 0, optionId: "right", servedAt: at(0), deadlineAt: null, answeredAt: at(1) })).toEqual({ correct: false, points: 0, elapsedMs: 1000 });
+  });
+
+  // US-028: the Owner's outage extension (attempt_questions.deadline_extension_ms) moves the deadline
+  // a pick may arrive by, never the time charged.
+  it("an extension lets a pick count up to the extended deadline (+ the grace), charging the full shown cap", () => {
+    const extended = { servedAt: at(0), deadlineAt: at(20 + 600), extensionMs: 600_000 };
+    expect(scoreAnswer(rule, { ...extended, optionId: "right", answeredAt: at(300) })).toEqual({ correct: true, points: 10, elapsedMs: 20000 });
+    expect(scoreAnswer(rule, { ...extended, optionId: "right", answeredAt: new Date(T0 + 620_000 + ANSWER_LATENCY_GRACE_MS) })).toEqual({ correct: true, points: 10, elapsedMs: 20000 });
+    expect(scoreAnswer(rule, { ...extended, optionId: "right", answeredAt: new Date(T0 + 620_000 + ANSWER_LATENCY_GRACE_MS + 1) })).toEqual({ correct: false, points: 0, elapsedMs: 20000 });
+    expect(scoreAnswer(rule, { ...extended, optionId: "right", answeredAt: at(3) })).toEqual({ correct: true, points: 10, elapsedMs: 3000 });
+    // A shortened timer still caps what is charged; without an extension the same pick is late.
+    expect(scoreAnswer({ ...rule, timerSeconds: 10 }, { ...extended, optionId: "wrong", answeredAt: at(300) })).toEqual({ correct: false, points: 0, elapsedMs: 10000 });
+    expect(scoreAnswer(rule, { servedAt: at(0), deadlineAt: at(20), extensionMs: 0, optionId: "right", answeredAt: at(300) })).toEqual({ correct: false, points: 0, elapsedMs: 20000 });
+    expect(() => scoreAnswer(rule, { ...extended, extensionMs: -1, optionId: null, answeredAt: null })).toThrow(RangeError);
+    expect(() => scoreAnswer(rule, { ...extended, extensionMs: 1.5, optionId: null, answeredAt: null })).toThrow(RangeError);
   });
 
   it("never scores above the question's points or above its timer (property)", () => {
@@ -284,7 +300,7 @@ describe("scoreAnswer", () => {
         fc.option(fc.integer({ min: -5_000, max: 700_000 })),
         fc.option(fc.integer({ min: 0, max: 700_000 })),
         (points, timerSeconds, optionId, offset, deadline) => {
-          const scored = scoreAnswer({ points, timerSeconds, correctOptionId: "right" }, { optionId, servedAt: at(0), deadlineAt: deadline === null ? null : new Date(T0 + deadline), answeredAt: offset === null ? null : new Date(T0 + offset) });
+          const scored = scoreAnswer({ points, timerSeconds, correctOptionId: "right" }, { optionId, servedAt: at(0), deadlineAt: deadline === null ? null : new Date(T0 + deadline), answeredAt: offset === null ? null : new Date(T0 + offset), extensionMs: 0 });
           expect(scored.points === 0 || scored.points === points).toBe(true);
           expect((scored.elapsedMs ?? 0) <= timerSeconds * 1000).toBe(true);
           expect(scored.points > 0).toBe(scored.correct === true && points > 0);

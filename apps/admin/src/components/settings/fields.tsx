@@ -29,7 +29,7 @@ export function TextField({
   label: string;
   defaultValue?: string | number | null | undefined;
   hint?: string | undefined;
-  type?: "text" | "date" | "email" | "url" | "number" | "password" | undefined;
+  type?: "text" | "date" | "datetime-local" | "email" | "url" | "number" | "password" | undefined;
   required?: boolean | undefined;
   disabled?: boolean | undefined;
   /** Shown and submitted, not editable (locked program fields). */

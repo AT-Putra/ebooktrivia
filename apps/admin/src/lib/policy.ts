@@ -57,6 +57,8 @@ const RULES = {
   "prize_tier.edit": "owner",
   "legal_page.edit": "owner",
   "winners.confirm": "owner",
+  // The deadline-extension tool for outages (US-028, plan §10 item 16): changes contest timing.
+  "contest.extend_deadlines": "owner",
   "prize_fulfillment.update": "owner",
   "rescore.override": "owner",
   "deletion_request.process": "owner",

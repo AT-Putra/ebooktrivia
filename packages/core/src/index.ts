@@ -2,6 +2,7 @@
 // every time-dependent function takes `now`. node:crypto is used for HMAC, hashing, CSPRNG and
 // constant-time comparison only; node:net / node:url only to parse host names (hosts.ts).
 export * from "./checkout.ts";
+export * from "./contest.ts";
 export * from "./conversion-machine.ts";
 export * from "./delivery-machine.ts";
 export * from "./eligibility.ts";

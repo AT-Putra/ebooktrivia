@@ -17,7 +17,7 @@
 -- ET030 audit_log append-only, ET031 worker audit entry not actor_kind 'system' / names an admin,
 -- ET040 order status change, ET041 order amount != product price, ET042 order LP / program /
 -- product mismatch, ET043 program not on sale, ET044 order expiry too far out,
--- ET045 winner confirmation reserved for admin, ET046 program status change reserved for admin,
+-- ET045 (unused since US-028), ET046 program status change not allowed for the caller,
 -- ET050 play row for a player not eligible on a published program, ET051 question/option not in
 -- the attempt's set/question, ET060 settings_secrets relabelled without re-encryption,
 -- ET061 settings_secrets id change, ET047 program field locked after its first PAID order
@@ -26,6 +26,10 @@
 -- ET049 a Midtrans attempt whose midtrans_order_id is not {public_id}-{n} of its order.
 -- ET080 a delivery / MT conversion row of an unpaid order, ET081 orders.paid_at / refunded_at changed
 -- once set, ET082 a fulfillment change of a flagged or revoked winner (US-021).
+-- ET104 results snapshot changed (immutable), ET105 winner deleted, changed or inconsistent with its snapshot,
+-- ET106 deadline extension written outside the Owner's tool, ET108 play timestamp or answer changed by the
+-- caller, ET109 a pick after the deadline + 1500 ms, ET110 a start or serve at or after the grace end,
+-- ET111 deadline extension ledger changed (US-028).
 
 SELECT pg_catalog.set_config('search_path', 'pg_catalog, pg_temp', false);
 
@@ -343,51 +347,107 @@ CREATE OR REPLACE TRIGGER player_otps_stamp
   FOR EACH ROW EXECUTE FUNCTION public.player_otps_stamp();
 
 -- ---------------------------------------------------------------------------------------------
--- Owner approvals. The worker writes winners as awaiting_confirmation and may flag one (a
--- chargeback after confirmation); only admin_rw (the Owner, enforced by the admin app's
--- policy) confirms or revokes. The worker may move a program only from published to
--- awaiting_confirmation (grace-end sweeper); finalizing is the Owner's.
+-- Winners (AC-A9, AC-Q11; US-028). Written only by the grace-end results snapshot and confirmed only
+-- by the Owner's confirmation, both SECURITY DEFINER functions owned by contest_results
+-- (sql/contest.sql); no app role holds INSERT or DELETE on the table, and only worker_rw holds an
+-- UPDATE, of the flag columns (grants.sql). For EVERY writer, the owner and superusers included:
+--   - a winner is inserted awaiting_confirmation, unconfirmed and unflagged, for the program of its
+--     snapshot, inside its prize tier's ranks (ET105);
+--   - it is never deleted or truncated, and its id, program, snapshot, tier, player, rank and
+--     created_at never change (ET105): the list is frozen with the snapshot;
+--   - only these status changes exist (ET105 otherwise):
+--       awaiting_confirmation -> confirmed, with confirmed_at set, flag untouched: inside
+--         contest_results' functions only (the Owner's confirmation);
+--       awaiting_confirmation or confirmed -> flagged, with flagged_at set, confirmed_at untouched:
+--         by worker_rw only (US-021: a chargeback; plan §10 item 17), changing only status,
+--         flagged_at, flag_reason and updated_at;
+--       awaiting_confirmation, confirmed or flagged -> revoked, and flagged -> confirmed (the
+--         Owner's revoke and reinstatement after a flag, with confirmed_at set), flag untouched:
+--         inside contest_results' functions only. No function makes them yet: US-030's revoke and
+--         re-award does, owned by contest_results.
+-- SECURITY INVOKER: current_user must be the caller.
 CREATE OR REPLACE FUNCTION public.winners_status_guard()
   RETURNS trigger
   LANGUAGE plpgsql
   SET search_path = pg_catalog, pg_temp
 AS $fn$
 BEGIN
-  IF pg_has_role(current_user, 'admin_rw', 'USAGE') OR pg_has_role(current_user, 'migrator', 'USAGE') THEN
-    RETURN NEW;
+  IF TG_OP IN ('DELETE', 'TRUNCATE') THEN
+    RAISE EXCEPTION 'winners are never deleted' USING ERRCODE = 'ET105';
   END IF;
   IF TG_OP = 'INSERT' THEN
-    IF NEW.status <> 'awaiting_confirmation' OR NEW.confirmed_at IS NOT NULL THEN
-      RAISE EXCEPTION 'only admin_rw confirms winners' USING ERRCODE = 'ET045';
+    IF NEW.status IS DISTINCT FROM 'awaiting_confirmation' OR NEW.confirmed_at IS NOT NULL OR NEW.flagged_at IS NOT NULL
+       OR NEW.flag_reason IS NOT NULL
+       OR NOT EXISTS (SELECT 1 FROM public.leaderboard_snapshots l WHERE l.id = NEW.snapshot_id AND l.program_id = NEW.program_id)
+       OR NOT EXISTS (
+         SELECT 1 FROM public.prize_tiers t
+          WHERE t.id = NEW.prize_tier_id AND t.program_id = NEW.program_id AND NEW.rank BETWEEN t.rank_from AND t.rank_to) THEN
+      RAISE EXCEPTION 'a winner is inserted awaiting confirmation, for its snapshot''s program, inside its prize tier'
+        USING ERRCODE = 'ET105';
     END IF;
-  ELSIF NEW.confirmed_at IS DISTINCT FROM OLD.confirmed_at
-     OR (NEW.status IS DISTINCT FROM OLD.status
-         AND NOT (NEW.status = 'flagged' AND OLD.status IN ('awaiting_confirmation', 'confirmed'))) THEN
-    RAISE EXCEPTION 'winner status change to % is reserved for admin_rw', NEW.status USING ERRCODE = 'ET045';
+    RETURN NEW;
   END IF;
-  RETURN NEW;
+  IF NEW.id IS DISTINCT FROM OLD.id OR NEW.program_id IS DISTINCT FROM OLD.program_id
+     OR NEW.snapshot_id IS DISTINCT FROM OLD.snapshot_id OR NEW.prize_tier_id IS DISTINCT FROM OLD.prize_tier_id
+     OR NEW.player_id IS DISTINCT FROM OLD.player_id OR NEW.rank IS DISTINCT FROM OLD.rank
+     OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
+    RAISE EXCEPTION 'a winner is frozen with the results snapshot' USING ERRCODE = 'ET105';
+  END IF;
+  -- The Owner's confirmation, revoke and reinstatement (contest_results' functions).
+  IF current_user = 'contest_results'
+     AND ((OLD.status IN ('awaiting_confirmation', 'flagged') AND NEW.status = 'confirmed' AND NEW.confirmed_at IS NOT NULL)
+          OR (OLD.status IN ('awaiting_confirmation', 'confirmed', 'flagged') AND NEW.status = 'revoked'))
+     AND NEW.flagged_at IS NOT DISTINCT FROM OLD.flagged_at AND NEW.flag_reason IS NOT DISTINCT FROM OLD.flag_reason THEN
+    RETURN NEW;
+  END IF;
+  -- A chargeback flag (US-021).
+  IF current_user <> 'contest_results' AND pg_has_role(current_user, 'worker_rw', 'USAGE')
+     AND OLD.status IN ('awaiting_confirmation', 'confirmed') AND NEW.status = 'flagged' AND NEW.flagged_at IS NOT NULL
+     AND NEW.confirmed_at IS NOT DISTINCT FROM OLD.confirmed_at THEN
+    RETURN NEW;
+  END IF;
+  RAISE EXCEPTION 'winner change % -> % is not allowed for role %', OLD.status, NEW.status, current_user
+    USING ERRCODE = 'ET105';
 END
 $fn$;
 
 CREATE OR REPLACE TRIGGER winners_status_guard
-  BEFORE INSERT OR UPDATE ON public.winners
+  BEFORE INSERT OR UPDATE OR DELETE ON public.winners
   FOR EACH ROW EXECUTE FUNCTION public.winners_status_guard();
 
+CREATE OR REPLACE TRIGGER winners_status_guard_truncate
+  BEFORE TRUNCATE ON public.winners
+  FOR EACH STATEMENT EXECUTE FUNCTION public.winners_status_guard();
+
+-- Program status (US-028). admin_rw moves a program only between draft and published (the admin
+-- app's publish / unpublish); the contest's own transitions happen only inside contest_results'
+-- functions: published -> awaiting_confirmation with the results snapshot (grace end), and
+-- awaiting_confirmation -> finalized with the Owner's winner confirmation. So an ended program never
+-- re-opens and no program ends without its snapshot. Other app roles change no status (ET046).
+-- migrator (and superusers) are exempt (operations, tests).
 CREATE OR REPLACE FUNCTION public.programs_status_guard()
   RETURNS trigger
   LANGUAGE plpgsql
   SET search_path = pg_catalog, pg_temp
 AS $fn$
 BEGIN
-  IF pg_has_role(current_user, 'admin_rw', 'USAGE') OR pg_has_role(current_user, 'migrator', 'USAGE') THEN
+  IF NEW.status IS NOT DISTINCT FROM OLD.status THEN
     RETURN NEW;
   END IF;
-  IF NEW.status IS DISTINCT FROM OLD.status
-     AND NOT (OLD.status = 'published' AND NEW.status = 'awaiting_confirmation') THEN
-    RAISE EXCEPTION 'program status change % -> % is reserved for admin_rw', OLD.status, NEW.status
-      USING ERRCODE = 'ET046';
+  IF current_user = 'contest_results'
+     AND ((OLD.status = 'published' AND NEW.status = 'awaiting_confirmation')
+          OR (OLD.status = 'awaiting_confirmation' AND NEW.status = 'finalized')) THEN
+    RETURN NEW;
   END IF;
-  RETURN NEW;
+  IF pg_has_role(current_user, 'migrator', 'USAGE') THEN
+    RETURN NEW;
+  END IF;
+  IF pg_has_role(current_user, 'admin_rw', 'USAGE')
+     AND OLD.status IN ('draft', 'published') AND NEW.status IN ('draft', 'published') THEN
+    RETURN NEW;
+  END IF;
+  RAISE EXCEPTION 'program status change % -> % is not allowed for role %', OLD.status, NEW.status, current_user
+    USING ERRCODE = 'ET046';
 END
 $fn$;
 
@@ -396,33 +456,66 @@ CREATE OR REPLACE TRIGGER programs_status_guard
   FOR EACH ROW EXECUTE FUNCTION public.programs_status_guard();
 
 -- ---------------------------------------------------------------------------------------------
--- Play rows written by the public app: only for a player eligible (paid, not refunded) for the
--- set's program, on a published program; questions/options must belong to the attempt's set.
--- Trusted writers are exempt (the worker finalizes attempts of players refunded meanwhile; the
--- Owner override's re-score, running as trivia_override, rewrites the scores of every affected player).
--- These checks bound WHO may write play rows, not WHAT score: finalize and re-score must
--- recompute from attempt_questions.option_id joined to question_options.is_correct and
--- questions.points, never trust set_attempts.score / player_program_stats.score.
+-- Play rows written by the public app (US-028 hardening, security review P1-1 / P1-2). For a writer
+-- that is not trusted (public_rw; worker_rw, admin_rw, migrator and the trivia_override /
+-- contest_results function owners are trusted):
+--   - the write's ARRIVAL time (clock_timestamp() when the guard starts, whole ms) is taken first;
+--     then the program's SHARED contest lock (functions.sql lock_program_contest_shared), so play
+--     waits for, and is waited for by, the results snapshot, a re-score, a prize tier edit and a
+--     deadline extension (all exclusive): the US-027 lock contract, enforced here. Waiting for that
+--     lock never costs the player time (US-018 rule; security review N1): the answer time, the
+--     deadline check and the grace-end check use the arrival time. A row trigger fires only once
+--     its row lock is held, so a wait for the ROW (another transaction holding a pick of the same
+--     question open) is charged: a pick queued behind an open one cannot hedge it (security review,
+--     N1 follow-up; statement_timestamp() would keep the early start). Every other check runs after
+--     the lock, on what is committed then;
+--   - only an eligible player (paid, not refunded) on a published program plays (ET050), with the
+--     questions / options of the attempt's set (ET051);
+--   - a set is started, a question row added and a question served only before the grace end G
+--     (ET110); a pick on a question served before G still counts until its deadline + 1500 ms;
+--   - the timestamps are the database's, never the caller's: served_at, deadline_at and answered_at
+--     only go from NULL to a value, in whole milliseconds; served_at = the clock after the lock (it
+--     only gives the player more time), deadline_at = served_at + the question's timer; a question is
+--     answered only once served by an EARLIER statement (no serve and pick in one, security review
+--     N3); a set answer never changes (ET108, AC-Q8);
+--   - a pick is refused when it arrives after deadline_at + 1500 ms (ET109, plan §10 item 5;
+--     deadline_at holds any Owner extension) and is recorded at its arrival (never before
+--     served_at); closing a question without a pick (a timeout) records LEAST(arrival, deadline_at),
+--     i.e. the deadline once it has passed.
+-- public_rw cannot write a score at all (grants.sql): scores are derived (score_answer), by the
+-- finalize, the re-score and the answer path's SECURITY DEFINER function (US-027).
+-- A deadline extension is the Owner's tool's alone, for EVERY writer (ET106): only contest_results
+-- sets deadline_extension_ms, once, from 0 (the ledger deadline_extensions holds one row per answer).
 CREATE OR REPLACE FUNCTION public.set_attempts_play_guard()
   RETURNS trigger
   LANGUAGE plpgsql
   SET search_path = pg_catalog, pg_temp
 AS $fn$
+DECLARE
+  v_program uuid;
+  v_status public.program_status;
+  v_grace_end timestamptz;
+  v_arrived timestamptz := date_trunc('milliseconds', clock_timestamp());
 BEGIN
   IF pg_has_role(current_user, 'worker_rw', 'USAGE')
      OR pg_has_role(current_user, 'admin_rw', 'USAGE')
      OR pg_has_role(current_user, 'migrator', 'USAGE')
-     OR current_user = 'trivia_override' THEN
+     OR current_user IN ('trivia_override', 'contest_results') THEN
     RETURN NEW;
   END IF;
-  IF NOT EXISTS (
-    SELECT 1
-      FROM public.trivia_sets s
-      JOIN public.programs p ON p.id = s.program_id
-      JOIN public.player_programs pp ON pp.program_id = s.program_id
-     WHERE s.id = NEW.set_id AND pp.player_id = NEW.player_id AND pp.eligible AND p.status = 'published'
+  SELECT s.program_id INTO v_program FROM public.trivia_sets s WHERE s.id = NEW.set_id;
+  IF v_program IS NOT NULL THEN
+    PERFORM public.lock_program_contest_shared(v_program);
+  END IF;
+  SELECT p.status, p.sales_end_at + make_interval(days => p.grace_days) INTO v_status, v_grace_end
+    FROM public.programs p WHERE p.id = v_program;
+  IF v_status IS DISTINCT FROM 'published' OR NOT EXISTS (
+    SELECT 1 FROM public.player_programs pp WHERE pp.program_id = v_program AND pp.player_id = NEW.player_id AND pp.eligible
   ) THEN
     RAISE EXCEPTION 'player is not eligible to play this set' USING ERRCODE = 'ET050';
+  END IF;
+  IF v_arrived >= v_grace_end THEN
+    RAISE EXCEPTION 'the grace period of this program has ended: no set starts' USING ERRCODE = 'ET110';
   END IF;
   RETURN NEW;
 END
@@ -440,27 +533,84 @@ AS $fn$
 DECLARE
   v_player uuid;
   v_set uuid;
+  v_program uuid;
+  v_status public.program_status;
+  v_grace_end timestamptz;
+  v_timer integer;
+  v_now timestamptz;
+  v_arrived timestamptz := date_trunc('milliseconds', clock_timestamp());
 BEGIN
+  IF NEW.deadline_extension_ms IS DISTINCT FROM (CASE WHEN TG_OP = 'UPDATE' THEN OLD.deadline_extension_ms ELSE 0 END)
+     AND (current_user <> 'contest_results' OR TG_OP = 'INSERT' OR OLD.deadline_extension_ms <> 0) THEN
+    RAISE EXCEPTION 'deadline extensions are written by the Owner''s extension tool only, once per answer' USING ERRCODE = 'ET106';
+  END IF;
   IF pg_has_role(current_user, 'worker_rw', 'USAGE')
      OR pg_has_role(current_user, 'admin_rw', 'USAGE')
      OR pg_has_role(current_user, 'migrator', 'USAGE')
-     OR current_user = 'trivia_override' THEN
+     OR current_user IN ('trivia_override', 'contest_results') THEN
     RETURN NEW;
   END IF;
-  SELECT a.player_id, a.set_id INTO v_player, v_set FROM public.set_attempts a WHERE a.id = NEW.attempt_id;
-  IF NOT EXISTS (
-    SELECT 1
-      FROM public.trivia_sets s
-      JOIN public.programs p ON p.id = s.program_id
-      JOIN public.player_programs pp ON pp.program_id = s.program_id
-     WHERE s.id = v_set AND pp.player_id = v_player AND pp.eligible AND p.status = 'published'
+  SELECT a.player_id, a.set_id, s.program_id INTO v_player, v_set, v_program
+    FROM public.set_attempts a JOIN public.trivia_sets s ON s.id = a.set_id WHERE a.id = NEW.attempt_id;
+  IF v_program IS NOT NULL THEN
+    PERFORM public.lock_program_contest_shared(v_program);
+  END IF;
+  v_now := date_trunc('milliseconds', clock_timestamp());
+  SELECT p.status, p.sales_end_at + make_interval(days => p.grace_days) INTO v_status, v_grace_end
+    FROM public.programs p WHERE p.id = v_program;
+  IF v_status IS DISTINCT FROM 'published' OR NOT EXISTS (
+    SELECT 1 FROM public.player_programs pp WHERE pp.program_id = v_program AND pp.player_id = v_player AND pp.eligible
   ) THEN
     RAISE EXCEPTION 'player is not eligible to play this set' USING ERRCODE = 'ET050';
   END IF;
-  IF NOT EXISTS (SELECT 1 FROM public.questions q WHERE q.id = NEW.question_id AND q.set_id = v_set)
+  SELECT q.timer_seconds INTO v_timer FROM public.questions q WHERE q.id = NEW.question_id AND q.set_id = v_set;
+  IF v_timer IS NULL
      OR (NEW.option_id IS NOT NULL AND NOT EXISTS (
            SELECT 1 FROM public.question_options o WHERE o.id = NEW.option_id AND o.question_id = NEW.question_id)) THEN
     RAISE EXCEPTION 'question or option does not belong to the attempt''s set' USING ERRCODE = 'ET051';
+  END IF;
+
+  IF TG_OP = 'INSERT' THEN
+    -- deadline_at, answered_at and option_id are not insertable by public_rw (grants.sql). No
+    -- question row is added after G either (it would turn an unfinished attempt into a finished one).
+    IF v_arrived >= v_grace_end THEN
+      RAISE EXCEPTION 'the grace period of this program has ended: no question is served' USING ERRCODE = 'ET110';
+    END IF;
+    IF NEW.served_at IS NOT NULL THEN
+      NEW.served_at := v_now;
+      NEW.deadline_at := v_now + make_interval(secs => v_timer);
+    END IF;
+    RETURN NEW;
+  END IF;
+
+  IF OLD.served_at IS NULL AND NEW.served_at IS NOT NULL THEN
+    IF v_arrived >= v_grace_end THEN
+      RAISE EXCEPTION 'the grace period of this program has ended: no question is served' USING ERRCODE = 'ET110';
+    END IF;
+    NEW.served_at := v_now;
+    NEW.deadline_at := v_now + make_interval(secs => v_timer);
+  ELSIF NEW.served_at IS DISTINCT FROM OLD.served_at THEN
+    RAISE EXCEPTION 'served_at is set once, by the database' USING ERRCODE = 'ET108';
+  ELSE
+    NEW.deadline_at := OLD.deadline_at;
+  END IF;
+  IF OLD.answered_at IS NOT NULL THEN
+    IF NEW.answered_at IS DISTINCT FROM OLD.answered_at OR NEW.option_id IS DISTINCT FROM OLD.option_id THEN
+      RAISE EXCEPTION 'an answer never changes' USING ERRCODE = 'ET108';
+    END IF;
+  ELSIF NEW.answered_at IS NOT NULL THEN
+    IF OLD.served_at IS NULL THEN
+      RAISE EXCEPTION 'a question is answered only once served, by an earlier statement' USING ERRCODE = 'ET108';
+    END IF;
+    IF NEW.option_id IS NULL THEN
+      NEW.answered_at := LEAST(GREATEST(v_arrived, NEW.served_at), NEW.deadline_at);
+    ELSIF v_arrived > NEW.deadline_at + interval '1500 milliseconds' THEN
+      RAISE EXCEPTION 'the question''s time is over' USING ERRCODE = 'ET109';
+    ELSE
+      NEW.answered_at := GREATEST(v_arrived, NEW.served_at);
+    END IF;
+  ELSIF NEW.option_id IS DISTINCT FROM OLD.option_id THEN
+    RAISE EXCEPTION 'a pick is recorded with its answer, once' USING ERRCODE = 'ET108';
   END IF;
   RETURN NEW;
 END
@@ -479,9 +629,10 @@ BEGIN
   IF pg_has_role(current_user, 'worker_rw', 'USAGE')
      OR pg_has_role(current_user, 'admin_rw', 'USAGE')
      OR pg_has_role(current_user, 'migrator', 'USAGE')
-     OR current_user = 'trivia_override' THEN
+     OR current_user IN ('trivia_override', 'contest_results') THEN
     RETURN NEW;
   END IF;
+  PERFORM public.lock_program_contest_shared(NEW.program_id);
   IF NOT EXISTS (
     SELECT 1
       FROM public.player_programs pp
@@ -498,6 +649,27 @@ $fn$;
 CREATE OR REPLACE TRIGGER player_program_stats_play_guard
   BEFORE INSERT OR UPDATE ON public.player_program_stats
   FOR EACH ROW EXECUTE FUNCTION public.player_program_stats_play_guard();
+
+-- The deadline-extension ledger (US-028, security review P1-4): one row per extended answer (its
+-- primary key: at most one extension per answer), written only by extend_open_question_deadlines
+-- and referenced from its audit row by extension_id. Append-only for EVERY writer (ET111).
+CREATE OR REPLACE FUNCTION public.deadline_extensions_append_only()
+  RETURNS trigger
+  LANGUAGE plpgsql
+  SET search_path = pg_catalog, pg_temp
+AS $fn$
+BEGIN
+  RAISE EXCEPTION 'the deadline extension ledger is append-only: % rejected', TG_OP USING ERRCODE = 'ET111';
+END
+$fn$;
+
+CREATE OR REPLACE TRIGGER deadline_extensions_append_only
+  BEFORE UPDATE OR DELETE ON public.deadline_extensions
+  FOR EACH ROW EXECUTE FUNCTION public.deadline_extensions_append_only();
+
+CREATE OR REPLACE TRIGGER deadline_extensions_append_only_truncate
+  BEFORE TRUNCATE ON public.deadline_extensions
+  FOR EACH STATEMENT EXECUTE FUNCTION public.deadline_extensions_append_only();
 
 -- ---------------------------------------------------------------------------------------------
 -- settings_secrets labels (US-011; US-009 security finding: admin_rw could relabel the payment
@@ -838,8 +1010,9 @@ CREATE OR REPLACE TRIGGER prize_tiers_guard
 
 -- The results snapshot takes the program's contest lock (functions.sql): it waits for a running
 -- override re-score or prize tier edit to commit, and none starts until it has committed (they
--- then see the snapshot and refuse, ET022 / ET072). The grace-end sweeper (M9) must also take the
--- lock BEFORE it reads the stats it freezes. SECURITY DEFINER: the lock is taken whoever inserts.
+-- then see the snapshot and refuse, ET022 / ET072). The grace-end finalize (contest.sql
+-- create_leaderboard_snapshot) takes the lock itself BEFORE it reads what it freezes. SECURITY
+-- DEFINER: the lock is taken whoever inserts.
 CREATE OR REPLACE FUNCTION public.leaderboard_snapshots_lock()
   RETURNS trigger
   LANGUAGE plpgsql
@@ -855,6 +1028,27 @@ $fn$;
 CREATE OR REPLACE TRIGGER leaderboard_snapshots_lock
   BEFORE INSERT ON public.leaderboard_snapshots
   FOR EACH ROW EXECUTE FUNCTION public.leaderboard_snapshots_lock();
+
+-- The results snapshot is immutable for EVERY writer, the owner and superusers included (like
+-- audit_log): no UPDATE, DELETE or TRUNCATE (ET104; US-028). It is written once per program
+-- (UNIQUE program_id) by public.create_leaderboard_snapshot (sql/contest.sql).
+CREATE OR REPLACE FUNCTION public.leaderboard_snapshots_immutable()
+  RETURNS trigger
+  LANGUAGE plpgsql
+  SET search_path = pg_catalog, pg_temp
+AS $fn$
+BEGIN
+  RAISE EXCEPTION 'the results snapshot is immutable: % rejected', TG_OP USING ERRCODE = 'ET104';
+END
+$fn$;
+
+CREATE OR REPLACE TRIGGER leaderboard_snapshots_immutable
+  BEFORE UPDATE OR DELETE ON public.leaderboard_snapshots
+  FOR EACH ROW EXECUTE FUNCTION public.leaderboard_snapshots_immutable();
+
+CREATE OR REPLACE TRIGGER leaderboard_snapshots_immutable_truncate
+  BEFORE TRUNCATE ON public.leaderboard_snapshots
+  FOR EACH STATEMENT EXECUTE FUNCTION public.leaderboard_snapshots_immutable();
 
 -- ---------------------------------------------------------------------------------------------
 -- Legal pages (AC-A10, US-018): versioned per program and kind (terms = S&K, privacy). Every save

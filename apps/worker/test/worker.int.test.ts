@@ -77,9 +77,9 @@ describe("startWorker", () => {
     await sql`UPDATE deliveries SET status = 'cancelled' WHERE id = ${delivery?.id ?? ""}`;
   });
 
-  // Code review US-013 #1: without the US-028 hook an ended program must stay published (the
-  // worker cannot move it back), and no sweeper runs whose work has no port.
-  it("with the production ports (none yet) relays no topic, fires no conversion and ends no grace period", async () => {
+  // Code review US-013 #1: no sweeper runs whose work has no port. The grace end needs none (US-028:
+  // public.create_leaderboard_snapshot), so the production worker ends a due program's grace period.
+  it("with the production ports (none yet) relays no topic and fires no conversion, but ends a due grace period", async () => {
     const config = loadWorkerConfig(workerEnv(uniquePrefix()));
     const [eventId] = await createConversionEvents(await createOrders(catalog, 1));
     const [rowId] = await createOutboxRows(PROBE_TOPIC, 1);
@@ -88,10 +88,9 @@ describe("startWorker", () => {
     const running = await startWorker(config, {}, captured.log);
     await sleep(800);
     await running.stop();
-    expect(first(await sql<{ status: string }[]>`SELECT status::text FROM programs WHERE id = ${ended.programId}`).status).toBe("published");
+    expect(first(await sql<{ status: string }[]>`SELECT status::text FROM programs WHERE id = ${ended.programId}`).status).toBe("awaiting_confirmation");
     const swept = new Set(captured.lines.filter((l) => l["msg"] === "sweep done").map((l) => l["sweeper"]));
-    expect([...swept].sort()).toEqual(["lease_expiry", "login_throttle", "order_expiry", "outbox", "snap_create"]);
-    await sql`UPDATE programs SET status = 'draft' WHERE id = ${ended.programId}`;
+    expect([...swept].sort()).toEqual(["grace_end", "lease_expiry", "login_throttle", "order_expiry", "outbox", "snap_create"]);
     expect(first(await sql<{ relayed: boolean }[]>`SELECT relayed_at IS NOT NULL AS relayed FROM outbox WHERE id = ${rowId ?? ""}`).relayed).toBe(false);
     expect(first(await sql<{ status: string }[]>`SELECT status::text FROM conversion_events WHERE id = ${eventId ?? ""}`).status).toBe("pending");
     await sql`UPDATE outbox SET processed_at = now() WHERE id = ${rowId ?? ""}`;

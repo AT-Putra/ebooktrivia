@@ -23,6 +23,7 @@ const PLAN_TABLES = {
     // play
     "set_attempts",
     "attempt_questions",
+    "deadline_extensions", // US-028: the Owner's outage extensions, one per answer
     "player_program_stats",
     "leaderboard_snapshots",
     "prize_tiers",

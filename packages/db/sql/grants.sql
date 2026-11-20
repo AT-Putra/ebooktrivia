@@ -244,10 +244,94 @@ GRANT INSERT (player_id, program_id, score, total_ms, sets_completed, finished_a
 GRANT INSERT (actor_kind, actor_admin_user_id, action, entity_type, entity_id, changes, pii_refs, request_id, ip)
   ON public.audit_log TO trivia_override;
 GRANT EXECUTE ON FUNCTION public.lock_program_contest(uuid),
-  public.score_answer(integer, integer, uuid, uuid, timestamptz, timestamptz, timestamptz) TO trivia_override;
+  public.score_answer(integer, integer, uuid, uuid, timestamptz, timestamptz, timestamptz, integer) TO trivia_override;
 
 -- ---------------------------------------------------------------------------------------------
 -- internal_rw (apps/worker --role=internal: Caddy ask, GlitchTip hook). No keys.
 
 GRANT SELECT ON public.lp_domains TO internal_rw;
 GRANT INSERT (source, kind, severity, dedupe_key, message, payload) ON public.alerts TO internal_rw;
+
+-- ---------------------------------------------------------------------------------------------
+-- US-028 (M9c) BLOCK BEGIN: grace end, results snapshot, winners, deadline extension.
+-- Kept in one block for the merge with US-020; the REVOKEs below supersede worker_rw lines of the
+-- worker section above and are to be folded into it.
+--
+-- worker_rw: the grace-end finalize, the snapshot and the winners are written ONLY through
+-- public.create_leaderboard_snapshot (sql/contest.sql, EXECUTE granted there), which derives every
+-- score in SQL; the worker keeps no direct write on play rows, the snapshot or a program's status
+-- (it needs no contest lock grant either: the function takes it). It keeps its UPDATE of winners'
+-- flag columns above: the chargeback flag (US-021), which the winners guard allows as the one
+-- worker change (awaiting_confirmation / confirmed -> flagged).
+REVOKE INSERT ON public.leaderboard_snapshots FROM worker_rw;
+REVOKE INSERT ON public.winners FROM worker_rw;
+REVOKE INSERT, UPDATE ON public.attempt_questions, public.player_program_stats FROM worker_rw;
+REVOKE UPDATE ON public.set_attempts, public.programs FROM worker_rw;
+-- admin_rw: winners are confirmed only through public.confirm_program_winners (sql/contest.sql); no
+-- direct write (the winners guard refuses every writer but that function anyway, ET105). No write on
+-- eligibility either (security review P1-3: a forged eligible / first_paid_at would change who ranks
+-- and who wins), nor on the deadline extension ledger.
+REVOKE INSERT, UPDATE, DELETE ON public.winners FROM admin_rw;
+REVOKE INSERT, UPDATE, DELETE ON public.player_programs FROM admin_rw;
+REVOKE INSERT, UPDATE, DELETE ON public.deadline_extensions FROM admin_rw;
+
+-- public_rw (security review P1-2, P1-5): play rows carry only what the player does; the database
+-- sets every timestamp (play guards, triggers.sql) and no score is writable (scores come only from
+-- score_answer: the finalize, the re-score and US-027's SECURITY DEFINER answer function). Starting
+-- a set: its player and set; a question row: its place, order and the serve; an answer: the serve,
+-- the answer, the pick and the device. It reads the results only through program_winners_banner
+-- (sql/contest.sql), never the snapshot or winners tables. The play guards take the shared contest
+-- lock as the caller.
+REVOKE INSERT, UPDATE ON public.set_attempts, public.attempt_questions, public.player_program_stats FROM public_rw;
+GRANT INSERT (player_id, set_id) ON public.set_attempts TO public_rw;
+GRANT INSERT (attempt_id, question_id, position, permutation, served_at, ip, ua_hash) ON public.attempt_questions TO public_rw;
+GRANT UPDATE (served_at, answered_at, option_id, ip, ua_hash) ON public.attempt_questions TO public_rw;
+REVOKE SELECT ON public.winners, public.leaderboard_snapshots FROM public_rw;
+GRANT EXECUTE ON FUNCTION public.lock_program_contest_shared(uuid) TO public_rw;
+-- Which option is correct is never readable before answering (AC-Q9, security review N3): the
+-- options without is_correct; US-027's SECURITY DEFINER answer function reads correctness.
+REVOKE SELECT ON public.question_options FROM public_rw;
+GRANT SELECT (id, question_id, position, label, created_at, updated_at) ON public.question_options TO public_rw;
+
+-- contest_results: the owner of the sql/contest.sql functions, which run as it. Reads what the
+-- finalize, the confirmation, the extension and the banner read (programs, sets, questions,
+-- options, attempts, answers, stats, eligibility, prize tiers, the snapshot, winners, the actor's
+-- admin profile, the extension bound in app_settings, and players' name and phone, which it only
+-- returns masked); writes only: the finalized answers (answered_at, correct, points, elapsed) and
+-- extended deadlines, attempts' and stats' derived columns, the snapshot, winners and their
+-- confirmation, a program's status / winners_confirmed_at, and its own audit rows.
+-- UPDATE (updated_at) on trivia_sets is only for the FOR SHARE row lock (no scoring edit meanwhile).
+REVOKE ALL ON ALL TABLES IN SCHEMA public, player_auth, admin_auth FROM contest_results;
+REVOKE ALL ON ALL SEQUENCES IN SCHEMA public, player_auth, admin_auth FROM contest_results;
+REVOKE ALL ON ALL FUNCTIONS IN SCHEMA public FROM contest_results;
+REVOKE ALL ON SCHEMA player_auth, admin_auth, drizzle FROM contest_results;
+GRANT SELECT ON
+  public.programs, public.trivia_sets, public.questions, public.question_options, public.set_attempts,
+  public.attempt_questions, public.player_program_stats, public.player_programs, public.prize_tiers,
+  public.leaderboard_snapshots, public.winners
+  TO contest_results;
+GRANT SELECT (id, name, phone) ON public.players TO contest_results;
+GRANT SELECT (auth_user_id, role, disabled_at) ON public.admin_profiles TO contest_results;
+GRANT SELECT (key, value) ON public.app_settings TO contest_results;
+GRANT UPDATE (updated_at) ON public.trivia_sets TO contest_results;
+-- Only for the FOR SHARE row lock on the winners' eligibility in the confirmation (no refund meanwhile).
+GRANT UPDATE (updated_at) ON public.player_programs TO contest_results;
+GRANT SELECT, INSERT (attempt_question_id, extension_id, program_id, original_deadline_at, granted_ms)
+  ON public.deadline_extensions TO contest_results;
+GRANT UPDATE (status, winners_confirmed_at, updated_at) ON public.programs TO contest_results;
+GRANT UPDATE (answered_at, correct, points, elapsed_ms, deadline_at, deadline_extension_ms) ON public.attempt_questions TO contest_results;
+GRANT UPDATE (score, total_ms, finished_at) ON public.set_attempts TO contest_results;
+GRANT INSERT (player_id, program_id, score, total_ms, sets_completed, finished_at, updated_at),
+  UPDATE (score, total_ms, sets_completed, finished_at, updated_at)
+  ON public.player_program_stats TO contest_results;
+GRANT INSERT (program_id, frozen_at, entries) ON public.leaderboard_snapshots TO contest_results;
+GRANT INSERT (program_id, snapshot_id, prize_tier_id, player_id, rank),
+  UPDATE (status, confirmed_at, updated_at)
+  ON public.winners TO contest_results;
+GRANT INSERT (actor_kind, actor_admin_user_id, action, entity_type, entity_id, changes, pii_refs, request_id, ip)
+  ON public.audit_log TO contest_results;
+GRANT EXECUTE ON FUNCTION public.lock_program_contest(uuid), public.setting_positive_int(text),
+  public.score_answer(integer, integer, uuid, uuid, timestamptz, timestamptz, timestamptz, integer),
+  public.mask_name(text), public.mask_phone(text)
+  TO contest_results;
+-- US-028 BLOCK END.

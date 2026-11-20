@@ -10,15 +10,18 @@
 //
 // Per answer row (attempt_questions), in whole milliseconds (the database CHECKs them, so this and
 // the SQL agree to the millisecond), with raw = answered_at - served_at (0 if negative), timer = the
-// question's CURRENT timer, shown = deadline_at - served_at when a deadline was shown, and
-// cap = min(timer, shown):
+// question's CURRENT timer, ext = deadline_extension_ms (what the Owner's deadline-extension tool
+// added to deadline_at for an outage, US-028; 0 otherwise), shown = deadline_at - served_at - ext
+// (the window the question was served with) when a deadline was shown, and cap = min(timer, shown):
 //   pending   answered_at NULL: not scored yet (correct NULL, 0 points, elapsed NULL).
 //   unserved  answered_at set but served_at NULL (finalized without ever being shown): a timeout
 //             with the full CURRENT timer (correct false, 0 points, elapsed = timer). The one
 //             asymmetry: no deadline was shown, so a changed timer changes this elapsed.
 //   timeout   finalized without a pick (option_id NULL): correct false, 0 points, elapsed = min(raw, cap).
-//   late      a pick with raw > cap + ANSWER_LATENCY_GRACE_MS (1500 ms, plan §10 item 5): scored as
-//             a timeout (correct false, 0 points, elapsed = min(raw, cap)). SHORTENING a timer makes
+//   late      a pick with raw > cap + ext + ANSWER_LATENCY_GRACE_MS (1500 ms, plan §10 item 5):
+//             scored as a timeout (correct false, 0 points, elapsed = min(raw, cap)). An extension
+//             lets a pick count up to the extended deadline, but never lowers the time charged: an
+//             answer given in the extension counts the full cap. SHORTENING a timer makes
 //             an answer given after the new deadline late: under the new rule it could not have
 //             been accepted. LENGTHENING a timer changes nothing for a SERVED row (one shown a
 //             deadline): the cap stays at that deadline, so no late pick is rewarded and no served
@@ -34,7 +37,8 @@
 // attempts in the program, sets_completed = finished attempts, finished_at = the last attempt
 // finish once every set of the program is finished, else NULL (ranked NULLS LAST, ranking.ts).
 // Only before the grace-end finalize: it does not model the timeouts finalize adds for unlocked
-// sets never started (plan §10 item 19); the override is refused once the snapshot exists.
+// sets never started (plan §10 item 19, contest.ts finalizeContest); the override is refused once
+// the snapshot exists.
 //
 // Deterministic (outputs sorted by id, input order irrelevant) and idempotent: it reads only the
 // raw facts (pick, timestamps) and the questions' rules, never a stored score, so re-scoring its
@@ -57,6 +61,8 @@ export interface AnswerFacts {
   /** The deadline the player was shown (attempt_questions.deadline_at); null = served_at + timer. */
   readonly deadlineAt: Date | null;
   readonly answeredAt: Date | null;
+  /** attempt_questions.deadline_extension_ms: the Owner's outage extension inside deadlineAt (0 for none). */
+  readonly extensionMs: number;
 }
 
 export interface AnswerScore {
@@ -156,13 +162,15 @@ export function scoreAnswer(rule: ScoringRule, facts: AnswerFacts): AnswerScore 
   assertDate(facts.servedAt, "servedAt");
   assertDate(facts.answeredAt, "answeredAt");
   assertDate(facts.deadlineAt, "deadlineAt");
+  const extensionMs = facts.extensionMs;
+  assertCount(extensionMs, "extensionMs");
   if (facts.answeredAt === null) return { correct: null, points: 0, elapsedMs: null };
   const timerMs = rule.timerSeconds * 1000;
   if (facts.servedAt === null) return { correct: false, points: 0, elapsedMs: timerMs };
   const raw = Math.max(0, facts.answeredAt.getTime() - facts.servedAt.getTime());
-  const cap = facts.deadlineAt === null ? timerMs : Math.min(timerMs, facts.deadlineAt.getTime() - facts.servedAt.getTime());
+  const cap = facts.deadlineAt === null ? timerMs : Math.min(timerMs, facts.deadlineAt.getTime() - facts.servedAt.getTime() - extensionMs);
   const elapsedMs = Math.min(raw, cap);
-  if (facts.optionId === null || raw > cap + ANSWER_LATENCY_GRACE_MS) return { correct: false, points: 0, elapsedMs };
+  if (facts.optionId === null || raw > cap + extensionMs + ANSWER_LATENCY_GRACE_MS) return { correct: false, points: 0, elapsedMs };
   const correct = facts.optionId === rule.correctOptionId;
   return { correct, points: correct ? rule.points : 0, elapsedMs };
 }

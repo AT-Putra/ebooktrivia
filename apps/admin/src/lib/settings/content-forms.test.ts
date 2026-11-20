@@ -250,6 +250,7 @@ describe("override reason, limits, prize tiers, legal pages", () => {
       "captcha.ip_cap": [1, 1000],
       "captcha.ip_window_seconds": [60, 86_400],
       "captcha.ip48_cap": [1, 100_000],
+      "trivia.extension_max_minutes": [1, 1440],
     });
     for (const l of LIMITS) {
       for (const bad of [String(l.min - 1), String(l.max + 1), "", "1.5", "-5", "1e3"]) {

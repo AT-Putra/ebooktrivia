@@ -119,9 +119,16 @@ describe("a flagged or revoked winner halts fulfillment (ET082)", () => {
   let programId: string;
   beforeAll(async () => {
     ({ programId } = await createProgram());
-    tierId = first(await sql<Id[]>`INSERT INTO prize_tiers (program_id, rank_from, rank_to, name) VALUES (${programId}, 1, 3, 'Juara') RETURNING id`).id;
+    // US-028: a winner's rank lies inside its tier (winners guard, ET105).
+    tierId = first(await sql<Id[]>`INSERT INTO prize_tiers (program_id, rank_from, rank_to, name) VALUES (${programId}, 1, 4, 'Juara') RETURNING id`).id;
     snapshotId = first(await sql<Id[]>`INSERT INTO leaderboard_snapshots (program_id, frozen_at, entries) VALUES (${programId}, now(), '[]') RETURNING id`).id;
   });
+  /** US-028: a winner's status changes only inside contest_results' functions (confirm, revoke, reinstate). */
+  const asContest = (statement: (tx: Tx) => Promise<unknown>) =>
+    sql.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL ROLE contest_results");
+      await statement(tx);
+    });
   const newWinner = async (rank: number): Promise<string> => {
     const { playerId } = await createPlayer({ programId, eligible: true });
     return first(
@@ -131,7 +138,7 @@ describe("a flagged or revoked winner halts fulfillment (ET082)", () => {
 
   it("no new fulfillment, no status or proof change while flagged; notes stay editable; the Owner can lift it", async () => {
     const winner = await newWinner(1);
-    await asRole("admin_rw", (tx) => tx`UPDATE public.winners SET status = 'confirmed', confirmed_at = now() WHERE id = ${winner}`);
+    await asContest((tx) => tx`UPDATE public.winners SET status = 'confirmed', confirmed_at = now() WHERE id = ${winner}`);
     const fulfillment = first(await asRole("admin_rw", (tx) => tx<Id[]>`INSERT INTO public.fulfillments (winner_id) VALUES (${winner}) RETURNING id`)).id;
     // The chargeback path: the worker flags the confirmed winner.
     await asRole("worker_rw", (tx) => tx`UPDATE public.winners SET status = 'flagged', flagged_at = now(), flag_reason = 'chargeback' WHERE id = ${winner}`);
@@ -139,7 +146,7 @@ describe("a flagged or revoked winner halts fulfillment (ET082)", () => {
     expect(await sqlState(sql`UPDATE fulfillments SET status = 'contacted' WHERE id = ${fulfillment}`)).toBe("ET082");
     await asRole("admin_rw", (tx) => tx`UPDATE public.fulfillments SET notes = 'on hold: chargeback' WHERE id = ${fulfillment}`);
     // The Owner reviews and reinstates the winner: fulfillment goes on.
-    await asRole("admin_rw", (tx) => tx`UPDATE public.winners SET status = 'confirmed' WHERE id = ${winner}`);
+    await asContest((tx) => tx`UPDATE public.winners SET status = 'confirmed' WHERE id = ${winner}`);
     await asRole("admin_rw", (tx) => tx`UPDATE public.fulfillments SET status = 'contacted' WHERE id = ${fulfillment}`);
   });
 
@@ -147,7 +154,7 @@ describe("a flagged or revoked winner halts fulfillment (ET082)", () => {
     const flagged = await newWinner(2);
     await sql`UPDATE winners SET status = 'flagged', flagged_at = now(), flag_reason = 'chargeback' WHERE id = ${flagged}`;
     const revoked = await newWinner(3);
-    await asRole("admin_rw", (tx) => tx`UPDATE public.winners SET status = 'revoked' WHERE id = ${revoked}`);
+    await asContest((tx) => tx`UPDATE public.winners SET status = 'revoked' WHERE id = ${revoked}`);
     expect(await sqlState(asRole("admin_rw", (tx) => tx`INSERT INTO public.fulfillments (winner_id) VALUES (${flagged})`))).toBe("ET082");
     expect(await sqlState(asRole("admin_rw", (tx) => tx`INSERT INTO public.fulfillments (winner_id) VALUES (${revoked})`))).toBe("ET082");
     const healthy = await newWinner(4);

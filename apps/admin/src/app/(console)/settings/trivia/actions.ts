@@ -2,10 +2,13 @@
 // Trivia sets and questions (manage trivia: Staff and Owner, AC-A1). The content lock is decided in
 // lib/settings/trivia.ts inside each change's transaction (Staff on a set with attempts -> 403) and
 // enforced by the database for every writer (ET020). The scoring override is the Owner's
-// (rescore.override, lib/settings/rescore.ts). Every form field is known: anything else is refused.
+// (rescore.override, lib/settings/rescore.ts), and so are the contest results actions (US-028,
+// lib/settings/contest.ts): confirming the winners (winners.confirm) and the deadline extension for
+// outages (contest.extend_deadlines). Every form field is known: anything else is refused.
 import type { SaveState } from "../../../../lib/form-state.ts";
 import { adminAction } from "../../../../lib/next/actions.ts";
 import { saveResult } from "../../../../lib/next/settings-result.ts";
+import { confirmWinners, extendDeadlines, extensionMaxMinutes, parseExtension } from "../../../../lib/settings/contest.ts";
 import { formValue, InvalidInput, onlyFields, uuid, wholeNumber } from "../../../../lib/settings/fields.ts";
 import { overrideQuestion, parseReason } from "../../../../lib/settings/rescore.ts";
 import {
@@ -164,6 +167,36 @@ export const overrideScoringAction = adminAction({ permission: "rescore.override
         reason: parseReason(formValue(form, "reason")),
       });
       return `Re-scored ${String(summary.players)} player${summary.players === 1 ? "" : "s"}: ${String(summary.answersChanged)} answer${summary.answersChanged === 1 ? "" : "s"} changed, total score ${String(summary.scoreBefore)} to ${String(summary.scoreAfter)}.`;
+    },
+    "layout",
+  ),
+);
+
+/** Owner only (US-028): confirms the winners of the results snapshot; the banner card then shows them, masked. */
+export const confirmWinnersAction = adminAction({ permission: "winners.confirm" }, async ({ rt }, _previous: SaveState, form: FormData): Promise<SaveState> =>
+  saveResult(
+    PATH,
+    async () => {
+      onlyFields(form, ["programId", "confirm"]);
+      if (formValue(form, "confirm") !== "on") throw new InvalidInput("Tick the box to confirm the winners.");
+      const { winners } = await confirmWinners(rt.sql, uuid(formValue(form, "programId")));
+      return `Confirmed ${String(winners)} winner${winners === 1 ? "" : "s"}. They now appear, masked, on the program's banner card.`;
+    },
+    "layout",
+  ),
+);
+
+/** Owner only (US-028, outages): gives the questions an outage cut short back the time they lost. */
+export const extendDeadlinesAction = adminAction({ permission: "contest.extend_deadlines" }, async ({ rt }, _previous: SaveState, form: FormData): Promise<SaveState> =>
+  saveResult(
+    PATH,
+    async () => {
+      onlyFields(form, ["programId", "outageStartedAt", "outageEndedAt", "reason", "confirm"]);
+      if (formValue(form, "confirm") !== "on") throw new InvalidInput("Tick the box to confirm the extension.");
+      const programId = uuid(formValue(form, "programId"));
+      const input = parseExtension(form, await extensionMaxMinutes(rt.sql), new Date());
+      const { questions, players } = await extendDeadlines(rt.sql, programId, input);
+      return `Extended ${String(questions)} open question${questions === 1 ? "" : "s"} of ${String(players)} player${players === 1 ? "" : "s"}.`;
     },
     "layout",
   ),

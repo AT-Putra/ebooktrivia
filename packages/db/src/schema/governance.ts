@@ -321,6 +321,9 @@ export const APP_SETTING_BOUNDS = {
   "captcha.ip_window_seconds": [60, 86_400],
   // The Cap routes per IPv6 /48 on top of the /64 bucket (Cap itself is stateless, US-020).
   "captcha.ip48_cap": [1, 100_000],
+  // US-028: the longest outage the Owner's deadline-extension tool covers: its outage start lies at
+  // most this far back (read by SQL, extend_open_question_deadlines).
+  "trivia.extension_max_minutes": [1, 1440],
 } as const satisfies Readonly<Record<string, readonly [number, number]>>;
 
 const boundsCase = Object.entries(APP_SETTING_BOUNDS)
@@ -337,10 +340,11 @@ export const appSettings = pgTable(
   },
   (t) => [
     check("app_settings_key_check", sql`${t.key} ~ '^[a-z0-9_]+(\\.[a-z0-9_]+)+$'`),
-    // OTP, order, checkout and captcha parameters are read as positive integers; reject anything else at write time.
+    // OTP, order, checkout and captcha parameters, and the deadline-extension bound (US-028), are
+    // read as positive integers; reject anything else at write time.
     check(
       "app_settings_positive_int_check",
-      sql`(${t.key} NOT LIKE 'otp.%' AND ${t.key} NOT LIKE 'orders.%' AND ${t.key} NOT LIKE 'checkout.%' AND ${t.key} NOT LIKE 'captcha.%') OR (jsonb_typeof(${t.value}) = 'number' AND (${t.value} #>> '{}')::numeric > 0 AND (${t.value} #>> '{}')::numeric = trunc((${t.value} #>> '{}')::numeric))`,
+      sql`(${t.key} NOT LIKE 'otp.%' AND ${t.key} NOT LIKE 'orders.%' AND ${t.key} NOT LIKE 'checkout.%' AND ${t.key} NOT LIKE 'captcha.%' AND ${t.key} <> 'trivia.extension_max_minutes') OR (jsonb_typeof(${t.value}) = 'number' AND (${t.value} #>> '{}')::numeric > 0 AND (${t.value} #>> '{}')::numeric = trunc((${t.value} #>> '{}')::numeric))`,
     ),
     // Each bounded key within APP_SETTING_BOUNDS (CASE, so a non-number is never cast).
     check(

@@ -235,7 +235,9 @@ export const alertsFor = (orderId: string) =>
 
 /**
  * A winner row of the player in the shop's program (its prize tier and results snapshot are made on
- * first use: tiers are final once the snapshot exists), `confirmed` by the Owner (admin_rw) or awaiting.
+ * first use: tiers are final once the snapshot exists), `confirmed` by the Owner or awaiting. US-028: a
+ * winner is confirmed only inside contest_results' functions (the winners guard), so the confirmation
+ * runs as that role; the fulfillment row is the admin's.
  */
 export async function crownWinner(shop: Shop, playerId: string, options: { readonly confirmed?: boolean; readonly fulfillment?: boolean } = {}): Promise<string> {
   let [snapshot] = await sql<{ id: string }[]>`SELECT id FROM leaderboard_snapshots WHERE program_id = ${shop.programId}`;
@@ -250,8 +252,10 @@ export async function crownWinner(shop: Shop, playerId: string, options: { reado
   );
   if (options.confirmed ?? true) {
     await sql.begin(async (tx) => {
-      await tx`SET LOCAL ROLE admin_rw`;
+      await tx`SET LOCAL ROLE contest_results`;
       await tx`UPDATE public.winners SET status = 'confirmed', confirmed_at = now() WHERE id = ${winner.id}`;
+      await tx`RESET ROLE`;
+      await tx`SET LOCAL ROLE admin_rw`;
       if (options.fulfillment ?? false) await tx`INSERT INTO public.fulfillments (winner_id) VALUES (${winner.id})`;
     });
   }

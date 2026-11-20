@@ -36,6 +36,11 @@ INSERT INTO public.app_settings (key, value) VALUES
   ('captcha.ip48_cap', '3000')
 ON CONFLICT (key) DO NOTHING;
 
+-- The Owner's deadline-extension tool (US-028, outages): covers an outage that started at most 60
+-- minutes back by default (APP_SETTING_BOUNDS 1..1440), read by extend_open_question_deadlines.
+INSERT INTO public.app_settings (key, value) VALUES ('trivia.extension_max_minutes', '60')
+ON CONFLICT (key) DO NOTHING;
+
 -- Midtrans (AC-S10, US-017): sandbox until the Owner switches (audited, and only once the
 -- production server key is set); the methods offered in Snap; per-method fees (flat IDR + basis
 -- points, packages/core money.ts) start empty. Not secret (public_rw reads app_settings); the
