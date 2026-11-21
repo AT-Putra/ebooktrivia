@@ -9,8 +9,9 @@
 // back and is in no figure. The ledger keeps 31 days: a longer range shows the last 31.
 // Buyers are shown masked (SQL mask_name / mask_phone), and an error is shown as its CODE only: `last_error` is a short code by design, but the report does not
 // trust a column that a future writer could fill with a message (security review US-029 L2): anything that is not a lower-case code is shown as `other`.
-import { DELIVERY_CHANNELS, DELIVERY_STATUSES, type DeliveryStatus, isUuid, rateBps, reportRange, wibDateOf, addDays, REPORT_DEFAULT_DAYS } from "@ebooktrivia/core";
+import { DELIVERED_WRONG_FILE, DELIVERY_CHANNELS, DELIVERY_STATUSES, type DeliveryStatus, isUuid, rateBps, reportRange, wibDateOf, addDays, REPORT_DEFAULT_DAYS } from "@ebooktrivia/core";
 import type { Sql } from "../db.ts";
+import { WRONG_FILE_HANDLED_ACTION } from "../settings/deliveries.ts";
 import { PAGE_SIZE, param, type Query, wibInstants } from "./common.ts";
 
 export interface DeliveryFilters {
@@ -190,7 +191,10 @@ export async function deliveryList(sql: Sql, f: DeliveryFilters, page: number): 
   };
 }
 
-/** A delivery that needs a person: failed for good, or a send that may have gone out (unknown). */
+/**
+ * A delivery that needs a person: failed for good, a send that may have gone out (unknown), or a WhatsApp file that arrived WRONG (`sent` with the code
+ * `delivered_wrong_file`, US-005 R11: the report only shows it; a `sent` row stays final, so it has no resend).
+ */
 export interface AttentionRow {
   readonly id: string;
   readonly createdAt: Date;
@@ -198,29 +202,43 @@ export interface AttentionRow {
   readonly buyerName: string;
   readonly buyerPhone: string | null;
   readonly channel: "whatsapp" | "email";
-  readonly status: "failed" | "unknown";
+  readonly status: "failed" | "unknown" | "sent";
   readonly errorCode: string | null;
   readonly attempts: number;
   readonly sender: string | null;
 }
 
-/** How many failed and unknown deliveries of PAID orders wait for a person, and the newest of them (the resend list). */
-export async function attentionList(sql: Sql, limit = PAGE_SIZE): Promise<{ readonly rows: AttentionRow[]; readonly failed: number; readonly unknown: number }> {
+/**
+ * How many failed, unknown and wrong-file deliveries of PAID orders wait for a person, and the newest of them (the resend list; the wrong-file ones are shown, never
+ * resent).
+ */
+export async function attentionList(
+  sql: Sql,
+  limit = PAGE_SIZE,
+): Promise<{ readonly rows: AttentionRow[]; readonly failed: number; readonly unknown: number; readonly wrongFile: number }> {
+  // A wrong-file delivery leaves the list when the Owner marked it handled (an audit entry, lib/settings/deliveries.ts): the delivery itself never changes.
+  const needsAttention = () => sql`
+    (d.status IN ('failed', 'unknown')
+     OR (d.status = 'sent' AND d.last_error = ${DELIVERED_WRONG_FILE}
+         AND NOT EXISTS (SELECT 1 FROM public.audit_log a WHERE a.action = ${WRONG_FILE_HANDLED_ACTION} AND a.entity_type = 'delivery' AND a.entity_id = d.id::text)))
+    AND o.status = 'paid'`;
   const [rows, [counts]] = await Promise.all([
     sql<
-      { id: string; created_at: Date; order_code: string; buyer_name: string; buyer_phone: string | null; channel: "whatsapp" | "email"; status: "failed" | "unknown"; error_code: string | null; attempts: number; sender: string | null }[]
+      { id: string; created_at: Date; order_code: string; buyer_name: string; buyer_phone: string | null; channel: "whatsapp" | "email"; status: "failed" | "unknown" | "sent"; error_code: string | null; attempts: number; sender: string | null }[]
     >`
       SELECT d.id, d.created_at, o.order_code, public.mask_name(o.buyer_name) AS buyer_name, public.mask_phone(o.buyer_phone) AS buyer_phone, d.channel, d.status::text AS status,
              CASE WHEN d.last_error IS NULL THEN NULL WHEN d.last_error ~ '^[a-z0-9_]{1,64}$' THEN d.last_error ELSE 'other' END AS error_code, d.attempts, s.phone AS sender
         FROM public.deliveries d
         JOIN public.orders o ON o.id = d.order_id
         LEFT JOIN public.waha_sessions s ON s.id = coalesce(d.session_id, d.tried_session_ids[cardinality(d.tried_session_ids)])
-       WHERE d.status IN ('failed', 'unknown') AND o.status = 'paid'
+       WHERE ${needsAttention()}
        ORDER BY d.updated_at DESC, d.id DESC
        LIMIT ${limit}`,
-    sql<{ failed: number; unknown: number }[]>`
-      SELECT (count(*) FILTER (WHERE d.status = 'failed'))::int AS failed, (count(*) FILTER (WHERE d.status = 'unknown'))::int AS unknown
-        FROM public.deliveries d JOIN public.orders o ON o.id = d.order_id WHERE d.status IN ('failed', 'unknown') AND o.status = 'paid'`,
+    sql<{ failed: number; unknown: number; wrong_file: number }[]>`
+      SELECT (count(*) FILTER (WHERE d.status = 'failed'))::int AS failed, (count(*) FILTER (WHERE d.status = 'unknown'))::int AS unknown,
+             (count(*) FILTER (WHERE d.status = 'sent'))::int AS wrong_file
+        FROM public.deliveries d JOIN public.orders o ON o.id = d.order_id
+       WHERE ${needsAttention()}`,
   ]);
   return {
     rows: rows.map((r) => ({
@@ -237,5 +255,6 @@ export async function attentionList(sql: Sql, limit = PAGE_SIZE): Promise<{ read
     })),
     failed: counts?.failed ?? 0,
     unknown: counts?.unknown ?? 0,
+    wrongFile: counts?.wrong_file ?? 0,
   };
 }

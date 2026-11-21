@@ -38,16 +38,41 @@ Do it by hand, once per session of ours:
 4. **Verify with a real delivery on staging**: send a message to the number and confirm the webhook is accepted (`message` stored, no 401 in the public app's log). The verifier
    follows the WAHA docs (`X-Webhook-Hmac` = hex HMAC-SHA512 of the raw body, `X-Webhook-Hmac-Algorithm: sha512`), but no signed delivery of this instance has been seen yet.
 
-The ebook download URL (`https://api.<DOMAIN>/files/deliverables/<id>.pdf?exp&sig`) is signed by the worker and verified by the public app with a key
-derived from the payment private key (both hold it). WAHA fetches it for the file send (valid 10 minutes). An e-mail whose attachment the server
+The ebook download URL (`https://api.<DOMAIN>/files/deliverables/<id>.pdf?exp&sig&n`) is signed by the worker and verified by the public app with a key
+derived from the payment private key (both hold it); `n` is a random nonce minted with every URL and covered by the signature (`HMAC(key, "ebooktrivia/files/v2\npath\nexp\nn")`). WAHA fetches
+it for the file send (valid 10 minutes). An e-mail whose attachment the server
 refuses for its size (or a PDF over `WORKER_EMAIL_ATTACH_MAX_BYTES`, 15 MiB) goes with a 72-hour link of the same kind instead. No link is ever valid for more than
 72 hours (the signer refuses a longer one, and the verifier refuses an expiry further out than that). Rotating the payment key voids every outstanding link
 (see the rotation note in `staging-provision.md`).
 
-The download is limited **per signed URL**, not per client address: at most 10 downloads of one URL (WAHA retrying a fetch, or a leaked link), and the counter
-lives exactly as long as the URL. WAHA downloads from one address for every delivery of a burst, so a per-address limit would have stopped deliveries. While
+The download is limited **per signed URL**, not per client address: at most 10 downloads of one URL (WAHA retrying a fetch, or a leaked link), counted on the URL's path,
+expiry and own nonce, so two URLs of one file (the worker's pre-flight and WAHA's) never share a counter, and the counter lives exactly as long as the URL. WAHA downloads from one address for every delivery of a burst, so a per-address limit would have stopped deliveries. While
 Valkey is down a short-lived URL (10 minutes or less: WAHA's) is still served, because its signature authenticates it and it expires on its own; a long one (the
 72-hour e-mail link) answers 503 until Valkey is back.
+
+### The file check around every WhatsApp file send (US-005, R11)
+
+**WAHA does not refuse a file URL it cannot fetch.** On the Owner's WEBJS it sends the answer page (a 404's HTML, 21 KB) as the document under the requested file name and answers `201`;
+the old assumption of US-025 ("WAHA answers 422 when it cannot fetch the file") is **FALSE for WEBJS**. The buyer would get a broken file and the delivery would look `sent`. So the worker
+checks on its side, twice (every WhatsApp file send: the buyer-first PDF and the D6 PDF-only reply):
+
+1. **Pre-flight, before the send.** The worker signs its **own 60-second URL** for the same file and fetches it: it must answer `200`, `application/pdf`, a `Content-Length` equal to the stored
+   size, and a body that starts with `%PDF-`. (A separate URL with its own nonce, so the check never uses up WAHA's 10 downloads per signed URL.) The request goes through the worker's
+   safe-fetch, with a budget of its own (5 s, `PREFLIGHT_TIMEOUT_MS`, never WAHA's request timeout). **The worker therefore needs public egress to `https://api.<DOMAIN>`** (https only, and no private,
+   loopback or metadata address: the same egress rules as every call the worker makes): a worker VM that cannot reach its own public API address, for example behind a private-only DNS name or a
+   firewall that blocks its own public IP, gets `file_unavailable` for every WhatsApp file until that is fixed. Otherwise **nothing is sent**: the delivery goes back to pending
+   (`file_unavailable`, "not attempted"), the number's health is not touched, the e-mail path is unaffected, and the critical alert `delivery_not_attempted` (key `file_unavailable`) is raised.
+   Fix the route (the public app's `/files/deliverables/...`, its proxy, the Valkey counter, the file on the worker's data volume) and the delivery goes out on the next attempt.
+2. **Read-back, after the send.** The message is read back (`getMessage`) and its delivered size (`_data.size`, `mediaSize`) is compared with the stored size. A mismatch means WAHA delivered
+   a different file: the delivery stays `sent` with `last_error = delivered_wrong_file`, the critical alert `delivery_wrong_file` is raised, and it is **never resent automatically**: the buyer already
+   holds the message, so a person decides. The delivery report shows the code and the alert says what to do; the console cannot resend a `sent` row (the database refuses it, ET133), so the Owner
+   sends the file to the buyer by hand if needed (the buyer also has the PDF by e-mail). The delivery report lists the row under "Needs attention" for information only (see "The way back" below): the Owner
+   reads a note, Staff see the code, and nobody gets a resend button. A size WAHA does not report is only a debug line, not an error.
+
+**Deploy the worker and the public app together, the worker FIRST.** An old worker has no pre-flight, so it would hand WAHA a URL without checking it, and the signed file URLs changed shape
+(`files/v2`: an `n` nonce the signature covers): the new public app refuses every `files/v1` URL (no `n`) as malformed, and WEBJS would then send that refusal page as the document. With the new worker
+first, a public app that is still old refuses the new URLs, but the pre-flight catches it (`file_unavailable`, nothing is sent, an alert) until the public app follows. No `v1` link was ever issued outside
+development, so nothing already sent to a buyer stops working.
 
 ## Owner checklist for every WhatsApp number (from WAHA's "How to avoid blocking")
 
@@ -82,10 +107,13 @@ would have to wait longer than 10 s for that gap is not sent late: the outbox re
 
 Seen, typing, paused and offline are **best effort**: each has a 3 s budget, a failure is only logged as a code, and it never fails, retries or counts against the send,
 and never makes it "maybe sent". No database lock or transaction is held during any of it. If the job is aborted, or its lease can no longer cover the send, during a wait,
-**nothing is sent** (the delivery goes back to pending: "not attempted"). The lease (`WORKER_DELIVERY_LEASE_MS`, default 200 s) covers the worst case: the number's slot (20 s),
-the contact gap (60 s), the first-contact lookup (10 s), the pauses and presence calls (28.5 s), the send (`WORKER_WAHA_TIMEOUT_MS`, 60 s) and a margin; the worker refuses to
-start with a shorter one. The bounds are constants in `packages/core/src/human-send.ts`; the request bodies are **UNVERIFIED** until US-005 checks them against the Owner's WAHA
-instance (its OpenAPI).
+**nothing is sent** (the delivery goes back to pending: "not attempted"). The lease (`WORKER_DELIVERY_LEASE_MS`, default 210 s) covers the worst case: the number's slot (20 s),
+the contact gap (60 s), the first-contact lookup (10 s, an opener), the file pre-flight (5 s, a file), the pauses and presence calls (34.5 s), the send (`WORKER_WAHA_TIMEOUT_MS`, 60 s), the read-back
+of a sent file (3 s) and a margin (10 s); the worker refuses to start with a lease shorter than 202.5 s (at the default request timeout). A claim too old for the pre-flight, the sequence, the send and the
+read-back together is not sent, and the read-back alone is skipped when what is left of the lease cannot cover it. The bounds are constants in `packages/core/src/human-send.ts`; the request bodies and answers are **recorded** on the Owner's WAHA (2026.10.1, WEBJS; `docs/spikes/R11.md`):
+presence and `sendSeen` with ids answer `201` with **no body** (the adapter accepts that for these calls only), typing answers `{"result": true}`, and reading everybody's presence (`GET`) is not implemented by WEBJS.
+
+**Text is never empty.** WEBJS does not refuse an empty `text`: it sends an empty message. The adapter refuses an empty or whitespace-only text before calling WAHA (`NotSentError`, a `RangeError` subclass raised only by the checks before any request: nothing is sent).
 
 ## How a delivery goes
 
@@ -93,7 +121,7 @@ instance (its OpenAPI).
    not paid is never claimed (the row is taken out with payments' own mark and only payments brings it back).
 2. **Pick a number** (WhatsApp). Weighted round-robin over the `WORKING` numbers: not one this opener already tried, under its daily cap (WIB day), not
    resting, with a send slot at most 20 s away. Every number paces itself with a random 3 to 9 s gap between sends, so a burst is spread out and never blasted.
-3. **First contact.** Before the first message to a phone, WAHA is asked `GET /api/contacts/check-exists?phone=<digits>&session=<name>` (`{numberExists, chatId, pn}`) and the
+3. **First contact.** Before the first message to a phone, WAHA is asked `GET /api/contacts/check-exists?phone=<digits>&session=<name>` (`{numberExists, chatId[, pn]}`: recorded, a `@lid` contact comes back with **no `pn`**) and the
    message goes to the **chat id it returns**, which since WhatsApp's LID rollout can be `<lid>@lid`: we never build `<phone>@c.us` for a first contact (a message to a chat id
    that is not the contact's is silently dropped). The answer is cached per phone in `wa_contacts` (a month when the phone is on WhatsApp, a day when it is not) and reused
    for later sends and for matching an inbound `@lid` sender. If the phone is **not on WhatsApp** the opener ends in a final `no_whatsapp`: no failover, no penalty for any
@@ -138,7 +166,7 @@ existing chats** (a buyer who wrote first, the PDF after a reply); only NEW cont
 A "new contact" is judged **per number**: a chat the number already has with that phone (it sent to it, or the phone wrote to it, in the last 30 days) is not a new contact for it.
 Each number has a **daily budget of new contacts** (`new_contact_cap`), separate from its replies, so openers can never use up the capacity for replies (`wa_new_contact_budget_spent`
 when every number has spent today's). The shapes of the timelock, capping and `@lid` answers are **verified live** (US-005 audit, WAHA 2026.10.1, WEBJS and CORE): an account with nothing to report answers `timelock` 200 `{isActive: false, ...}`
-and `capping` 200 `{cappingStatus: "NONE", totalQuota: -1, mvStatus: "NOT_ELIGIBLE", ...}`, and an unknown `@lid` answers 200 `{lid, pn: null}` (not a 404). The check-exists answer is still **UNVERIFIED** until US-005 records it.
+and `capping` 200 `{cappingStatus: "NONE", totalQuota: -1, mvStatus: "NOT_ELIGIBLE", ...}`, and an unknown `@lid` answers 200 `{lid, pn: null}` (not a 404). The check-exists answer is **recorded** too (`R11.md`): a `@lid` chat id and no `pn`. A warning or CAPPED state, and 463 / 475, were not provoked: their shape is the documented one.
 
 ## Buyer-first ("Kirim via WhatsApp" on the order page, and the reply to the opener)
 
@@ -170,7 +198,10 @@ The database refuses it for every login (ET130): a `sent` row never changes stat
 `sending` or `cancelled`); the same for an opener (ET131), which has no resend at all. The one door for a delivery is `public.resend_delivery(id, confirm_unknown)`: a SECURITY DEFINER function
 owned by the NOLOGIN role `delivery_resend` (no members, `roles.sql`; it may change only the machine's columns of a delivery). The console's login has no write on `deliveries` at all.
 
-**Reports, Delivery report, "Needs attention"** lists the failed and unknown deliveries of paid orders (newest first, buyers masked) with a **Resend** button (AC-A1: Staff may manage resends):
+**Reports, Delivery report, "Needs attention"** lists the failed and unknown deliveries of paid orders (newest first, buyers masked) with a **Resend** button (AC-A1: Staff may manage resends), and, for information only,
+the `sent` deliveries whose WhatsApp file arrived wrong (`delivered_wrong_file`, see "The file check"): counted as "wrong-file", with the Owner-facing note "WhatsApp delivered a wrong file. Check that the buyer received the PDF by email, and send the file manually if needed." Staff see the error code only, and there is
+**no resend button** for it (`sent` stays final). The Owner has a **Mark handled** button (permission `delivery.wrong_file_handled`, audited as `delivery.wrong_file_handled`) that takes the row off the list:
+nothing about the delivery changes, the report just leaves out a delivery that has that audit entry:
 
 | Delivery | Who may resend | What it does |
 |---|---|---|
@@ -201,7 +232,8 @@ unknown, or still in flight). Volume = sent + failed + unknown; failure rate = f
 | `delivery_failed` (critical) | A delivery failed on every attempt (or has no PDF): see the failed deliveries. |
 | `delivery_unknown` (warning) | A send may or may not have gone out and no lookup could settle it. |
 | `waha_lookup_failing` (warning) | A number could not look up whether a phone is on WhatsApp (WAHA failed); one alert an hour per number. Its openers wait and are tried again. |
-| `delivery_not_attempted` (critical) | Deliveries are held back by a fault on our side (a template, the ebook file, a lookup that keeps failing); the key says which. Nothing was sent; it goes out once fixed. |
+| `delivery_not_attempted` (critical) | Deliveries are held back by a fault on our side (a template, the ebook file, a lookup that keeps failing, `file_unavailable`: the signed file URL did not answer the stored PDF); the key says which. Nothing was sent; it goes out once fixed. |
+| `delivery_wrong_file` (critical) | WAHA delivered a file whose size is not the stored PDF's (the delivery is `sent`, `last_error = delivered_wrong_file`). Not resent automatically: check the file route, then decide a resend with the buyer. |
 
 No alert is raised for an opener that was not answered, one nobody could send, a phone that is not on WhatsApp (`no_whatsapp`), or an opener that may have gone out: the buyer has the e-mail.
 
@@ -214,10 +246,10 @@ No alert is raised for an opener that was not answered, one nobody could send, a
 - US-030 (retention and deletion): the job must cover `wa_contacts` (phones and chat ids of strangers who were asked about too) and `waha_sends.contact_key` (an UNSALTED SHA-256 of the
   chat id: pseudonymous, not anonymous, so a deletion request for a phone must delete its rows); and the console's `admin_rw` SELECT on `wa_contacts` (personal data) must be reviewed
   (the report does not read it).
-- US-005 (real WAHA): confirm against the Owner's instance (its OpenAPI): what WAHA answers when it cannot fetch the file URL (the mock answers 422); the exact bodies of `sendSeen`,
-  `startTyping`, `presence`; the shape of `check-exists` (`chatId`, `pn`, `@lid`) and of the `session.status` webhook's `data`; the exact error text of 463 and 475; and a signed webhook
-  delivery (the HMAC headers). Already verified live: the shapes of `timelock`, `capping` and an unknown `@lid`, and that the messages lookup filter is `filter.fromMe=true` (a bare `fromMe`
-  is silently ignored, so the lookup sends the right one, keeps its own check, and pages back until the time of the send is covered).
+- US-005 (real WAHA, DONE, `docs/spikes/R11.md`): recorded on the Owner's instance: the bodies and answers of `sendSeen`, typing and presence, `check-exists` (`@lid`, no `pn`), `timelock`, `capping`,
+  the unknown `@lid` (200 `pn: null`), message-by-id through a `@lid` chat, and that the messages lookup filter is `filter.fromMe=true` (a bare `fromMe` is silently ignored, so the lookup sends the right one,
+  keeps its own check, and pages back until the time of the send is covered). **Still docs-only: a signed webhook delivery (the HMAC headers, the `message`, `message.ack` and `session.status`
+  envelopes, a `@c.us` sender), the exact error text of 463 and 475, and a stopped session's answer to a send.** Verify the webhook with a real delivery on staging (US-014 / US-032).
 - US-027 (the player's play surface; US-029 only for the Owner's manual resend): a **self-service magic-link resend** is the recovery path for a player locked out of the OTP (US-026 security review). It is not built:
   the buyer's order page or login page would ask for a fresh link by phone, answered identically for every phone (no enumeration), rate limited, and sent through the pool (`delivery/pool-sender.ts`) with
   `issue_magic_link` (which already supersedes the previous unconsumed link of that channel). The Owner is deciding which story owns it.

@@ -16,7 +16,12 @@
 //   7. ONE transaction: INSERT ... ON CONFLICT DO NOTHING into
 //      payment_notifications, then enqueue_notification(id) (SECURITY DEFINER,
 //      one outbox row per inbox row); the signature is stored lowercased          200 new or duplicate
-//      any database error                                                         500 (Midtrans retries)
+//      any database error or other unexpected failure                             503 (Midtrans retries)
+//
+// Why 503 and not 500 (Midtrans docs, read 2026-11-21): a 2xx is final; a 500 is retried ONCE (about 2 minutes
+// later), a 503 four times (about 2, 10, 30 and 90 minutes later), 400 / 404 twice, any other failure five
+// times. A database outage longer than two minutes would lose a 500's notification (the nightly reconciliation
+// still finds the payment, a day late), so every failure we want retried answers 503.
 //
 // The body is UNTRUSTED. Only the signed fields, the status label (normalised: the signature does not
 // cover it) and a whitelisted summary are stored; the worker takes status, amount and currency from its
@@ -46,9 +51,9 @@ export interface MidtransWebhookDeps {
   readonly log: Logger;
 }
 
-type Answer = "ok" | "ignored" | "invalid" | "signature" | "rate_limited" | "unavailable" | "internal";
+type Answer = "ok" | "ignored" | "invalid" | "signature" | "rate_limited" | "unavailable";
 
-const STATUS: Readonly<Record<Answer, number>> = { ok: 200, ignored: 200, invalid: 400, signature: 401, rate_limited: 429, unavailable: 503, internal: 500 };
+const STATUS: Readonly<Record<Answer, number>> = { ok: 200, ignored: 200, invalid: 400, signature: 401, rate_limited: 429, unavailable: 503 };
 
 const answer = (kind: Answer, extra: Record<string, string> = {}): Response =>
   json(STATUS[kind], kind === "ok" || kind === "ignored" ? { v: 1, ok: true } : { v: 1, error: kind }, null, extra);
@@ -118,8 +123,8 @@ export async function handleMidtransNotification(deps: MidtransWebhookDeps, requ
       log("error", "webhook.midtrans.failed", { reason: error instanceof ValkeyUnavailable ? "valkey_unavailable" : "midtrans_key_unavailable" }, error);
       return answer("unavailable");
     }
-    // A real database error (or anything unexpected): 500, so Midtrans delivers the notification again.
+    // A real database error (or anything unexpected): 503, so Midtrans delivers the notification again, four times (a 500 only once).
     log("error", "webhook.midtrans.failed", { reason: "internal" }, error);
-    return answer("internal");
+    return answer("unavailable");
   }
 }

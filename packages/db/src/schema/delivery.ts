@@ -73,7 +73,7 @@ export const wahaSessions = pgTable(
     newContactCap: integer("new_contact_cap").notNull().default(30),
     /**
      * US-025: WhatsApp's limits on this number as WAHA reports them (docs, Sessions: Reachout timelock, Message capping), persisted from the health poll, the
-     * session.status webhook and every 463 / 475. UNVERIFIED shapes until US-005. `capping_status` is an open set (NONE, FIRST_WARNING, SECOND_WARNING, CAPPED).
+     * session.status webhook and every 463 / 475. The shapes are RECORDED (US-005, WAHA 2026.10.1: an unrestricted account); 463 / 475 are documented only. `capping_status` is an open set (NONE, FIRST_WARNING, SECOND_WARNING, CAPPED).
      */
     timelockActive: boolean("timelock_active").notNull().default(false),
     timelockEndsAt: tstz("timelock_ends_at"),
@@ -243,7 +243,7 @@ export const deliveryOpeners = pgTable(
  * WhatsApp message to a phone the worker asks WAHA `GET /api/contacts/check-exists?phone=<digits>&session=<name>` and sends to the chat id it RETURNS (it can be
  * `<lid>@lid`, never built as `<phone>@c.us` by us). The answer is cached here per phone with a refresh age: a number that is on WhatsApp is not asked again
  * for a month, one that is not for a day (it may install it). The lid -> phone link also answers an inbound @lid sender without another WAHA call.
- * Personal data (the phone, the chat id) lives in this table only; logs and alerts never carry them. UNVERIFIED shapes until US-005.
+ * Personal data (the phone, the chat id) lives in this table only; logs and alerts never carry them. The shapes are RECORDED (US-005): a first contact is a @lid with no phone.
  */
 export const waContacts = pgTable(
   "wa_contacts",

@@ -742,6 +742,7 @@ exports[`hardening > pins the full privilege matrix 1`] = `
   "worker_rw EXECUTE public.prune_otp_enqueues()",
   "worker_rw EXECUTE public.prune_player_sessions()",
   "worker_rw EXECUTE public.refresh_report_rollups(p_now timestamp with time zone, p_window_days integer)",
+  "worker_rw EXECUTE public.revoke_player_magic_links(p_player_id uuid)",
   "worker_rw EXECUTE public.sweep_login_throttle(p_window_seconds integer)",
   "worker_rw EXECUTE public.wib_day(p_at timestamp with time zone)",
   "worker_rw INSERT public.alerts",

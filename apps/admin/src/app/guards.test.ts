@@ -139,6 +139,7 @@ const GUARDS: Readonly<Record<string, string>> = {
   "(console)/reports/delivery/page.tsx": "permission:reports.view",
   "(console)/reports/delivery/actions.ts#resendDeliveryAction": "permission:delivery.resend",
   "(console)/reports/delivery/actions.ts#resendUnknownDeliveryAction": "permission:delivery.resend_unknown",
+  "(console)/reports/delivery/actions.ts#markWrongFileHandledAction": "permission:delivery.wrong_file_handled",
   "(console)/reports/postbacks/page.tsx": "permission:reports.view",
   "(console)/reports/postbacks/actions.ts#refireConversionAction": "permission:conversion.refire",
   "(console)/reports/contest/page.tsx": "permission:reports.view",

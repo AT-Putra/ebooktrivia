@@ -10,6 +10,7 @@ import { createLogger } from "../src/log.ts";
 import { OUTBOX_MAX_ATTEMPTS } from "../src/outbox-consumer.ts";
 import { createQueue, JOB_OPTIONS, redisOptions } from "../src/queues.ts";
 import {
+  alertNoPaymentMethods,
   endGracePeriods,
   expireLeases,
   expireOrders,
@@ -400,7 +401,7 @@ describe("runSweeps", () => {
     const broken = postgres(inject("workerDbUrl"), { ...PG_CONNECTION_OPTIONS, max: 1, onnotice: () => undefined });
     await broken.end();
     await runSweeps({ sql: broken, log: captured.log, outboxQueues: new Map(), outboxStaleMs: 120_000 });
-    expect(captured.lines.filter((l) => l["level"] === 50).map((l) => l["sweeper"])).toEqual(["lease_expiry", "outbox", "snap_create", "order_expiry", "grace_end", "login_throttle", "otp_expiry"]);
+    expect(captured.lines.filter((l) => l["level"] === 50).map((l) => l["sweeper"])).toEqual(["lease_expiry", "outbox", "snap_create", "order_expiry", "grace_end", "login_throttle", "otp_expiry", "payment_methods"]);
     await runSweeps({ sql: workerSql, log: captured.log, outboxQueues: new Map(), outboxStaleMs: 120_000 });
     expect(first(await sql<{ status: string }[]>`SELECT status::text FROM orders WHERE id = ${orderId ?? ""}`).status).toBe("expired");
   });
@@ -411,7 +412,7 @@ describe("runSweeps", () => {
     const ended = await createCatalog({ salesEndAt: new Date(Date.now() - 3 * 86_400_000), graceDays: 1 });
     const captured = captureLogger("debug");
     await runSweeps({ sql: workerSql, log: captured.log, outboxQueues: new Map(), outboxStaleMs: 120_000 });
-    expect(captured.lines.filter((l) => l["msg"] === "sweep done").map((l) => l["sweeper"])).toEqual(["lease_expiry", "outbox", "snap_create", "order_expiry", "grace_end", "login_throttle", "otp_expiry"]);
+    expect(captured.lines.filter((l) => l["msg"] === "sweep done").map((l) => l["sweeper"])).toEqual(["lease_expiry", "outbox", "snap_create", "order_expiry", "grace_end", "login_throttle", "otp_expiry", "payment_methods"]);
     expect(first(await sql<{ status: string }[]>`SELECT status::text FROM programs WHERE id = ${ended.programId}`).status).toBe("awaiting_confirmation");
 
     const withPorts = captureLogger("debug");
@@ -433,6 +434,40 @@ describe("runSweeps", () => {
       "grace_end",
       "login_throttle",
       "otp_expiry",
+      "payment_methods",
     ]);
+  });
+});
+
+describe("payment_methods (Owner D11): the checkout takes no orders while no method is enabled, and the Owner is told", () => {
+  const KEY = "midtrans.enabled_methods";
+  const alertRows = () => sql<{ severity: string; source: string; message: string }[]>`SELECT severity, source, message FROM alerts WHERE dedupe_key = 'checkout_no_payment_methods' AND resolved_at IS NULL`;
+
+  it("raises ONE critical alert while the list is empty (or holds no code the system knows), none while a method is enabled, and not again within the hour", async () => {
+    const [saved] = await sql<{ value: unknown }[]>`SELECT value FROM app_settings WHERE key = ${KEY}`;
+    try {
+      await sql`DELETE FROM alerts WHERE dedupe_key = 'checkout_no_payment_methods'`;
+      expect(await alertNoPaymentMethods(workerSql)).toBe(false);
+      expect(await alertRows()).toEqual([]);
+
+      await sql`UPDATE app_settings SET value = '[]'::jsonb WHERE key = ${KEY}`;
+      expect(await alertNoPaymentMethods(workerSql)).toBe(true);
+      expect(await alertRows()).toEqual([{ severity: "critical", source: "worker", message: expect.stringContaining("no payment method is enabled") as unknown }]);
+      // Deduped while unresolved.
+      expect(await alertNoPaymentMethods(workerSql)).toBe(false);
+      expect(await alertRows()).toHaveLength(1);
+
+      // A list of codes nobody knows is "none" too (the checkout drops them).
+      await sql`UPDATE alerts SET resolved_at = now() WHERE dedupe_key = 'checkout_no_payment_methods'`;
+      await sql`UPDATE app_settings SET value = '["not_a_method"]'::jsonb WHERE key = ${KEY}`;
+      expect(await alertNoPaymentMethods(workerSql)).toBe(true);
+
+      await sql`UPDATE alerts SET resolved_at = now() WHERE dedupe_key = 'checkout_no_payment_methods'`;
+      await sql`UPDATE app_settings SET value = '["other_qris"]'::jsonb WHERE key = ${KEY}`;
+      expect(await alertNoPaymentMethods(workerSql)).toBe(false);
+    } finally {
+      await sql`UPDATE alerts SET resolved_at = now() WHERE dedupe_key = 'checkout_no_payment_methods' AND resolved_at IS NULL`;
+      if (saved !== undefined) await sql`UPDATE app_settings SET value = ${sql.json(saved.value as postgres.JSONValue)} WHERE key = ${KEY}`;
+    }
   });
 });

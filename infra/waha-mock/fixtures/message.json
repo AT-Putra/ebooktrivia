@@ -1,5 +1,25 @@
 {
-  "_provenance": "PROVISIONAL — shaped from WAHA public docs, not yet recorded from a real WAHA session (replace in US-005)",
+  "_provenance": "inbound_lid is RECORDED: the message the Owner's test phone sent to the instance, read back through GET (id, from the @lid, to our @c.us, source app, ack 0 PENDING), scrubbed, inside a webhook envelope of the documented shape. The webhook BODY itself was not recorded (no public URL): the envelope and payload shape are the documented ones, the payload fields are the recorded ones. inbound_pn is DOCS-SHAPED: the test phone's messages arrive from a @lid, so a @c.us sender was not recorded.",
+  "recorded_inbound_message_as_read_back": {
+    "id": "false_98765432101234@lid_3EB0000000000000000005",
+    "timestamp": 1760000020,
+    "from": "98765432101234@lid",
+    "fromMe": false,
+    "source": "app",
+    "to": "628111111111@c.us",
+    "body": "Halo, ini pesan uji.",
+    "hasMedia": false,
+    "media": null,
+    "ack": 0,
+    "ackName": "PENDING",
+    "location": null,
+    "vCards": [],
+    "_data": {
+      "type": "chat"
+    },
+    "_data_key_count": 101,
+    "whole_message_bytes": 3565
+  },
   "inbound_pn": {
     "event": "message",
     "session": "default",
@@ -15,17 +35,36 @@
     }
   },
   "inbound_lid": {
+    "id": "evt_01HZZZZZZZZZZZZZZZZZZZZZZZ",
+    "timestamp": 1760000000000,
     "event": "message",
     "session": "default",
+    "me": {
+      "id": "628111111111@c.us",
+      "pushName": "mock"
+    },
     "payload": {
-      "id": "false_98765432101234@lid_3EB0AAAA0002",
-      "timestamp": 1760000000,
+      "id": "false_98765432101234@lid_3EB0000000000000000005",
+      "timestamp": 1760000020,
       "from": "98765432101234@lid",
       "fromMe": false,
-      "body": "halo dari lid",
+      "source": "app",
+      "to": "628111111111@c.us",
+      "body": "Halo, ini pesan uji.",
       "hasMedia": false,
-      "ack": 1,
-      "ackName": "SERVER"
+      "media": null,
+      "ack": 0,
+      "ackName": "PENDING",
+      "location": null,
+      "vCards": [],
+      "_data": {
+        "type": "chat"
+      }
+    },
+    "engine": "WEBJS",
+    "environment": {
+      "tier": "CORE",
+      "version": "2026.10.1"
     }
   }
 }

@@ -1,5 +1,5 @@
-// US-012 criterion 2: Midtrans adapter against the infra/midtrans-stub app (in-process, PROVISIONAL
-// fixtures until US-005 records real sandbox traffic).
+// US-012 criterion 2: Midtrans adapter against the infra/midtrans-stub app (in-process), which replays
+// the fixtures RECORDED from the Midtrans sandbox in US-005.
 import { createMidtransStubApp } from "@ebooktrivia/midtrans-stub/src/app.ts";
 import { midtransSignature } from "@ebooktrivia/midtrans-stub/src/signature.ts";
 import { describe, expect, it } from "vitest";
@@ -82,13 +82,14 @@ describe("Snap create and status re-query (against midtrans-stub)", () => {
       bodies.push(JSON.parse(String(init.body)));
       return stubFetch(url, init);
     };
-    const input = { ...snapInput(49_000), expiryMinutes: 44, enabledPayments: ["other_qris", "bca_va"] };
+    const input = { ...snapInput(49_000), expiryMinutes: 44, startTime: new Date("2026-11-21T10:30:00.900Z"), enabledPayments: ["other_qris", "bca_va"] };
     await createSnapTransaction(config({ fetch: recording }), input);
     expect(bodies[0]).toEqual({
       transaction_details: { order_id: input.midtransOrderId, gross_amount: 49_000 },
       item_details: [{ id: "ebook-1", name: "Ebook Trivia Nusantara Juara", price: 49_000, quantity: 1 }],
       customer_details: { first_name: "Budi", email: "budi@example.com", phone: "+6281234567890" },
-      expiry: { unit: "minutes", duration: 44 },
+      // The window starts at start_time (WIB, whole seconds): recorded, Midtrans otherwise starts it when the buyer picks a method.
+      expiry: { start_time: "2026-11-21 17:30:00 +0700", unit: "minutes", duration: 44 },
       enabled_payments: ["other_qris", "bca_va"],
       callbacks: { finish: "https://order.example.id/o/abc" },
     });
@@ -97,6 +98,35 @@ describe("Snap create and status re-query (against midtrans-stub)", () => {
     await createSnapTransaction(config({ fetch: recording }), withoutFinish);
     expect(bodies[1]).not.toHaveProperty("enabled_payments");
     expect(bodies[1]).not.toHaveProperty("callbacks");
+    // Without a startTime the window starts now.
+    expect((bodies[1] as { expiry: { start_time: string } }).expiry.start_time).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \+0700$/);
+  });
+
+  it("asks for 3-D Secure explicitly whenever cards can be offered (the sandbox account does not default to it): credit_card in the list, or no list", async () => {
+    const bodies: { credit_card?: unknown }[] = [];
+    const recording: HttpFetch = async (url, init) => {
+      bodies.push(JSON.parse(String(init.body)) as { credit_card?: unknown });
+      return stubFetch(url, init);
+    };
+    await createSnapTransaction(config({ fetch: recording }), { ...snapInput(), enabledPayments: ["credit_card", "bca_va"] });
+    await createSnapTransaction(config({ fetch: recording }), { ...snapInput(), enabledPayments: ["bca_va", "other_qris"] });
+    await createSnapTransaction(config({ fetch: recording }), snapInput());
+    await createSnapTransaction(config({ fetch: recording }), { ...snapInput(), enabledPayments: ["credit_card"] });
+    expect(bodies[0]?.credit_card).toEqual({ secure: true });
+    expect(bodies[1]).not.toHaveProperty("credit_card"); // no card offered: nothing to secure
+    expect(bodies[2]?.credit_card).toEqual({ secure: true }); // Snap's own list includes cards
+    expect(bodies[3]?.credit_card).toEqual({ secure: true });
+  });
+
+  it("the stub's expiry_time is start_time plus the duration, as Midtrans recorded it (the window is not counted from the method choice)", async () => {
+    const input = { ...snapInput(), expiryMinutes: 45, startTime: new Date("2026-11-21T10:30:00Z") };
+    await createSnapTransaction(config(), input);
+    const answer = (await (await stubFetch(`https://api.sandbox.midtrans.com/v2/${input.midtransOrderId}/status`, { method: "GET", headers: { authorization: `Basic ${Buffer.from(`${SERVER_KEY}:`).toString("base64")}` } })).json()) as { expiry_time: string };
+    expect(answer.expiry_time).toBe("2026-11-21 18:15:00");
+  });
+
+  it("rejects a startTime that is not a date", async () => {
+    await expect(createSnapTransaction(config(), { ...snapInput(), startTime: new Date(Number.NaN) })).rejects.toThrow(RangeError);
   });
 
   it("has fixed Snap and API hosts per environment", () => {
@@ -216,17 +246,35 @@ describe("M3: confirmSettlement is the one paid predicate (AC-S6: settlement, am
     expect(confirmSettlement(status(overrides), expected)).toEqual({ kind: "review", reason });
   });
 
-  it("anything but a settlement is not settled; card capture pays only behind the explicit option", () => {
+  it("anything but a settlement or a card capture with fraud accept is not settled", () => {
     expect(confirmSettlement(status({ transactionStatus: "pending", statusCode: "201" }), expected)).toEqual({ kind: "not_settled", transactionStatus: "pending" });
+    for (const transactionStatus of ["deny", "cancel", "expire", "failure", "refund", "authorize"]) {
+      expect(confirmSettlement(status({ transactionStatus }), expected)).toEqual({ kind: "not_settled", transactionStatus });
+    }
+  });
+
+  it("Owner D10: a card capture with fraud accept is paid by default (the settlement comes the next day); the opt-out waits; challenge and deny never pay", () => {
     const capture = status({ transactionStatus: "capture", fraudStatus: "accept" });
-    expect(confirmSettlement(capture, expected)).toEqual({ kind: "not_settled", transactionStatus: "capture" });
-    expect(confirmSettlement(capture, expected, { treatCardCaptureAsPaid: false })).toEqual({ kind: "not_settled", transactionStatus: "capture" });
+    expect(confirmSettlement(capture, expected)).toEqual({ kind: "paid" });
     expect(confirmSettlement(capture, expected, { treatCardCaptureAsPaid: true })).toEqual({ kind: "paid" });
-    expect(confirmSettlement({ ...capture, currency: undefined }, expected, { treatCardCaptureAsPaid: true })).toEqual({ kind: "review", reason: "currency_mismatch" });
-    expect(confirmSettlement(status({ transactionStatus: "capture", fraudStatus: "challenge" }), expected, { treatCardCaptureAsPaid: true })).toEqual({
-      kind: "not_settled",
-      transactionStatus: "capture",
-    });
+    expect(confirmSettlement(capture, expected, { treatCardCaptureAsPaid: false })).toEqual({ kind: "not_settled", transactionStatus: "capture" });
+    // The same checks as a settlement: amount, currency, status code.
+    expect(confirmSettlement({ ...capture, currency: undefined }, expected)).toEqual({ kind: "review", reason: "currency_mismatch" });
+    expect(confirmSettlement({ ...capture, grossAmount: "49000.00" }, expected)).toEqual({ kind: "review", reason: "amount_mismatch" });
+    expect(confirmSettlement({ ...capture, statusCode: "201" }, expected)).toEqual({ kind: "review", reason: "status_code_mismatch" });
+    for (const fraudStatus of ["challenge", "deny", undefined]) {
+      expect(confirmSettlement(status({ transactionStatus: "capture", fraudStatus }), expected)).toEqual({ kind: "not_settled", transactionStatus: "capture" });
+    }
+  });
+
+  it("decides on the stub's re-queried capture of a card: paid", async () => {
+    const input = snapInput(49_000);
+    await createSnapTransaction(config(), input);
+    await stub.fetch(new Request(`https://stub/__stub/transactions/${input.midtransOrderId}/state`, { method: "POST", body: JSON.stringify({ transaction_status: "capture", payment_type: "credit_card" }) }));
+    const requeried = await getTransactionStatus(config(), input.midtransOrderId);
+    if (requeried === undefined) throw new Error("expected a status");
+    expect(requeried).toMatchObject({ transactionStatus: "capture", fraudStatus: "accept", paymentType: "credit_card", statusCode: "200" });
+    expect(confirmSettlement(requeried, { midtransOrderId: input.midtransOrderId, amountIdr: 49_000 })).toEqual({ kind: "paid" });
   });
 
   it("decides on the stub's re-queried, signed status", async () => {
@@ -347,6 +395,7 @@ describe("notification signature (constant-time, gross_amount as the signed stri
       payment_type: "qris",
       transaction_id: "tx-1",
       transaction_time: "x".repeat(64),
+      currency: "IDR",
     });
     // The label is not signed: anything outside the known list collapses to one value.
     expect(parseNotification({ ...signed, transaction_status: "settlement2" })?.transactionStatus).toBe("unknown");

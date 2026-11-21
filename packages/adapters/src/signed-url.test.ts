@@ -8,13 +8,13 @@ const PATH = "/files/products/1f2e/ebook-trivia.pdf";
 
 function parts(href: string) {
   const url = new URL(href);
-  return { path: url.pathname, exp: url.searchParams.get("exp"), sig: url.searchParams.get("sig") };
+  return { path: url.pathname, exp: url.searchParams.get("exp"), sig: url.searchParams.get("sig"), nonce: url.searchParams.get("n") };
 }
 
 describe("signed file URLs (WAHA sendFile)", () => {
   it("are valid for 10 minutes and can be used several times", () => {
     const href = signFileUrl({ origin: "https://api.example.id", path: PATH, key, now });
-    expect(href).toMatch(/^https:\/\/api\.example\.id\/files\/products\/1f2e\/ebook-trivia\.pdf\?exp=\d+&sig=[A-Za-z0-9_-]{43}$/);
+    expect(href).toMatch(/^https:\/\/api\.example\.id\/files\/products\/1f2e\/ebook-trivia\.pdf\?exp=\d+&sig=[A-Za-z0-9_-]{43}&n=[A-Za-z0-9_-]{22}$/);
     const p = parts(href);
     expect(verifyFileUrl({ ...p, key, now })).toEqual({ ok: true, path: PATH });
     expect(verifyFileUrl({ ...p, key, now: new Date(now.getTime() + 60_000) })).toEqual({ ok: true, path: PATH });
@@ -29,6 +29,10 @@ describe("signed file URLs (WAHA sendFile)", () => {
     expect(verifyFileUrl({ ...p, sig: "short", key, now })).toEqual({ ok: false, reason: "malformed" });
     expect(verifyFileUrl({ ...p, sig: "A".repeat(43), key, now })).toEqual({ ok: false, reason: "bad_signature" });
     expect(verifyFileUrl({ ...p, sig: null, key, now })).toEqual({ ok: false, reason: "malformed" });
+    // The nonce is part of what is signed: a missing, another or malformed one does not verify.
+    expect(verifyFileUrl({ ...p, nonce: null, key, now })).toEqual({ ok: false, reason: "malformed" });
+    expect(verifyFileUrl({ ...p, nonce: "short", key, now })).toEqual({ ok: false, reason: "malformed" });
+    expect(verifyFileUrl({ ...p, nonce: randomBytes(16).toString("base64url"), key, now })).toEqual({ ok: false, reason: "bad_signature" });
     expect(verifyFileUrl({ ...p, exp: "1e9", key, now })).toEqual({ ok: false, reason: "malformed" });
     expect(verifyFileUrl({ ...p, path: "/files/../etc/passwd", key, now })).toEqual({ ok: false, reason: "malformed" });
   });
@@ -59,6 +63,21 @@ describe("signed file URLs (WAHA sendFile)", () => {
     expect(verifyFileUrl({ ...longest, key, now })).toEqual({ ok: true, path: PATH });
     expect(verifyFileUrl({ ...forge(nowSeconds + max + 700), key, now })).toEqual({ ok: false, reason: "malformed" });
     expect(verifyFileUrl({ ...forge(nowSeconds + 600), key, now })).toEqual({ ok: true, path: PATH });
+  });
+
+  it("LOW-2: every URL carries its own random nonce, even two minted in the same second for the same file (so a download counter keyed on it is never shared)", () => {
+    const urls = Array.from({ length: 50 }, () => parts(signFileUrl({ origin: "https://api.example.id", path: PATH, key, now })));
+    expect(new Set(urls.map((u) => u.nonce)).size).toBe(50);
+    expect(new Set(urls.map((u) => u.exp)).size).toBe(1);
+    expect(new Set(urls.map((u) => u.sig)).size).toBe(50);
+    for (const u of urls) expect(verifyFileUrl({ ...u, key, now })).toEqual({ ok: true, path: PATH });
+    // A non-canonical spelling of the nonce (the last character carries 4 unused bits) is not another valid URL.
+    const first = parts(signFileUrl({ origin: "https://api.example.id", path: PATH, key, now }));
+    const nonce = first.nonce ?? "";
+    const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    const variant = `${nonce.slice(0, -1)}${alphabet[alphabet.indexOf(nonce.slice(-1)) ^ 1] ?? ""}`;
+    expect(Buffer.from(variant, "base64url").equals(Buffer.from(nonce, "base64url"))).toBe(true);
+    expect(verifyFileUrl({ ...first, nonce: variant, key, now })).toEqual({ ok: false, reason: "malformed" });
   });
 
   it("refuses unsafe inputs when signing", () => {

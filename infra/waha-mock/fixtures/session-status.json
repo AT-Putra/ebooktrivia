@@ -1,5 +1,52 @@
 {
-  "_provenance": "PROVISIONAL — shaped from WAHA public docs, not yet recorded from a real WAHA session (replace in US-005)",
+  "_provenance": "RECORDED 2026-11-21 (GET /api/sessions/{session}, scrubbed; the session config, which holds webhook URLs and HMAC keys, is NOT kept) plus the status names of the instance's OpenAPI. `example` (the session.status webhook event) is DOCS-SHAPED: a real webhook delivery was not recorded (no public URL), see docs/spikes/R11.md.",
+  "session": {
+    "name": "default",
+    "status": "WORKING",
+    "config": "<omitted>",
+    "me": {
+      "id": "628111111111@c.us",
+      "lid": "300000000000001@lid",
+      "pushName": "mock",
+      "reachoutTimelock": null,
+      "messageCapping": {
+        "cappingStatus": "NONE",
+        "totalQuota": -1,
+        "usedQuota": 0,
+        "cycleStart": 1793000000,
+        "cycleEnd": 1795600000,
+        "mvStatus": "NOT_ELIGIBLE",
+        "oteStatus": "NOT_ELIGIBLE"
+      }
+    },
+    "presence": "offline",
+    "timestamps": {
+      "activity": 1760000000000
+    },
+    "engine": {
+      "engine": "WEBJS",
+      "WWebVersion": "2.3000.0",
+      "state": "CONNECTED"
+    }
+  },
+  "statuses": [
+    "STOPPED",
+    "STARTING",
+    "SCAN_QR_CODE",
+    "PASSKEY_REQUIRED",
+    "PASSKEY_CONFIRMATION_REQUIRED",
+    "WORKING",
+    "FAILED"
+  ],
+  "get_unknown_session": {
+    "note": "RECORDED in the US-005 audit (GET /api/sessions/{session}). Sending through an unknown session is a different answer: 422 {error, session}, see send.json errors.unknown_session. The mock does not replay either: it creates a session on first use.",
+    "http_status": 404,
+    "body": {
+      "message": "Session not found",
+      "error": "Not Found",
+      "statusCode": 404
+    }
+  },
   "example": {
     "event": "session.status",
     "session": "default",
@@ -7,12 +54,5 @@
       "name": "default",
       "status": "WORKING"
     }
-  },
-  "statuses": [
-    "STOPPED",
-    "STARTING",
-    "SCAN_QR_CODE",
-    "WORKING",
-    "FAILED"
-  ]
+  }
 }

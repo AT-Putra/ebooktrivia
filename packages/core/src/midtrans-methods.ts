@@ -1,8 +1,15 @@
 // The Midtrans Snap `enabled_payments` codes this system knows (AC-S10), in ONE place: the admin
 // console offers them (apps/admin lib/settings/midtrans.ts, stored in app_settings
 // midtrans.enabled_methods) and the public app sends the enabled ones to Snap (US-020).
-// UNVERIFIED until the US-005 sandbox recordings: re-check every code against the real sandbox
-// before production (a wrong code is silently not offered, or Snap rejects the transaction).
+// Checked against the Midtrans sandbox in US-005 (docs/spikes/R12.md, 2026-11-21): Snap OFFERED other_qris, gopay, bca_va,
+// bni_va, permata_va, echannel, other_va, credit_card, indomaret and akulaku. shopeepay, bri_va, cimb_va and kredivo were
+// accepted by the API (201) but not offered (the page said "No payment channels available": the same answer as for an
+// invented code, so a wrong code and an inactive channel look alike). Snap never rejects a code. Before production, activate
+// the channels in the Midtrans dashboard and re-check on the Snap page (a code that is not offered is silently left out).
+// Owner D11: each method is a per-method switch in the console (app_settings midtrans.enabled_methods); the default is ON for
+// every code here except shopeepay, bri_va, cimb_va and kredivo (sql/seed.sql). The checkout sends only the enabled ones.
+// Reports price an order by its stored payment_type from midtrans.fees, so a switched-off method keeps its fee; a QRIS payment
+// (payment_type qris) reads the fee of other_qris AND gopay (sql/reports.sql midtrans_method_codes): the GoPay tile arrives as qris.
 export const MIDTRANS_METHODS = [
   { code: "other_qris", label: "QRIS" },
   { code: "gopay", label: "GoPay" },

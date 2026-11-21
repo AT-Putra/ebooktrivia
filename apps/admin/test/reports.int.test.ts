@@ -184,59 +184,61 @@ describe("the dashboard (AC-A4): today's numbers from the rollups, with the time
 
 describe("profit / ROI (AC-A8): revenue - CPA - gateway fee - ad spend, whole rupiah, against hand-computed fixtures", () => {
   /**
-   * Per order (fee = flat + ceil(amount x bp / 10000); qris 0.70 %, gopay 2.00 %, bank_transfer = the dearest VA 4400, credit_card 2000 + 2.90 %;
+   * Per order (fee = flat + ceil(amount x bp / 10000); qris = the DEARER of other_qris 0.70 % and gopay 2.00 %, i.e. 2.00 %, because a desktop
+   * GoPay tile arrives as qris (US-005); gopay 2.00 %, bank_transfer = the dearest VA 4400, credit_card 2000 + 2.90 %;
    * cstore has no fee set; revenue = paid only; the fee is charged for every order that was ever paid; CPA = the reported payout of an MT the
    * sink may have counted, less the reversal it acknowledged):
-   *   o1  rev 49000 fee 343  CPA 5000      o2  rev 49000 fee 980  CPA 5000      o3  refunded: fee 343, CPA 0 (reversal sent)
-   *   o4  rev 49000 fee 4400 CPA 7500      o5  refunded: fee 343, CPA 7500 (no reversal)  o6  rev 49000 fee 2000 + ceil(1421) = 3421
+   *   o1  rev 49000 fee 980  CPA 5000      o2  rev 49000 fee 980  CPA 5000      o3  refunded: fee 980, CPA 0 (reversal sent)
+   *   o4  rev 49000 fee 4400 CPA 7500      o5  refunded: fee 980, CPA 7500 (no reversal)  o6  rev 49000 fee 2000 + ceil(1421) = 3421
    *   o7  rev 49000 fee 0 (cstore: not set, counted as missing)                  o11 review: fee 980, CPA 5000, no revenue
-   *   o12 rev 49000 fee 343  CPA 0 (its MT is still pending)                      o13 rev 99000 fee 693  CPA 7500
+   *   o12 rev 49000 fee 980  CPA 0 (its MT is still pending)                      o13 rev 99000 fee 1980  CPA 7500
    *   o14 rev 99000 fee 1980 CPA 7500      o15 rev 99000 fee 4400 CPA 0 (its MT failed and was not counted)
    * Ad spend: D1 12000 (Alpha, LP1, promo-a), D2 9000 (Beta, no landing page, "Promo-B "), D3 5000 (LP3, no adnet) and 1000 (nothing).
    */
-  it("by adnet: Beta 295184; Alpha 117011; Organic 98000 - 0 - 3421 = 94579; the spend that names no adnet (5000 + 1000) is -6000 of its own, not Organic's", async () => {
+  it("by adnet: Beta 293260; Alpha 115100; Organic 98000 - 0 - 3421 = 94579; the spend that names no adnet (5000 + 1000) is -6000 of its own, not Organic's", async () => {
     const report = await roiReport(rt.sql, { from: D1, to: D3, group: "adnet", page: 1 });
     const view = report.rows.map((r) => ({ label: r.label.replace(/ [0-9a-f]{8}$/, ""), key: r.key === null ? null : r.key === "" ? "" : "id", paid: r.paidOrders, revenue: r.revenueIdr, cpa: r.payoutIdr, fee: r.gatewayFeeIdr, spend: r.adSpendIdr, net: r.netIdr, missing: r.feeMissingOrders }));
     expect(view).toEqual([
-      // Beta: revenue 346000 (o4 + o13 + o14 + o15); CPA 7500 x 4 = 30000; fee 4400 + 693 + 1980 + 4400 + 343 (o5 refunded) = 11816; spend 9000.
-      { label: "Beta Media", key: "id", paid: 4, revenue: 346_000, cpa: 30_000, fee: 11_816, spend: 9_000, net: 295_184, missing: 0 },
-      { label: "Alpha Ads", key: "id", paid: 3, revenue: 147_000, cpa: 15_000, fee: 2_989, spend: 12_000, net: 117_011, missing: 0 },
+      // Beta: revenue 346000 (o4 + o13 + o14 + o15); CPA 7500 x 4 = 30000; fee 4400 + 1980 + 1980 + 4400 + 980 (o5 refunded) = 13740; spend 9000.
+      { label: "Beta Media", key: "id", paid: 4, revenue: 346_000, cpa: 30_000, fee: 13_740, spend: 9_000, net: 293_260, missing: 0 },
+      // Alpha: revenue 147000 (o1 + o2 + o12); CPA 5000 + 5000 + 5000 (o11, review) = 15000; fee 980 x 5 (o1, o2, o3, o11, o12) = 4900; spend 12000.
+      { label: "Alpha Ads", key: "id", paid: 3, revenue: 147_000, cpa: 15_000, fee: 4_900, spend: 12_000, net: 115_100, missing: 0 },
       // Organic: o6 + o7 = 98000, fee 3421 (o7's store method has none set), and NO spend: none of it names Organic.
       { label: "Organic", key: "", paid: 2, revenue: 98_000, cpa: 0, fee: 3_421, spend: 0, net: 94_579, missing: 1 },
       { label: "Spend with no adnet", key: null, paid: 0, revenue: 0, cpa: 0, fee: 0, spend: 6_000, net: -6_000, missing: 0 },
     ]);
-    // Total: 591000 - 45000 - 18226 - 27000 = 500774, and the rows add up to it.
-    expect(report.totals).toMatchObject({ paidOrders: 9, revenueIdr: 591_000, payoutIdr: 45_000, gatewayFeeIdr: 18_226, adSpendIdr: 27_000, netIdr: 500_774, feeMissingOrders: 1 });
-    expect(report.rows.reduce((n, r) => n + r.netIdr, 0)).toBe(500_774);
+    // Total: 591000 - 45000 - 22061 (13740 + 4900 + 3421) - 27000 = 496939, and the rows add up to it.
+    expect(report.totals).toMatchObject({ paidOrders: 9, revenueIdr: 591_000, payoutIdr: 45_000, gatewayFeeIdr: 22_061, adSpendIdr: 27_000, netIdr: 496_939, feeMissingOrders: 1 });
+    expect(report.rows.reduce((n, r) => n + r.netIdr, 0)).toBe(496_939);
     expect(report.rowCount).toBe(4);
   });
 
-  it("by landing page: LP3 269927, LP1 192190, LP2 48657, and the spend that names no landing page (9000 + 1000) as a loss of its own", async () => {
+  it("by landing page: LP3 268640, LP1 190279, LP2 48020, and the spend that names no landing page (9000 + 1000) as a loss of its own", async () => {
     const report = await roiReport(rt.sql, { from: D1, to: D3, group: "landing_page", page: 1 });
     expect(report.rows.map((r) => [r.label.startsWith("LP ") ? r.label.split(" ").slice(0, 2).join(" ") : r.label, r.revenueIdr, r.payoutIdr, r.gatewayFeeIdr, r.adSpendIdr, r.netIdr])).toEqual([
-      // LP3: 297000 - (7500 + 7500) - (693 + 1980 + 4400) - 5000
-      ["LP Three", 297_000, 15_000, 7_073, 5_000, 269_927],
-      // LP1: 245000 - (5000 + 5000 + 7500 + 7500 + 5000) - (343 + 980 + 343 + 4400 + 343 + 3421 + 0 + 980) - 12000
-      ["LP One", 245_000, 30_000, 10_810, 12_000, 192_190],
-      ["LP Two", 49_000, 0, 343, 0, 48_657],
+      // LP3: 297000 - (7500 + 7500) - (1980 + 1980 + 4400) - 5000
+      ["LP Three", 297_000, 15_000, 8_360, 5_000, 268_640],
+      // LP1: 245000 - (5000 + 5000 + 7500 + 7500 + 5000) - (980 + 980 + 980 + 4400 + 980 + 3421 + 0 + 980) - 12000
+      ["LP One", 245_000, 30_000, 12_721, 12_000, 190_279],
+      ["LP Two", 49_000, 0, 980, 0, 48_020],
       ["Spend with no landing page", 0, 0, 0, 10_000, -10_000],
     ]);
-    expect(report.totals.netIdr).toBe(500_774);
-    expect(report.rows.reduce((n, r) => n + r.netIdr, 0)).toBe(500_774);
+    expect(report.totals.netIdr).toBe(496_939);
+    expect(report.rows.reduce((n, r) => n + r.netIdr, 0)).toBe(496_939);
   });
 
-  it("by campaign (compared lower-cased and trimmed): promo-b 295184, promo-a 68354, no campaign 94579, promo-c 48657, and the spend with no campaign -6000 of its own", async () => {
+  it("by campaign (compared lower-cased and trimmed): promo-b 293260, promo-a 67080, no campaign 94579, promo-c 48020, and the spend with no campaign -6000 of its own", async () => {
     const report = await roiReport(rt.sql, { from: D1, to: D3, group: "utm_campaign", page: 1 });
     expect(report.rows.map((r) => [r.label, r.revenueIdr, r.payoutIdr, r.gatewayFeeIdr, r.adSpendIdr, r.netIdr])).toEqual([
-      ["promo-b", 346_000, 30_000, 11_816, 9_000, 295_184],
-      // promo-a: 2 x 49000 = 98000; CPA o1 + o2 + o11 = 15000; fee 343 + 980 + 343 + 980 = 2646; spend 12000 ("Promo-A" == "promo-a")
-      ["promo-a", 98_000, 15_000, 2_646, 12_000, 68_354],
+      ["promo-b", 346_000, 30_000, 13_740, 9_000, 293_260],
+      // promo-a: 2 x 49000 = 98000; CPA o1 + o2 + o11 = 15000; fee 980 x 4 (o1, o2, o3, o11) = 3920; spend 12000 ("Promo-A" == "promo-a")
+      ["promo-a", 98_000, 15_000, 3_920, 12_000, 67_080],
       ["No campaign", 98_000, 0, 3_421, 0, 94_579],
-      ["promo-c", 49_000, 0, 343, 0, 48_657],
+      ["promo-c", 49_000, 0, 980, 0, 48_020],
       ["Spend with no campaign", 0, 0, 0, 6_000, -6_000],
     ]);
-    expect(report.totals.netIdr).toBe(500_774);
-    expect(report.rows.reduce((n, r) => n + r.netIdr, 0)).toBe(500_774);
+    expect(report.totals.netIdr).toBe(496_939);
+    expect(report.rows.reduce((n, r) => n + r.netIdr, 0)).toBe(496_939);
   });
 
   it("does not mix a campaign that is literally named like the unassigned row with the unassigned spend (the key is NULL, not a name)", async () => {
@@ -250,17 +252,18 @@ describe("profit / ROI (AC-A8): revenue - CPA - gateway fee - ad spend, whole ru
     await root`DELETE FROM ad_spend WHERE spend_date = ${day}`;
   });
 
-  it("for a shorter range: D1 + D2 = 344000 - 32500 - 10523 - 21000 = 279977; D3 alone has no missing fee", async () => {
+  it("for a shorter range: D1 + D2 = 344000 - 32500 - 13721 - 21000 = 276779; D3 alone has no missing fee", async () => {
+    // D1 + D2 fees: o1 980 + o2 980 + o3 980 + o4 4400 + o5 980 + o6 3421 + o7 0 + o13 1980 = 13721.
     const early = await roiReport(rt.sql, { from: D1, to: D2, group: "adnet", page: 1 });
-    expect(early.totals).toMatchObject({ revenueIdr: 344_000, payoutIdr: 32_500, gatewayFeeIdr: 10_523, adSpendIdr: 21_000, netIdr: 279_977, feeMissingOrders: 1 });
+    expect(early.totals).toMatchObject({ revenueIdr: 344_000, payoutIdr: 32_500, gatewayFeeIdr: 13_721, adSpendIdr: 21_000, netIdr: 276_779, feeMissingOrders: 1 });
     const last = await roiReport(rt.sql, { from: D3, to: D3, group: "adnet", page: 1 });
-    // D3: revenue o12 + o14 + o15 = 247000; CPA o11 5000 + o14 7500 = 12500; fee o11 980 + o12 343 + o14 1980 + o15 4400 = 7703; spend 5000 + 1000.
-    expect(last.totals).toMatchObject({ revenueIdr: 247_000, payoutIdr: 12_500, gatewayFeeIdr: 7_703, adSpendIdr: 6_000, netIdr: 247_000 - 12_500 - 7_703 - 6_000, feeMissingOrders: 0 });
+    // D3: revenue o12 + o14 + o15 = 247000; CPA o11 5000 + o14 7500 = 12500; fee o11 980 + o12 980 + o14 1980 + o15 4400 = 8340; spend 5000 + 1000.
+    expect(last.totals).toMatchObject({ revenueIdr: 247_000, payoutIdr: 12_500, gatewayFeeIdr: 8_340, adSpendIdr: 6_000, netIdr: 247_000 - 12_500 - 8_340 - 6_000, feeMissingOrders: 0 });
   });
 
   it("is the same total whatever the grouping, and a page past the end is empty but still reports the real number of groups", async () => {
     const nets = await Promise.all((["adnet", "landing_page", "utm_campaign"] as RoiGroup[]).map(async (group) => (await roiReport(rt.sql, { from: D1, to: D3, group, page: 1 })).totals.netIdr));
-    expect(new Set(nets)).toEqual(new Set([500_774]));
+    expect(new Set(nets)).toEqual(new Set([496_939]));
     const second = await roiReport(rt.sql, { from: D1, to: D3, group: "adnet", page: 2 });
     expect(second.rows).toEqual([]);
     expect(second.rowCount).toBe(4);
@@ -557,6 +560,23 @@ describe("drift: the SQL method map and core", () => {
     for (const code of mapped) expect(core.has(code), `${code} is mapped by SQL but unknown to core`).toBe(true);
     expect([...core].filter((c) => !mapped.has(c)), "core codes no payment_type reaches (a fee set for them would never apply)").toEqual([]);
     expect((await root<{ codes: string[] }[]>`SELECT public.midtrans_method_codes('some_new_type') AS codes`)[0]?.codes).toEqual(["some_new_type"]); // unknown types fall through to a code core does not know: counted as fee missing
+  });
+
+  // What the Midtrans sandbox recorded (US-005, docs/spikes/R12.md, infra/midtrans-stub/fixtures/status.json): the payment_type each
+  // Snap method arrives as. Every row names the core codes the SQL map must give it (a payment_type the map misses is priced as fee_missing).
+  it.each<[string, string, readonly string[]]>([
+    ["QRIS tile", "qris", ["other_qris"]],
+    ["GoPay tile on a desktop (a QR: acquirer gopay)", "qris", ["gopay"]],
+    ["virtual accounts (the bank is in va_numbers[].bank, not kept)", "bank_transfer", ["bca_va", "bni_va", "bri_va", "permata_va", "cimb_va", "other_va"]],
+    ["Mandiri Bill", "echannel", ["echannel"]],
+    ["Indomaret", "cstore", ["indomaret"]],
+    ["card", "credit_card", ["credit_card"]],
+    ["GoPay on a phone", "gopay", ["gopay"]],
+    ["ShopeePay on a phone", "shopeepay", ["shopeepay"]],
+  ])("the recorded payment_type of %s (%s) reaches %j", async (_tile, type, codes) => {
+    const [row] = await root<{ codes: string[] }[]>`SELECT public.midtrans_method_codes(${type}) AS codes`;
+    for (const code of codes) expect(row?.codes, `${type} must carry the fee of ${code}`).toContain(code);
+    expect(MIDTRANS_METHODS.map((m) => m.code)).toEqual(expect.arrayContaining([...codes]));
   });
 });
 

@@ -430,6 +430,8 @@ GRANT EXECUTE ON FUNCTION public.prepare_player_login(text), public.player_for_l
 -- live link per player and channel), and the minute sweeper deletes expired OTP rows (their HMAC and any
 -- sealed code not moved yet): the expiry to find them, never the code or its HMAC.
 GRANT EXECUTE ON FUNCTION public.issue_magic_link(uuid, text, bytea) TO worker_rw;
+-- ... and revokes a player's live links when Midtrans reverses a payment we counted (Owner D9, US-005; the payment consumer).
+GRANT EXECUTE ON FUNCTION public.revoke_player_magic_links(uuid) TO worker_rw;
 GRANT SELECT (id, expires_at), DELETE ON public.player_otps TO worker_rw;
 -- The same sweeper prunes the OTP send ledger, older than 24 hours only (prune_otp_enqueues), and expired player
 -- sessions with their state (prune_player_sessions); it has no other access to player_auth.

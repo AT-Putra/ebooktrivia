@@ -1,5 +1,5 @@
 {
-  "_provenance": "PROVISIONAL — shaped from WAHA public docs, not yet recorded from a real WAHA session (replace in US-005)",
+  "_provenance": "ack numbers and names are RECORDED where observed (0 PENDING on a message the instance received, 1 SERVER, 2 DEVICE on every message we sent, within seconds) and confirmed against the instance's OpenAPI enum (-1 ERROR, 0 PENDING, 1 SERVER, 2 DEVICE, 3 READ, 4 PLAYED). The message.ack WEBHOOK event is DOCS-SHAPED (not recorded: no public URL).",
   "ack_values": {
     "0": "PENDING",
     "1": "SERVER",
@@ -7,6 +7,23 @@
     "3": "READ",
     "4": "PLAYED",
     "-1": "ERROR"
+  },
+  "observed": {
+    "inbound_message": {
+      "ack": 0,
+      "ackName": "PENDING"
+    },
+    "sent_text_by_id_after_a_few_seconds": {
+      "ack": 2,
+      "ackName": "DEVICE"
+    },
+    "sendText_answer": {
+      "ack": 0
+    },
+    "an_empty_text_message_on_the_wire": {
+      "ack": 1,
+      "ackName": "SERVER"
+    }
   },
   "example": {
     "event": "message.ack",

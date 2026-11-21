@@ -2,6 +2,7 @@
 // as codes only, the failed deliveries and their resend) and the contest report (completion per set, the live and the frozen leaderboard, the winners export), as the admin_rw login. Figures are
 // worked out by hand in the comments.
 import { randomBytes } from "node:crypto";
+import { DELIVERED_WRONG_FILE } from "@ebooktrivia/core";
 import Papa from "papaparse";
 import { beforeAll, describe, expect, it } from "vitest";
 import { leaderboard, participation, programChoices } from "../src/lib/reports/contest-report.ts";
@@ -177,6 +178,39 @@ describe("the delivery report (AC-A6)", () => {
     expect((await attentionList(rt.sql, 200)).rows.map((r) => r.id)).toContain(refunded);
     await root`UPDATE orders SET status = 'refunded', refunded_at = now() WHERE id = ${refundedOrder}`;
     expect((await attentionList(rt.sql, 200)).rows.map((r) => r.id)).not.toContain(refunded);
+  });
+
+  it("lists a WhatsApp file that arrived WRONG (sent + delivered_wrong_file) for a person to see: counted, masked, never offered for a resend, and not a plain sent delivery or a refunded order's", async () => {
+    // The worker writes this code (US-005 R11: WAHA delivered a file of the wrong size); the report shows it and the row stays `sent` (final).
+    expect(DELIVERED_WRONG_FILE).toBe("delivered_wrong_file");
+    const before = await attentionList(rt.sql, 200);
+    const sentWith = async (hour: number, lastError: string | null): Promise<{ order: string; id: string }> => {
+      const order = await paidOrder(ids.programId, ids.productId, ids.lpId, DAY2, hour);
+      const id = (
+        await one(root<Id[]>`
+          INSERT INTO deliveries (order_id, channel, status, attempts, last_error, created_at, sent_at)
+          VALUES (${order}, 'whatsapp', 'sent', 1, ${lastError}, ${at(DAY2, hour)}, ${at(DAY2, hour)}) RETURNING id`)
+      ).id;
+      return { order, id };
+    };
+    const wrong = await sentWith(12, "delivered_wrong_file");
+    const other = await sentWith(13, "waha_error");
+    const refunded = await sentWith(14, "delivered_wrong_file");
+    await root`UPDATE orders SET status = 'refunded', refunded_at = now() WHERE id = ${refunded.order}`;
+    const after = await attentionList(rt.sql, 200);
+    const listed = after.rows.map((r) => r.id);
+    expect(after.rows.find((r) => r.id === wrong.id)).toMatchObject({ status: "sent", errorCode: "delivered_wrong_file", channel: "whatsapp", buyerName: "B*** S***", buyerPhone: "****100" });
+    // Only the wrong-file delivery of a PAID order is listed and counted: not a plain sent one (d1 / d2), not a sent one with another code, not a refunded order's.
+    expect(listed).not.toContain(deliveries["d1"]);
+    expect(listed).not.toContain(deliveries["d2"]);
+    expect(listed).not.toContain(other.id);
+    expect(listed).not.toContain(refunded.id);
+    expect(after.wrongFile).toBe(before.wrongFile + 1);
+    expect([after.failed, after.unknown]).toEqual([before.failed, before.unknown]);
+    expect(JSON.stringify(after.rows)).not.toContain("Budi");
+    expect(JSON.stringify(after.rows)).not.toContain("+6281234500100");
+    // Display only: the report changes nothing, the delivery stays `sent`.
+    expect((await one(root<{ status: string }[]>`SELECT status FROM deliveries WHERE id = ${wrong.id}`)).status).toBe("sent");
   });
 
   it("shows the state of the WhatsApp opener next to its delivery (Owner decision D7)", async () => {

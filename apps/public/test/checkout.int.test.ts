@@ -430,16 +430,56 @@ describe("criterion 3: Snap and MO", () => {
       transaction_details: { order_id: `${order.public_id}-1`, gross_amount: PRICE_IDR },
       item_details: [{ id: shop.productId, price: PRICE_IDR, quantity: 1 }],
       customer_details: { first_name: "Budi Santoso", email: "budi@example.test", phone: order.buyer_phone },
-      enabled_payments: ["other_qris", "gopay", "shopeepay", "bca_va", "bni_va", "bri_va", "permata_va", "echannel"],
+      // The seeded default (Owner D11): every method but shopeepay, bri_va, cimb_va and kredivo.
+      enabled_payments: ["other_qris", "gopay", "bca_va", "bni_va", "permata_va", "echannel", "other_va", "credit_card", "indomaret", "akulaku"],
       callbacks: { finish: `https://order.${DOMAIN}/${order.public_id}` },
+      // credit_card is enabled by default, so 3-D Secure is asked for explicitly (the sandbox account does not default to it, R12).
+      credit_card: { secure: true },
     });
     // sales_end (2 h away) comes first: 120 minutes less the one-minute margin, rounded down.
     expect((call?.body["expiry"] as { duration: number }).duration).toBeGreaterThanOrEqual(117);
     expect((call?.body["expiry"] as { duration: number }).duration).toBeLessThanOrEqual(118);
     // The 24 h order expiry comes first.
-    expect(farCall?.body["expiry"]).toEqual({ unit: "minutes", duration: 24 * 60 - 1 });
+    expect(farCall?.body["expiry"]).toMatchObject({ unit: "minutes", duration: 24 * 60 - 1 });
     expect(order.snap_expires_at?.getTime() ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(salesEnd.getTime() - 60_000);
+    // Midtrans counts the window from expiry.start_time (WIB, whole seconds), not from the buyer's method choice (recorded, US-005):
+    // start_time + duration is our snap_expires_at.
+    const expiry = call?.body["expiry"] as { start_time: string; duration: number };
+    expect(expiry.start_time).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \+0700$/);
+    const windowEnd = Date.parse(expiry.start_time.replace(" +0700", "+07:00").replace(" ", "T")) + expiry.duration * 60_000;
+    expect(Math.abs(windowEnd - (order.snap_expires_at?.getTime() ?? Number.NaN))).toBeLessThan(1000);
     expect(order.expires_at.getTime() - order.created_at.getTime()).toBeGreaterThan(86_399_000);
+  });
+
+  it("Owner D11: Snap gets ONLY the methods the Owner enabled; switching one off takes it out of the next checkout, none enabled is a 503 and no order", async () => {
+    const shop = await createShop();
+    const deps = checkoutDeps();
+    // shopeepay, bri_va, cimb_va and kredivo are OFF in the default: they never reach Snap.
+    await ok(await post(deps, shop, await checkoutBody(shop)));
+    const [defaultCall] = deps.stub.calls;
+    expect(defaultCall?.body["enabled_payments"]).not.toEqual(expect.arrayContaining(["shopeepay"]));
+    for (const off of ["shopeepay", "bri_va", "cimb_va", "kredivo"]) expect(defaultCall?.body["enabled_payments"], off).not.toContain(off);
+
+    const other = await createShop();
+    await withSettings({ "midtrans.enabled_methods": ["credit_card", "gopay"] }, async () => {
+      await ok(await post(deps, other, await checkoutBody(other)));
+    });
+    expect(deps.stub.calls[1]?.body["enabled_payments"]).toEqual(["credit_card", "gopay"]);
+    expect(deps.stub.calls[1]?.body["credit_card"]).toEqual({ secure: true });
+    // Without the card enabled there is nothing to secure: no credit_card block at all.
+    const noCard = await createShop();
+    await withSettings({ "midtrans.enabled_methods": ["gopay"] }, async () => {
+      await ok(await post(deps, noCard, await checkoutBody(noCard)));
+    });
+    expect(deps.stub.calls[2]?.body["enabled_payments"]).toEqual(["gopay"]);
+    expect(deps.stub.calls[2]?.body).not.toHaveProperty("credit_card");
+
+    const none = await createShop();
+    await withSettings({ "midtrans.enabled_methods": [] }, async () => {
+      expect(await failed(await post(deps, none, await checkoutBody(none)))).toEqual({ status: 503, body: { v: 1, error: "unavailable" } });
+    });
+    expect(await ordersOf(none)).toHaveLength(0);
+    expect(deps.stub.calls).toHaveLength(3);
   });
 
   it("enqueues the MO only after Snap succeeded (tx2), once", async () => {

@@ -288,12 +288,14 @@ describe("bounded, server to server, fail closed", () => {
     expect(opened).toBe(2);
   });
 
-  it("500 on a real database error, so Midtrans delivers again; the retry is stored", async () => {
+  it("503 (not 500) on a real database error: Midtrans retries a 503 four times and a 500 only once; the retry is stored", async () => {
     const orderId = midtransId();
     await root.unsafe("ALTER TABLE payment_notifications ADD CONSTRAINT us021_refuse_all CHECK (false) NOT VALID");
     try {
       const d = deps();
-      expect((await handleMidtransNotification(d, post(signedBody(orderId)))).status).toBe(500);
+      const refused = await handleMidtransNotification(d, post(signedBody(orderId)));
+      expect(refused.status).toBe(503);
+      expect(await refused.json()).toEqual({ v: 1, error: "unavailable" });
       expect(d.lines.some((l) => l.includes('"reason":"internal"'))).toBe(true);
     } finally {
       await root.unsafe("ALTER TABLE payment_notifications DROP CONSTRAINT us021_refuse_all");

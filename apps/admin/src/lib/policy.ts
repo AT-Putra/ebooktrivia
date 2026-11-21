@@ -71,6 +71,9 @@ const RULES = {
   // Resending a delivery that MAY already have reached the buyer (an unknown send), after the Owner's explicit confirmation (US-025): a failed delivery is
   // `delivery.resend` (Staff, AC-A1), an unknown one can duplicate the ebook or a login link, so it is not covered by AC-A1's "resends" for Staff.
   "delivery.resend_unknown": "owner",
+  // Marking a `sent` delivery whose WhatsApp file arrived wrong (last_error delivered_wrong_file, US-005 R11) as handled, which takes it off the "Needs attention" list. Display only:
+  // it changes nothing about the delivery (a sent row stays final) and is audited. The Owner reads the note and decides, so it is the Owner's.
+  "delivery.wrong_file_handled": "owner",
   "order.review.resolve": "owner",
   "ad_spend.edit": "owner",
   // The profit / ROI view (US-029, AC-A8): it shows adnet payouts (CPA), gateway fees and ad spend, which are Owner-only

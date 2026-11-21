@@ -29,12 +29,18 @@ describe("paymentEvent: the event of a re-queried verdict", () => {
   it("maps every other status through classifyMidtransStatus", () => {
     expect(paymentEvent({ kind: "not_settled", transactionStatus: "deny" }, null)).toBe("deny");
     expect(paymentEvent({ kind: "not_settled", transactionStatus: "partial_refund" }, undefined)).toBe("partial_refund");
-    expect(paymentEvent({ kind: "not_settled", transactionStatus: "capture" }, "accept")).toBe("capture");
+    expect(paymentEvent({ kind: "not_settled", transactionStatus: "capture" }, "deny")).toBe("deny");
+    expect(paymentEvent({ kind: "not_settled", transactionStatus: "capture" }, "challenge")).toBe("challenge");
     expect(paymentEvent({ kind: "not_settled", transactionStatus: "authorize" }, null)).toBe("unknown");
   });
 
-  it("never turns a not-settled verdict into a settlement", () => {
+  it("never turns a not-settled verdict into a settlement (not even a capture+accept the verdict refused)", () => {
     expect(paymentEvent({ kind: "not_settled", transactionStatus: "settlement" }, "accept")).toBe("challenge");
+    expect(paymentEvent({ kind: "not_settled", transactionStatus: "capture" }, "accept")).toBe("challenge");
+  });
+
+  it("Owner D10: a confirmed capture+accept verdict is a settlement", () => {
+    expect(paymentEvent({ kind: "paid" }, "accept")).toBe("settlement");
   });
 });
 
@@ -43,16 +49,39 @@ describe("attemptContext", () => {
 
   it("counts the OTHER attempts whose stored status holds money", () => {
     const attempts = [a(1, "settlement", "accept"), a(2, "settlement"), a(3, "deny"), a(4, null), a(5, "settlement", "challenge")];
-    expect(attemptContext(2, 5, attempts)).toEqual({ eventAttemptIsLatest: false, otherSettledAttempts: 1 });
-    expect(attemptContext(5, 5, attempts)).toEqual({ eventAttemptIsLatest: true, otherSettledAttempts: 2 });
-    expect(attemptContext(1, 1, [])).toEqual({ eventAttemptIsLatest: true, otherSettledAttempts: 0 });
+    expect(attemptContext(2, 5, attempts)).toEqual({ eventAttemptIsLatest: false, otherSettledAttempts: 1, eventAttemptHeldMoney: false });
+    expect(attemptContext(5, 5, attempts)).toEqual({ eventAttemptIsLatest: true, otherSettledAttempts: 2, eventAttemptHeldMoney: false });
+    expect(attemptContext(1, 1, [])).toEqual({ eventAttemptIsLatest: true, otherSettledAttempts: 0, eventAttemptHeldMoney: false });
   });
 
-  it("isSettledStatus: settlement with fraud accept or none, nothing else", () => {
+  it("Owner D9: whether the event's own attempt held money is the CALLER's fact (its payments.settled_at), never read from the attempt's last status", () => {
+    // The attempt's stored status is `pending` (an intermediate answer after its settlement): that must not decide it.
+    const attempts = [a(1, "pending")];
+    expect(attemptContext(1, 1, attempts, true).eventAttemptHeldMoney).toBe(true);
+    expect(attemptContext(1, 1, attempts, false).eventAttemptHeldMoney).toBe(false);
+    expect(attemptContext(1, 1, attempts).eventAttemptHeldMoney).toBe(false);
+    expect(attemptContext(1, 1, [a(1, "settlement", "accept")]).eventAttemptHeldMoney).toBe(false);
+  });
+
+  it("Owner D9: paid, then an intermediate status, then deny: the held fact survives the intermediate status and the order goes to review", () => {
+    // The caller (worker) read settled_at BEFORE each event; the intermediate pending did not clear it.
+    const context = attemptContext(1, 1, [a(1, "pending")], true);
+    const intermediate = decidePayment("paid", { kind: "not_settled", transactionStatus: "pending" }, null, context);
+    expect(intermediate).toEqual({ event: "pending", transition: { kind: "stay", alert: false }, alert: null });
+    expect(decidePayment("paid", { kind: "not_settled", transactionStatus: "deny" }, null, context).transition).toEqual({ kind: "move", to: "review" });
+    // An unknown intermediate status (authorize) is an anomaly alert, not a way to hide the reversal.
+    expect(decidePayment("paid", { kind: "not_settled", transactionStatus: "authorize" }, null, context).transition).toEqual({ kind: "stay", alert: true });
+    expect(decidePayment("paid", { kind: "not_settled", transactionStatus: "expire" }, null, context).transition).toEqual({ kind: "move", to: "review" });
+  });
+
+  it("isSettledStatus: settlement with fraud accept or none, a card capture with fraud accept (Owner D10), nothing else", () => {
     expect(isSettledStatus("settlement", null)).toBe(true);
     expect(isSettledStatus("settlement", "accept")).toBe(true);
     expect(isSettledStatus("settlement", "challenge")).toBe(false);
-    expect(isSettledStatus("capture", "accept")).toBe(false);
+    expect(isSettledStatus("capture", "accept")).toBe(true);
+    expect(isSettledStatus("capture", "challenge")).toBe(false);
+    expect(isSettledStatus("capture", "deny")).toBe(false);
+    expect(isSettledStatus("capture", null)).toBe(false);
     expect(isSettledStatus("refund", null)).toBe(false);
     expect(isSettledStatus(null, null)).toBe(false);
   });
@@ -84,13 +113,33 @@ describe("decidePayment", () => {
     expect(decidePayment("paid", { kind: "paid" }, null, {})).toEqual({ event: "settlement", transition: { kind: "stay", alert: false }, alert: null });
   });
 
-  it("m10: an accepted card capture of an unpaid order waits for settlement quietly; on a paid order it still alerts", () => {
-    const capture = { kind: "not_settled", transactionStatus: "capture" } as const;
+  it("Owner D10: a confirmed card capture+accept pays an unpaid order silently, and the settlement of the next day changes nothing", () => {
     for (const state of ["pending", "expired", "gateway_failed", "snap_create_failed"] as const) {
-      expect(decidePayment(state, capture, "accept", {})).toEqual({ event: "capture", transition: { kind: "stay", alert: true }, alert: null });
+      expect(decidePayment(state, { kind: "paid" }, "accept", {})).toEqual({ event: "settlement", transition: { kind: "move", to: "paid" }, alert: null });
     }
-    expect(decidePayment("paid", capture, "accept", {}).alert).toEqual({ kind: "payment_anomaly", severity: "warning" });
-    expect(decidePayment("refunded", capture, "accept", {}).alert).toEqual({ kind: "payment_anomaly", severity: "warning" });
+    // The same attempt's later settlement: paid stays, no alert (a second attempt's would be a double charge).
+    expect(decidePayment("paid", { kind: "paid" }, "accept", {})).toEqual({ event: "settlement", transition: { kind: "stay", alert: false }, alert: null });
+  });
+
+  it("a capture the verdict did not confirm (challenge, or an opted-out capture+accept) never pays: it goes to review with a warning", () => {
+    const capture = { kind: "not_settled", transactionStatus: "capture" } as const;
+    for (const fraud of ["challenge", "accept"]) {
+      expect(decidePayment("pending", capture, fraud, {})).toEqual({ event: "challenge", transition: { kind: "move", to: "review" }, alert: { kind: "payment_review", severity: "warning" } });
+    }
+    expect(decidePayment("pending", capture, "deny", {})).toEqual({ event: "deny", transition: { kind: "stay", alert: false }, alert: null });
+  });
+
+  it.each(["deny", "cancel", "expire", "failure"] as const)("Owner D9: %s of the attempt that held a PAID order's money moves it to review with a CRITICAL payment_paid_reversed alert", (status) => {
+    const verdict = { kind: "not_settled", transactionStatus: status } as const;
+    expect(decidePayment("paid", verdict, null, { eventAttemptHeldMoney: true })).toEqual({ event: status, transition: { kind: "move", to: "review" }, alert: { kind: "payment_paid_reversed", severity: "critical" } });
+    // Another attempt's noise on a paid order stays quiet, a cancel included (it is gated on held money like the rest).
+    expect(decidePayment("paid", verdict, null, {})).toEqual({ event: status, transition: { kind: "stay", alert: false }, alert: null });
+  });
+
+  it("Owner D9: when another attempt still holds money, the reversal only alerts (a warning anomaly); a review order is not moved again", () => {
+    const deny = { kind: "not_settled", transactionStatus: "deny" } as const;
+    expect(decidePayment("paid", deny, null, { eventAttemptHeldMoney: true, otherSettledAttempts: 1 })).toEqual({ event: "deny", transition: { kind: "stay", alert: true }, alert: { kind: "payment_anomaly", severity: "warning" } });
+    expect(decidePayment("review", deny, null, { eventAttemptHeldMoney: true })).toEqual({ event: "deny", transition: { kind: "stay", alert: false }, alert: null });
   });
 
   it("isChargeback: full and partial chargebacks only", () => {

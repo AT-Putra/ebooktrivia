@@ -55,11 +55,20 @@ ON CONFLICT (key) DO NOTHING;
 -- production server key is set); the methods offered in Snap; per-method fees (flat IDR + basis
 -- points, packages/core money.ts) start empty. Not secret (public_rw reads app_settings); the
 -- server keys are sealed payment secrets.
+-- Owner D11 (US-005): every method is ON except shopeepay, bri_va, cimb_va and kredivo, which the Owner's Midtrans account does
+-- not have active (Snap accepts their codes but offers nothing for them, docs/spikes/R12.md); the Owner switches each one in
+-- the console (Midtrans settings, audited).
 INSERT INTO public.app_settings (key, value) VALUES
   ('midtrans.environment', '"sandbox"'),
-  ('midtrans.enabled_methods', '["other_qris", "gopay", "shopeepay", "bca_va", "bni_va", "bri_va", "permata_va", "echannel"]'),
+  ('midtrans.enabled_methods', '["other_qris", "gopay", "bca_va", "bni_va", "permata_va", "echannel", "other_va", "credit_card", "indomaret", "akulaku"]'),
   ('midtrans.fees', '{}')
 ON CONFLICT (key) DO NOTHING;
+-- A database seeded before D11 still holds the OLD default list. Replace it, once, only while no admin ever saved the setting
+-- (updated_by_admin_user_id IS NULL: an Owner's choice, even the same list, is never touched).
+UPDATE public.app_settings
+   SET value = '["other_qris", "gopay", "bca_va", "bni_va", "permata_va", "echannel", "other_va", "credit_card", "indomaret", "akulaku"]'::jsonb, updated_at = now()
+ WHERE key = 'midtrans.enabled_methods' AND updated_by_admin_user_id IS NULL
+   AND value = '["other_qris", "gopay", "shopeepay", "bca_va", "bni_va", "bri_va", "permata_va", "echannel"]'::jsonb;
 
 -- Default message templates (AC-A10, Bahasa Indonesia), editable in the admin console. Keys and
 -- the variables each may use: apps/admin/src/lib/settings/templates.ts.

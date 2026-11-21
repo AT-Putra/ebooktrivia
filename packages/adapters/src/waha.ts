@@ -40,6 +40,18 @@ export class WahaError extends Error {
   }
 }
 
+/**
+ * An argument the client refused BEFORE any request was made (a malformed session name or chat id, an empty text, a file URL that is not https): nothing was sent, whatever the
+ * caller does next. Thrown ONLY by those checks, so a caller can treat exactly this class as "not sent" (security / code review US-005): any other error, a plain RangeError
+ * included, may have been raised after the request left and stays on the uncertain path. It is a RangeError, so callers that only care about bad input still catch it.
+ */
+export class NotSentError extends RangeError {
+  constructor(message: string) {
+    super(message);
+    this.name = "NotSentError";
+  }
+}
+
 export interface WahaClientConfig {
   /** From assertWahaTarget(): https, host bound to the API key. */
   readonly target: URL;
@@ -75,6 +87,8 @@ const SESSION_NAME = /^[A-Za-z0-9_-]{1,64}$/;
 const CHAT_ID = /^[0-9]{5,20}@(?:c\.us|lid)$/;
 /** WAHA message ids: "{fromMe}_{chatId}_{key}", e.g. "false_628123456789@c.us_3EB0AAAA0001". */
 const MESSAGE_ID = /^(?:true|false)_([0-9]{5,20}@(?:c\.us|lid))_[A-Za-z0-9]{1,64}$/;
+/** A message id of a message WE sent (`true_`) in `chatId`: what a send answer must carry. */
+const isOurMessageIn = (id: string, chatId: string): boolean => id.startsWith("true_") && MESSAGE_ID.exec(id)?.[1] === chatId;
 
 export interface ContactCheck {
   readonly numberExists: boolean;
@@ -92,6 +106,11 @@ export interface FetchedMessage {
   readonly fromMe: boolean;
   readonly body: string;
   readonly hasMedia: boolean;
+  /**
+   * The size in bytes of the file WAHA delivered, when the engine says (WEBJS: `_data.size`, recorded in US-005 R11). WAHA does not refuse a file URL it cannot
+   * fetch: it sends the error page as the document, so this is how a wrong file is told from the right one. Absent when the answer does not carry it.
+   */
+  readonly mediaSize?: number;
   /** Unix seconds. */
   readonly timestamp: number;
 }
@@ -108,15 +127,18 @@ export interface WahaClient {
    * The filter is WAHA's `filter.fromMe=true` (the instance ignores a bare `fromMe`), and every message is checked on our side again.
    */
   recentOutgoing(session: string, chatId: string, limit?: number, since?: Date): Promise<OutgoingMessage[]>;
-  /** One message by id, from WAHA itself (the webhook body is only a hint), or null if unknown. */
-  getMessage(session: string, messageId: string): Promise<FetchedMessage | null>;
+  /**
+   * One message by id, from WAHA itself (the webhook body is only a hint), or null if unknown. `timeoutMs`: the budget of THIS call alone (default: the client's
+   * whole-request timeout), for a caller working inside a lease (the read-back after a file send, US-005).
+   */
+  getMessage(session: string, messageId: string, options?: { readonly timeoutMs?: number }): Promise<FetchedMessage | null>;
 
   // --- human-like sending (US-025; WAHA docs "How to avoid blocking", "Presence", "Chats") --------------------------------------------------
   // Every call below is BEST EFFORT: the caller (apps/worker/src/delivery/human.ts) catches its failure and goes on, and each has a short budget
-  // (presenceTimeoutMs). The exact request bodies are UNVERIFIED until US-005 checks them against the Owner's WAHA instance (its OpenAPI): the
-  // "presence" bodies are the documented ones ({chatId, presence: "typing" | "paused"}, {presence: "offline"}); sendSeen's body is not documented on
-  // the pages we read ({session, chatId, messageIds} is the shape of the other /api/send* calls) and falls back to the documented
-  // POST /api/{session}/chats/{chatId}/messages/read ({}: every unread message of the chat) when WAHA answers 4xx.
+  // (presenceTimeoutMs). The bodies and the answers are RECORDED on the Owner's WAHA 2026.10.1 (WEBJS, US-005, docs/spikes/R11.md): the "presence" bodies are
+  // {chatId, presence: "typing" | "paused"} and {presence: "offline"}, sendSeen's is {session, chatId, messageIds?}; presence and sendSeen-with-ids answer 201 with
+  // NO BODY (hence `emptyOk`), startTyping and stopTyping 201 {"result": true}. sendSeen still falls back to the documented
+  // POST /api/{session}/chats/{chatId}/messages/read ({}: every unread message of the chat) when WAHA answers 4xx (another engine).
   /** Marks the chat's messages as read (`messageIds`: only these, where the engine supports it). */
   sendSeen(session: string, chatId: string, messageIds?: readonly string[]): Promise<void>;
   /** The "typing..." presence in a chat: POST /api/{session}/presence {chatId, presence: "typing"}. */
@@ -129,9 +151,10 @@ export interface WahaClient {
   // --- first contact (WAHA docs, Contacts: check-exists; LIDs) -----------------------------------------------------------------------------------
   /**
    * Is `phone` (E.164, with the plus or digits) on WhatsApp, and what is its chat id: GET /api/contacts/check-exists?phone=<digits>&session=<name> answers
-   * {numberExists, chatId, pn}. SEND TO THE RETURNED chatId: since the LID rollout it can be `<lid>@lid`, so a first contact is never addressed as
-   * `<phone>@c.us` by us. `lid` is set when the chat id is a @lid; `phone` is the `pn` WAHA gives back. A failure (5xx, timeout) is a WahaError "failed":
-   * a lookup is never a send, so it is never maybe_sent. UNVERIFIED shape until US-005.
+   * {numberExists, chatId[, pn]}. SEND TO THE RETURNED chatId: since the LID rollout it can be `<lid>@lid`, so a first contact is never addressed as
+   * `<phone>@c.us` by us. `lid` is set when the chat id is a @lid; `phone` is the `pn` WAHA gives back. RECORDED (US-005, WEBJS): the test phone came back as
+   * a @lid with NO `pn`, and a number that is not on WhatsApp as {numberExists: false}. A failure (5xx, timeout) is a WahaError "failed":
+   * a lookup is never a send, so it is never maybe_sent.
    */
   checkExists(session: string, phone: string): Promise<ContactCheck>;
 
@@ -169,13 +192,17 @@ export function createWahaClient(config: WahaClientConfig): WahaClient {
   };
 
   const assertSession = (session: string) => {
-    if (!SESSION_NAME.test(session)) throw new RangeError("invalid WAHA session name");
+    if (!SESSION_NAME.test(session)) throw new NotSentError("invalid WAHA session name");
   };
   const assertChat = (chatId: string) => {
-    if (!CHAT_ID.test(chatId)) throw new RangeError("invalid WhatsApp chat id");
+    if (!CHAT_ID.test(chatId)) throw new NotSentError("invalid WhatsApp chat id");
   };
 
-  async function call(path: readonly string[], init: { method: "GET" | "POST"; body?: unknown; query?: Record<string, string>; notFound?: unknown; budgetMs?: number }, sending: boolean): Promise<unknown> {
+  /**
+   * `emptyOk`: a 2xx answer with an EMPTY body is a success (the answer is then undefined). Recorded on the Owner's WEBJS instance (US-005, R11): POST /api/{session}/presence
+   * and sendSeen with messageIds answer 201 and no body at all. Only those calls say so; every other call keeps requiring JSON.
+   */
+  async function call(path: readonly string[], init: { method: "GET" | "POST"; body?: unknown; query?: Record<string, string>; notFound?: unknown; budgetMs?: number; emptyOk?: boolean }, sending: boolean): Promise<unknown> {
     let response: HttpResponse;
     try {
       response = await config.fetch(url(path, init.query), {
@@ -199,6 +226,20 @@ export function createWahaClient(config: WahaClientConfig): WahaClient {
     if (response.status === 404 && init.notFound !== undefined) return init.notFound;
     if (response.status >= 500) throw new WahaError(sending ? "maybe_sent" : "failed", `WAHA error ${String(response.status)}`);
     if (response.status >= 400) throw new WahaError("rejected", `WAHA rejected the request (${String(response.status)})`);
+    if (init.emptyOk === true) {
+      let text: string;
+      try {
+        text = await response.text();
+      } catch (error) {
+        throw new WahaError("bad_response", "WAHA answer could not be read", { cause: error });
+      }
+      if (text.trim() === "") return undefined;
+      try {
+        return JSON.parse(text) as unknown;
+      } catch (error) {
+        throw new WahaError("bad_response", "WAHA answered without JSON", { cause: error });
+      }
+    }
     try {
       return await response.json();
     } catch (error) {
@@ -218,11 +259,19 @@ export function createWahaClient(config: WahaClientConfig): WahaClient {
   const presenceBudget = config.presenceTimeoutMs ?? PRESENCE_TIMEOUT_MS;
   const unix = (value: unknown): Date | null => (typeof value === "number" && Number.isFinite(value) && value > 0 ? new Date(value * 1000) : null);
 
-  const sent = (body: unknown): SentMessage => {
+  /**
+   * The id and time of a send answer, BOUND to the message we asked for (security review US-005, LOW-1): the id must be one of OUR messages (`true_`) in the chat we
+   * sent to (`true_<chatId>_<key>`), whichever form WAHA answers it in; anything else is an answer we cannot tie to this send, so it is `maybe_sent` (the message may
+   * well have gone out: it is never resent). The documented answer is a WAMessage whose `id` is a string; the Owner's WEBJS instance answers the raw whatsapp-web.js
+   * message instead (US-005, R11, recorded for sendText and sendFile): `id` is an OBJECT {fromMe, remote, id, $1, _serialized} and `_serialized` holds the string id
+   * the message list shows. `timestamp` is a number (unix seconds); `source` is absent on this shape and is not needed.
+   */
+  const sent = (body: unknown, chatId: string): SentMessage => {
     if (!isRecord(body)) throw new WahaError("maybe_sent", "WAHA send answer is not an object");
-    const id = stringField(body, "id");
+    const rawId = body["id"];
+    const id = typeof rawId === "string" ? rawId : isRecord(rawId) ? stringField(rawId, "_serialized") : undefined;
     const timestamp = body["timestamp"];
-    if (id === undefined || typeof timestamp !== "number") throw new WahaError("maybe_sent", "WAHA send answer has no id/timestamp");
+    if (id === undefined || !isOurMessageIn(id, chatId) || typeof timestamp !== "number") throw new WahaError("maybe_sent", "WAHA send answer is not our message in this chat");
     return { id, timestamp };
   };
 
@@ -230,14 +279,16 @@ export function createWahaClient(config: WahaClientConfig): WahaClient {
     async sendText(session, chatId, text) {
       assertSession(session);
       assertChat(chatId);
-      return sent(await call(["api", "sendText"], { method: "POST", body: { session, chatId, text } }, true));
+      // WEBJS does not validate it: a send with an empty text is SENT as an empty message (recorded, US-005 R11). Refused here, before WAHA is called.
+      if (text.trim() === "") throw new NotSentError("text must not be empty");
+      return sent(await call(["api", "sendText"], { method: "POST", body: { session, chatId, text } }, true), chatId);
     },
     async sendFile(session, chatId, file, caption) {
       assertSession(session);
       assertChat(chatId);
-      if (!file.url.startsWith("https://")) throw new RangeError("file.url must be https (a signFileUrl URL)");
+      if (!file.url.startsWith("https://")) throw new NotSentError("file.url must be https (a signFileUrl URL)");
       const body = { session, chatId, file: { url: file.url, filename: file.filename, mimetype: file.mimetype }, ...(caption === undefined ? {} : { caption }) };
-      return sent(await call(["api", "sendFile"], { method: "POST", body }, true));
+      return sent(await call(["api", "sendFile"], { method: "POST", body }, true), chatId);
     },
     async sessionStatus(session) {
       assertSession(session);
@@ -281,11 +332,16 @@ export function createWahaClient(config: WahaClientConfig): WahaClient {
       }
       return found;
     },
-    async getMessage(session, messageId) {
+    async getMessage(session, messageId, options) {
       assertSession(session);
       const chatId = MESSAGE_ID.exec(messageId)?.[1];
       if (chatId === undefined) throw new RangeError("invalid WAHA message id");
-      const body = await call(["api", session, "chats", chatId, "messages", messageId], { method: "GET", query: { downloadMedia: "false" }, notFound: null }, false);
+      const budgetMs = options?.timeoutMs;
+      const body = await call(
+        ["api", session, "chats", chatId, "messages", messageId],
+        { method: "GET", query: { downloadMedia: "false" }, notFound: null, ...(budgetMs === undefined ? {} : { budgetMs }) },
+        false,
+      );
       if (body === null) return null;
       if (!isRecord(body)) throw new WahaError("bad_response", "WAHA message answer is not an object");
       const timestamp = body["timestamp"];
@@ -294,7 +350,10 @@ export function createWahaClient(config: WahaClientConfig): WahaClient {
         throw new WahaError("bad_response", "WAHA message answer is for another message or incomplete");
       }
       const text = body["body"];
-      return { messageId, chat: parseChatId(chatId), fromMe, body: typeof text === "string" ? text : "", hasMedia: body["hasMedia"] === true, timestamp };
+      const data = body["_data"];
+      const size = isRecord(data) ? data["size"] : undefined;
+      const mediaSize = typeof size === "number" && Number.isSafeInteger(size) && size >= 0 ? size : undefined;
+      return { messageId, chat: parseChatId(chatId), fromMe, body: typeof text === "string" ? text : "", hasMedia: body["hasMedia"] === true, ...(mediaSize === undefined ? {} : { mediaSize }), timestamp };
     },
 
     async sendSeen(session, chatId, messageIds) {
@@ -302,26 +361,26 @@ export function createWahaClient(config: WahaClientConfig): WahaClient {
       assertChat(chatId);
       const ids = messageIds === undefined || messageIds.length === 0 ? undefined : messageIds.filter((id) => MESSAGE_ID.test(id));
       try {
-        await call(["api", "sendSeen"], { method: "POST", body: { session, chatId, ...(ids === undefined || ids.length === 0 ? {} : { messageIds: ids }) }, budgetMs: presenceBudget }, false);
+        await call(["api", "sendSeen"], { method: "POST", body: { session, chatId, ...(ids === undefined || ids.length === 0 ? {} : { messageIds: ids }) }, budgetMs: presenceBudget, emptyOk: true }, false);
       } catch (error) {
         // An instance without POST /api/sendSeen answers 4xx: the documented "read the chat" call does the same for every unread message.
         if (!(error instanceof WahaError) || error.code !== "rejected") throw error;
-        await call(["api", session, "chats", chatId, "messages", "read"], { method: "POST", body: {}, budgetMs: presenceBudget }, false);
+        await call(["api", session, "chats", chatId, "messages", "read"], { method: "POST", body: {}, budgetMs: presenceBudget, emptyOk: true }, false);
       }
     },
     async startTyping(session, chatId) {
       assertSession(session);
       assertChat(chatId);
-      await call(["api", session, "presence"], { method: "POST", body: { chatId, presence: "typing" }, budgetMs: presenceBudget }, false);
+      await call(["api", session, "presence"], { method: "POST", body: { chatId, presence: "typing" }, budgetMs: presenceBudget, emptyOk: true }, false);
     },
     async stopTyping(session, chatId) {
       assertSession(session);
       assertChat(chatId);
-      await call(["api", session, "presence"], { method: "POST", body: { chatId, presence: "paused" }, budgetMs: presenceBudget }, false);
+      await call(["api", session, "presence"], { method: "POST", body: { chatId, presence: "paused" }, budgetMs: presenceBudget, emptyOk: true }, false);
     },
     async setOffline(session) {
       assertSession(session);
-      await call(["api", session, "presence"], { method: "POST", body: { presence: "offline" }, budgetMs: presenceBudget }, false);
+      await call(["api", session, "presence"], { method: "POST", body: { presence: "offline" }, budgetMs: presenceBudget, emptyOk: true }, false);
     },
 
     async checkExists(session, phone) {
@@ -444,7 +503,8 @@ export interface SessionStatusEvent {
   /**
    * WhatsApp's limits on the number, when the event carries them (WAHA docs: payload.data.reachoutTimelock {isActive, timeEnforcementEnds} and
    * payload.data.messageCapping {cappingStatus, totalQuota, usedQuota, cycleStart, cycleEnd}); the raw objects, which record_waha_session_state checks.
-   * UNVERIFIED shapes until US-005.
+   * The shapes are the documented ones, which GET /api/sessions/{session}/timelock and /capping and `me` of the session answer too (RECORDED, US-005); a real
+   * session.status webhook delivery was not recorded (no public URL): verify it on staging (US-014 / US-032).
    */
   readonly reachoutTimelock: Record<string, unknown> | undefined;
   readonly messageCapping: Record<string, unknown> | undefined;

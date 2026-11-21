@@ -51,6 +51,7 @@ export {
   type FileToSend,
   type InboundMessage,
   mapAck,
+  NotSentError,
   type OutgoingMessage,
   parseChatId,
   parseWebhookEvent,

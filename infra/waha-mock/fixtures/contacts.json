@@ -1,0 +1,103 @@
+{
+  "_provenance": "RECORDED 2026-11-21 from the Owner's WAHA 2026.10.1 (WEBJS), scrubbed (stable placeholders for the phone and its LID). The test phone's chat id comes back as a @lid WITHOUT a pn field.",
+  "check_exists": {
+    "registered_lid_contact": {
+      "http_status": 200,
+      "body": {
+        "numberExists": true,
+        "chatId": "98765432101234@lid"
+      }
+    },
+    "not_on_whatsapp": {
+      "http_status": 200,
+      "body": {
+        "numberExists": false
+      }
+    }
+  },
+  "lids": {
+    "by_phone": {
+      "http_status": 200,
+      "body": {
+        "lid": "98765432101234@lid",
+        "pn": "628123456789@c.us"
+      }
+    },
+    "by_lid": {
+      "http_status": 200,
+      "body": {
+        "lid": "98765432101234@lid",
+        "pn": "628123456789@c.us"
+      }
+    },
+    "unknown_lid": {
+      "http_status": 200,
+      "body": {
+        "lid": "100000000000001@lid",
+        "pn": null
+      }
+    },
+    "list_entry_shape": {
+      "lid": "98765432101235@lid",
+      "pn": "628123456780@c.us",
+      "keys": [
+        "lid",
+        "pn"
+      ],
+      "count_on_this_instance_is_small": true
+    }
+  },
+  "message_by_id": {
+    "through_the_lid_chat": {
+      "http_status": 200,
+      "body": {
+        "id": "false_98765432101234@lid_3EB0000000000000000005",
+        "timestamp": 1760000020,
+        "from": "98765432101234@lid",
+        "fromMe": false,
+        "source": "app",
+        "to": "628111111111@c.us",
+        "body": "Halo, ini pesan uji.",
+        "hasMedia": false,
+        "media": null,
+        "ack": 0,
+        "ackName": "PENDING",
+        "location": null,
+        "vCards": [],
+        "_data": {
+          "type": "chat"
+        }
+      }
+    },
+    "through_the_c_us_chat": {
+      "http_status": 200,
+      "body": {
+        "id": "false_98765432101234@lid_3EB0000000000000000005",
+        "timestamp": 1760000020,
+        "from": "98765432101234@lid",
+        "fromMe": false,
+        "source": "app",
+        "to": "628111111111@c.us",
+        "body": "Halo, ini pesan uji.",
+        "hasMedia": false,
+        "media": null,
+        "ack": 0,
+        "ackName": "PENDING",
+        "location": null,
+        "vCards": [],
+        "_data": {
+          "type": "chat"
+        }
+      }
+    },
+    "unknown_id": {
+      "http_status": 404,
+      "body": {
+        "message": "Message not found",
+        "error": "Not Found",
+        "statusCode": 404
+      }
+    },
+    "note": "WEBJS ignores the chat in the path: the message is found through its @lid chat, through the phone's @c.us chat and through a wrong chat id alike."
+  }
+}

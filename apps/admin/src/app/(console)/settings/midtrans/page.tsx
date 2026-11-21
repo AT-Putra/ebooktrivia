@@ -61,7 +61,11 @@ export default async function MidtransPage() {
       <Card className="p-0 md:p-0">
         <ActionForm action={updateMidtransMethodsAction} submitLabel="Save methods and fees" className="flex flex-col gap-3 p-4 md:p-6" testId="midtrans-methods">
           <CardTitle className="text-base">Payment methods and fees</CardTitle>
-          <CardDescription>The fee is what Midtrans charges the seller (used in the ROI report); buyers always pay the product price.</CardDescription>
+          <CardDescription>
+            Tick a method to offer it in Snap; the checkout sends only the ticked ones (and refuses to take orders when none is ticked). A method that is not active
+            on your Midtrans account is simply not shown to buyers: ShopeePay, BRI VA, CIMB VA and Kredivo start switched off for that reason. The fee is what Midtrans
+            charges the seller (used in the ROI report); a method you switch off keeps its saved fee, so older orders still count it. Buyers always pay the product price.
+          </CardDescription>
           <Table aria-label="Payment methods">
             <TableHeader>
               <TableRow>

@@ -17,7 +17,7 @@
 //     the number's health (the breaker rests a number that keeps failing);
 //   - a send that MAY have gone out (a timeout, a reset, a 5xx) is never tried on another number: the caller learns `maybe_sent` and the player
 //     asks for a new code if none arrives. Nothing is stored or logged but ids and codes: never the number or the text.
-import { WahaError } from "@ebooktrivia/adapters";
+import { NotSentError, WahaError } from "@ebooktrivia/adapters";
 import { type IdMobileE164, OTP_GAP_MS, toWaChatId, WA_MAX_SESSIONS } from "@ebooktrivia/core";
 import { setTimeout as delay } from "node:timers/promises";
 import type postgres from "postgres";
@@ -83,6 +83,8 @@ export function createPoolSender(deps: {
   const sleep = deps.sleep ?? ((ms: number, signal?: AbortSignal) => delay(ms, undefined, signal === undefined ? {} : { signal }));
   return {
     async sendText({ to, text, signal }) {
+      // WEBJS sends an empty text as an empty message (R11): refused before a number is claimed, before any "typing" is shown, and never an uncertain send.
+      if (text.trim() === "") throw new NotSentError("text must not be empty");
       // A phone is one contact (the buyer's opener and a login code count together); the chat ids it is known by tell the pool which numbers already have a
       // chat with it. The chat id built from the phone is for matching history only: what is SENT to is what check-exists returns.
       const chats = await knownChatsOf(sql, to, toWaChatId(to));
@@ -157,6 +159,12 @@ export function createPoolSender(deps: {
           return { sessionId: picked.sessionId };
         } catch (error) {
           if (error instanceof PoolSendError) throw error;
+          // An argument the adapter refused before it made any request (a malformed chat id or session name: exactly NotSentError): nothing was sent, so the claim is given back,
+          // never `unknown`. Any other error, a plain RangeError included, may have been raised after the request left and takes the uncertain path below.
+          if (error instanceof NotSentError) {
+            await discardSend(sql, picked.sendId);
+            throw new PoolSendError("failed", refusal);
+          }
           if (error instanceof WahaError && (error.code === "reachout_timelock" || error.code === "message_capping")) {
             // WhatsApp refused a NEW contact from this number: nothing was sent. Held back (and alerted), not counted as failing; another number.
             refusal = { kind: "waha", code: error.code };

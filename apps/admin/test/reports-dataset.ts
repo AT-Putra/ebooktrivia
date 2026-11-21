@@ -26,6 +26,7 @@
 // order_not_paid; a failed TikTok MT of o14 marked "no MT template"; a failed reversal of o5 marked "skipped".
 //
 // Gateway fees (midtrans.fees): other_qris 0 + 0.70 %, gopay 0 + 2.00 %, bca_va 4000, bni_va 4400, credit_card 2000 + 2.90 %.
+// A qris payment reads BOTH other_qris and gopay and takes the dearer (a desktop GoPay tile arrives as qris, US-005): 2.00 % here.
 import { randomBytes } from "node:crypto";
 import { EFFECT_CANCELLED, NO_MT_TEMPLATE, REVERSAL_SKIPPED } from "@ebooktrivia/core";
 import { root, suffix } from "./support.ts";

@@ -31,7 +31,7 @@
 //
 // Nothing here logs or stores a phone, an e-mail address, a message, a login link or a signed URL: errors are codes
 // (deliveries.last_error), logs and alerts carry ids and codes only.
-import { SmtpError, WahaError } from "@ebooktrivia/adapters";
+import { NotSentError, SmtpError, WahaError } from "@ebooktrivia/adapters";
 import {
   type BuyerFirstReply,
   claimDelivery,
@@ -67,8 +67,9 @@ import type postgres from "postgres";
 import type { Logger } from "../log.ts";
 import { type JobSpec, jobRowId, rowJobId } from "../queues.ts";
 import { deliveryColumns, raiseAlert, raiseAlertIn } from "../sweepers.ts";
-import type { DeliveryConfig } from "./config.ts";
+import { type DeliveryConfig, PREFLIGHT_TIMEOUT_MS, READBACK_TIMEOUT_MS } from "./config.ts";
 import { ContactCacheError, type ContactResolution, knownChatsOf, resolveContact } from "./contacts.ts";
+import { DELIVERED_WRONG_FILE, deliveredSize, FILE_UNAVAILABLE, type WrongFile, wrongFile } from "./file-check.ts";
 import { refreshSessionLimits } from "./health.ts";
 import { cryptoRandom, sendLikeAHuman } from "./human.ts";
 import { emailMessage, loadOpenerTemplates, loadTemplate, openerMessage, TemplateMissing, whatsappCaption } from "./messages.ts";
@@ -433,6 +434,8 @@ export function createDelivery(deps: DeliveryDeps): Delivery {
     readonly counts: boolean;
     /** WhatsApp refused a new contact (463 / 475): the number is held back from new contacts, and this says nothing of its health. */
     readonly ban?: BanCode;
+    /** The file went out, but WAHA says it delivered a different size than the stored PDF (US-005 R11): the delivery is marked, the Owner is alerted, nothing is resent. */
+    readonly wrongFile?: WrongFile;
   }
 
   /** The opener's outcomes are the delivery's plus `no_whatsapp` (the phone is not on WhatsApp). */
@@ -440,6 +443,8 @@ export function createDelivery(deps: DeliveryDeps): Delivery {
 
   /** What the lease can still cover: after the claim's waits, the human-like sequence and the send itself must fit in it. */
   const leaseLeft = (context: { readonly claimedAt: number }, reserveMs: number): boolean => clock() <= context.claimedAt + config.leaseMs - config.wahaTimeoutMs - reserveMs - 1000;
+  /** Does the lease still have `ms` (and a second) left for something AFTER the send (the read-back of a file)? */
+  const leaseCovers = (context: { readonly claimedAt: number }, ms: number): boolean => clock() + ms + 1000 <= context.claimedAt + config.leaseMs;
   const humanDeps = { log, random: deps.humanRandom, sleep };
   const notAttempted = (error: string): Sent => ({ outcome: { kind: "not_attempted", error }, counts: false });
 
@@ -465,12 +470,25 @@ export function createDelivery(deps: DeliveryDeps): Delivery {
     } catch {
       return notAttempted("aborted_before_send");
     }
-    // A claim that stalled past what the lease can still cover (the human-like pauses and the send) is not sent: nothing went out, so it is as if it
-    // had not been made.
-    if (!leaseLeft(context, HUMAN_MAX_MS)) return notAttempted("claim_too_old");
+    // A claim that stalled past what the lease can still cover (the pre-flight, the human-like pauses, the send and the read-back) is not sent: nothing went out, so it
+    // is as if it had not been made.
+    if (!leaseLeft(context, PREFLIGHT_TIMEOUT_MS + HUMAN_MAX_MS + READBACK_TIMEOUT_MS)) return notAttempted("claim_too_old");
+    // The pre-flight (US-005 R11): WAHA delivers whatever the URL answers, even a 404 page, so the URL must answer the stored file BEFORE anything is sent. Nothing went out, so it
+    // is nobody's fault but ours (not_attempted: the attempt and the number are given back, no health penalty, a persisted alert) and the e-mail path is untouched.
+    let expectedSize: number;
     try {
-      const result = await deps.waha.withSession(target.sessionId, ({ sessionName, client }) =>
-        sendLikeAHuman(humanDeps, {
+      const preflight = await deps.files.preflight(context.product.storagePath, new Date());
+      if (!preflight.ok) {
+        log.warn({ deliveryId: context.deliveryId, reason: preflight.reason }, "the signed ebook URL does not answer the stored file; the WhatsApp send is not attempted");
+        return notAttempted(FILE_UNAVAILABLE);
+      }
+      expectedSize = preflight.size;
+    } catch (error) {
+      return { outcome: preparationFailure(error), counts: false };
+    }
+    try {
+      const { sent, delivered } = await deps.waha.withSession(target.sessionId, async ({ sessionName, client }) => {
+        const result = await sendLikeAHuman(humanDeps, {
           client,
           sessionName,
           chatId,
@@ -481,10 +499,19 @@ export function createDelivery(deps: DeliveryDeps): Delivery {
           signal,
           beforeSend: () => leaseLeft(context, HUMAN_PRESENCE_TIMEOUT_MS),
           send: () => client.sendFile(sessionName, chatId, { url, filename: target.filename, mimetype: "application/pdf" }, caption),
-        }),
-      );
-      if (result.kind === "not_sent") return notAttempted(result.reason === "aborted" ? "aborted_before_send" : "claim_too_old");
-      return { outcome: { kind: "sent", waMessageId: result.value.id }, counts: true };
+        });
+        // The read-back: the size WAHA delivered, compared below with the stored file's. Best effort: it never changes how the send is recorded, it has a budget of its own
+        // (READBACK_TIMEOUT_MS) and it is skipped when what is left of the lease cannot cover it (the lease sweeper may be about to take the row).
+        let delivered: number | undefined;
+        if (result.kind === "sent") {
+          if (leaseCovers(context, READBACK_TIMEOUT_MS)) delivered = await deliveredSize(client, sessionName, result.value.id, log);
+          else log.debug({ deliveryId: context.deliveryId }, "the lease cannot cover the read-back of the sent file; its size is not checked");
+        }
+        return { sent: result, delivered };
+      });
+      if (sent.kind === "not_sent") return notAttempted(sent.reason === "aborted" ? "aborted_before_send" : "claim_too_old");
+      const wrong = wrongFile(expectedSize, delivered);
+      return { outcome: { kind: "sent", waMessageId: sent.value.id }, counts: true, ...(wrong === undefined ? {} : { wrongFile: wrong }) };
     } catch (error) {
       return whatsappFailure(error);
     }
@@ -500,6 +527,8 @@ export function createDelivery(deps: DeliveryDeps): Delivery {
     } catch (error) {
       return { outcome: preparationFailure(error), counts: false };
     }
+    // WEBJS sends an empty text as an empty message (R11): a template that renders to nothing is refused here, BEFORE the human-like sequence shows "typing" for it.
+    if (text.trim() === "") return notAttempted("template_invalid");
     try {
       await sleep(Math.max(0, target.startAt.getTime() - Date.now()), signal);
     } catch {
@@ -557,6 +586,10 @@ export function createDelivery(deps: DeliveryDeps): Delivery {
       // maybe_sent: the request may have reached WhatsApp (a timeout, a reset, a 5xx, an answer we could not read). Never resent.
       return { outcome: error.code === "maybe_sent" ? { kind: "maybe_sent", error: "waha_maybe_sent" } : { kind: "retryable_failure", error: code("waha", error.code) }, counts: true };
     }
+    // An argument the adapter refused BEFORE it made any request (a malformed chat id or session name, an empty text, a file URL that is not https): the adapter raises exactly
+    // NotSentError for those, so nothing was sent and it is never maybe_sent. A fault of ours (data or a template): not attempted, alerted, the number untouched. Any other error,
+    // a plain RangeError included, may have been raised after the request left and stays on the uncertain path below.
+    if (error instanceof NotSentError) return notAttempted("invalid_request");
     // An unexpected error somewhere after the request may have left: treat it as possibly sent (never a blind resend). It is not
     // WAHA's answer, so it says nothing about the number.
     return { outcome: { kind: "maybe_sent", error: "waha_send_failed" }, counts: false };
@@ -649,6 +682,18 @@ export function createDelivery(deps: DeliveryDeps): Delivery {
         }
       }
       const status = decision.set.status;
+      // The file went out with the wrong size (WAHA delivered a page instead of the PDF): the delivery stays `sent` (it WAS sent, and is never resent by itself) and is marked
+      // for a person: last_error is shown as its code in the delivery report, and a persisted critical alert tells the Owner. No personal data in either.
+      if (sent.wrongFile !== undefined && outcome.kind === "sent") {
+        await tx`UPDATE public.deliveries SET last_error = ${DELIVERED_WRONG_FILE}, updated_at = ${row.now} WHERE id = ${row.id} AND status = 'sent'`;
+        await raiseAlertIn(tx, {
+          kind: "delivery_wrong_file",
+          severity: "critical",
+          dedupeKey: `delivery_wrong_file:${row.id}`,
+          message: "a WhatsApp ebook went out but WAHA delivered a file of another size than the PDF (a page instead of the ebook?): check the order and resend it; it is not resent by itself",
+          payload: { delivery_id: row.id, order_id: row.order_id, expected_bytes: sent.wrongFile.expected, delivered_bytes: sent.wrongFile.delivered },
+        });
+      }
       if (sent.ban !== undefined && context.whatsapp !== undefined) await holdBack(tx, context.whatsapp.sessionId, sent.ban, row.now);
       else if (outcome.kind === "not_attempted") {
         // Deliveries wait on something of ours (the login link, a template, the PDF): one persisted alert per cause an hour, no personal data.

@@ -5,7 +5,6 @@
 // proactive send is not cancelled. Races between the reply and the proactive send send one PDF.
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
-import { createEbookFiles } from "../src/delivery/access.ts";
 import { createDelivery, type Delivery } from "../src/delivery/deliver.ts";
 import { createInboundConsumer, INBOUND_TOPIC } from "../src/delivery/inbound.ts";
 import { pdfOnlyCaption, replyText } from "../src/delivery/messages.ts";
@@ -28,6 +27,7 @@ import {
   storeInbound,
   unpaidOrder,
 } from "./support/delivery.ts";
+import { testFiles } from "./support/files.ts";
 import { first, sql } from "./support/db.ts";
 import { silentLog, uniquePhone, workerPool } from "./support/midtrans.ts";
 
@@ -63,14 +63,14 @@ function rig(options: { random?: () => number; clock?: () => number } = {}) {
     config,
     waha: waha.access,
     mail,
-    files: createEbookFiles(config),
+    files: testFiles(config),
     magicLinks: magic,
     enqueue: () => Promise.resolve(),
     random: options.random ?? (() => 0.5),
     sleep: () => Promise.resolve(),
     ...clock,
   });
-  const consumer = createInboundConsumer({ sql: workerSql, log: silentLog, config, waha: waha.access, delivery, files: createEbookFiles(config), random: options.random ?? (() => 0.5), sleep: () => Promise.resolve(), ...clock });
+  const consumer = createInboundConsumer({ sql: workerSql, log: silentLog, config, waha: waha.access, delivery, files: testFiles(config), random: options.random ?? (() => 0.5), sleep: () => Promise.resolve(), ...clock });
   const process = createOutboxProcessor(consumer, { sql: workerSql, failpoint: inertFailpoint, log: silentLog });
   /** A buyer's message: registered in WAHA, stored as the webhook route would, and handled by the consumer. */
   async function hear(input: { session: string; chatId: string; body: string; orderCode?: string }) {

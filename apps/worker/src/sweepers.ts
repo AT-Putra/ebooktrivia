@@ -38,6 +38,8 @@
 //   login_throttle admin login-throttle rows whose window and lock are over (US-016), through the
 //                  SECURITY DEFINER public.sweep_login_throttle(): worker_rw has no other access
 //                  to admin_auth. Consecutive second-factor counts and hard locks are kept.
+//   payment_methods the checkout takes no orders while midtrans.enabled_methods is empty (it answers 503): one critical
+//                  alert for the Owner while that lasts (Owner D11, US-005).
 // conversions and deliveries need a port (the fire port US-024, the delivery consumer US-025):
 // runSweeps skips each one until its port is registered, so nothing is moved that the worker
 // cannot finish.
@@ -47,6 +49,7 @@ import {
   type DeliveryPatch,
   type DeliveryRow,
   type DeliveryStatus,
+  enabledMidtransMethods,
   expireConversionLease,
   expireDeliveryLease,
   GRACE_END_SETTLE_MS,
@@ -470,6 +473,23 @@ export async function expireLeases(sql: postgres.Sql, sinkDedupesByTxid: SinkDed
   return { conversions, deliveries };
 }
 
+/**
+ * The checkout answers 503 while no payment method is enabled (app_settings midtrans.enabled_methods: the Owner's per-method switch,
+ * Owner D11; the console refuses to save none, so this means a setting that was emptied or damaged outside it). The public app cannot
+ * write alerts, so the minute sweep does: one critical alert while it lasts (deduped per hour by raiseAlert). Returns whether one was raised.
+ */
+export async function alertNoPaymentMethods(sql: postgres.Sql): Promise<boolean> {
+  const [row] = await sql<{ value: unknown }[]>`SELECT value FROM public.app_settings WHERE key = 'midtrans.enabled_methods'`;
+  if (enabledMidtransMethods(row?.value).length > 0) return false;
+  return raiseAlert(sql, {
+    kind: "checkout_no_payment_methods",
+    severity: "critical",
+    dedupeKey: "checkout_no_payment_methods",
+    message: "no payment method is enabled: the checkout answers 503 and takes no orders; enable at least one in Settings, Midtrans",
+    payload: {},
+  });
+}
+
 /** One sweep of everything; a failing sweeper is logged and does not stop the others. */
 export async function runSweeps(deps: SweepDeps): Promise<void> {
   const { conversionQueue, deliveryQueue } = deps;
@@ -484,6 +504,7 @@ export async function runSweeps(deps: SweepDeps): Promise<void> {
   sweepers.push(["grace_end", () => endGracePeriods(deps.sql, deps.log)]);
   sweepers.push(["login_throttle", () => sweepLoginThrottle(deps.sql)]);
   sweepers.push(["otp_expiry", () => sweepExpiredOtps(deps.sql)]);
+  sweepers.push(["payment_methods", () => alertNoPaymentMethods(deps.sql)]);
   for (const [name, run] of Object.entries(deps.extraSweeps ?? {})) sweepers.push([name, run]);
   for (const [sweeper, run] of sweepers) {
     try {

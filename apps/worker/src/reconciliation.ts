@@ -26,7 +26,7 @@ import { confirmSettlement, getTransactionStatus, MidtransError, type MidtransSt
 import { type OrderStatus, RECONCILE_WINDOW_DAYS, type ReconcileFinding, reconcileOrder, type ReconcileVerdict, reconciliationDay } from "@ebooktrivia/core";
 import type postgres from "postgres";
 import type { Logger } from "./log.ts";
-import { applyRequery, type AttemptRef, idr, type MidtransSource } from "./payments.ts";
+import { applyRequery, type AttemptRef, idr, type MidtransSource, requeryInstant } from "./payments.ts";
 import { raiseAlert, raiseAlertIn } from "./sweepers.ts";
 
 /** An unfinished run whose heartbeat is this old is claimed again (its worker died). */
@@ -44,7 +44,7 @@ export interface ReconcileDeps {
   readonly midtrans: MidtransSource;
   readonly log: Logger;
   readonly waDelayMs: number;
-  /** Default the system clock. */
+  /** Default the system clock for the run day; the stamp of a re-query is the DATABASE clock unless this is injected (payments.ts requeryInstant). */
   readonly clock?: () => Date;
   readonly heartbeatEvery?: number;
   readonly maxConsecutiveErrors?: number;
@@ -115,7 +115,6 @@ export async function reconcileIfDue(deps: ReconcileDeps): Promise<ReconcileSumm
 
 export async function reconcile(deps: ReconcileDeps, run: { readonly id: string; readonly runDate: string }): Promise<ReconcileSummary> {
   const { sql, log } = deps;
-  const clock = deps.clock ?? (() => new Date());
   const heartbeatEvery = deps.heartbeatEvery ?? RECONCILE_HEARTBEAT_ORDERS;
   const maxConsecutive = deps.maxConsecutiveErrors ?? RECONCILE_MAX_CONSECUTIVE_ERRORS;
   const midtrans = await deps.midtrans(sql);
@@ -147,7 +146,7 @@ export async function reconcile(deps: ReconcileDeps, run: { readonly id: string;
     let incomplete = false;
     for (const a of attempts) {
       const attempt: AttemptRef = { id: a.id, orderId, n: a.n, midtransOrderId: a.midtrans_order_id };
-      const requeriedAt = clock();
+      const requeriedAt = await requeryInstant(sql, deps.clock);
       try {
         checked.push({ attempt, status: await getTransactionStatus(midtrans, a.midtrans_order_id), requeriedAt });
         attemptsChecked++;

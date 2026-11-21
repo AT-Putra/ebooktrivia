@@ -1,21 +1,121 @@
 {
-  "_provenance": "PROVISIONAL — shaped from Midtrans public docs, not yet recorded from a real Midtrans sandbox (replace when verified in US-005)",
+  "_provenance": "Midtrans documents the HTTP notification body as the same shape as Get Status. These bodies are the RECORDED Get Status answers of status.json (scrubbed the same way, 2026-11-21); NO real notification delivery was recorded (the sandbox needs a public notification URL). Verify one on staging (US-014/US-032). The signature formula sha512(order_id+status_code+gross_amount+serverKey) was verified live on every recorded status.",
   "pending": {
     "status_code": "201",
-    "transaction_status": "pending",
+    "transaction_id": "00000000-0000-4000-8000-000000000012",
     "gross_amount": "50000.00",
-    "order_id": "ORDER-1"
+    "currency": "IDR",
+    "order_id": "ORDER-1",
+    "payment_type": "bank_transfer",
+    "signature_key": "2b4abdd9e735d2d01ccd3ee7323b0ee0ebba8c95f2721224e7dbc292c4d4fad3da4c0d95a13f48755d94c9c96d39a4c90f95856381b8ae94cbda3dc07571fc24",
+    "transaction_status": "pending",
+    "fraud_status": "accept",
+    "status_message": "Success, transaction is found",
+    "merchant_id": "G000000000",
+    "va_numbers": [
+      {
+        "bank": "bca",
+        "va_number": "00000000000000000000001"
+      }
+    ],
+    "payment_amounts": [],
+    "transaction_time": "2026-01-01 10:00:00",
+    "expiry_time": "2026-01-01 11:00:00"
   },
   "settlement": {
     "status_code": "200",
-    "transaction_status": "settlement",
+    "transaction_id": "00000000-0000-4000-8000-000000000012",
     "gross_amount": "50000.00",
-    "order_id": "ORDER-1"
+    "currency": "IDR",
+    "order_id": "ORDER-1",
+    "payment_type": "bank_transfer",
+    "signature_key": "4b4862cf7e565f7319ccd0df499c1fb59c9574a0f9b3fed95b0ec6101b6a81cc7d0ea3bfba2245a7c0965c39ec0f6bcef65f2fdf246a34d2ee328934c1347b22",
+    "transaction_status": "settlement",
+    "fraud_status": "accept",
+    "status_message": "Success, transaction is found",
+    "merchant_id": "G000000000",
+    "va_numbers": [
+      {
+        "bank": "bca",
+        "va_number": "00000000000000000000001"
+      }
+    ],
+    "payment_amounts": [],
+    "transaction_time": "2026-01-01 10:00:00",
+    "settlement_time": "2026-01-01 10:00:30",
+    "expiry_time": "2026-01-01 11:00:00"
+  },
+  "capture": {
+    "status_code": "200",
+    "transaction_id": "00000000-0000-4000-8000-000000000071",
+    "gross_amount": "50000.00",
+    "currency": "IDR",
+    "order_id": "ORDER-7",
+    "payment_type": "credit_card",
+    "signature_key": "cf55133597cd0bca79cd2e21f905f471440192afa861e5c51ccb6151526689363066bec5362bb29eba86c266bf126158e9eeada5b358e3b51abc959e95153180",
+    "transaction_status": "capture",
+    "fraud_status": "accept",
+    "status_message": "Success, Credit Card capture transaction is successful",
+    "merchant_id": "G000000000",
+    "transaction_time": "2026-01-01 10:00:00",
+    "settlement_time": "2026-01-01 10:00:30",
+    "expiry_time": "2026-01-09 10:00:00",
+    "channel_response_code": "00",
+    "channel_response_message": "Approved",
+    "bank": "cimb",
+    "approval_code": "000000",
+    "masked_card": "48111111-1114",
+    "card_type": "credit",
+    "channel": "dragon",
+    "on_us": false
   },
   "expire": {
     "status_code": "407",
-    "transaction_status": "expire",
+    "transaction_id": "00000000-0000-4000-8000-000000000021",
     "gross_amount": "50000.00",
-    "order_id": "ORDER-1"
+    "currency": "IDR",
+    "order_id": "ORDER-2",
+    "payment_type": "bank_transfer",
+    "signature_key": "f2736eb0cd73ad12a6e0f6718658099c583f2adef82ad046150fba989696e3719de9b32d23d52a04c5679f357a52a0a77709b075b8a914b79499c51364e01e70",
+    "transaction_status": "expire",
+    "fraud_status": "accept",
+    "status_message": "Success, transaction is found",
+    "merchant_id": "G000000000",
+    "va_numbers": [
+      {
+        "bank": "bni",
+        "va_number": "9880000000000001"
+      }
+    ],
+    "payment_amounts": [
+      {
+        "amount": "50000.00",
+        "paid_at": "2026-01-01 10:00:00"
+      }
+    ],
+    "transaction_time": "2026-01-01 10:00:00",
+    "expiry_time": "2026-01-01 11:00:00"
+  },
+  "deny": {
+    "status_code": "202",
+    "transaction_id": "00000000-0000-4000-8000-000000000011",
+    "gross_amount": "50000.00",
+    "currency": "IDR",
+    "order_id": "ORDER-1",
+    "payment_type": "credit_card",
+    "signature_key": "7c05067feed9faceda281ce96731103c228da843057cd15956946cf2222f947a42c82b252455861f45d61233f33a6bef97ec6caa90f905391af12b31ae6ada62",
+    "transaction_status": "deny",
+    "fraud_status": "accept",
+    "status_message": "Deny by Bank [BNI] with code [05] and message [Do not honour]",
+    "merchant_id": "G000000000",
+    "transaction_time": "2026-01-01 10:00:00",
+    "expiry_time": "2026-01-09 10:00:00",
+    "channel_response_code": "05",
+    "channel_response_message": "Do not honour",
+    "bank": "bni",
+    "masked_card": "48111111-1114",
+    "card_type": "debit",
+    "channel": "dragon",
+    "on_us": false
   }
 }

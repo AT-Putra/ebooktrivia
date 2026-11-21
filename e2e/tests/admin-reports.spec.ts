@@ -103,6 +103,8 @@ async function seed(): Promise<void> {
       INSERT INTO conversion_events (order_id, sink, kind, status, adnet_id, txid, event_id, value_idr, maybe_counted, reported_payout_idr, attempts, failed_at, last_error, last_http_status)
       VALUES (${oB}, 's2s', 'mt', 'failed', ${adnet.id}, ${oB}, gen_random_uuid(), 49000, false, 5000, 6, now(), 'HTTP 500', 500) RETURNING id`)
   ).id;
+  // A WhatsApp ebook that arrived as the wrong file (US-005 R11): `sent`, code delivered_wrong_file; the delivery report lists it under "Needs attention", display only.
+  await admin.sql`INSERT INTO deliveries (order_id, channel, status, attempts, last_error, sent_at) VALUES (${oA}, 'whatsapp', 'sent', 1, 'delivered_wrong_file', now())`;
   await admin.sql`INSERT INTO visits (landing_page_id, adnet_id, clickid) SELECT ${lp.id}, ${adnet.id}, 'x' FROM generate_series(1, 3)`;
   await admin.sql`INSERT INTO visits (landing_page_id) SELECT ${lp.id} FROM generate_series(1, 2)`;
   await admin.sql`INSERT INTO ad_spend (spend_date, platform, landing_page_id, adnet_id, amount_idr) VALUES ((now() AT TIME ZONE 'UTC' + interval '7 hours')::date, 'meta', ${lp.id}, ${adnet.id}, 20000)`;
@@ -213,6 +215,35 @@ test("Staff view the reports but cannot export, see profit, edit ad spend or re-
   await expect(staff.getByTestId("winners-export")).toHaveCount(0);
   const exports = await one(admin.sql<{ n: number }[]>`SELECT count(*)::int AS n FROM audit_log WHERE action IN ('sales.export', 'winners.export')`);
   expect(exports.n).toBe(1);
+});
+
+test("a WhatsApp file that arrived wrong is listed under Needs attention: the Owner reads the note and can mark it handled, Staff see the code only, and nobody gets a resend", async () => {
+  for (const [who, page] of [["owner", owner], ["staff", staff]] as const) {
+    await page.goto("/reports/delivery");
+    const card = page.getByTestId("delivery-attention");
+    await expect(card.getByTestId("attention-row"), who).toHaveCount(1);
+    await expect(card.getByTestId("attention-error"), who).toContainText("delivered_wrong_file");
+    await expect(card, who).toContainText("1 wrong-file");
+    // `sent` stays final: no resend button for it, for anybody.
+    await expect(card.getByRole("button", { name: "Resend" }), who).toHaveCount(0);
+  }
+  await expect(owner.getByTestId("attention-wrong-file-note")).toContainText("WhatsApp delivered a wrong file. Check that the buyer received the PDF by email, and send the file manually if needed.");
+  await expect(staff.getByTestId("attention-wrong-file-note")).toHaveCount(0);
+  // Only the Owner has "Mark handled" (the server refuses Staff too: guards.test.ts, policy).
+  await expect(staff.getByTestId("delivery-attention").getByRole("button")).toHaveCount(0);
+  await owner.getByTestId("delivery-attention").getByRole("button", { name: "Mark handled" }).click();
+  // The row leaves the list for everybody (the page is refreshed by the action, so the button's own confirmation goes with it); the delivery itself is unchanged and the
+  // action is audited.
+  await expect(owner.getByTestId("delivery-attention").getByTestId("attention-row")).toHaveCount(0);
+  for (const [who, page] of [["owner", owner], ["staff", staff]] as const) {
+    await page.goto("/reports/delivery");
+    await expect(page.getByTestId("delivery-attention").getByTestId("attention-row"), who).toHaveCount(0);
+    await expect(page.getByTestId("delivery-attention"), who).toContainText("0 wrong-file");
+  }
+  const delivery = await one(admin.sql<{ status: string; last_error: string | null }[]>`SELECT status::text AS status, last_error FROM deliveries WHERE last_error = 'delivered_wrong_file'`);
+  expect(delivery).toEqual({ status: "sent", last_error: "delivered_wrong_file" });
+  const audited = await one(admin.sql<{ n: number }[]>`SELECT count(*)::int AS n FROM audit_log WHERE action = 'delivery.wrong_file_handled'`);
+  expect(audited.n).toBe(1);
 });
 
 test("the Owner's profit report matches the hand-computed fixture, and ad spend entered in the console changes it at once", async () => {

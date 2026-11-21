@@ -36,6 +36,16 @@
 //                  MTs that may have reached their sink (core reversalSinks);
 //      plus the payments ledger row, an audit row per status change, the decision's alert and a
 //      critical alert for EVERY chargeback (whatever it does to the order).
+// Owner decisions of US-005 (docs/runbooks/payments.md):
+//   D10  a card `capture` with fraud accept pays the order at once (core classifyMidtransStatus, adapters confirmSettlement); the
+//        settlement the next day is the same attempt again: paid stays, nothing changes (paid_at and payments.settled_at are set
+//        once, by the capture).
+//   D9   a PAID order whose payment Midtrans reverses (deny, cancel, expire or failure of the attempt that held its money, e.g. Permata
+//        VA, Mandiri Bill and Indomaret flipping a settlement to deny within minutes) goes to review (the D5 semantics above), the
+//        buyer's live magic links are revoked when no eligible program is left (public.revoke_player_magic_links) and a persisted
+//        CRITICAL payment_paid_reversed alert is raised. "Held the money" = the attempt's payments.settled_at (set once), so an
+//        intermediate pending or unknown status cannot hide the reversal. Delivery stays instant; what was already sent is never
+//        reversed here.
 // Exactly once: every effect is an INSERT ... ON CONFLICT DO NOTHING on a unique key (deliveries
 // order+channel, conversion_events order+sink+kind, outbox dedupe_key, player_programs pkey), paid_at is
 // stamped once (coalesce; orders_payment_stamps_guard), and deliveries / MT rows exist for paid orders
@@ -49,6 +59,7 @@ import {
   deliverySchedule,
   EFFECT_CANCELLED,
   isChargeback,
+  isSettledStatus,
   isUuid,
   mtSinks,
   NO_MT_TEMPLATE,
@@ -76,6 +87,18 @@ export const PAYMENT_LEASE_MS = 30_000;
 export const ORDER_PAID_TOPIC = "order.paid";
 /** Inbox labels that name money moving: a re-query still pending for them is a lag, retried. */
 const MONEY_LABELS: readonly string[] = ["settlement", "capture", "refund", "partial_refund", "chargeback", "partial_chargeback"];
+
+/**
+ * The instant a re-query is SENT, read from the DATABASE clock (clock_timestamp()): it is what orders two answers of one attempt
+ * (applyRequery keeps a newer one and drops a stale one by comparing these instants). Every worker process reads the same clock, so a
+ * worker whose own clock is skewed cannot make an older answer look newer and overwrite a newer one. An injected clock (the tests) wins.
+ */
+export async function requeryInstant(sql: postgres.Sql, clock?: () => Date): Promise<Date> {
+  if (clock !== undefined) return clock();
+  const [row] = await sql<{ now: Date }[]>`SELECT clock_timestamp() AS now`;
+  if (row === undefined) throw new Error("the database clock did not answer");
+  return row.now;
+}
 
 /** The deployment's Midtrans access: the server key (opened with the payment private key) and the HTTP port. */
 export type MidtransSource = (sql: postgres.Sql) => Promise<MidtransConfig>;
@@ -129,6 +152,8 @@ const ALERT_MESSAGES: Readonly<Record<PaymentAlert["kind"], string>> = {
   payment_settlement_review: "a Midtrans settlement does not match its order (amount, currency, status code or fraud status): the order is NOT paid; review it",
   payment_double_settlement: "a second Midtrans attempt of a paid order settled: possible double charge, refund one of them",
   payment_review: "a payment moved its order to review (partial refund or chargeback, challenge, or cancel): eligibility is suspended until the Owner decides",
+  payment_paid_reversed:
+    "Midtrans reversed a payment we counted (deny, cancel, expire or failure of a paid order): the order is in review, the buyer's eligibility is suspended and their login links are revoked; the ebook already sent is NOT recalled; decide: refund, or restore if Midtrans settles it again",
   payment_anomaly: "a re-queried Midtrans status does not fit the order's state; nothing changed",
 };
 
@@ -279,7 +304,10 @@ async function recordPayment(tx: postgres.TransactionSql, order: OrderRow, attem
     payment_type: status.paymentType ?? null,
     transaction_time: status.transactionTime ?? null,
   };
-  const settled = status.transactionStatus === "settlement" ? order.now : null;
+  // settled_at is the first instant the money counted as ours (set once: coalesce below). A card is `capture` + accept at first and
+  // `settlement` the next day (Owner D10), so the capture stamps it and the later settlement keeps it; a settlement with a doubtful
+  // fraud status is not settled.
+  const settled = isSettledStatus(status.transactionStatus, status.fraudStatus ?? null) ? order.now : null;
   await tx`
     INSERT INTO public.payments (order_id, midtrans_attempt_id, gateway_txn_id, payment_type, transaction_status, fraud_status, gross_amount_idr, currency, settled_at, raw, updated_at)
     VALUES (${order.id}, ${attempt.id}, ${status.transactionId.slice(0, 128)}, ${status.paymentType ?? null}, ${status.transactionStatus.slice(0, 64)}, ${status.fraudStatus ?? null},
@@ -302,6 +330,13 @@ export async function applyRequery(tx: postgres.TransactionSql, attempt: Attempt
      WHERE o.id = ${attempt.orderId}
        FOR UPDATE OF o`;
   if (order === undefined) throw new Error("the attempt's order is missing");
+  // Did this attempt EVER hold the buyer's money? Its payments.settled_at, set once (coalesce in recordPayment) when a
+  // settlement or a capture+accept was counted, and cleared by nothing. A settled attempt that now answers deny / cancel /
+  // expire / failure is a payment Midtrans reversed (Owner D9), not another attempt's noise; deciding it from the attempt's last
+  // status instead would let an intermediate pending or unknown status hide the reversal (fail open). Read BEFORE this
+  // re-query's own recordPayment.
+  const [held] = await tx<{ held: boolean }[]>`
+    SELECT EXISTS (SELECT 1 FROM public.payments p WHERE p.midtrans_attempt_id = ${attempt.id} AND p.order_id = ${order.id} AND p.settled_at IS NOT NULL) AS held`;
   const recorded = await tx`
     UPDATE public.midtrans_attempts
        SET gateway_status = ${status.transactionStatus.slice(0, 64)}, gateway_fraud_status = ${status.fraudStatus?.slice(0, 64) ?? null}, gateway_checked_at = ${requeriedAt}
@@ -314,11 +349,13 @@ export async function applyRequery(tx: postgres.TransactionSql, attempt: Attempt
     attempt.n,
     order.snap_attempt_count,
     attempts.map((a) => ({ n: a.n, gatewayStatus: a.gateway_status, gatewayFraudStatus: a.gateway_fraud_status })),
+    held?.held === true,
   );
   const decision = decidePayment(order.status, verdict, status.fraudStatus, context);
   await recordPayment(tx, order, attempt, status);
 
   let to = order.status;
+  let magicLinksRevoked: number | undefined;
   if (decision.transition.kind === "move") {
     to = decision.transition.to;
     const moved =
@@ -331,6 +368,13 @@ export async function applyRequery(tx: postgres.TransactionSql, attempt: Attempt
     await audit(tx, order, to, decision.event, attempt, options.source);
     if (to === "paid") await paidEffects(tx, order, options.waDelayMs);
     else if (to === "refunded" || to === "review") await reversalEffects(tx, order, to, decision.event, attempt);
+    // Owner D9: a paid order whose payment Midtrans reversed (deny, cancel, expire, failure of the attempt that held its money):
+    // the buyer's live magic links are revoked (eligibility is suspended and the unsent effects cancelled by reversalEffects above;
+    // what was already sent is never reversed here). The Owner is alerted by the decision's critical payment_paid_reversed.
+    if (decision.alert?.kind === "payment_paid_reversed" && order.player_id !== null) {
+      const [revoked] = await tx<{ n: number }[]>`SELECT public.revoke_player_magic_links(${order.player_id}) AS n`;
+      magicLinksRevoked = revoked?.n ?? 0;
+    }
   }
   const payload = {
     order_id: order.id,
@@ -340,6 +384,7 @@ export async function applyRequery(tx: postgres.TransactionSql, attempt: Attempt
     event: decision.event,
     transaction_status: status.transactionStatus.slice(0, 64),
     ...(verdict.kind === "review" ? { reason: verdict.reason } : {}),
+    ...(magicLinksRevoked === undefined ? {} : { magic_links_revoked: magicLinksRevoked }),
     source: options.source,
   };
   if (decision.alert !== null) {
@@ -373,7 +418,7 @@ export interface PaymentDeps {
   readonly midtrans: MidtransSource;
   readonly log: Logger;
   readonly waDelayMs: number;
-  /** The clock stamped on a re-query (taken BEFORE it is sent); default the system clock. */
+  /** The clock stamped on a re-query (taken BEFORE it is sent) and used for the age of a notification; default: the DATABASE clock for the stamp (requeryInstant), the system clock for the age. */
   readonly clock?: () => Date;
 }
 
@@ -422,7 +467,7 @@ export function createPaymentNotificationConsumer(deps: PaymentDeps): OutboxCons
       }
       const attempt: AttemptRef = { id: note.attempt_id, orderId: note.order_id, n: note.n, midtransOrderId: note.midtrans_order_id };
       const failed = (code: string, error: unknown) => requeryFailed(deps, { orderId: attempt.orderId, attempt: attempt.n, receivedAt: note.received_at, now: clock(), code, error });
-      const requeriedAt = clock();
+      const requeriedAt = await requeryInstant(sql, deps.clock);
       let status: MidtransStatus | undefined;
       try {
         status = await getTransactionStatus(await deps.midtrans(sql), attempt.midtransOrderId);

@@ -241,6 +241,8 @@ async function createSnap(
         midtransOrderId: midtransOrderId(order.publicId, n),
         grossAmountIdr: order.amountIdr,
         expiryMinutes: c.opened.expiryMinutes,
+        // Midtrans counts the window from the buyer's method choice unless told: pin it to the instant snap_expires_at counts from.
+        startTime: new Date(c.opened.snapExpiresAt.getTime() - c.opened.expiryMinutes * 60_000),
         item: { id: c.lp.productId, name: c.lp.productTitle },
         // What Snap needs to show and prefill the payment page; nothing else about the buyer. A reused
         // order belongs to the same buyer (D1), so these equal the stored details up to case and spaces.

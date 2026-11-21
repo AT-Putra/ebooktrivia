@@ -1,0 +1,63 @@
+{
+  "_provenance": "RECORDED 2026-11-21 from the Owner's WAHA 2026.10.1, engine WEBJS, against the Owner's TEST chat. NO BODY means a 201 with an empty body.",
+  "sendSeen_without_messageIds": {
+    "http_status": 201,
+    "body": {
+      "ids": null
+    }
+  },
+  "sendSeen_with_messageIds": {
+    "http_status": 201,
+    "empty_body": true
+  },
+  "startTyping": {
+    "http_status": 201,
+    "body": {
+      "result": true
+    }
+  },
+  "stopTyping": {
+    "http_status": 201,
+    "body": {
+      "result": true
+    }
+  },
+  "presence_typing": {
+    "http_status": 201,
+    "empty_body": true
+  },
+  "presence_paused": {
+    "http_status": 201,
+    "empty_body": true
+  },
+  "presence_recording": {
+    "http_status": 201,
+    "empty_body": true
+  },
+  "presence_offline": {
+    "http_status": 201,
+    "empty_body": true
+  },
+  "presence_unsupported_value": {
+    "http_status": 501,
+    "body": {
+      "message": "WEBJS engine doesn't support 'bogus' presence. The method is not implemented by 'WEBJS' engine. Check the docs and try another engine: https://waha.devlike.pro/",
+      "error": "Not Implemented",
+      "statusCode": 501
+    }
+  },
+  "presence_typing_without_chat": {
+    "http_status": 400,
+    "body": {
+      "detail": "'typing' presence requires 'chatId' field."
+    }
+  },
+  "sendSeen_without_chat": {
+    "http_status": 500,
+    "body": "<500 with the engine exception>"
+  },
+  "get_presence_all": {
+    "http_status": 501,
+    "note": "GET /api/{session}/presence is not implemented by WEBJS"
+  }
+}

@@ -227,7 +227,7 @@ The SDK can clear and control only what it owns. The landing page must therefore
 (`midtrans_env: "sandbox"`) or `app.midtrans.com` (`"production"`), no port, no user info, **no query and no fragment, and a path of the
 Snap payment page shape** `/snap/v<N>/(redirection|vtweb)/<token>` with a token of letters, digits and hyphens (Midtrans' documentation
 shows `/snap/v2/vtweb/{token}` and `/snap/v3/redirection/{snap_token}`; the sandbox returns `/snap/v4/redirection/{token}`; any version
-number is accepted; **the strict path and the no-query rule must be confirmed against the real sandbox in US-005 before production**: a real
+number is accepted; **the sandbox shape is confirmed (US-005 recorded `/snap/v4/redirection/{uuid}`, no query); check one real production Snap URL on the first production order**: a real
 Snap URL this refuses would turn every payment into the error state). The SDK navigates to the parsed form, never the raw string. Anything
 else shows "Alamat pembayaran tidak dikenali, jadi kamu tidak dialihkan. Hubungi penyelenggara.", fires no pixel and leaves the form
 usable.

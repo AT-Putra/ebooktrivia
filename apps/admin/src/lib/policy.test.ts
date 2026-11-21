@@ -41,6 +41,7 @@ const STAFF_EXPECTED: Readonly<Record<Permission, boolean | "unlocked">> = {
   "conversion.refire": false,
   "delivery.mark_unknown_sent": false,
   "delivery.resend_unknown": false,
+  "delivery.wrong_file_handled": false,
   "order.review.resolve": false,
   "ad_spend.edit": false,
   "roi.view": false,
@@ -123,6 +124,9 @@ describe("plan denials for Staff (AC-A1, plan M5a.3, §10 item 18)", () => {
     // ... but never a delivery that may already have reached the buyer: that is the Owner's, with a confirmation.
     expect(can("staff", "delivery.resend_unknown")).toBe(false);
     expect(can("owner", "delivery.resend_unknown")).toBe(true);
+    // ... and only the Owner reads the wrong-file note and marks it handled (US-005 R11).
+    expect(can("staff", "delivery.wrong_file_handled")).toBe(false);
+    expect(can("owner", "delivery.wrong_file_handled")).toBe(true);
   });
 });
 

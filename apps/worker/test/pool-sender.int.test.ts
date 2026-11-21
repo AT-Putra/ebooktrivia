@@ -1,8 +1,10 @@
 // US-025: a text message out of the pool (src/delivery/pool-sender.ts), the port the player's OTP sender sits behind. It uses the same numbers, caps,
 // pacing, failover and health as a delivery, and never tries a second number after a send that may have gone out.
+import { NotSentError } from "@ebooktrivia/adapters";
 import { toWaChatId, type IdMobileE164, OTP_GAP_MS } from "@ebooktrivia/core";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { createPoolSender, PoolSendError } from "../src/delivery/pool-sender.ts";
+import type { WahaAccess } from "../src/delivery/ports.ts";
 import { createSession, createWahaFake, retireSessions } from "./support/delivery.ts";
 import { first, sql } from "./support/db.ts";
 import { silentLog, uniquePhone, workerPool } from "./support/midtrans.ts";
@@ -56,6 +58,62 @@ describe("a text out of the pool", () => {
     // The third finds the number at its cap.
     expect(await code(r.sender.sendText({ to: TO(), text: "y" }))).toBe("no_number");
     expect(r.waha.sent).toHaveLength(2);
+  });
+
+  it("refuses an empty or whitespace-only text BEFORE a number is claimed (WEBJS would send an empty message): a NotSentError, no WAHA call (no typing), no ledger row, no health change", async () => {
+    const r = rig();
+    const session = await createSession({ dailyCap: 5 });
+    for (const text of ["", " ", "\n\t  "]) await expect(r.sender.sendText({ to: TO(), text }), JSON.stringify(text)).rejects.toThrow(NotSentError);
+    expect(r.waha.calls).toEqual([]);
+    expect(r.waha.sent).toHaveLength(0);
+    expect(r.slept).toEqual([]);
+    expect(await sql`SELECT id FROM waha_sends WHERE session_id = ${session.id}`).toEqual([]);
+    expect(await health(session.id)).toBe(0);
+    // A real one still goes.
+    expect(await r.sender.sendText({ to: TO(), text: "Kode 123456" })).toEqual({ sessionId: session.id });
+  });
+
+  it("an argument the adapter refuses before it makes any request (a NotSentError after the claim) is NOT an uncertain send: the claim is given back, the failure is definite, nothing is `unknown`", async () => {
+    const waha = createWahaFake();
+    const session = await createSession();
+    const refusing: WahaAccess = {
+      withSession: (sessionId, use, options) =>
+        waha.access.withSession(sessionId, (access) => use({ ...access, client: { ...access.client, sendText: () => Promise.reject(new NotSentError("invalid WhatsApp chat id")) } }), options),
+    };
+    const sender = createPoolSender({ sql: workerSql, log: silentLog, waha: refusing, random: () => 0, sleep: () => Promise.resolve() });
+    expect(await code(sender.sendText({ to: TO(), text: "Kode 123456" }))).toBe("failed");
+    expect(await sql`SELECT outcome FROM waha_sends WHERE session_id = ${session.id}`).toEqual([]);
+    expect(await health(session.id)).toBe(0);
+  });
+
+  it("any OTHER error, even a plain RangeError thrown after the request has left, is an uncertain send: the ledger row is `unknown`, the error is maybe_sent, and no second number is tried (never resent)", async () => {
+    const waha = createWahaFake();
+    const first = await createSession({ weight: 5 });
+    const second = await createSession({ weight: 1 });
+    const afterTheRequest: WahaAccess = {
+      withSession: (sessionId, use, options) =>
+        waha.access.withSession(
+          sessionId,
+          (access) =>
+            use({
+              ...access,
+              // The send DID go out; then something of ours raised a RangeError (not the adapter's NotSentError).
+              client: {
+                ...access.client,
+                sendText: async (...args) => {
+                  await access.client.sendText(...args);
+                  throw new RangeError("raised after the request left");
+                },
+              },
+            }),
+          options,
+        ),
+    };
+    const sender = createPoolSender({ sql: workerSql, log: silentLog, waha: afterTheRequest, random: () => 0, sleep: () => Promise.resolve() });
+    expect(await code(sender.sendText({ to: TO(), text: "Kode 123456" }))).toBe("maybe_sent");
+    expect(waha.sent).toHaveLength(1);
+    expect(await sql`SELECT outcome FROM waha_sends WHERE session_id = ${first.id}`).toEqual([{ outcome: "unknown" }]);
+    expect(await sql`SELECT outcome FROM waha_sends WHERE session_id = ${second.id}`).toEqual([]);
   });
 
   it("fails over to another number on a definite failure, and records the failure on the first", async () => {

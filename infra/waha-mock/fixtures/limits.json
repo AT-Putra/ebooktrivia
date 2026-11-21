@@ -1,0 +1,23 @@
+{
+  "_provenance": "RECORDED 2026-11-21 from the Owner's WAHA 2026.10.1 (WEBJS): an account with no restriction and no capping. The warning and CAPPED states were NOT provoked: their shape is the documented one (docs/spikes/R11.md).",
+  "timelock": {
+    "http_status": 200,
+    "body": {
+      "enforcementType": "DEFAULT",
+      "isActive": false,
+      "timeEnforcementEnds": null
+    }
+  },
+  "capping": {
+    "http_status": 200,
+    "body": {
+      "cappingStatus": "NONE",
+      "totalQuota": -1,
+      "usedQuota": 0,
+      "cycleStart": 1793000000,
+      "cycleEnd": 1795600000,
+      "mvStatus": "NOT_ELIGIBLE",
+      "oteStatus": "NOT_ELIGIBLE"
+    }
+  }
+}

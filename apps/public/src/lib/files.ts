@@ -1,4 +1,4 @@
-// GET api.<DOMAIN>/files/deliverables/<upload id>.pdf?exp=..&sig=.. (US-025; plan M3.3, M2.5): the ebook PDF, served only to a holder of
+// GET api.<DOMAIN>/files/deliverables/<upload id>.pdf?exp=..&sig=..&n=.. (US-025; plan M3.3, M2.5): the ebook PDF, served only to a holder of
 // a signed URL. The worker mints the URL (adapters signFileUrl; the key is derived from the payment-scope private key both apps
 // hold, packages/crypto file-url-key.ts): WAHA fetches it to send the file over WhatsApp (10 minutes, usable several times, WAHA may
 // retry the download), and the e-mail fallback for an ebook the SMTP server would not carry holds one for 72 hours.
@@ -28,8 +28,11 @@ export const FILE_URL_CAP = 10;
 /** A URL with at most this long left is WAHA's (the worker mints those with FILE_URL_TTL_SECONDS): served even while Valkey is down. */
 export const SHORT_URL_SECONDS = 600;
 
-/** The rate-limit key of a URL: a digest of what the signature covers, never the signature or the path itself. */
-export const urlKey = (path: string, exp: string): string => createHash("sha256").update(`ebooktrivia/files-url/v1|${path}|${exp}`).digest("hex").slice(0, 32);
+/**
+ * The rate-limit key of a URL: a digest of what the signature covers (the path, the expiry and the URL's own random nonce `n`), never the signature or the path
+ * itself. The nonce makes every minted URL its own counter: a pre-flight URL and WAHA's, or two URLs of one file that expire in the same second, never share one.
+ */
+export const urlKey = (path: string, exp: string, nonce: string): string => createHash("sha256").update(`ebooktrivia/files-url/v2|${path}|${exp}|${nonce}`).digest("hex").slice(0, 32);
 
 /** The one path served: the admin upload's storage path (`deliverables/<id>.pdf`) under /files. */
 const PATH = /^\/files\/(deliverables\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.pdf)$/;
@@ -67,15 +70,17 @@ export async function handleFileDownload(deps: FilesDeps, request: Request): Pro
     log("error", "files.refused", { reason: "key_not_configured" });
     return plain(503, { "retry-after": "30" });
   }
-  const checked = verifyFileUrl({ path: url.pathname, exp: url.searchParams.get("exp"), sig: url.searchParams.get("sig"), key: deps.key, now: (deps.now ?? (() => new Date()))() });
+  const checked = verifyFileUrl({ path: url.pathname, exp: url.searchParams.get("exp"), sig: url.searchParams.get("sig"), nonce: url.searchParams.get("n"), key: deps.key, now: (deps.now ?? (() => new Date()))() });
   if (!checked.ok) {
     log("warn", "files.refused", { reason: checked.reason });
     return plain(403);
   }
-  // Per signed URL, for as long as the URL lives (verifyFileUrl has checked that exp is valid, so it is a whole number of seconds).
+  // Per signed URL, for as long as the URL lives (verifyFileUrl has checked that exp is valid, so it is a whole number of seconds, and that n is the URL's nonce).
   const secondsLeft = Number(url.searchParams.get("exp")) - Math.floor((deps.now ?? (() => new Date()))().getTime() / 1000);
   try {
-    const limited = await hitRateLimits(deps.valkey, [{ key: `files:url:${urlKey(url.pathname, url.searchParams.get("exp") ?? "")}`, limit: FILE_URL_CAP, windowMs: Math.max(1000, secondsLeft * 1000) }]);
+    const limited = await hitRateLimits(deps.valkey, [
+      { key: `files:url:${urlKey(url.pathname, url.searchParams.get("exp") ?? "", url.searchParams.get("n") ?? "")}`, limit: FILE_URL_CAP, windowMs: Math.max(1000, secondsLeft * 1000) },
+    ]);
     if (!limited.allowed) {
       log("warn", "files.refused", { reason: "rate_limited" });
       return plain(429, { "retry-after": String(limited.retryAfterSeconds) });

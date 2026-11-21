@@ -10,7 +10,7 @@ import { createWahaClient, type HttpFetch, SafeFetchError } from "@ebooktrivia/a
 import { createWahaMockApp } from "../../../../infra/waha-mock/src/app.ts";
 import type { MagicLinkChannel } from "@ebooktrivia/core";
 import type { DeliveryConfig } from "../../src/delivery/config.ts";
-import { createEbookFiles } from "../../src/delivery/access.ts";
+import { testFiles } from "./files.ts";
 import { type EbookFiles, type MagicLinks, MagicLinkUnavailable, type MailSender, type OutgoingMail, type WahaAccess, WahaAccessError } from "../../src/delivery/ports.ts";
 import { first, sql, suffix } from "./db.ts";
 import { createOrder, createShop, type Shop, uniquePhone } from "./midtrans.ts";
@@ -182,12 +182,19 @@ export interface WahaFake {
 }
 
 /** The mock app of infra/waha-mock in process, and a WahaAccess over it for the sessions of the test database. */
-export function createWahaFake(): WahaFake {
+export function createWahaFake(options: { readonly files?: { readonly fetch: typeof fetch } } = {}): WahaFake {
   const faults = new Map<string, SendFault>();
   const outages = new Set<string>();
   const calls: WahaFake["calls"][number][] = [];
   const sent: WahaFake["sent"][number][] = [];
-  const mock = createWahaMockApp({ apiKey: WAHA_KEY, webhookHmacSecret: WAHA_HMAC, timeoutMs: 5, fetchImpl: () => Promise.resolve(new Response("ok")) });
+  // `files`: WAHA downloads the file URL itself, as the Owner's WEBJS does (US-005 R11): an answer that is an error page is delivered as the document, not refused.
+  const mock = createWahaMockApp({
+    apiKey: WAHA_KEY,
+    webhookHmacSecret: WAHA_HMAC,
+    timeoutMs: 5,
+    fetchImpl: options.files?.fetch ?? (() => Promise.resolve(new Response("ok"))),
+    ...(options.files === undefined ? {} : { fetchFiles: "webjs" as const }),
+  });
   const control = (path: string, body: unknown): Promise<Response> => Promise.resolve(mock.fetch(new Request(`https://mock${path}`, { method: "POST", body: JSON.stringify(body) })));
 
   const sessionOf = (url: URL, body: unknown): string => {
@@ -215,8 +222,10 @@ export function createWahaFake(): WahaFake {
     const response = await mock.fetch(new Request(rawUrl, { method: init.method, headers: init.headers, body: init.body ?? null }));
     if (sending && response.status < 300) {
       const sentBody = body as { chatId: string; text?: string; caption?: string; file?: { filename?: string; url?: string } };
+      // WEBJS answers the raw message: `id` is an object whose `_serialized` is the string id (US-005 R11; the documented shape is the string itself).
+      const answered = ((await response.clone().json()) as { id: string | { _serialized: string } }).id;
       sent.push({
-        id: ((await response.clone().json()) as { id: string }).id,
+        id: typeof answered === "string" ? answered : answered._serialized,
         kind: url.pathname.endsWith("/sendFile") ? "file" : "text",
         session,
         chatId: sentBody.chatId,
@@ -352,5 +361,5 @@ export function deliveryConfig(shop: Pick<DeliveryShop, "dataDir">, over: Partia
   };
 }
 
-export const filesFor = (config: DeliveryConfig): EbookFiles => createEbookFiles(config);
+export const filesFor = (config: DeliveryConfig): EbookFiles => testFiles(config);
 export const noSleep = (): Promise<void> => Promise.resolve();

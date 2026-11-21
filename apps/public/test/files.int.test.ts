@@ -10,7 +10,7 @@ import { createWahaMockApp } from "../../../infra/waha-mock/src/app.ts";
 import { FILE_URL_CAP, type FilesDeps, handleFileDownload, urlKey } from "../src/lib/files.ts";
 import { captureLog, DOMAIN, freshIp, newValkey, valkey } from "./support.ts";
 
-/** A different expiry for every URL a test signs (the limit is per signed URL, i.e. per path and expiry): a TTL of 1..599 s on top of the base. */
+/** A different expiry for every URL a test signs (the limit is per signed URL, i.e. per path, expiry and nonce: the nonce alone already separates them): a TTL of 1..599 s on top of the base. */
 let counter = Math.floor(Math.random() * 598);
 const unique = (): number => 1 + (counter++ % 598);
 
@@ -75,6 +75,8 @@ describe("the signed ebook download", () => {
       "a later expiry": url.replace(/exp=\d+/, `exp=${String(Number(parsed.searchParams.get("exp")) + 3600)}`),
       "a signature of another path": signed(`/files/deliverables/${randomUUID()}.pdf`).replace(/\/files\/deliverables\/[0-9a-f-]+\.pdf/, `/files/${STORAGE}`),
       "a malformed signature": url.replace(/sig=[^&]+/, "sig=AAAA"),
+      "no nonce": url.replace(/&n=[^&]+/, ""),
+      "another nonce": url.replace(/&n=[^&]+/, `&n=${randomBytes(16).toString("base64url")}`),
     };
     for (const [name, variant] of Object.entries(variants)) {
       const res = await get(d, variant);
@@ -121,12 +123,32 @@ describe("the signed ebook download", () => {
     // Valkey a single SCAN page may not hold it.
     const inspect = await newValkey(undefined, true);
     const parsed = new URL(url);
-    const key = `rl:files:url:${urlKey(parsed.pathname, parsed.searchParams.get("exp") ?? "")}`;
+    const key = `rl:files:url:${urlKey(parsed.pathname, parsed.searchParams.get("exp") ?? "", parsed.searchParams.get("n") ?? "")}`;
     expect(await inspect.exists(key)).toBe(1);
     const ttl = await inspect.pttl(key);
     expect(ttl).toBeGreaterThan(0);
     // ... and no longer than the URL itself has left (ttlSeconds is below 600).
     expect(ttl).toBeLessThanOrEqual(600_000);
+  });
+
+  it("LOW-2: URLs of the same file with the SAME expiry (a pre-flight check and WAHA's link minted in the same second) never share a download counter, and the nonce cannot be swapped", async () => {
+    const d = deps();
+    const now = new Date();
+    const a = signed(undefined, { ttlSeconds: 600, now });
+    const b = signed(undefined, { ttlSeconds: 600, now });
+    const parsedA = new URL(a);
+    const parsedB = new URL(b);
+    expect(parsedA.searchParams.get("exp")).toBe(parsedB.searchParams.get("exp"));
+    expect(parsedA.searchParams.get("n")).not.toBe(parsedB.searchParams.get("n"));
+    // `a` is used up; `b` still has its full allowance.
+    for (let i = 0; i < FILE_URL_CAP; i++) expect((await get(d, a)).status, `download ${String(i + 1)}`).toBe(200);
+    expect((await get(d, a)).status).toBe(429);
+    expect((await get(d, b)).status).toBe(200);
+    // Swapping in the nonce of another URL (or dropping it) to reach a fresh counter fails the signature: one answer, nothing served, nothing counted.
+    parsedA.searchParams.set("n", parsedB.searchParams.get("n") ?? "");
+    expect((await get(d, parsedA.href)).status).toBe(403);
+    parsedA.searchParams.delete("n");
+    expect((await get(d, parsedA.href)).status).toBe(403);
   });
 
   it("with Valkey down: a short-lived URL (WAHA's) is still served, the 72 h e-mail link fails closed", async () => {
@@ -142,7 +164,11 @@ describe("the signed ebook download", () => {
     expect((await get(down, signed(undefined, { ttlSeconds: 600 }))).status).toBe(200);
   });
 
-  it("serves WAHA's real download path: waha-mock GETs file.url for every delivery of a burst from one address, none is limited", async () => {
+  // This test is about the ROUTE (one counter per signed URL, forged URLs refused), driven by a downloader that fetches the URL the way WAHA does. `fetchFiles: true` is the
+  // waha-mock's STRICT mode: a download that fails refuses the send with 422. The Owner's WEBJS does NOT do that (R11, docs/spikes/R11.md: it sends the error page as the
+  // document and answers 201), so the 422s below are the strict mock's answer to a refused download, NOT what a real send does. What keeps a refusing or broken route from
+  // reaching a buyer is the worker's pre-flight before every file send and its read-back after it: apps/worker/test/delivery-file-check.int.test.ts.
+  it("serves a WAHA-like downloader (the waha-mock's strict fetch mode): every delivery of a burst from one address is served, one URL is worth FILE_URL_CAP downloads", async () => {
     const d = deps();
     const mock = createWahaMockApp({
       apiKey: "k",
@@ -158,14 +184,15 @@ describe("the signed ebook download", () => {
     // A burst of 40 deliveries: each with its own URL (the worker signs one per send), all from WAHA's one address: all go through. (The old
     // per-IP limit of 60 per 10 minutes would have stopped the burst of a busy minute.)
     const statuses = await Promise.all(Array.from({ length: 40 }, () => send(signed(undefined, { ttlSeconds: unique() })).then((r) => r.status)));
-    expect(statuses.every((s) => s === 200)).toBe(true);
-    // WAHA retrying one URL more than FILE_URL_CAP times is refused: the send fails, like any failed download.
+    // (A successful WEBJS send answers 201, as recorded in US-005.)
+    expect(statuses.every((s) => s === 201)).toBe(true);
+    // A downloader retrying one URL more than FILE_URL_CAP times is refused by the route (429), which the STRICT mock turns into a refused send (422).
     const one = signed(undefined, { ttlSeconds: unique() });
     const retried: number[] = [];
     for (let i = 0; i < FILE_URL_CAP + 2; i++) retried.push((await send(one)).status);
-    expect(retried.slice(0, FILE_URL_CAP).every((s) => s === 200)).toBe(true);
+    expect(retried.slice(0, FILE_URL_CAP).every((s) => s === 201)).toBe(true);
     expect(retried.slice(FILE_URL_CAP)).toEqual([422, 422]);
-    // A forged URL fails the send too.
+    // A forged URL is refused by the route (403): a refused send in the strict mock.
     expect((await send(signed(undefined, { key: randomBytes(32) }))).status).toBe(422);
   });
 });

@@ -1,16 +1,286 @@
 {
-  "_provenance": "PROVISIONAL — shaped from Midtrans public docs, not yet recorded from a real Midtrans sandbox (replace when verified in US-005)",
-  "settlement": {
-    "status_code": "200",
-    "status_message": "Success, transaction is found",
-    "transaction_id": "11111111-1111-1111-1111-111111111111",
-    "order_id": "ORDER-1",
+  "_provenance": "RECORDED 2026-11-21 from the Midtrans sandbox (GET https://api.sandbox.midtrans.com/v2/{order_id}/status) and scrubbed: order ids, transaction ids, merchant id, VA numbers, bill keys, payment codes, amounts and times are placeholders (ORDER-n, 00000000-0000-4000-8000-..., G000000000, 50000.00); key names, key ORDER, value shapes and status codes are as recorded. signature_key is recomputed over the scrubbed values with the dev key SB-Mid-server-DEVONLY. Every answer was HTTP 200: the status lives in the body status_code.",
+  "scenarios": {
+    "no_method_chosen": {
+      "status_code": "404",
+      "status_message": "Transaction doesn't exist.",
+      "id": "00000000-0000-4000-8000-000000000001"
+    },
+    "deny_by_bank_card": {
+      "status_code": "202",
+      "transaction_id": "00000000-0000-4000-8000-000000000011",
+      "gross_amount": "50000.00",
+      "currency": "IDR",
+      "order_id": "ORDER-1",
+      "payment_type": "credit_card",
+      "signature_key": "7c05067feed9faceda281ce96731103c228da843057cd15956946cf2222f947a42c82b252455861f45d61233f33a6bef97ec6caa90f905391af12b31ae6ada62",
+      "transaction_status": "deny",
+      "fraud_status": "accept",
+      "status_message": "Deny by Bank [BNI] with code [05] and message [Do not honour]",
+      "merchant_id": "G000000000",
+      "transaction_time": "2026-01-01 10:00:00",
+      "expiry_time": "2026-01-09 10:00:00",
+      "channel_response_code": "05",
+      "channel_response_message": "Do not honour",
+      "bank": "bni",
+      "masked_card": "48111111-1114",
+      "card_type": "debit",
+      "channel": "dragon",
+      "on_us": false
+    },
+    "bca_va_pending_after_deny": {
+      "status_code": "201",
+      "transaction_id": "00000000-0000-4000-8000-000000000012",
+      "gross_amount": "50000.00",
+      "currency": "IDR",
+      "order_id": "ORDER-1",
+      "payment_type": "bank_transfer",
+      "signature_key": "2b4abdd9e735d2d01ccd3ee7323b0ee0ebba8c95f2721224e7dbc292c4d4fad3da4c0d95a13f48755d94c9c96d39a4c90f95856381b8ae94cbda3dc07571fc24",
+      "transaction_status": "pending",
+      "fraud_status": "accept",
+      "status_message": "Success, transaction is found",
+      "merchant_id": "G000000000",
+      "va_numbers": [
+        {
+          "bank": "bca",
+          "va_number": "00000000000000000000001"
+        }
+      ],
+      "payment_amounts": [],
+      "transaction_time": "2026-01-01 10:00:00",
+      "expiry_time": "2026-01-01 11:00:00"
+    },
+    "bca_va_settlement": {
+      "status_code": "200",
+      "transaction_id": "00000000-0000-4000-8000-000000000012",
+      "gross_amount": "50000.00",
+      "currency": "IDR",
+      "order_id": "ORDER-1",
+      "payment_type": "bank_transfer",
+      "signature_key": "4b4862cf7e565f7319ccd0df499c1fb59c9574a0f9b3fed95b0ec6101b6a81cc7d0ea3bfba2245a7c0965c39ec0f6bcef65f2fdf246a34d2ee328934c1347b22",
+      "transaction_status": "settlement",
+      "fraud_status": "accept",
+      "status_message": "Success, transaction is found",
+      "merchant_id": "G000000000",
+      "va_numbers": [
+        {
+          "bank": "bca",
+          "va_number": "00000000000000000000001"
+        }
+      ],
+      "payment_amounts": [],
+      "transaction_time": "2026-01-01 10:00:00",
+      "settlement_time": "2026-01-01 10:00:30",
+      "expiry_time": "2026-01-01 11:00:00"
+    },
+    "bni_va_pending": {
+      "status_code": "201",
+      "transaction_id": "00000000-0000-4000-8000-000000000021",
+      "gross_amount": "50000.00",
+      "currency": "IDR",
+      "order_id": "ORDER-2",
+      "payment_type": "bank_transfer",
+      "signature_key": "3a3c3039209638cbc42995e25fbfb03bacf0191c946c4530e38d0523205a6ed0de7779bf6a6ab5425190185c26279c87ccd40996b837d2568f016642782bb3ad",
+      "transaction_status": "pending",
+      "fraud_status": "accept",
+      "status_message": "Success, transaction is found",
+      "merchant_id": "G000000000",
+      "va_numbers": [
+        {
+          "bank": "bni",
+          "va_number": "9880000000000001"
+        }
+      ],
+      "payment_amounts": [
+        {
+          "amount": "50000.00",
+          "paid_at": "2026-01-01 10:00:00"
+        }
+      ],
+      "transaction_time": "2026-01-01 10:00:00",
+      "expiry_time": "2026-01-01 11:00:00"
+    },
+    "permata_va_pending": {
+      "status_code": "201",
+      "transaction_id": "00000000-0000-4000-8000-000000000031",
+      "gross_amount": "50000.00",
+      "currency": "IDR",
+      "order_id": "ORDER-3",
+      "payment_type": "bank_transfer",
+      "signature_key": "a21e7633869b0264eac94759b73f39fc4b003edc061393325594b44625cb7d5aba5392184eb79ac27c59986247683368096d40c8bb6a306e4ca04c4593222ca1",
+      "transaction_status": "pending",
+      "fraud_status": "accept",
+      "status_message": "Success, transaction is found",
+      "merchant_id": "G000000000",
+      "permata_va_number": "8000000000000001",
+      "transaction_time": "2026-01-01 10:00:00",
+      "expiry_time": "2026-01-01 11:00:00"
+    },
+    "echannel_pending": {
+      "status_code": "201",
+      "transaction_id": "00000000-0000-4000-8000-000000000041",
+      "gross_amount": "50000.00",
+      "currency": "IDR",
+      "order_id": "ORDER-4",
+      "payment_type": "echannel",
+      "signature_key": "2da4d8fad7aa181ee12fbbd51fbd9f614ad2c4a826a55f7330983f08a147f27d31c16ff125a8a24de1d2bed14b3acad54574727f656aec67847abbea13aa5c77",
+      "transaction_status": "pending",
+      "fraud_status": "accept",
+      "status_message": "Success, transaction is found",
+      "merchant_id": "G000000000",
+      "bill_key": "000000000001",
+      "biller_code": "70012",
+      "transaction_time": "2026-01-01 10:00:00",
+      "expiry_time": "2026-01-01 11:00:00"
+    },
+    "qris_pending": {
+      "status_code": "201",
+      "transaction_id": "00000000-0000-4000-8000-000000000051",
+      "gross_amount": "50000.00",
+      "currency": "IDR",
+      "order_id": "ORDER-5",
+      "payment_type": "qris",
+      "signature_key": "d6a1fac544051cf25d0a966d319d3dbbf02f248320da28da23cb4f342ca0123f1c33e7491e310358fe2c81dc55bf16d78b33c8b01500c3e2c93df13034e7f895",
+      "transaction_status": "pending",
+      "fraud_status": "accept",
+      "status_message": "Success, transaction is found",
+      "merchant_id": "G000000000",
+      "transaction_time": "2026-01-01 10:00:00",
+      "expiry_time": "2026-01-01 11:00:00"
+    },
+    "qris_settlement": {
+      "status_code": "200",
+      "transaction_id": "00000000-0000-4000-8000-000000000052",
+      "gross_amount": "50000.00",
+      "currency": "IDR",
+      "order_id": "ORDER-5",
+      "payment_type": "qris",
+      "signature_key": "9a49660a2adbea9601b8e9072aedd11e419da9b3584aa4e4a1212a0f2efa1cafaae83c3182d0ba7f83ec7677193dbed54830f679db581947f833bce70239a008",
+      "transaction_status": "settlement",
+      "fraud_status": "accept",
+      "status_message": "Success, transaction is found",
+      "merchant_id": "G000000000",
+      "transaction_type": "on-us",
+      "issuer": "gopay",
+      "acquirer": "gopay",
+      "merchant_cross_reference_id": "00000000-0000-4000-8000-000000000952",
+      "transaction_time": "2026-01-01 10:00:00",
+      "settlement_time": "2026-01-01 10:00:30",
+      "expiry_time": "2026-01-01 11:00:00"
+    },
+    "indomaret_pending": {
+      "status_code": "201",
+      "transaction_id": "00000000-0000-4000-8000-000000000061",
+      "gross_amount": "50000.00",
+      "currency": "IDR",
+      "order_id": "ORDER-6",
+      "payment_type": "cstore",
+      "signature_key": "f9c74d59c91c119f915a1c87307e780cac97b2a2e39486d43cd44dc75f666aad028c064721684e850822262df24fddff0c4e484b05227bd8f11be7e3e5efcfec",
+      "transaction_status": "pending",
+      "fraud_status": "accept",
+      "status_message": "Success, transaction is found",
+      "merchant_id": "G000000000",
+      "payment_code": "600000000001",
+      "store": "indomaret",
+      "transaction_time": "2026-01-01 10:00:00",
+      "expiry_time": "2026-01-01 11:00:00"
+    },
+    "indomaret_cancelled": {
+      "status_code": "200",
+      "transaction_id": "00000000-0000-4000-8000-000000000061",
+      "gross_amount": "50000.00",
+      "currency": "IDR",
+      "order_id": "ORDER-6",
+      "payment_type": "cstore",
+      "signature_key": "f0ad24a86a3c1b9c59bc4be69a2a26ea59e4c42f125ed86c08a1b00c4e9f1960104944a35dd10034ab9006032bc9cc529c4e98ab759152332194644b791b5d4c",
+      "transaction_status": "cancel",
+      "fraud_status": "accept",
+      "status_message": "Success, transaction is found",
+      "merchant_id": "G000000000",
+      "payment_code": "600000000001",
+      "store": "indomaret",
+      "transaction_time": "2026-01-01 10:00:00",
+      "expiry_time": "2026-01-01 11:00:00"
+    },
+    "card_capture": {
+      "status_code": "200",
+      "transaction_id": "00000000-0000-4000-8000-000000000071",
+      "gross_amount": "50000.00",
+      "currency": "IDR",
+      "order_id": "ORDER-7",
+      "payment_type": "credit_card",
+      "signature_key": "cf55133597cd0bca79cd2e21f905f471440192afa861e5c51ccb6151526689363066bec5362bb29eba86c266bf126158e9eeada5b358e3b51abc959e95153180",
+      "transaction_status": "capture",
+      "fraud_status": "accept",
+      "status_message": "Success, Credit Card capture transaction is successful",
+      "merchant_id": "G000000000",
+      "transaction_time": "2026-01-01 10:00:00",
+      "settlement_time": "2026-01-01 10:00:30",
+      "expiry_time": "2026-01-09 10:00:00",
+      "channel_response_code": "00",
+      "channel_response_message": "Approved",
+      "bank": "cimb",
+      "approval_code": "000000",
+      "masked_card": "48111111-1114",
+      "card_type": "credit",
+      "channel": "dragon",
+      "on_us": false
+    },
+    "bni_va_expired": {
+      "status_code": "407",
+      "transaction_id": "00000000-0000-4000-8000-000000000021",
+      "gross_amount": "50000.00",
+      "currency": "IDR",
+      "order_id": "ORDER-2",
+      "payment_type": "bank_transfer",
+      "signature_key": "f2736eb0cd73ad12a6e0f6718658099c583f2adef82ad046150fba989696e3719de9b32d23d52a04c5679f357a52a0a77709b075b8a914b79499c51364e01e70",
+      "transaction_status": "expire",
+      "fraud_status": "accept",
+      "status_message": "Success, transaction is found",
+      "merchant_id": "G000000000",
+      "va_numbers": [
+        {
+          "bank": "bni",
+          "va_number": "9880000000000001"
+        }
+      ],
+      "payment_amounts": [
+        {
+          "amount": "50000.00",
+          "paid_at": "2026-01-01 10:00:00"
+        }
+      ],
+      "transaction_time": "2026-01-01 10:00:00",
+      "expiry_time": "2026-01-01 11:00:00"
+    }
+  },
+  "expire_api_answer": {
+    "status_code": "407",
+    "status_message": "Success, transaction is expired",
+    "transaction_id": "00000000-0000-4000-8000-000000000021",
+    "order_id": "ORDER-2",
+    "merchant_id": "G000000000",
     "gross_amount": "50000.00",
     "currency": "IDR",
-    "payment_type": "qris",
-    "transaction_status": "settlement",
+    "payment_type": "bank_transfer",
+    "transaction_time": "2026-01-01 10:00:00",
+    "transaction_status": "expire",
     "fraud_status": "accept",
-    "transaction_time": "2026-11-10 10:00:00",
-    "signature_key": "<sha512hex(order_id+status_code+gross_amount+serverKey)>"
+    "acquirer": "BNI"
+  },
+  "cancel_api_answer": {
+    "status_code": "200",
+    "status_message": "Success, transaction is canceled",
+    "transaction_id": "00000000-0000-4000-8000-000000000061",
+    "order_id": "ORDER-6",
+    "merchant_id": "G000000000",
+    "gross_amount": "50000.00",
+    "currency": "IDR",
+    "payment_type": "cstore",
+    "transaction_status": "cancel",
+    "fraud_status": "accept",
+    "transaction_time": "2026-01-01 10:00:00",
+    "payment_code": "600000000001",
+    "store": "indomaret"
   }
 }

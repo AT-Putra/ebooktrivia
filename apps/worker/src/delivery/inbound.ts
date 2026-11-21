@@ -23,7 +23,7 @@
 //                 crash can lose a reply but never double it), and only while the number is under 80 % of its daily cap, so they can never
 //                 starve the proactive deliveries.
 // The sender's own number and the message text are never logged; the outcome is a code on the waha_inbound row.
-import { WahaError } from "@ebooktrivia/adapters";
+import { NotSentError, WahaError } from "@ebooktrivia/adapters";
 import {
   claimBuyerFirst,
   DELIVERY_GAP_MS,
@@ -42,11 +42,13 @@ import type { Logger } from "../log.ts";
 import type { FinalizeWrites, OutboxConsumer } from "../outbox-consumer.ts";
 import type { DeliveryConfig } from "./config.ts";
 import { knownLid, LID_LINK_FRESH_MS, rememberLid } from "./contacts.ts";
+import { raiseAlert } from "../sweepers.ts";
 import { applyDecision, type Delivery, lockDelivery, machineRow, type SendContext } from "./deliver.ts";
+import { deliveredSize, FILE_UNAVAILABLE, wrongFile } from "./file-check.ts";
 import { cryptoRandom, sendLikeAHuman } from "./human.ts";
 import { pdfOnlyCaption, type ReplyKind, replyText } from "./messages.ts";
 import { claimSession, discardSend, recordSessionOutcome, settleSend } from "./pool.ts";
-import { type EbookFiles, type WahaAccess, WahaAccessError } from "./ports.ts";
+import { type EbookFiles, type FilePreflight, type WahaAccess, WahaAccessError } from "./ports.ts";
 
 export const INBOUND_TOPIC = "waha.inbound";
 /** A WAHA lookup (the message, an @lid) is a quick read; a text reply is one small send; the PDF for an unresolved sender is a file send. */
@@ -116,6 +118,12 @@ export function createInboundConsumer(deps: InboundDeps): OutboxConsumer {
    * may have gone out (`unknown`).
    */
   async function settleFailedSend(sendId: string, error: unknown): Promise<void> {
+    // An argument the adapter refused BEFORE it made any request (an empty text, a malformed chat id: exactly NotSentError): nothing was sent, so the claim is given back, never
+    // `unknown`. Any other error, a plain RangeError included, may have been raised after the request left: it is an unknown send below.
+    if (error instanceof NotSentError) {
+      await discardSend(sql, sendId).catch(() => undefined);
+      return;
+    }
     // Anything else (a fault of ours after the request may have left) is an unknown send too: a row is never left `reserved`.
     const end = error instanceof WahaAccessError || (error instanceof WahaError && error.code !== "maybe_sent") ? "failed" : "unknown";
     await settleSend(sql, sendId, end).catch(() => undefined);
@@ -240,12 +248,36 @@ export function createInboundConsumer(deps: InboundDeps): OutboxConsumer {
     const { sessionId } = claim;
     try {
       await sleep(Math.max(0, claim.slotStart.getTime() - Date.now()), signal);
-      const url = deps.files.signedUrl(file.storage_path, new Date());
+      // The pre-flight (US-005 R11): WAHA delivers whatever the URL answers, even a 404 page. Nothing is sent unless the URL answers the stored PDF; the claim is given back.
+      let url: string;
+      let preflight: FilePreflight;
+      try {
+        url = deps.files.signedUrl(file.storage_path, new Date());
+        preflight = await deps.files.preflight(file.storage_path, new Date());
+      } catch {
+        // The stored PDF is not on disk (or its path is not a deliverable one): nothing could be sent, so this is NOT an uncertain send: the claim is given back, never
+        // ledgered `unknown`.
+        log.warn({ inboundId: inbound.id }, "the stored ebook file cannot be read; the PDF reply is not sent");
+        await discardSend(sql, claim.sendId);
+        return "not_sendable";
+      }
       const caption = pdfOnlyCaption();
-      const result = await deps.waha.withSession(
+      if (!preflight.ok) {
+        log.warn({ inboundId: inbound.id, reason: preflight.reason }, "the signed ebook URL does not answer the stored file; the PDF reply is not sent");
+        await discardSend(sql, claim.sendId);
+        await raiseAlert(sql, {
+          kind: "delivery_not_attempted",
+          severity: "critical",
+          dedupeKey: `delivery_not_attempted:${FILE_UNAVAILABLE}`,
+          message: "deliveries are held back by a fault on our side (the login link, a message template or the ebook file): nothing is sent until it is fixed",
+          payload: { cause: FILE_UNAVAILABLE },
+        }).catch(() => undefined);
+        return "pdf_only_failed";
+      }
+      const { sent: result, delivered } = await deps.waha.withSession(
         sessionId,
-        ({ sessionName, client }) =>
-          sendLikeAHuman(humanDeps, {
+        async ({ sessionName, client }) => {
+          const sentResult = await sendLikeAHuman(humanDeps, {
             client,
             sessionName,
             chatId: fetched.chat.chatId,
@@ -255,12 +287,27 @@ export function createInboundConsumer(deps: InboundDeps): OutboxConsumer {
             seenMessageId: fetched.messageId,
             signal,
             send: () => client.sendFile(sessionName, fetched.chat.chatId, { url, filename: deliveryFilename(file.title), mimetype: "application/pdf" }, caption),
-          }),
+          });
+          // The read-back: the size WAHA delivered against the stored file's (best effort; an unknown size is not an error).
+          return { sent: sentResult, delivered: sentResult.kind === "sent" ? await deliveredSize(client, sessionName, sentResult.value.id, log) : undefined };
+        },
         { timeoutMs: deps.config.wahaTimeoutMs },
       );
       if (result.kind !== "sent") {
         await discardSend(sql, claim.sendId);
         return "pdf_only_failed";
+      }
+      const wrong = wrongFile(preflight.size, delivered);
+      if (wrong !== undefined) {
+        // It went out, and is never resent by itself: the Owner is told (this extra send has no delivery row to mark).
+        log.warn({ inboundId: inbound.id, expected: wrong.expected, delivered: wrong.delivered }, "the PDF reply was delivered with another size than the stored file");
+        await raiseAlert(sql, {
+          kind: "delivery_wrong_file",
+          severity: "critical",
+          dedupeKey: `delivery_wrong_file:inbound:${inbound.id}`,
+          message: "a WhatsApp ebook went out but WAHA delivered a file of another size than the PDF (a page instead of the ebook?): check the order and resend it; it is not resent by itself",
+          payload: { inbound_id: inbound.id, order_id: order.id, expected_bytes: wrong.expected, delivered_bytes: wrong.delivered },
+        }).catch(() => undefined);
       }
       await settleSend(sql, claim.sendId, "sent");
       await sql.begin((tx) => recordSessionOutcome(tx, sessionId, true, new Date()));

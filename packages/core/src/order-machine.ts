@@ -7,16 +7,20 @@
 //   paid + refund / chargeback -> refunded
 //   any state + partial_refund / partial_chargeback / capture+challenge -> review (§10.17)
 // Where the plan is silent, the safest choice (documented per cell in TRANSITIONS):
-//   - nothing but a settlement ever leads to paid. Card capture+accept is NOT a settlement
-//     (spec AC-S6: paid only on confirmed settlement): it is the `capture` event, which never
-//     changes state and alerts. classifyMidtransStatus's `treatCardCaptureAsPaid` (default false)
-//     lets the Owner decide later to count capture+accept as a settlement;
+//   - nothing but a settlement ever leads to paid, and (Owner D10, US-005: the sandbox showed a successful card is
+//     `capture` + fraud accept at once, the settlement only comes the next day) a card capture with fraud accept
+//     IS a settlement: classifyMidtransStatus maps it to `settlement` by default. A capture with challenge or
+//     deny never pays (challenge -> review, deny -> deny). `treatCardCaptureAsPaid: false` is the explicit opt-out:
+//     capture+accept is then the `capture` event, which never changes state and alerts;
 //   - refunded is terminal; money events on it are logged, a settlement on it is an anomaly;
 //   - a full refund / chargeback of an order we never confirmed paid goes to review (Owner);
-//   - paid + cancel -> review is an addition beyond the plan table, kept as a safety net: a
-//     captured card can be cancelled before settlement, so the money may never arrive (relevant
-//     when treatCardCaptureAsPaid is on); paid + pending / deny / expire / failure are ignored,
-//     because with several Snap attempts per order they normally belong to another attempt;
+//   - paid + deny / cancel / expire / failure are ignored when they belong to another attempt (with several Snap
+//     attempts per order they normally do) but NOT when they hit the attempt that held the money (Owner D9: for
+//     Permata VA, Mandiri Bill and Indomaret Midtrans may flip a settlement to deny within minutes, and a captured
+//     card can be cancelled before it settles, so the money may never arrive): then paid -> review (eligibility
+//     suspended, the Owner alerted); nothing already sent is reversed by this machine. The caller says which
+//     attempt held the money (eventAttemptHeldMoney: its payments.settled_at is set, which no later status clears);
+//     paid + pending is ignored;
 //   - pending + cancel / failure -> gateway_failed, pending + expire -> expired; the same events on
 //     the other unpaid states change nothing (the order's own expiry sweeper owns those);
 //   - review only leaves via settlement (paid) or a full refund / chargeback (refunded);
@@ -26,9 +30,9 @@
 // Caller contract (multiple Midtrans attempts per order, midtrans_order_id = {publicId}-{n}):
 // pass OrderEventContext so the machine can tell attempts apart.
 //   - eventAttemptIsLatest: false -> deny / cancel / expire / failure are ignored (they belong to
-//     an older attempt), except paid + cancel, which may be the attempt that paid;
+//     an older attempt), except on a paid order when that older attempt held the money (eventAttemptHeldMoney);
 //   - otherSettledAttempts = number of the order's OTHER attempts whose latest re-queried status is
-//     settled (settlement, or capture+accept when treatCardCaptureAsPaid is on). Double payment
+//     settled (settlement, or capture+accept). Double payment
 //     policy: the kept attempt's money still stands, so every reversal or doubt event (refund,
 //     partial_refund, chargeback, partial_chargeback, challenge, cancel) leaves a paid (or
 //     review) order unchanged and alerts the Owner; a second settlement on a paid order alerts.
@@ -80,6 +84,12 @@ export interface OrderEventContext {
   readonly eventAttemptIsLatest?: boolean;
   /** The order's other attempts whose re-queried status is settled. Default 0. */
   readonly otherSettledAttempts?: number;
+  /**
+   * The event's own attempt held the buyer's money: a payment of it was counted as settled (payments.settled_at is
+   * set, once, and no later status clears it), so a deny / cancel / expire / failure of it is a reversal of a payment
+   * we counted (Owner D9), not noise of another attempt. Default false.
+   */
+  readonly eventAttemptHeldMoney?: boolean;
 }
 
 const move = (to: OrderStatus): OrderTransition => ({ kind: "move", to });
@@ -125,7 +135,7 @@ const TRANSITIONS: Readonly<Record<OrderStatus, Readonly<Record<OrderEvent, Orde
     capture: anomaly,
     pending: stay,
     deny: stay,
-    cancel: move("review"),
+    cancel: stay,
     expire: stay,
     failure: stay,
     refund: move("refunded"),
@@ -179,31 +189,41 @@ const REVERSAL_OR_DOUBT_EVENTS: readonly OrderEvent[] = [
   "cancel",
 ];
 
+/** Non-paid final statuses that, on the attempt that held the money, reverse a payment we counted (Owner D9). */
+const PAID_REVERSAL_EVENTS: readonly OrderEvent[] = ["deny", "cancel", "expire", "failure"];
+
 export function transitionOrder(state: OrderStatus, event: OrderEvent, context: OrderEventContext = {}): OrderTransition {
   const latest = context.eventAttemptIsLatest ?? true;
   const others = context.otherSettledAttempts ?? 0;
   if (!Number.isSafeInteger(others) || others < 0) {
     throw new RangeError("otherSettledAttempts must be a non-negative integer");
   }
+  // D9: the attempt that held the money turned deny / cancel / expire / failure. If another attempt still holds
+  // money (double payment) that money stands: alert only. Otherwise the order leaves PAID for review, whatever
+  // the attempt's number (the held attempt need not be the latest). A cancel of an attempt that never held money
+  // is no reversal: it falls through (a double payment still alerts on it, otherwise it is ignored).
+  if (state === "paid" && context.eventAttemptHeldMoney === true && PAID_REVERSAL_EVENTS.includes(event)) {
+    return others > 0 ? anomaly : move("review");
+  }
   if (others > 0 && (state === "paid" || state === "review")) {
     // Double payment: another attempt still holds the buyer's money, so nothing is revoked.
     if (REVERSAL_OR_DOUBT_EVENTS.includes(event)) return anomaly;
     if (state === "paid" && event === "settlement") return anomaly;
   }
-  if (!latest && NEGATIVE_EVENTS.includes(event) && !(state === "paid" && event === "cancel")) return stay;
+  if (!latest && NEGATIVE_EVENTS.includes(event)) return stay;
   return TRANSITIONS[state][event];
 }
 
 export interface MidtransClassifyOptions {
-  /** Count card capture+accept as a settlement (paid). Default false: wait for settlement. */
+  /** Count card capture+accept as a settlement (paid). Default TRUE (Owner D10); false waits for the settlement. */
   readonly treatCardCaptureAsPaid?: boolean;
 }
 
 /**
  * Maps a re-queried Midtrans transaction_status / fraud_status to an event.
  *   settlement (fraud accept or absent) -> settlement; with any other fraud status -> challenge
- *   capture + accept -> capture (settlement only with treatCardCaptureAsPaid); capture + deny ->
- *   deny; capture + challenge / missing / anything else -> challenge (review, fail-safe)
+ *   capture + accept -> settlement (Owner D10; the `capture` event only with treatCardCaptureAsPaid: false); capture +
+ *   deny -> deny; capture + challenge / missing / anything else -> challenge (review, fail-safe)
  *   pending, deny, cancel, expire, failure, refund, partial_refund, chargeback,
  *   partial_chargeback -> the same event; anything else (e.g. authorize) -> unknown
  */
@@ -217,7 +237,7 @@ export function classifyMidtransStatus(
     case "settlement":
       return fraud === "" || fraud === "accept" ? "settlement" : "challenge";
     case "capture":
-      if (fraud === "accept") return options.treatCardCaptureAsPaid === true ? "settlement" : "capture";
+      if (fraud === "accept") return options.treatCardCaptureAsPaid === false ? "capture" : "settlement";
       return fraud === "deny" ? "deny" : "challenge";
     case "pending":
     case "deny":

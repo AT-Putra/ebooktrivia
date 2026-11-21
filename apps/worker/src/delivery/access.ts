@@ -13,7 +13,7 @@ import { readFile, stat } from "node:fs/promises";
 import { isIP } from "node:net";
 import { join } from "node:path";
 import type postgres from "postgres";
-import type { DeliveryConfig } from "./config.ts";
+import { type DeliveryConfig, PREFLIGHT_TIMEOUT_MS } from "./config.ts";
 import { type EbookFiles, MailAccessError, type MailSender, type OutgoingMail, WahaAccessError, type WahaAccess } from "./ports.ts";
 
 async function messagingSecret(sql: postgres.Sql, name: string): Promise<SettingsSecretRow | undefined> {
@@ -105,12 +105,66 @@ function assertStoragePath(storagePath: string): void {
   if (!STORAGE_PATH.test(storagePath)) throw new RangeError("not a deliverable storage path");
 }
 
-export function createEbookFiles(config: Pick<DeliveryConfig, "dataDir" | "apiOrigin" | "fileUrlKey">): EbookFiles {
+/** What the pre-flight needs of a fetch (adapters createSafeFetch satisfies it; a test passes a fake that serves the file as the public route does). */
+export interface PreflightResponse {
+  readonly status: number;
+  readonly headers: { get(name: string): string | null };
+  /** At most `maxBytes` of the body as text; the rest is discarded. */
+  textPrefix(maxBytes: number): Promise<string>;
+  cancel(): Promise<void>;
+}
+export type PreflightFetch = (url: string) => Promise<PreflightResponse>;
+
+/** A pre-flight URL lives this long: enough for one request. (It is also its own URL with its own nonce, so its downloads never count against WAHA's.) */
+export const PREFLIGHT_TTL_SECONDS = 60;
+
+/**
+ * The injected fetch (tests), or a safe-fetch of the worker's own that is closed afterwards. It goes through the SAME egress rules as every outgoing call of the worker
+ * (https only, no private, loopback or metadata address), over its own SHORT budget (PREFLIGHT_TIMEOUT_MS: connect, headers and the first bytes), never WAHA's request
+ * timeout. So the worker needs public egress to https://api.<DOMAIN> (docs/runbooks/delivery.md): a VM that cannot reach its own public API address gets `file_unavailable`.
+ */
+function preflightFetch(
+  config: Partial<Pick<DeliveryConfig, "dev">>,
+  options: { readonly fetch?: PreflightFetch; readonly timeoutMs?: number },
+): { readonly fetch: PreflightFetch; readonly close: () => Promise<void> } {
+  if (options.fetch !== undefined) return { fetch: options.fetch, close: () => Promise.resolve() };
+  const safe = createSafeFetch({ allowHttp: config.dev?.allowHttp ?? false, devAllowLoopback: config.dev?.allowLoopback ?? false, timeoutMs: options.timeoutMs ?? PREFLIGHT_TIMEOUT_MS });
+  return { fetch: (url) => safe(url, { method: "GET" }), close: () => safe.close().catch(() => undefined) };
+}
+
+export function createEbookFiles(
+  config: Pick<DeliveryConfig, "dataDir" | "apiOrigin" | "fileUrlKey"> & Partial<Pick<DeliveryConfig, "dev">>,
+  options: { readonly fetch?: PreflightFetch; /** The whole-request budget of the pre-flight (default PREFLIGHT_TIMEOUT_MS); a test shortens it. */ readonly timeoutMs?: number } = {},
+): EbookFiles {
   const absolute = (storagePath: string): string => {
     assertStoragePath(storagePath);
     return join(config.dataDir, storagePath);
   };
   return {
+    async preflight(storagePath, now) {
+      const expected = (await stat(absolute(storagePath))).size;
+      const url = signFileUrl({ origin: config.apiOrigin, path: `/files/${storagePath}`, key: config.fileUrlKey, now, ttlSeconds: PREFLIGHT_TTL_SECONDS });
+      const { fetch: get, close } = preflightFetch(config, options);
+      try {
+        const response = await get(url);
+        try {
+          if (response.status !== 200) return { ok: false, reason: "status" };
+          if (!/^application\/pdf\b/i.test(response.headers.get("content-type") ?? "")) return { ok: false, reason: "content_type" };
+          // An exact whole number: a missing, chunked or different length is a different file than the one stored.
+          const length = response.headers.get("content-length");
+          if (length === null || !/^[0-9]{1,15}$/.test(length) || Number(length) !== expected) return { ok: false, reason: "content_length" };
+          if ((await response.textPrefix(5)) !== "%PDF-") return { ok: false, reason: "magic" };
+          return { ok: true, size: expected };
+        } finally {
+          await response.cancel().catch(() => undefined);
+        }
+      } catch {
+        // The route could not be reached (DNS, TLS, a timeout, a refused address): WAHA would not reach it either. Nothing is said about why: never the URL.
+        return { ok: false, reason: "unreachable" };
+      } finally {
+        await close();
+      }
+    },
     async size(storagePath) {
       return (await stat(absolute(storagePath))).size;
     },

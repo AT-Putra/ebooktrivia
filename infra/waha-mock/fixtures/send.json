@@ -1,0 +1,362 @@
+{
+  "_provenance": "RECORDED 2026-11-21 from the Owner's WAHA 2026.10.1, engine WEBJS, tier CORE, and scrubbed: numbers, LIDs, the session name, message keys, texts and times are stable placeholders; the raw engine data (_data, about 3 KB) is cut down to the file facts. Keys and value shapes are as recorded. The messages went to the Owner's TEST phone only.",
+  "sendText": {
+    "request": {
+      "session": "default",
+      "chatId": "98765432101234@lid",
+      "text": "Halo, ini pesan uji."
+    },
+    "http_status": 201,
+    "body": {
+      "_data": {
+        "type": "chat"
+      },
+      "id": {
+        "fromMe": true,
+        "remote": "98765432101234@lid",
+        "id": "3EB0000000000000000001",
+        "$1": "true_98765432101234@lid_3EB0000000000000000001",
+        "_serialized": "true_98765432101234@lid_3EB0000000000000000001"
+      },
+      "ack": 0,
+      "hasMedia": false,
+      "body": "Halo, ini pesan uji.",
+      "type": "chat",
+      "timestamp": 1760000000,
+      "from": "300000000000001@lid",
+      "to": "98765432101234@lid",
+      "deviceType": "web",
+      "isForwarded": false,
+      "forwardingScore": 0,
+      "isStatus": false,
+      "isStarred": false,
+      "fromMe": true,
+      "hasQuotedMsg": false,
+      "hasReaction": false,
+      "vCards": [],
+      "mentionedIds": [],
+      "groupMentions": [],
+      "isGif": false,
+      "links": []
+    },
+    "_data_keys_in_answer": 90,
+    "message_by_id_after": {
+      "http_status": 200,
+      "body": {
+        "id": "true_98765432101234@lid_3EB0000000000000000001",
+        "timestamp": 1760000000,
+        "from": "300000000000001@lid",
+        "fromMe": true,
+        "source": "api",
+        "to": "98765432101234@lid",
+        "body": "Halo, ini pesan uji.",
+        "hasMedia": false,
+        "media": null,
+        "ack": 2,
+        "ackName": "DEVICE",
+        "location": null,
+        "vCards": [],
+        "_data": {
+          "type": "chat"
+        }
+      }
+    }
+  },
+  "sendFile": {
+    "request": {
+      "session": "default",
+      "chatId": "98765432101234@lid",
+      "file": {
+        "url": "https://files.example.test/a.pdf",
+        "filename": "contoh-ebook.pdf",
+        "mimetype": "application/pdf"
+      },
+      "caption": "Halo, ini pesan uji."
+    },
+    "http_status": 201,
+    "body": {
+      "_data": {
+        "type": "document",
+        "size": 13264,
+        "mimetype": "application/pdf",
+        "filename": "contoh-ebook.pdf",
+        "pageCount": 1
+      },
+      "mediaKey": "<media-key>",
+      "id": {
+        "fromMe": true,
+        "remote": "98765432101234@lid",
+        "id": "3EB0000000000000000002",
+        "$1": "true_98765432101234@lid_3EB0000000000000000002",
+        "_serialized": "true_98765432101234@lid_3EB0000000000000000002"
+      },
+      "ack": 0,
+      "hasMedia": true,
+      "body": "Halo, ini pesan uji.",
+      "type": "document",
+      "timestamp": 1760000005,
+      "from": "300000000000001@lid",
+      "to": "98765432101234@lid",
+      "deviceType": "web",
+      "isForwarded": false,
+      "forwardingScore": 0,
+      "isStatus": false,
+      "isStarred": false,
+      "fromMe": true,
+      "hasQuotedMsg": false,
+      "hasReaction": false,
+      "vCards": [],
+      "mentionedIds": [],
+      "groupMentions": [],
+      "isGif": false,
+      "links": []
+    },
+    "_data_keys_in_answer": 101,
+    "message_by_id_after": {
+      "http_status": 200,
+      "body": {
+        "id": "true_98765432101234@lid_3EB0000000000000000002",
+        "timestamp": 1760000005,
+        "from": "300000000000001@lid",
+        "fromMe": true,
+        "source": "api",
+        "to": "98765432101234@lid",
+        "body": "Halo, ini pesan uji.",
+        "hasMedia": true,
+        "media": {
+          "url": null,
+          "filename": "contoh-ebook.pdf",
+          "mimetype": "application/pdf"
+        },
+        "ack": 2,
+        "ackName": "DEVICE",
+        "location": null,
+        "vCards": [],
+        "_data": {
+          "type": "document",
+          "size": 13264,
+          "mimetype": "application/pdf",
+          "filename": "contoh-ebook.pdf",
+          "pageCount": 1
+        }
+      }
+    }
+  },
+  "sendFile_url_answers_404": {
+    "note": "WAHA does NOT refuse a URL it cannot fetch: it sends the 404 page as the document (size of the page, not of the PDF) and answers 201.",
+    "http_status": 201,
+    "body": {
+      "_data": {
+        "type": "document",
+        "size": 21483,
+        "mimetype": "application/pdf",
+        "filename": "x.pdf"
+      },
+      "mediaKey": "<media-key>",
+      "id": {
+        "fromMe": true,
+        "remote": "98765432101234@lid",
+        "id": "3EB0000000000000000003",
+        "$1": "true_98765432101234@lid_3EB0000000000000000003",
+        "_serialized": "true_98765432101234@lid_3EB0000000000000000003"
+      },
+      "ack": 0,
+      "hasMedia": true,
+      "body": "",
+      "type": "document",
+      "timestamp": 1760000010,
+      "from": "300000000000001@lid",
+      "to": "98765432101234@lid",
+      "deviceType": "web",
+      "isForwarded": false,
+      "forwardingScore": 0,
+      "isStatus": false,
+      "isStarred": false,
+      "fromMe": true,
+      "hasQuotedMsg": false,
+      "hasReaction": false,
+      "vCards": [],
+      "mentionedIds": [],
+      "groupMentions": [],
+      "isGif": false,
+      "links": []
+    }
+  },
+  "errors": {
+    "unknown_session": {
+      "http_status": 422,
+      "body": {
+        "error": "Session \"no_such_session_x\" does not exist",
+        "session": "no_such_session_x"
+      }
+    },
+    "text_missing_sends_an_empty_message": {
+      "http_status": 201,
+      "body": {
+        "_data": {
+          "type": "chat"
+        },
+        "id": {
+          "fromMe": true,
+          "remote": "98765432101234@lid",
+          "id": "3EB0000000000000000004",
+          "$1": "true_98765432101234@lid_3EB0000000000000000004",
+          "_serialized": "true_98765432101234@lid_3EB0000000000000000004"
+        },
+        "ack": 0,
+        "hasMedia": false,
+        "body": "",
+        "type": "chat",
+        "timestamp": 1760000015,
+        "from": "300000000000001@lid",
+        "to": "98765432101234@lid",
+        "deviceType": "web",
+        "isForwarded": false,
+        "forwardingScore": 0,
+        "isStatus": false,
+        "isStarred": false,
+        "fromMe": true,
+        "hasQuotedMsg": false,
+        "hasReaction": false,
+        "vCards": [],
+        "mentionedIds": [],
+        "groupMentions": [],
+        "isGif": false,
+        "links": []
+      }
+    },
+    "chat_missing": {
+      "http_status": 500,
+      "body": {
+        "statusCode": 500,
+        "timestamp": "2026-11-21T13:12:44.392Z",
+        "exception": {
+          "message": "Cannot read properties of undefined (reading 'includes')",
+          "name": "TypeError",
+          "stack": "<stack>"
+        },
+        "request": {
+          "path": "/api/sendText",
+          "method": "POST",
+          "body": {
+            "session": "default",
+            "text": "never sent"
+          },
+          "query": {}
+        },
+        "version": {
+          "version": "2026.10.1",
+          "engine": "WEBJS",
+          "tier": "CORE",
+          "browser": "/usr/bin/google-chrome",
+          "platform": "linux/x64",
+          "worker": {
+            "id": null
+          }
+        }
+      }
+    },
+    "file_without_url_or_data": {
+      "http_status": 500,
+      "body": {
+        "statusCode": 500,
+        "timestamp": "2026-11-21T13:12:44.416Z",
+        "exception": {
+          "message": "InvalidCharacterError: Failed to execute 'atob' on 'Window': The string to be decoded is not correctly encoded.\nwindow.WWebJS.mediaInfoToFile (pptr:evaluate;%2Fapp%2Fnode_modules%2Fwhatsapp-web.js%2Fsrc%2FClient.js%3A350%3A48:1316:35)\nwindow.WWebJS.processMediaData (pptr:evaluate;%2Fapp%2Fnode_modules%2Fwhatsapp-web.js%2Fsrc%2FClient.js%3A350%3A48:890:36)\nwindow.WWebJS.sendMessage (pptr:evaluate;%2Fapp%2Fnode_modules%2Fwhatsapp-web.js%2Fsrc%2FClient.js%3A350%3A48:298:43)\npptr:evaluate;WPage.evaluate%20(%2Fapp%2Fdist%2Fcore%2Fengines%2Fwebjs%2FWPage.js%3A13%3A36):15:49",
+          "name": "DOMException",
+          "stack": "<stack>"
+        },
+        "request": {
+          "path": "/api/sendFile",
+          "method": "POST",
+          "body": {
+            "session": "default",
+            "chatId": "98765432101234@lid",
+            "file": {
+              "mimetype": "application/pdf"
+            }
+          },
+          "query": {}
+        },
+        "version": {
+          "version": "2026.10.1",
+          "engine": "WEBJS",
+          "tier": "CORE",
+          "browser": "/usr/bin/google-chrome",
+          "platform": "linux/x64",
+          "worker": {
+            "id": null
+          }
+        }
+      }
+    }
+  },
+  "recent_outgoing_filter_fromMe_true": [
+    {
+      "id": "true_98765432101234@lid_3EB0000000000000000002",
+      "timestamp": 1760000005,
+      "from": "300000000000001@lid",
+      "fromMe": true,
+      "source": "api",
+      "to": "98765432101234@lid",
+      "body": "Halo, ini pesan uji.",
+      "hasMedia": true,
+      "media": {
+        "url": null,
+        "filename": "contoh-ebook.pdf",
+        "mimetype": "application/pdf"
+      },
+      "ack": 2,
+      "ackName": "DEVICE",
+      "location": null,
+      "vCards": [],
+      "_data": {
+        "type": "document",
+        "size": 13264,
+        "mimetype": "application/pdf",
+        "filename": "contoh-ebook.pdf",
+        "pageCount": 1
+      }
+    },
+    {
+      "id": "true_98765432101234@lid_3EB0000000000000000001",
+      "timestamp": 1760000000,
+      "from": "300000000000001@lid",
+      "fromMe": true,
+      "source": "api",
+      "to": "98765432101234@lid",
+      "body": "Halo, ini pesan uji.",
+      "hasMedia": false,
+      "media": null,
+      "ack": 2,
+      "ackName": "DEVICE",
+      "location": null,
+      "vCards": [],
+      "_data": {
+        "type": "chat"
+      }
+    }
+  ],
+  "recent_outgoing_final": {
+    "count": 5,
+    "all_fromMe": true,
+    "first": {
+      "id": "true_98765432101234@lid_3EB0000000000000000004",
+      "timestamp": 1760000015,
+      "from": "300000000000001@lid",
+      "fromMe": true,
+      "source": "api",
+      "to": "98765432101234@lid",
+      "body": "",
+      "hasMedia": false,
+      "media": null,
+      "ack": 1,
+      "ackName": "SERVER",
+      "location": null,
+      "vCards": [],
+      "_data": {
+        "type": "chat"
+      }
+    }
+  }
+}

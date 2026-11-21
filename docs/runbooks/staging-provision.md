@@ -65,7 +65,11 @@ sudo infra/provision/build-images.sh              # 2. postgres-walg, public, ad
   **Error** redirect URLs to `https://order.<DOMAIN>/`: the checkout sends only the per-order **finish** URL
   `https://order.<DOMAIN>/{publicId}` in the Snap request (`callbacks.finish`, the one callback the Snap API
   documents), and Midtrans appends `?order_id={publicId}-{n}` to the dashboard URLs (the order page, US-022,
-  maps it back). Confirm both against the real sandbox in US-005.
+  maps it back). The sandbox recording of US-005 (docs/spikes/R12.md) confirmed the per-order finish URL: Snap
+  redirects to it with `?order_id=&status_code=&transaction_status=` appended (an existing query is kept) after a
+  successful payment, and a bank decline does NOT redirect (the buyer stays on the Snap page and can pick another
+  method). The Unfinish and Error redirects exist only as dashboard settings and could not be triggered without the
+  dashboard: check them once on staging.
 - **Payment notifications (US-021).** Add the same escrowed `SECRETS_PAYMENT_PRIVATE_KEY` to
   `/etc/ebooktrivia/worker.env`: the worker re-queries Midtrans for every notification and runs the nightly
   reconciliation (02:00 WIB); without it no order is ever confirmed PAID. In the Midtrans dashboard (Settings,

@@ -1,6 +1,6 @@
 # infra
 
-The local dev stack, provisional third-party stubs, and the VM infrastructure (staging, then
+The local dev stack, third-party stubs replaying recorded answers, and the VM infrastructure (staging, then
 production).
 
 | Path | What |
@@ -70,11 +70,21 @@ Every credential in this stack is a DEV ONLY placeholder; never reuse them elsew
 The dev Valkey ACL gives `worker` all keys (`~*`), so the worker tests can use random BullMQ
 prefixes. The production ACL (`provision/files/valkey/`) allows `~ebt:* ~cache:*` only.
 
-## PROVISIONAL status of fixtures
+## Provenance of fixtures
 
-All files in `waha-mock/fixtures` and `midtrans-stub/fixtures` carry a top-level `_provenance` of
-`PROVISIONAL`: they are shaped from public docs, not recorded from a real WAHA session or Midtrans sandbox.
-WAHA fixtures are to be replaced in US-005. The Midtrans duplicate `order_id` 400 body is also unverified.
+Every fixture file carries a top-level `_provenance`.
+
+- `midtrans-stub/fixtures` are **RECORDED** from the Midtrans sandbox on 2026-11-21 (US-005, `docs/spikes/R12.md`) and
+  scrubbed: ids, merchant id, VA numbers and amounts are placeholders, and every signature is recomputed with the dev key
+  `SB-Mid-server-DEVONLY`. The stub replays them (`midtrans-stub/src/replay.test.ts` pins its answers to them). One thing is NOT
+  recorded: a real HTTP notification delivery (the sandbox needs a public notification URL); the notification fixture reuses
+  the recorded Get Status bodies, which Midtrans documents as the same shape.
+- `waha-mock/fixtures` are **RECORDED** from the Owner's WAHA 2026.10.1 (engine WEBJS) on 2026-11-21 (US-005, `docs/spikes/R11.md`) and
+  scrubbed: phone, LID, own number, session name, message keys, texts and times are placeholders, and the session `config` (webhook URLs and
+  HMAC keys) is never kept. The mock answers exactly like WEBJS (the raw send message with an object `id`, `201` with no body for presence,
+  a 404 file URL delivered as the document with `fetchFiles: "webjs"`) and `waha-mock/src/replay.test.ts` pins its answers to them. NOT
+  recorded (docs-shaped, and said so in each file's `_provenance`): a real webhook delivery (the HMAC headers and the event envelopes), a
+  `@c.us` inbound sender, 463 / 475 and a stopped session's answer to a send. Verify the webhook with a real delivery on staging.
 
 ## Tests
 

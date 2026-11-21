@@ -1,6 +1,6 @@
 // The human-like sequence of every WhatsApp send (US-025, Owner requirement; human.ts): the order of the calls, the pauses (random, bounded, never
 // equal for consecutive recipients), best-effort presence calls that never touch the send, and no send at all when the job is aborted during a wait.
-import { WahaError, type WahaClient } from "@ebooktrivia/adapters";
+import { createWahaClient, type HttpResponse, WahaError, type WahaClient } from "@ebooktrivia/adapters";
 import { HUMAN_TIMING } from "@ebooktrivia/core";
 import { describe, expect, it } from "vitest";
 import { cryptoRandom, type HumanSend, sendLikeAHuman } from "./human.ts";
@@ -222,5 +222,69 @@ describe("an abort or a lease that ends during a wait means nothing is sent", ()
     expect(recorded.calls).toEqual(["seen", "typing", "paused", "offline"]);
     const ok: Recorded = { calls: [], waits: [] };
     expect(await run(ok, { beforeSend: () => true })).toEqual({ kind: "sent", value: "sent" });
+  });
+});
+
+// US-005 (R11): the REAL adapter client against the answers the Owner's WEBJS instance recorded for these calls. WEBJS answers 201 with NO BODY to a presence call and
+// to sendSeen with message ids; the adapter used to throw on that, so startTyping "failed", `typing` stayed false and the "paused" step never ran (the session was
+// left typing until the finally block went offline). Each call must now succeed, and the sequence must stop typing before the send.
+describe("the sequence against the answers WEBJS recorded (US-005 R11)", () => {
+  const target = new URL("https://waha.example.id:3000/");
+  const CHAT = "98765432101234@lid";
+
+  function webjsClient(log: string[]): WahaClient {
+    return createWahaClient({
+      target,
+      apiKey: "key",
+      fetch: (url, init) => {
+        const path = new URL(url).pathname;
+        const body = typeof init.body === "string" ? (JSON.parse(init.body) as Record<string, unknown>) : {};
+        log.push(`${path}${typeof body["presence"] === "string" ? `:${body["presence"]}` : ""}`);
+        const answer = (status: number, text: string): Promise<HttpResponse> =>
+          Promise.resolve({ status, json: () => Promise.resolve(JSON.parse(text) as unknown), text: () => Promise.resolve(text) });
+        if (path.endsWith("/presence")) return answer(201, "");
+        if (path === "/api/sendSeen") return Array.isArray(body["messageIds"]) ? answer(201, "") : answer(201, '{"ids":null}');
+        return Promise.reject(new Error(`unexpected call ${path}`));
+      },
+    });
+  }
+
+  it("a reply runs every step: seen, typing, PAUSED, the send, offline, and no best-effort call fails", async () => {
+    const wire: string[] = [];
+    const failures: string[] = [];
+    const out = await sendLikeAHuman(
+      { log: { debug: (fields: unknown) => failures.push(JSON.stringify(fields)) } as never, sleep: () => Promise.resolve() },
+      {
+        client: webjsClient(wire),
+        sessionName: "default",
+        chatId: CHAT,
+        textLength: 90,
+        kind: "message",
+        withSeen: true,
+        seenMessageId: "false_98765432101234@lid_3EB0AAAA0001",
+        signal: new AbortController().signal,
+        send: () => {
+          wire.push("SEND");
+          return Promise.resolve("sent");
+        },
+      },
+    );
+    expect(out).toEqual({ kind: "sent", value: "sent" });
+    expect(wire).toEqual(["/api/sendSeen", "/api/default/presence:typing", "/api/default/presence:paused", "SEND", "/api/default/presence:offline"]);
+    expect(failures).toEqual([]);
+  });
+
+  it("an opener (no seen) also stops typing before the send; seen without ids answers {ids: null} and is fine", async () => {
+    const wire: string[] = [];
+    const failures: string[] = [];
+    await sendLikeAHuman(
+      { log: { debug: (fields: unknown) => failures.push(JSON.stringify(fields)) } as never, sleep: () => Promise.resolve() },
+      { client: webjsClient(wire), sessionName: "default", chatId: CHAT, textLength: 60, kind: "message", withSeen: false, signal: new AbortController().signal, send: () => Promise.resolve("sent") },
+    );
+    expect(wire).toEqual(["/api/default/presence:typing", "/api/default/presence:paused", "/api/default/presence:offline"]);
+    const seenOnly: string[] = [];
+    await webjsClient(seenOnly).sendSeen("default", CHAT);
+    expect(seenOnly).toEqual(["/api/sendSeen"]);
+    expect(failures).toEqual([]);
   });
 });

@@ -5,7 +5,6 @@ import { SmtpError, WahaError } from "@ebooktrivia/adapters";
 import { EMAIL_MAX_ATTEMPTS } from "@ebooktrivia/core";
 import postgres from "postgres";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
-import { createEbookFiles } from "../src/delivery/access.ts";
 import { createDelivery, type DeliveryDeps, raisePoolAlert } from "../src/delivery/deliver.ts";
 import { createInboundConsumer } from "../src/delivery/inbound.ts";
 import { createDeliveryPort } from "../src/delivery/index.ts";
@@ -30,6 +29,7 @@ import {
   retireSessions,
   storeInbound,
 } from "./support/delivery.ts";
+import { testFiles } from "./support/files.ts";
 import { first, sql } from "./support/db.ts";
 import { silentLog, uniquePhone, workerPool } from "./support/midtrans.ts";
 
@@ -64,7 +64,7 @@ function build(over: Partial<DeliveryDeps> = {}) {
     config,
     waha: waha.access,
     mail,
-    files: createEbookFiles(config),
+    files: testFiles(config),
     magicLinks: magic,
     enqueue: (jobs) => {
       enqueued.push(...jobs);
@@ -100,12 +100,12 @@ describe("claims that cannot happen", () => {
 describe("what goes wrong before anything is sent", () => {
   it("a PDF that is not on disk fails the e-mail for good (with an alert); an unreadable one is retried; a buyer without a player has no login link to send (the opener needs none)", async () => {
     const missing = await paidOrder(shop);
-    const r = build({ files: { size: () => Promise.reject(Object.assign(new Error("gone"), { code: "ENOENT" })), read: () => Promise.reject(new Error("x")), signedUrl: () => "https://x" } });
+    const r = build({ files: { size: () => Promise.reject(Object.assign(new Error("gone"), { code: "ENOENT" })), read: () => Promise.reject(new Error("x")), signedUrl: () => "https://x", preflight: () => Promise.reject(new Error("x")) } });
     expect(await r.delivery.process({ id: missing.deliveries.email })).toBe("failed");
     expect(await deliveryOf(missing.deliveries.email)).toMatchObject({ status: "failed", last_error: "ebook_file_missing" });
 
     const unreadable = await paidOrder(shop);
-    const broken: EbookFiles = { size: () => Promise.reject(new Error("disk error")), read: () => Promise.reject(new Error("x")), signedUrl: () => "https://x" };
+    const broken: EbookFiles = { size: () => Promise.reject(new Error("disk error")), read: () => Promise.reject(new Error("x")), signedUrl: () => "https://x", preflight: () => Promise.reject(new Error("disk error")) };
     expect(await build({ files: broken }).delivery.process({ id: unreadable.deliveries.email })).toBe("pending");
     expect(await deliveryOf(unreadable.deliveries.email)).toMatchObject({ status: "pending", last_error: "preparation_failed" });
 
@@ -215,7 +215,7 @@ describe("what goes wrong while sending", () => {
 
 describe("buyer-first refusals and failures", () => {
   function inbound(r: ReturnType<typeof build>, waha: WahaAccess = r.waha.access) {
-    const consumer = createInboundConsumer({ sql: workerSql, log: silentLog, config: r.config, waha, delivery: r.delivery, files: createEbookFiles(r.config), random: () => 0 });
+    const consumer = createInboundConsumer({ sql: workerSql, log: silentLog, config: r.config, waha, delivery: r.delivery, files: testFiles(r.config), random: () => 0 });
     const process = createOutboxProcessor(consumer, { sql: workerSql, failpoint: inertFailpoint, log: silentLog });
     return { process, hear: async (session: string, chatId: string, body: string) => storeInbound({ sessionName: session, messageId: await r.waha.inbound({ session, chatId, body }), fromJid: chatId }) };
   }
@@ -294,7 +294,7 @@ describe("buyer-first refusals and failures", () => {
     const r = build();
     const session = await createSession();
     const order = await paidOrder(shop, { waNotBefore: later() });
-    const consumer = createInboundConsumer({ sql: workerSql, log: silentLog, config: r.config, waha: r.waha.access, delivery: r.delivery, files: createEbookFiles(r.config) });
+    const consumer = createInboundConsumer({ sql: workerSql, log: silentLog, config: r.config, waha: r.waha.access, delivery: r.delivery, files: testFiles(r.config) });
     const process = createOutboxProcessor(consumer, { sql: workerSql, failpoint: inertFailpoint, log: silentLog });
     const heard = await storeInbound({ sessionName: session.name, messageId: await r.waha.inbound({ session: session.name, chatId: "6281999900123@c.us", body: `kode ${order.code}` }), fromJid: "6281999900123@c.us" });
     await process({ id: heard.outboxId });
@@ -314,7 +314,7 @@ describe("the unknown-send lookup", () => {
     r.waha.fault(flaky.name, "timeout_after_send");
     // A PDF reply to a buyer who wrote first, whose answer is lost: the delivery row is unknown (an opener never is a delivery's unknown state).
     const order = await paidOrder(shop, { waNotBefore: new Date(Date.now() + 180_000) });
-    const consumer = createInboundConsumer({ sql: workerSql, log: silentLog, config: r.config, waha: r.waha.access, delivery: r.delivery, files: createEbookFiles(r.config), random: () => 0 });
+    const consumer = createInboundConsumer({ sql: workerSql, log: silentLog, config: r.config, waha: r.waha.access, delivery: r.delivery, files: testFiles(r.config), random: () => 0 });
     const heard = await storeInbound({ sessionName: flaky.name, messageId: await r.waha.inbound({ session: flaky.name, chatId: order.chatId, body: `kode ${order.code}` }), fromJid: order.chatId });
     await createOutboxProcessor(consumer, { sql: workerSql, failpoint: inertFailpoint, log: silentLog })({ id: heard.outboxId });
     expect((await deliveryOf(order.deliveries.whatsapp)).status).toBe("unknown");
@@ -344,7 +344,7 @@ describe("the delivery port's optional parts", () => {
       config: r.config,
       waha: r.waha.access,
       mail: r.mail,
-      files: createEbookFiles(r.config),
+      files: testFiles(r.config),
       magicLinks: r.magic,
       random: () => 0.25,
       sleep: () => Promise.resolve(),

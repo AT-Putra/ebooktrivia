@@ -1,7 +1,9 @@
 // Midtrans (AC-S10; US-017). Owner only (midtrans.edit: gateway secrets and fees).
 //   - environment: sandbox or production (app_settings midtrans.environment). Switching to
 //     production needs the production server key; every switch is audited (plan M11 go-live);
-//   - enabled methods: the Snap `enabled_payments` codes offered to buyers (midtrans.enabled_methods);
+//   - enabled methods: the Snap `enabled_payments` codes offered to buyers (midtrans.enabled_methods): the Owner's per-method
+//     switch (Owner D11; default ON except shopeepay, bri_va, cimb_va and kredivo, see sql/seed.sql); the checkout sends ONLY
+//     these, and answers 503 when none is enabled;
 //   - per-method gateway fee: flat whole rupiah + a percentage in basis points
 //     (midtrans.fees = { method: { flat_idr, percent_bps } }, @ebooktrivia/core gatewayFeeIdr), for
 //     the ROI report; the buyer always pays the product price;
@@ -22,7 +24,7 @@ import { clearSecret, parseSecret, requireSealer, secretStatus, type SecretStatu
 export const MIDTRANS_ENVIRONMENTS = ["sandbox", "production"] as const;
 export type MidtransEnvironment = (typeof MIDTRANS_ENVIRONMENTS)[number];
 
-/** Snap enabled_payments codes offered in the console: one list in @ebooktrivia/core (unverified until US-005). */
+/** Snap enabled_payments codes offered in the console: one list in @ebooktrivia/core (what the sandbox offered is in docs/spikes/R12.md). */
 export { MIDTRANS_METHODS, type MidtransMethod };
 const METHOD_CODES: readonly string[] = MIDTRANS_METHODS.map((m) => m.code);
 
@@ -56,12 +58,16 @@ export function percentToBps(raw: string): number {
 
 export const bpsToPercent = (bps: number): string => `${String(Math.trunc(bps / 100))}${bps % 100 === 0 ? "" : `.${String(bps % 100).padStart(2, "0").replace(/0$/, "")}`}`;
 
-/** Enabled methods and their fees from the form ("method:<code>", "flat:<code>", "percent:<code>"). */
+/**
+ * Enabled methods and the fee of EVERY method row, ticked or not ("method:<code>", "flat:<code>", "percent:<code>"): a method that is
+ * switched off can be given (or keep) a fee, which the ROI report still uses for its old orders. Which rows are saved is decided by
+ * updateMethodsAndFees.
+ */
 export function parseMethodsAndFees(form: FormData): Pick<MidtransSettings, "enabledMethods" | "fees"> {
   const enabledMethods = MIDTRANS_METHODS.map((m) => m.code).filter((code) => form.get(`method:${code}`) === "on");
   if (enabledMethods.length === 0) throw new InvalidInput("Enable at least one payment method.");
   const fees: Partial<Record<MidtransMethod, MethodFee>> = {};
-  for (const code of enabledMethods) {
+  for (const { code } of MIDTRANS_METHODS) {
     const flatRaw = formValue(form, `flat:${code}`).replace(/[.\s]/g, "");
     fees[code] = {
       flat_idr: wholeNumber(flatRaw === "" ? "0" : flatRaw, `The flat fee is 0 to ${MAX_FLAT_FEE_IDR.toLocaleString("en-US")} rupiah.`, { min: 0, max: MAX_FLAT_FEE_IDR }),
@@ -106,11 +112,25 @@ async function putSetting(tx: Tx, audit: AuditRecorder, adminUserId: string, key
   audit({ action: "app_setting.update", entityType: "app_setting", entityId: key, fields: SETTING_FIELDS, before: { value: before }, after: { value: after } });
 }
 
+/**
+ * Saves which methods Snap offers (the Owner's per-method switch, Owner D11) and their fees; both changes are audited. The fee of a method
+ * switched OFF is saved like any other (the form submits every row): the ROI report prices an old order by its payment_type, and dropping
+ * the fee would turn every order ever paid with that method into "fee missing" (reports ignore the enabled list, they read the fees only).
+ * A row that is NOT ticked, has nothing typed (0 + 0 %) and has no fee saved yet stays "not configured": storing it as 0 would make the
+ * report call such a payment free instead of "fee missing". A fee already saved is kept even if it is now 0 and the row is not ticked.
+ */
 export async function updateMethodsAndFees(sql: Sql, adminUserId: string, input: Pick<MidtransSettings, "enabledMethods" | "fees">): Promise<void> {
   await withAudit(sql, async (tx, audit) => {
     const before = await readSettings(tx, true);
+    const enabled = new Set<string>(input.enabledMethods);
+    const fees: Partial<Record<MidtransMethod, MethodFee>> = {};
+    for (const code of METHOD_CODES as readonly MidtransMethod[]) {
+      const stored = before.fees[code];
+      const fee = input.fees[code] ?? stored;
+      if (fee !== undefined && (enabled.has(code) || fee.flat_idr > 0 || fee.percent_bps > 0 || stored !== undefined)) fees[code] = fee;
+    }
     await putSetting(tx, audit, adminUserId, "midtrans.enabled_methods", before.enabledMethods, [...input.enabledMethods]);
-    await putSetting(tx, audit, adminUserId, "midtrans.fees", before.fees, { ...input.fees });
+    await putSetting(tx, audit, adminUserId, "midtrans.fees", before.fees, fees);
   });
 }
 

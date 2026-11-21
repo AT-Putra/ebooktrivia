@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { endpointHostOf, parseAdnet, parseSecretName } from "./adnets.ts";
 import { InvalidInput, wholeNumber } from "./fields.ts";
 import { newLpKey, parsePixels, snippet } from "./landing-pages.ts";
-import { bpsToPercent, parseMethodsAndFees, parseServerKey, percentToBps } from "./midtrans.ts";
+import { bpsToPercent, MIDTRANS_METHODS, parseMethodsAndFees, parseServerKey, percentToBps } from "./midtrans.ts";
 import { graceEndDay, lastSalesDay, salesWindow, wibDay } from "./programs.ts";
 import { parseSecret } from "./secrets.ts";
 import { parseSmtp } from "./smtp.ts";
@@ -59,7 +59,7 @@ describe("Midtrans fees (integers: whole rupiah + basis points)", () => {
     expect(() => percentToBps(input)).toThrow(InvalidInput);
   });
 
-  it("keeps only enabled methods and requires one", () => {
+  it("keeps only enabled methods, parses the fee of EVERY row (a switched-off method can have one), and requires one method", () => {
     const form = new FormData();
     form.set("method:other_qris", "on");
     form.set("flat:other_qris", "0");
@@ -67,8 +67,22 @@ describe("Midtrans fees (integers: whole rupiah + basis points)", () => {
     form.set("method:bca_va", "on");
     form.set("flat:bca_va", "4.000");
     form.set("flat:gopay", "999");
+    form.set("percent:shopeepay", "1.5");
     form.set("method:not_a_method", "on");
-    expect(parseMethodsAndFees(form)).toEqual({ enabledMethods: ["other_qris", "bca_va"], fees: { other_qris: { flat_idr: 0, percent_bps: 70 }, bca_va: { flat_idr: 4000, percent_bps: 0 } } });
+    const parsed = parseMethodsAndFees(form);
+    expect(parsed.enabledMethods).toEqual(["other_qris", "bca_va"]);
+    expect(Object.keys(parsed.fees).sort()).toEqual(MIDTRANS_METHODS.map((m) => m.code).sort());
+    expect(parsed.fees.other_qris).toEqual({ flat_idr: 0, percent_bps: 70 });
+    expect(parsed.fees.bca_va).toEqual({ flat_idr: 4000, percent_bps: 0 });
+    // Not ticked, but the Owner typed a fee: it is parsed (and saved) all the same.
+    expect(parsed.fees.gopay).toEqual({ flat_idr: 999, percent_bps: 0 });
+    expect(parsed.fees.shopeepay).toEqual({ flat_idr: 0, percent_bps: 150 });
+    expect(parsed.fees.kredivo).toEqual({ flat_idr: 0, percent_bps: 0 });
+    // A malformed fee in an unticked row refuses the save too.
+    const badRow = new FormData();
+    badRow.set("method:gopay", "on");
+    badRow.set("percent:kredivo", "abc");
+    expect(() => parseMethodsAndFees(badRow)).toThrow(InvalidInput);
     expect(() => parseMethodsAndFees(new FormData())).toThrow(InvalidInput);
     const tooBig = new FormData();
     tooBig.set("method:gopay", "on");

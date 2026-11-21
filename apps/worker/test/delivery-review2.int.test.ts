@@ -5,7 +5,6 @@
 import type { WahaClient } from "@ebooktrivia/adapters";
 import { EFFECT_CANCELLED } from "@ebooktrivia/core";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { createEbookFiles } from "../src/delivery/access.ts";
 import { ContactCacheError, knownLid, rememberLid, resolveContact } from "../src/delivery/contacts.ts";
 import { createDelivery, type DeliveryDeps } from "../src/delivery/deliver.ts";
 import { refreshSessionLimits } from "../src/delivery/health.ts";
@@ -31,6 +30,7 @@ import {
   storeInbound,
   type WahaFake,
 } from "./support/delivery.ts";
+import { testFiles } from "./support/files.ts";
 import { first, sql } from "./support/db.ts";
 import { silentLog, uniquePhone, workerPool } from "./support/midtrans.ts";
 
@@ -84,7 +84,7 @@ function build(over: Partial<DeliveryDeps> = {}, fake: WahaFake = createWahaFake
     config,
     waha: fake.access,
     mail,
-    files: createEbookFiles(config),
+    files: testFiles(config),
     magicLinks: magic,
     enqueue: () => Promise.resolve(),
     random: () => 0,
@@ -92,7 +92,7 @@ function build(over: Partial<DeliveryDeps> = {}, fake: WahaFake = createWahaFake
     ...over,
   };
   const delivery = createDelivery(deps);
-  const consumer = createInboundConsumer({ sql: workerSql, log: silentLog, config, waha: deps.waha, delivery, files: createEbookFiles(config), random: () => 0, sleep: () => Promise.resolve() });
+  const consumer = createInboundConsumer({ sql: workerSql, log: silentLog, config, waha: deps.waha, delivery, files: testFiles(config), random: () => 0, sleep: () => Promise.resolve() });
   const process = createOutboxProcessor(consumer, { sql: workerSql, failpoint: inertFailpoint, log: silentLog });
   const hear = async (session: string, chatId: string, body: string) => {
     const stored = await storeInbound({ sessionName: session, messageId: await fake.inbound({ session, chatId, body }), fromJid: chatId });
@@ -392,7 +392,7 @@ describe("the lease covers the offline call, and the pacing is not Math.random",
     const fake = createWahaFake();
     await createSession({ dailyCap: 100 });
     const order = await paidOrder(shop);
-    const delivery = createDelivery({ sql: workerSql, log: silentLog, config: deliveryConfig(shop), waha: fake.access, mail: recordingMail(), files: createEbookFiles(deliveryConfig(shop)), magicLinks: fakeMagicLinks(), enqueue: () => Promise.resolve(), sleep: () => Promise.resolve() });
+    const delivery = createDelivery({ sql: workerSql, log: silentLog, config: deliveryConfig(shop), waha: fake.access, mail: recordingMail(), files: testFiles(deliveryConfig(shop)), magicLinks: fakeMagicLinks(), enqueue: () => Promise.resolve(), sleep: () => Promise.resolve() });
     const sender = createPoolSender({ sql: workerSql, log: silentLog, waha: fake.access, sleep: () => Promise.resolve() });
     const spy = vi.spyOn(Math, "random");
     try {

@@ -1,5 +1,5 @@
-// US-012 criterion 3: WAHA adapter against the infra/waha-mock app (in-process, PROVISIONAL
-// fixtures until US-005 records a real WAHA session).
+// US-012 criterion 3: WAHA adapter against the infra/waha-mock app (in-process), which answers what the Owner's WEBJS
+// instance RECORDED in US-005 (docs/spikes/R11.md).
 import { createWahaMockApp } from "@ebooktrivia/waha-mock/src/app.ts";
 import { webhookHmacSha512 } from "@ebooktrivia/waha-mock/src/hmac.ts";
 import { describe, expect, it } from "vitest";
@@ -8,7 +8,7 @@ import messageFixtures from "../../../infra/waha-mock/fixtures/message.json" wit
 import sessionFixture from "../../../infra/waha-mock/fixtures/session-status.json" with { type: "json" };
 import type { HttpFetch, HttpResponse } from "./http.ts";
 import { SafeFetchError } from "./safe-fetch.ts";
-import { createWahaClient, mapAck, parseChatId, parseWebhookEvent, RECENT_MAX_PAGES, verifyWebhookHmac, WahaError } from "./waha.ts";
+import { createWahaClient, mapAck, NotSentError, parseChatId, parseWebhookEvent, RECENT_MAX_PAGES, verifyWebhookHmac, WahaError } from "./waha.ts";
 
 const API_KEY = "waha-test-api-key";
 const SECRET = "waha-webhook-hmac-secret";
@@ -51,6 +51,159 @@ const respond =
       json: () => (body === "not json" ? Promise.reject(new SyntaxError("x")) : Promise.resolve(body)),
       text: () => Promise.resolve(JSON.stringify(body)),
     });
+
+describe("a successful send on WEBJS: the raw message with an OBJECT id (recorded, US-005 R11), never maybe_sent", () => {
+  // The exact shape the Owner's instance answered to sendText (scrubbed): `id` is an object, `_serialized` the string id, `ack` 0, no `source`.
+  const KEY = "3EB0C767D0D2E0A1F4B3C2";
+  const SERIALIZED = `true_98765432101234@lid_${KEY}`;
+  const raw = (overrides: Record<string, unknown> = {}) => ({
+    _data: { id: { fromMe: true, remote: "98765432101234@lid", id: KEY, _serialized: SERIALIZED }, type: "chat" },
+    id: { fromMe: true, remote: "98765432101234@lid", id: KEY, $1: SERIALIZED, _serialized: SERIALIZED },
+    ack: 0,
+    hasMedia: false,
+    body: "Halo",
+    type: "chat",
+    timestamp: 1_795_266_657,
+    from: "300000000000001@lid",
+    to: "98765432101234@lid",
+    fromMe: true,
+    ...overrides,
+  });
+  const clientOf = (body: unknown) => createWahaClient({ target, apiKey: API_KEY, fetch: respond(201, body) });
+  const LID_CHAT = "98765432101234@lid";
+
+  it("records the string id (_serialized) and the unix-seconds timestamp of sendText and sendFile", async () => {
+    const file = { url: "https://files.example.id/a.pdf?sig=x", filename: "a.pdf", mimetype: "application/pdf" };
+    for (const answer of [clientOf(raw()).sendText("default", LID_CHAT, "Halo"), clientOf(raw({ hasMedia: true, type: "document" })).sendFile("default", LID_CHAT, file, "cap")]) {
+      expect(await answer).toEqual({ id: SERIALIZED, timestamp: 1_795_266_657 });
+    }
+  });
+
+  it("still reads the documented string id", async () => {
+    expect(await clientOf(raw({ id: "true_628123456789@c.us_3EB0AAAA0001" })).sendText("default", CHAT, "hi")).toEqual({ id: "true_628123456789@c.us_3EB0AAAA0001", timestamp: 1_795_266_657 });
+  });
+
+  it("LOW-1: the answer must be OUR message in the chat we sent to, in BOTH id forms: another chat, a buyer's message (`false_`) or a malformed key is maybe_sent (it may have gone out: never resent)", async () => {
+    const file = { url: "https://files.example.id/a.pdf?sig=x", filename: "a.pdf", mimetype: "application/pdf" };
+    const OTHER = "98765432109999@lid";
+    const forms = (id: string) => [id, { fromMe: true, remote: LID_CHAT, id: KEY, _serialized: id }];
+    const refused = [`true_${OTHER}_${KEY}`, `false_${LID_CHAT}_${KEY}`, `true_628123456789@c.us_${KEY}`, `true_${LID_CHAT}_`, `true_${LID_CHAT}_a b`, `xtrue_${LID_CHAT}_${KEY}`, ` true_${LID_CHAT}_${KEY}`];
+    for (const id of refused) {
+      for (const form of forms(id)) {
+        expect(await wahaError(clientOf(raw({ id: form })).sendText("default", LID_CHAT, "x")), `text ${JSON.stringify(form)}`).toBe("maybe_sent");
+        expect(await wahaError(clientOf(raw({ id: form })).sendFile("default", LID_CHAT, file, "cap")), `file ${JSON.stringify(form)}`).toBe("maybe_sent");
+      }
+    }
+    // The same chat, in either form, is accepted; and the chat must be the one REQUESTED (a send to the c.us chat answered with the lid chat's id is not tied to it).
+    for (const form of forms(`true_${LID_CHAT}_${KEY}`)) expect((await clientOf(raw({ id: form })).sendText("default", LID_CHAT, "x")).id).toBe(`true_${LID_CHAT}_${KEY}`);
+    expect(await wahaError(clientOf(raw()).sendText("default", CHAT, "x"))).toBe("maybe_sent");
+  });
+
+  it("an object id without a usable _serialized (missing, not a string, not a WAHA message id) or no numeric timestamp is maybe_sent, as before", async () => {
+    const id = (patch: Record<string, unknown>) => ({ fromMe: true, remote: LID_CHAT, id: KEY, ...patch });
+    for (const bad of [id({}), id({ _serialized: 42 }), id({ _serialized: "not a message id" }), id({ _serialized: "true_https://evil.example/x_AAAA" }), null, 7]) {
+      expect(await wahaError(clientOf(raw({ id: bad })).sendText("default", LID_CHAT, "x")), JSON.stringify(bad)).toBe("maybe_sent");
+    }
+    expect(await wahaError(clientOf(raw({ timestamp: "1795266657" })).sendText("default", LID_CHAT, "x"))).toBe("maybe_sent");
+    expect(await wahaError(clientOf(raw({ timestamp: undefined })).sendText("default", LID_CHAT, "x"))).toBe("maybe_sent");
+  });
+
+  it("refuses an empty or whitespace-only text BEFORE calling WAHA (WEBJS would send an empty message), and sends a real one", async () => {
+    let calls = 0;
+    const counting = createWahaClient({
+      target,
+      apiKey: API_KEY,
+      fetch: (...args) => {
+        calls++;
+        return respond(201, raw())(...args);
+      },
+    });
+    for (const text of ["", " ", "\n\t  \n", " "]) {
+      await expect(counting.sendText("default", LID_CHAT, text), JSON.stringify(text)).rejects.toThrow(NotSentError);
+    }
+    expect(calls).toBe(0);
+    await expect(counting.sendText("default", LID_CHAT, "Halo")).resolves.toMatchObject({ id: SERIALIZED });
+    expect(calls).toBe(1);
+  });
+
+  it("NotSentError is raised ONLY by the checks before any request (empty text, a malformed chat id or session name, a file URL that is not https): an unreadable answer is a WahaError, never a NotSentError", async () => {
+    let calls = 0;
+    const counting = createWahaClient({
+      target,
+      apiKey: API_KEY,
+      fetch: (...args) => {
+        calls++;
+        return respond(201, raw())(...args);
+      },
+    });
+    const file = { url: "https://files.example.id/a.pdf?sig=x", filename: "a.pdf", mimetype: "application/pdf" };
+    for (const refused of [
+      counting.sendText("default", LID_CHAT, ""),
+      counting.sendText("default", "not a chat", "Halo"),
+      counting.sendText("de/fault", LID_CHAT, "Halo"),
+      counting.sendFile("default", LID_CHAT, { ...file, url: "http://files.example.id/a.pdf" }),
+    ]) await expect(refused).rejects.toBeInstanceOf(NotSentError);
+    expect(calls).toBe(0);
+    // A NotSentError is still a RangeError (callers that only care about bad input), but a plain RangeError is not a NotSentError.
+    expect(new NotSentError("x")).toBeInstanceOf(RangeError);
+    expect(new RangeError("x")).not.toBeInstanceOf(NotSentError);
+    // After the request left: the answer cannot be tied to this send, so it is a maybe_sent WahaError.
+    const error = await clientOf(raw({ id: "true_628123456789@c.us_3EB0AAAA0001" })).sendText("default", LID_CHAT, "x").catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(WahaError);
+    expect(error).not.toBeInstanceOf(NotSentError);
+  });
+
+  it("getMessage reports the DELIVERED size of a file (WEBJS _data.size) as mediaSize, and nothing when the answer has none or it is not a size", async () => {
+    const id = `true_${LID_CHAT}_${KEY}`;
+    const answer = (data: unknown) => ({ id, timestamp: 1_795_266_751, fromMe: true, body: "cap", hasMedia: true, _data: data });
+    expect((await clientOf(answer({ type: "document", size: 13264 })).getMessage("default", id))?.mediaSize).toBe(13264);
+    expect((await clientOf(answer({ size: 0 })).getMessage("default", id))?.mediaSize).toBe(0);
+    for (const data of [{ type: "document" }, { size: "13264" }, { size: -1 }, { size: 1.5 }, null, "x", undefined]) {
+      const message = await clientOf(answer(data)).getMessage("default", id);
+      expect(message, JSON.stringify(data)).not.toBeNull();
+      expect(message).not.toHaveProperty("mediaSize");
+    }
+  });
+
+  it("getMessage takes a budget of its own (the read-back inside a lease): a read that hangs is given up after timeoutMs, and without one no signal is set", async () => {
+    const id = `true_${LID_CHAT}_${KEY}`;
+    const signals: (AbortSignal | undefined)[] = [];
+    const hanging: HttpFetch = (_url, init) => {
+      signals.push(init.signal);
+      return new Promise((_resolve, reject) => {
+        init.signal?.addEventListener("abort", () => {
+          reject(new SafeFetchError("timeout", "budget over"));
+        });
+      });
+    };
+    const slow = createWahaClient({ target, apiKey: API_KEY, fetch: hanging });
+    const started = Date.now();
+    expect(await wahaError(slow.getMessage("default", id, { timeoutMs: 40 }))).toBe("failed");
+    expect(Date.now() - started).toBeLessThan(2000);
+    expect(signals[0]).toBeDefined();
+    // The default stays the client's whole-request timeout: no per-call signal.
+    const answer: HttpFetch = respond(200, { id, timestamp: 1_795_266_751, fromMe: true, body: "", hasMedia: true });
+    const answers = createWahaClient({
+      target,
+      apiKey: API_KEY,
+      fetch: (url, init) => {
+        signals.push(init.signal);
+        return answer(url, init);
+      },
+    });
+    await answers.getMessage("default", id);
+    expect(signals[1]).toBeUndefined();
+  });
+
+  it("the waha-mock answers this shape for sendText and sendFile, and the id the adapter records is the one the message list shows", async () => {
+    const text = await client.sendText("default", LID_CHAT, "Halo");
+    const file = await client.sendFile("default", LID_CHAT, { url: "https://files.example.id/a.pdf", filename: "ebook.pdf", mimetype: "application/pdf" }, "cap");
+    const listed = await client.recentOutgoing("default", LID_CHAT);
+    expect(listed.map((m) => m.id)).toEqual(expect.arrayContaining([text.id, file.id]));
+    expect(text.id).toMatch(/^true_98765432101234@lid_[0-9A-F]{22}$/);
+    expect(listed.find((m) => m.id === file.id)?.filename).toBe("ebook.pdf");
+  });
+});
 
 describe("WAHA client (against waha-mock)", () => {
   it("sends text and files, and finds them again in the chat's recent outgoing messages", async () => {
@@ -98,7 +251,8 @@ describe("WAHA client (against waha-mock)", () => {
 
   it("classifies failures for the delivery machine", async () => {
     expect(await wahaError(createWahaClient({ target, apiKey: "wrong", fetch: mockFetch }).sendText("default", CHAT, "x"))).toBe("unauthorized");
-    expect(await wahaError(client.sendText("default", CHAT, ""))).toBe("rejected"); // 422
+    await control("/__mock/sessions/stopped_session/status", { status: "STOPPED" });
+    expect(await wahaError(client.sendText("stopped_session", CHAT, "x"))).toBe("rejected"); // 422: a session that is not WORKING
     await control("/__mock/faults", { sendFile: "http500" });
     const file = { url: "https://api.example.id/files/a.pdf", filename: "a.pdf", mimetype: "application/pdf" };
     expect(await wahaError(client.sendFile("default", CHAT, file))).toBe("maybe_sent");
@@ -131,7 +285,7 @@ describe("WAHA client (against waha-mock)", () => {
   });
 });
 
-describe("human-like sending calls (US-025; request bodies UNVERIFIED until US-005 checks them against the Owner's instance)", () => {
+describe("human-like sending calls (US-025; the request bodies and the answers RECORDED on the Owner's WEBJS instance, US-005)", () => {
   const callsOf = async () => (await (await mock.fetch(new Request("https://mock/__mock/calls"))).json()) as { path: string; body: Record<string, unknown> }[];
   const clearCalls = () => mock.fetch(new Request("https://mock/__mock/calls", { method: "DELETE" }));
   const MESSAGE_ID = "false_628123456789@c.us_3EB0AAAA0001";
@@ -168,6 +322,41 @@ describe("human-like sending calls (US-025; request bodies UNVERIFIED until US-0
     expect(seen).toEqual(["POST /api/sendSeen", `POST /api/default/chats/${encodeURIComponent(CHAT)}/messages/read`]);
     // Anything but a refusal is not retried on another endpoint.
     expect(await wahaError(createWahaClient({ target, apiKey: API_KEY, fetch: respond(503, {}) }).sendSeen("default", CHAT))).toBe("failed");
+  });
+
+  describe("an EMPTY 2xx body (recorded on the Owner's WEBJS: presence and sendSeen with ids answer 201 and nothing)", () => {
+    const empty = (status: number, text = ""): HttpFetch => () =>
+      Promise.resolve<HttpResponse>({ status, json: () => Promise.reject(new SyntaxError("Unexpected end of JSON input")), text: () => Promise.resolve(text) });
+    const clientOf = (fetch: HttpFetch) => createWahaClient({ target, apiKey: API_KEY, fetch });
+
+    it("is a success for sendSeen (with and without ids), startTyping, stopTyping and setOffline", async () => {
+      const wahaClient = clientOf(empty(201));
+      await expect(wahaClient.sendSeen("default", CHAT, [MESSAGE_ID])).resolves.toBeUndefined();
+      await expect(wahaClient.sendSeen("default", CHAT)).resolves.toBeUndefined();
+      await expect(wahaClient.startTyping("default", CHAT)).resolves.toBeUndefined();
+      await expect(wahaClient.stopTyping("default", CHAT)).resolves.toBeUndefined();
+      await expect(wahaClient.setOffline("default")).resolves.toBeUndefined();
+      // And a JSON answer ({"ids": null}, {"result": true}) is still fine.
+      const json = clientOf(respond(201, { result: true }));
+      await expect(json.startTyping("default", CHAT)).resolves.toBeUndefined();
+    });
+
+    it("is NOT a success for any other call: they keep requiring JSON", async () => {
+      const wahaClient = clientOf(empty(200));
+      expect(await wahaError(wahaClient.sessionStatus("default"))).toBe("bad_response");
+      expect(await wahaError(wahaClient.resolveLid("default", "98765432101234@lid"))).toBe("bad_response");
+      expect(await wahaError(wahaClient.checkExists("default", "+628123456789"))).toBe("bad_response");
+      expect(await wahaError(wahaClient.recentOutgoing("default", CHAT))).toBe("bad_response");
+      expect(await wahaError(wahaClient.reachoutTimelock("default"))).toBe("bad_response");
+      // A send that answers nothing may have happened: never a clean failure.
+      expect(await wahaError(clientOf(empty(201)).sendText("default", CHAT, "hi"))).toBe("maybe_sent");
+    });
+
+    it("still refuses a non-empty body that is not JSON, and an error status stays an error", async () => {
+      expect(await wahaError(clientOf(empty(201, "<html>proxy</html>")).startTyping("default", CHAT))).toBe("bad_response");
+      expect(await wahaError(clientOf(empty(500)).startTyping("default", CHAT))).toBe("failed");
+      expect(await wahaError(clientOf(empty(401)).setOffline("default"))).toBe("unauthorized");
+    });
   });
 
   it("every call has a short budget of its own (the signal handed to the fetch), and a failing call is a WahaError, never maybe_sent", async () => {
@@ -381,7 +570,8 @@ describe("request URLs stay on the WAHA origin", () => {
 
   it("encodes every segment and keeps a base path", async () => {
     const c = createWahaClient({ target: new URL("https://waha.example.id:3000/waha/"), apiKey: API_KEY, fetch: capture });
-    await c.sendText("default", CHAT, "x");
+    // (The canned answer of `capture` is not our message: only the URL is looked at here.)
+    await c.sendText("default", CHAT, "x").catch(() => undefined);
     await c.sessionStatus("s_1-a");
     await c.recentOutgoing("default", CHAT, 5).catch(() => undefined);
     await c.resolveLid("default", "98765432101234@lid");

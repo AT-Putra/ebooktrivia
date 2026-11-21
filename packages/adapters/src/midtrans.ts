@@ -6,7 +6,7 @@
 //     "50000.00"); it is never parsed and re-formatted before the check, and the order amount is
 //     compared against that same string (grossAmountMatches).
 //   - An order becomes PAID only after the worker re-queries the status (getTransactionStatus) and
-//     confirmSettlement() says "paid" for that status (AC-S6: settlement, this order, status 200,
+//     confirmSettlement() says "paid" for that status (AC-S6: settlement or a card capture with fraud accept, this order, status 200,
 //     the exact amount, currency IDR). The worker MUST use confirmSettlement and nothing else to
 //     decide "paid"; "review" means money arrived that does not match the order. A notification
 //     alone never decides anything.
@@ -56,6 +56,12 @@ export interface SnapCreateInput {
   /** Integer IDR. */
   readonly grossAmountIdr: number;
   readonly expiryMinutes: number;
+  /**
+   * When the expiry window starts (default: now). Midtrans starts the clock of a pending method (virtual account, GoPay)
+   * only when the buyer PICKS it unless `expiry.start_time` is sent (US-005, recorded: expiry_time = start_time + duration),
+   * so callers pass the instant their own snap_expires_at counts from.
+   */
+  readonly startTime?: Date;
   readonly item: { readonly id: string; readonly name: string };
   readonly customer: { readonly firstName: string; readonly email: string; readonly phone: string };
   /** Where Snap sends the buyer when done (the order status page). */
@@ -147,8 +153,8 @@ export function signedFields(body: unknown): SignedPayload | undefined {
 }
 
 /**
- * Midtrans transaction_status values (public docs; PROVISIONAL until US-005 records the sandbox).
- * A notification's label outside this list is kept as "unknown".
+ * Midtrans transaction_status values (public docs, 2026-11-21; the sandbox recording of US-005 produced deny, pending,
+ * settlement, capture, expire and cancel; the rest are DOCS-ONLY). A notification's label outside this list is kept as "unknown".
  */
 export const MIDTRANS_TRANSACTION_STATUSES = [
   "authorize",
@@ -260,17 +266,29 @@ function failure(response: HttpResponse, body: Record<string, unknown>, what: st
   return new MidtransError("rejected", `${what}: rejected (${String(response.status)})`, { messages });
 }
 
+/** Midtrans' time format, in WIB (the zone it reports in): "2026-11-21 17:30:00 +0700". */
+function midtransTime(date: Date): string {
+  const wib = new Date(date.getTime() + 7 * 3_600_000).toISOString();
+  return `${wib.slice(0, 10)} ${wib.slice(11, 19)} +0700`;
+}
+
 /** POST /snap/v1/transactions. A 4xx (e.g. duplicate order_id) is a non-retryable rejection. */
 export async function createSnapTransaction(cfg: MidtransConfig, input: SnapCreateInput): Promise<SnapTransaction> {
   if (!MIDTRANS_ORDER_ID.test(input.midtransOrderId)) throw new RangeError("midtransOrderId has an invalid format");
   if (!Number.isInteger(input.expiryMinutes) || input.expiryMinutes < 1) throw new RangeError("expiryMinutes must be a positive integer");
+  const startTime = input.startTime ?? new Date();
+  if (Number.isNaN(startTime.getTime())) throw new RangeError("startTime must be a valid date");
   const gross = Number(expectedGrossAmount(input.grossAmountIdr).slice(0, -3));
   const body = {
     transaction_details: { order_id: input.midtransOrderId, gross_amount: gross },
     item_details: [{ id: input.item.id, name: input.item.name.slice(0, 50), price: gross, quantity: 1 }],
     customer_details: { first_name: input.customer.firstName, email: input.customer.email, phone: input.customer.phone },
-    expiry: { unit: "minutes", duration: input.expiryMinutes },
+    expiry: { start_time: midtransTime(startTime), unit: "minutes", duration: input.expiryMinutes },
     ...(input.enabledPayments === undefined ? {} : { enabled_payments: [...input.enabledPayments] }),
+    // 3-D Secure is asked for EXPLICITLY whenever cards can be offered (credit_card enabled, or no list so Snap offers its own): the
+    // Owner's sandbox account does NOT default to it (US-005, R12: a 3DS-challenge test card paid with no step at all when the body
+    // said nothing, and got the 3DS 2 challenge with `secure: true`), whatever the docs' "default true" says.
+    ...(input.enabledPayments === undefined || input.enabledPayments.includes("credit_card") ? { credit_card: { secure: true } } : {}),
     ...(input.finishUrl === undefined ? {} : { callbacks: { finish: input.finishUrl } }),
   };
   const response = await send(cfg, `${cfg.snapBaseUrl}/snap/v1/transactions`, { method: "POST", body: JSON.stringify(body) });
@@ -340,14 +358,16 @@ export type SettlementCheck =
 
 /**
  * THE paid predicate (AC-S6) for a re-queried status. Paid only when the status is for this
- * order, transaction_status is settlement (fraud accept or absent) - or capture + accept when the
- * Owner opted in with treatCardCaptureAsPaid (default false, as in core classifyMidtransStatus) -,
+ * order, transaction_status is settlement (fraud accept or absent) - or capture + accept, Midtrans' standard for a
+ * card (Owner D10, US-005: a successful card is `capture` at once; the settlement comes the next day), unless the
+ * caller opts out with treatCardCaptureAsPaid: false (default true, as in core classifyMidtransStatus) -,
  * status_code is "200", gross_amount equals expectedGrossAmount(amountIdr) as a string and
- * currency is "IDR". A missing or other currency or amount is review, never paid.
+ * currency is "IDR". A missing or other currency or amount is review, never paid. A capture with
+ * challenge or deny is never paid.
  */
 export function confirmSettlement(status: MidtransStatus, expected: SettlementExpectation, options: { readonly treatCardCaptureAsPaid?: boolean } = {}): SettlementCheck {
   const fraud = status.fraudStatus ?? "";
-  const settled = status.transactionStatus === "settlement" || (status.transactionStatus === "capture" && fraud === "accept" && options.treatCardCaptureAsPaid === true);
+  const settled = status.transactionStatus === "settlement" || (status.transactionStatus === "capture" && fraud === "accept" && options.treatCardCaptureAsPaid !== false);
   if (!settled) return { kind: "not_settled", transactionStatus: status.transactionStatus };
   if (status.orderId !== expected.midtransOrderId) return { kind: "review", reason: "order_mismatch" };
   if (status.statusCode !== "200") return { kind: "review", reason: "status_code_mismatch" };

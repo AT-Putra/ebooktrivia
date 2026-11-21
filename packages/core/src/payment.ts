@@ -38,17 +38,25 @@ export interface AttemptState {
   readonly gatewayFraudStatus: string | null;
 }
 
-/** The order machine's context for an event of attempt `eventN` (order-machine.ts caller contract). */
-export function attemptContext(eventN: number, latestN: number, others: readonly AttemptState[]): OrderEventContext {
+/**
+ * The order machine's context for an event of attempt `eventN` (order-machine.ts caller contract). `heldMoney` says
+ * whether the event's own attempt ever held the buyer's money (Owner D9, eventAttemptHeldMoney): the caller decides it
+ * from the attempt's payments.settled_at (set once when a settlement or capture+accept was counted), NOT from its last
+ * re-queried status, so an intermediate pending or unknown status cannot hide a later deny, expire, failure or cancel.
+ */
+export function attemptContext(eventN: number, latestN: number, others: readonly AttemptState[], heldMoney = false): OrderEventContext {
   return {
     eventAttemptIsLatest: eventN >= latestN,
     otherSettledAttempts: others.filter((a) => a.n !== eventN && isSettledStatus(a.gatewayStatus, a.gatewayFraudStatus)).length,
+    eventAttemptHeldMoney: heldMoney,
   };
 }
 
-export type PaymentAlertKind = "payment_settlement_review" | "payment_double_settlement" | "payment_review" | "payment_anomaly";
+export type PaymentAlertKind = "payment_settlement_review" | "payment_double_settlement" | "payment_review" | "payment_anomaly" | "payment_paid_reversed";
 
 const UNPAID: readonly OrderStatus[] = ["pending", "expired", "gateway_failed", "snap_create_failed"];
+/** The non-paid final statuses that, from a paid order, mean Midtrans reversed the payment (Owner D9). */
+const PAID_REVERSALS: readonly OrderEvent[] = ["deny", "cancel", "expire", "failure"];
 
 export interface PaymentAlert {
   readonly kind: PaymentAlertKind;
@@ -66,10 +74,13 @@ export interface PaymentDecision {
  * The transition of an order on one re-queried attempt status, and its alert:
  *   - a mismatched settlement (amount, currency, status code, fraud) is critical, whatever happens;
  *   - a second settlement on another attempt of a paid order is a possible double charge (critical);
- *   - a card capture (accepted, not yet settled) of an unpaid order is the normal way to settlement:
- *     quiet (code review US-021 m10); on a paid, reviewed or refunded order it stays an anomaly;
+ *   - a card capture+accept normally IS a settlement (Owner D10) and pays; the `capture` event only exists for the opt-out
+ *     (treatCardCaptureAsPaid: false): then, on an unpaid order, it is the normal way to settlement and stays quiet (code
+ *     review US-021 m10), and on a paid, reviewed or refunded order it stays an anomaly;
  *   - any other anomaly of the order machine is a warning;
- *   - a move to review asks the Owner to look (warning).
+ *   - a move to review asks the Owner to look (warning);
+ *   - a PAID order that a deny, cancel, expire or failure of the attempt that held its money moves to review is
+ *     critical (Owner D9: the buyer may hold an ebook that Midtrans reversed; nothing sent is reversed for us).
  * Chargebacks get their own critical alert besides (isChargeback).
  */
 export function decidePayment(state: OrderStatus, verdict: SettlementVerdict, fraudStatus: string | null | undefined, context: OrderEventContext): PaymentDecision {
@@ -80,6 +91,8 @@ export function decidePayment(state: OrderStatus, verdict: SettlementVerdict, fr
   else if (event === "capture" && UNPAID.includes(state)) alert = null;
   else if (transition.kind === "stay" && transition.alert) {
     alert = state === "paid" && event === "settlement" ? { kind: "payment_double_settlement", severity: "critical" } : { kind: "payment_anomaly", severity: "warning" };
+  } else if (state === "paid" && transition.kind === "move" && transition.to === "review" && PAID_REVERSALS.includes(event)) {
+    alert = { kind: "payment_paid_reversed", severity: "critical" };
   } else if (transition.kind === "move" && transition.to === "review") alert = { kind: "payment_review", severity: "warning" };
   return { event, transition, alert };
 }

@@ -6,6 +6,7 @@ import { Card, CardDescription, CardTitle } from "@ebooktrivia/ui/components/car
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@ebooktrivia/ui/components/table";
 import { DateInput, EmptyState, FilterForm, FilterSelect, Pager } from "../../../../components/reports/report-ui.tsx";
 import { PageHeading } from "../../../../components/settings/fields.tsx";
+import { MarkHandledForm } from "../../../../components/reports/mark-handled-form.tsx";
 import { ResendForm } from "../../../../components/reports/resend-form.tsx";
 import { formatBps, formatInt, formatWibTime } from "../../../../lib/format.ts";
 import { requireAdmin } from "../../../../lib/next/require-admin.ts";
@@ -13,7 +14,7 @@ import { can } from "../../../../lib/policy.ts";
 import { getRuntime } from "../../../../lib/next/runtime.ts";
 import { pageOf, type Query } from "../../../../lib/reports/common.ts";
 import { attentionList, channelCounts, deliveryList, parseDeliveryFilters, perNumberStats } from "../../../../lib/reports/delivery-source.ts";
-import { resendDeliveryAction, resendUnknownDeliveryAction } from "./actions.ts";
+import { markWrongFileHandledAction, resendDeliveryAction, resendUnknownDeliveryAction } from "./actions.ts";
 
 export const metadata: Metadata = { title: "Delivery report | Admin Console" };
 export const dynamic = "force-dynamic";
@@ -29,6 +30,9 @@ const OPENER_LABELS: Readonly<Record<string, string>> = {
   failed: "No opener (not on WhatsApp, or given up)",
   expired: "Opener not needed",
 };
+
+/** The Owner's note on a `sent` delivery whose WhatsApp file arrived wrong (last_error delivered_wrong_file). Staff sees the error code only. */
+const WRONG_FILE_NOTE = "WhatsApp delivered a wrong file. Check that the buyer received the PDF by email, and send the file manually if needed.";
 
 function StatusBadge({ status }: { status: string }) {
   if (status === "sent") {
@@ -68,6 +72,7 @@ export default async function DeliveryPage({ searchParams }: { searchParams: Pro
   const admin = await requireAdmin({ permission: "reports.view" });
   const canResend = can(admin.role, "delivery.resend");
   const canResendUnknown = can(admin.role, "delivery.resend_unknown");
+  const canMarkHandled = can(admin.role, "delivery.wrong_file_handled");
   const { sql } = await getRuntime();
   const query = await searchParams;
   const { filters, error } = parseDeliveryFilters(query, new Date());
@@ -155,10 +160,10 @@ export default async function DeliveryPage({ searchParams }: { searchParams: Pro
       <Card data-testid="delivery-attention">
         <CardTitle className="text-base">Needs attention</CardTitle>
         <CardDescription>
-          {`${formatInt(attention.failed)} failed and ${formatInt(attention.unknown)} unknown deliveries of paid orders (all dates; the newest ${formatInt(attention.rows.length)} are listed). A failed delivery had nothing delivered: Staff and the Owner can resend it. An unknown one may already have reached the buyer: only the Owner can resend it, after confirming that. A resent e-mail goes out within a minute; a resent WhatsApp ebook goes out when the buyer writes to one of the numbers.`}
+          {`${formatInt(attention.failed)} failed, ${formatInt(attention.unknown)} unknown and ${formatInt(attention.wrongFile)} wrong-file deliveries of paid orders (all dates; the newest ${formatInt(attention.rows.length)} are listed). A failed delivery had nothing delivered: Staff and the Owner can resend it. An unknown one may already have reached the buyer: only the Owner can resend it, after confirming that. A resent e-mail goes out within a minute; a resent WhatsApp ebook goes out when the buyer writes to one of the numbers. A wrong-file delivery is shown for information: it stays Sent and has no resend; the Owner can mark it handled to take it off this list.`}
         </CardDescription>
         {attention.rows.length === 0 ? (
-          <EmptyState testId="attention-empty">Nothing needs a resend.</EmptyState>
+          <EmptyState testId="attention-empty">Nothing needs attention.</EmptyState>
         ) : (
           <Table aria-label="Deliveries that need attention">
             <TableHeader>
@@ -187,6 +192,14 @@ export default async function DeliveryPage({ searchParams }: { searchParams: Pro
                   </TableCell>
                   <TableCell className="font-mono text-xs" data-testid="attention-error">
                     {r.errorCode ?? "-"}
+                    {r.status === "sent" && canMarkHandled ? (
+                      <>
+                        <span className="mt-1 block max-w-64 font-sans text-xs text-muted-foreground" data-testid="attention-wrong-file-note">
+                          {WRONG_FILE_NOTE}
+                        </span>
+                        <MarkHandledForm id={r.id} action={markWrongFileHandledAction} />
+                      </>
+                    ) : null}
                   </TableCell>
                   {canResend ? (
                     <TableCell>

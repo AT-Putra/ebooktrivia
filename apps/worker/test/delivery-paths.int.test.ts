@@ -4,7 +4,6 @@
 import { WahaError } from "@ebooktrivia/adapters";
 import { EFFECT_CANCELLED } from "@ebooktrivia/core";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
-import { createEbookFiles } from "../src/delivery/access.ts";
 import { createDelivery, type DeliveryDeps } from "../src/delivery/deliver.ts";
 import { createInboundConsumer } from "../src/delivery/inbound.ts";
 import { contactKey } from "../src/delivery/pool.ts";
@@ -13,6 +12,7 @@ import { inertFailpoint } from "../src/failpoint.ts";
 import { createOutboxProcessor } from "../src/outbox-consumer.ts";
 import { MailAccessError } from "../src/delivery/ports.ts";
 import { createDeliveryShop, createSession, createWahaFake, type DeliveryShop, deliveryConfig, deliveryOf, fakeMagicLinks, inboundOf, paidOrder, recordingMail, retireDeliveries, retireSessions, storeInbound } from "./support/delivery.ts";
+import { testFiles } from "./support/files.ts";
 import { first, sql } from "./support/db.ts";
 import { silentLog, workerPool } from "./support/midtrans.ts";
 
@@ -57,7 +57,7 @@ function build(over: Partial<DeliveryDeps> = {}) {
     config,
     waha: waha.access,
     mail,
-    files: createEbookFiles(config),
+    files: testFiles(config),
     magicLinks: magic,
     enqueue: () => Promise.resolve(),
     random: () => 0,
@@ -65,7 +65,7 @@ function build(over: Partial<DeliveryDeps> = {}) {
     ...over,
   };
   const delivery = createDelivery(deps);
-  const consumer = createInboundConsumer({ sql: workerSql, log: silentLog, config, waha: over.waha ?? waha.access, delivery, files: createEbookFiles(config), random: () => 0, sleep: () => Promise.resolve() });
+  const consumer = createInboundConsumer({ sql: workerSql, log: silentLog, config, waha: over.waha ?? waha.access, delivery, files: testFiles(config), random: () => 0, sleep: () => Promise.resolve() });
   const process = createOutboxProcessor(consumer, { sql: workerSql, failpoint: inertFailpoint, log: silentLog });
   const hear = async (session: string, chatId: string, body: string) => {
     const stored = await storeInbound({ sessionName: session, messageId: await waha.inbound({ session, chatId, body }), fromJid: chatId });
@@ -238,7 +238,7 @@ describe("the ledger row of an informational reply that failed, or may have gone
       return storeInbound({ sessionName: s.name, messageId, fromJid: "55555555555801@lid" });
     })();
     // The consumer of `build` reads through the default fake; the rejecting access is the one under test here.
-    const consumer = createInboundConsumer({ sql: workerSql, log: silentLog, config: r.config, waha: rejecting, delivery: r.delivery, files: createEbookFiles(r.config), random: () => 0, sleep: () => Promise.resolve() });
+    const consumer = createInboundConsumer({ sql: workerSql, log: silentLog, config: r.config, waha: rejecting, delivery: r.delivery, files: testFiles(r.config), random: () => 0, sleep: () => Promise.resolve() });
     await createOutboxProcessor(consumer, { sql: workerSql, failpoint: inertFailpoint, log: silentLog })({ id: heard.outboxId });
     expect(await inboundOf(heard.inboundId)).toMatchObject({ outcome: "pdf_only_sent" });
     expect(await ledger(s.id)).toEqual([{ kind: "reply", outcome: "sent" }]);

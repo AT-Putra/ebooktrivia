@@ -9,7 +9,6 @@ import { randomUUID } from "node:crypto";
 import { SmtpError, verifyFileUrl } from "@ebooktrivia/adapters";
 import { DELIVERY_GAP_MS, EFFECT_CANCELLED, EMAIL_MAX_ATTEMPTS, POOL_MAX_WAIT_MS, WA_MAX_SESSIONS } from "@ebooktrivia/core";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
-import { createEbookFiles } from "../src/delivery/access.ts";
 import { createDelivery, type Delivery, isSizeRejection } from "../src/delivery/deliver.ts";
 import { expireOpenerLeases } from "../src/delivery/opener-sweep.ts";
 import { expireLeases } from "../src/sweepers.ts";
@@ -27,6 +26,7 @@ import {
   retireDeliveries,
   retireSessions,
 } from "./support/delivery.ts";
+import { testFiles } from "./support/files.ts";
 import { first, sql } from "./support/db.ts";
 import { silentLog, workerPool } from "./support/midtrans.ts";
 
@@ -71,7 +71,7 @@ function rig(options: { config?: Partial<ReturnType<typeof deliveryConfig>>; ran
     config,
     waha: waha.access,
     mail,
-    files: createEbookFiles(config),
+    files: testFiles(config),
     magicLinks: magic,
     enqueue: (jobs) => {
       enqueued.push(...(jobs as Rig["enqueued"]));
@@ -195,7 +195,7 @@ describe("e-mail (criterion 2)", () => {
     expect(url).not.toBe("");
     expect(fallback?.text).toContain(url);
     const parsed = new URL(url);
-    const checked = verifyFileUrl({ path: parsed.pathname, exp: parsed.searchParams.get("exp"), sig: parsed.searchParams.get("sig"), key: r.config.fileUrlKey, now: new Date() });
+    const checked = verifyFileUrl({ path: parsed.pathname, exp: parsed.searchParams.get("exp"), sig: parsed.searchParams.get("sig"), nonce: parsed.searchParams.get("n"), key: r.config.fileUrlKey, now: new Date() });
     expect(checked).toEqual({ ok: true, path: `/files/${shop.storagePath}` });
     // 72 hours, like the login link.
     const ttl = Number(parsed.searchParams.get("exp")) - Math.floor(Date.now() / 1000);
@@ -332,7 +332,11 @@ describe("WhatsApp: the proactive message is ONE short opener (Owner decision D7
     // The delivery itself is untouched: pending, no attempt, no number. The opener is exactly-once on its own row.
     expect(await deliveryOf(order.deliveries.whatsapp)).toMatchObject({ status: "pending", attempts: 0, session_id: null, tried_session_ids: [] });
     expect(await openerOf(order.deliveries.whatsapp)).toMatchObject({ status: "sent", attempts: 1, session_id: session.id, tried_session_ids: [session.id], last_error: null });
+    // The send answer is the raw WEBJS message (an object id, US-005 R11): the id the machine records is its string `_serialized`, and the send is SENT, never maybe_sent
+    // (which would have left the opener `unknown`, to be reconciled instead of recorded).
+    expect(sent?.id).toMatch(/^true_98765432101234@lid_[0-9A-F]{22}$/);
     expect((await openerOf(order.deliveries.whatsapp)).wa_message_id).toBe(sent?.id);
+    expect((await openerOf(order.deliveries.whatsapp)).status).toBe("sent");
     // It spends the number's budget of NEW contacts, and is counted per contact (a digest, never the phone).
     expect(await ledgerOf(session.id)).toEqual([{ kind: "opener", new_contact: true, has_key: true, outcome: "sent" }]);
     // What WAHA said is cached per phone: the chat id to send to, and the lid link.
@@ -388,7 +392,7 @@ describe("WhatsApp: the proactive message is ONE short opener (Owner decision D7
         },
       },
       mail: r.mail,
-      files: createEbookFiles(r.config),
+      files: testFiles(r.config),
       magicLinks: r.magic,
       enqueue: () => Promise.resolve(),
       random: () => 0.5,
@@ -709,6 +713,26 @@ describe("WhatsApp: first contact, failover of the opener, and what never happen
     expect(r.waha.sent).toHaveLength(1);
   });
 
+  it("an opener template that renders to NOTHING is refused before the human-like sequence (WEBJS would send an empty message): no WAHA call at all, so no typing is shown; the attempt and the number are given back", async () => {
+    const r = rig({ random: () => 0 });
+    const first = await createSession();
+    const saved = await sql<{ id: string; body: string }[]>`SELECT id, body FROM message_templates WHERE key LIKE 'delivery\_opener\_%' AND channel = 'whatsapp'`;
+    await sql`UPDATE message_templates SET body = '   ' WHERE key LIKE 'delivery\_opener\_%' AND channel = 'whatsapp'`;
+    try {
+      const id = (await paidOrder(shop)).deliveries.whatsapp;
+      await sql`UPDATE delivery_openers SET next_attempt_at = now() - interval '1 second' WHERE delivery_id = ${id}`;
+      expect(await r.delivery.process({ id })).toBe("pending");
+      expect(await openerOf(id)).toMatchObject({ status: "pending", attempts: 1, last_error: "template_invalid", session_id: null, tried_session_ids: [] });
+      // Not one call: no first-contact lookup, no typing, no presence, no send.
+      expect(r.waha.calls).toEqual([]);
+      expect(r.waha.sent).toHaveLength(0);
+      expect(await sql`SELECT fail_streak, cooldown_until FROM waha_sessions WHERE id = ${first.id}`).toEqual([{ fail_streak: 0, cooldown_until: null }]);
+      expect(await ledgerOf(first.id)).toEqual([]);
+    } finally {
+      for (const row of saved) await sql`UPDATE message_templates SET body = ${row.body} WHERE id = ${row.id}`;
+    }
+  });
+
   it("a claim that stalled past what its lease can still cover is not sent", async () => {
     const r = rig({ random: () => 0 });
     await createSession();
@@ -721,7 +745,7 @@ describe("WhatsApp: first contact, failover of the opener, and what never happen
       config: r.config,
       waha: r.waha.access,
       mail: r.mail,
-      files: createEbookFiles(r.config),
+      files: testFiles(r.config),
       magicLinks: r.magic,
       enqueue: () => Promise.resolve(),
       random: () => 0,

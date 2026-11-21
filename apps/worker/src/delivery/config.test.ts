@@ -1,7 +1,7 @@
 import { generateScopeKeyPair } from "@ebooktrivia/crypto";
 import { describe, expect, it } from "vitest";
 import { ConfigError } from "../env.ts";
-import { loadDeliveryConfig } from "./config.ts";
+import { leaseFloorMs, loadDeliveryConfig, PREFLIGHT_TIMEOUT_MS, READBACK_TIMEOUT_MS } from "./config.ts";
 
 const dev = { allowHttp: false, allowLoopback: false, allowPlaintextSmtp: false };
 const payment = Buffer.from(generateScopeKeyPair().privateKey).toString("base64url");
@@ -23,7 +23,7 @@ describe("delivery config (worker.env)", () => {
       playOrigin: "https://play.ebooktrivia.example.id",
       apiOrigin: "https://api.ebooktrivia.example.id",
       dataDir: "/srv/data",
-      leaseMs: 200_000,
+      leaseMs: 210_000,
       wahaTimeoutMs: 60_000,
       smtpTimeoutMs: 30_000,
       emailAttachMaxBytes: 15 * 1024 * 1024,
@@ -61,14 +61,20 @@ describe("delivery config (worker.env)", () => {
     }
   });
 
-  it("refuses a lease that cannot cover the slot wait, the contact gap, the human-like pauses, the WAHA timeout and a margin; the default grows with the timeout", () => {
-    // 60 s request + 20 s slot + 60 s contact gap + 10 s check-exists lookup + 34.5 s of pauses and presence calls (seen and its fallback, typing, paused, offline) + 10 s margin = 194.5 s.
+  it("refuses a lease that cannot cover the slot wait, the contact gap, the lookup, the pre-flight, the human-like pauses, the WAHA timeout, the read-back and a margin; the default grows with the timeout", () => {
+    // 60 s request + 20 s slot + 60 s contact gap + 10 s check-exists lookup + 5 s file pre-flight + 34.5 s of pauses and presence calls (seen and its fallback, typing, paused,
+    // offline) + 3 s read-back after a file send + 10 s margin = 202.5 s.
+    expect(leaseFloorMs(60_000)).toBe(202_500);
+    // Both budgets are short and fixed: the pre-flight's own (never WAHA's request timeout) and the read-back's (a presence-call budget).
+    expect([PREFLIGHT_TIMEOUT_MS, READBACK_TIMEOUT_MS]).toEqual([5000, 3000]);
     expect(message({ WORKER_DELIVERY_LEASE_MS: "120000" })).toMatch(/WORKER_DELIVERY_LEASE_MS must be at least/);
-    expect(message({ WORKER_DELIVERY_LEASE_MS: "194499", WORKER_WAHA_TIMEOUT_MS: "60000" })).toMatch(/WORKER_DELIVERY_LEASE_MS/);
-    expect(message({ WORKER_DELIVERY_LEASE_MS: "194500", WORKER_WAHA_TIMEOUT_MS: "60000" })).toBe("");
-    expect(message({ WORKER_DELIVERY_LEASE_MS: "135500", WORKER_WAHA_TIMEOUT_MS: "1000" })).toBe("");
-    expect(load({ WORKER_WAHA_TIMEOUT_MS: "100000" }).leaseMs).toBe(234_500);
-    expect(load({ WORKER_WAHA_TIMEOUT_MS: "1000" }).leaseMs).toBe(200_000);
+    expect(message({ WORKER_DELIVERY_LEASE_MS: "202499", WORKER_WAHA_TIMEOUT_MS: "60000" })).toMatch(/WORKER_DELIVERY_LEASE_MS/);
+    expect(message({ WORKER_DELIVERY_LEASE_MS: "202500", WORKER_WAHA_TIMEOUT_MS: "60000" })).toBe("");
+    // The old floor (before the pre-flight and the read-back were counted) is no longer enough.
+    expect(message({ WORKER_DELIVERY_LEASE_MS: "194500", WORKER_WAHA_TIMEOUT_MS: "60000" })).toMatch(/WORKER_DELIVERY_LEASE_MS/);
+    expect(message({ WORKER_DELIVERY_LEASE_MS: "143500", WORKER_WAHA_TIMEOUT_MS: "1000" })).toBe("");
+    expect(load({ WORKER_WAHA_TIMEOUT_MS: "100000" }).leaseMs).toBe(242_500);
+    expect(load({ WORKER_WAHA_TIMEOUT_MS: "1000" }).leaseMs).toBe(210_000);
     expect(message({ WORKER_EMAIL_ATTACH_MAX_BYTES: "0" })).toMatch(/WORKER_EMAIL_ATTACH_MAX_BYTES/);
     expect(message({ WORKER_SESSION_POLL_INTERVAL_MS: "10" })).toMatch(/WORKER_SESSION_POLL_INTERVAL_MS/);
   });

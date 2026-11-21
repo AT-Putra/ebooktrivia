@@ -766,6 +766,40 @@ BEGIN
 END
 $fn$;
 
+-- Revokes a player's live (unconsumed) magic links, on every channel (worker_rw; Owner D9, US-005: Midtrans reversed a
+-- payment we counted, so the order went to review and the buyer's eligibility is suspended). A suspended player's links
+-- are refused at use already (consume_magic_link asks player_auth_user_for), but they stay in the table and would work
+-- again the moment the player is eligible; deleting them takes the old links away for good. A buyer whose order is
+-- restored logs in with a WhatsApp OTP, or with the self-service resend on the login page (US-027), or the Owner
+-- re-sends; nothing here issues a link. It DELETES NOTHING (returns 0) while the player still has an eligible
+-- player_programs row (another paid order stands: that player is not suspended, so their links are not touched).
+-- Consumed links stay (a replay is refused as used). Takes the same per player+channel advisory locks as
+-- issue_magic_link, in a fixed order, so it does not interleave with an issue; an issue that checked eligibility just
+-- before this commits can still leave one link behind, and that link is inert for as long as the player is suspended.
+-- Returns how many were deleted.
+CREATE OR REPLACE FUNCTION public.revoke_player_magic_links(p_player_id uuid)
+  RETURNS integer
+  LANGUAGE plpgsql
+  SECURITY DEFINER
+  SET search_path = pg_catalog, pg_temp
+AS $fn$
+DECLARE
+  v_count integer;
+BEGIN
+  IF p_player_id IS NULL THEN
+    RETURN 0;
+  END IF;
+  IF EXISTS (SELECT 1 FROM public.player_programs pp WHERE pp.player_id = p_player_id AND pp.eligible) THEN
+    RETURN 0;
+  END IF;
+  PERFORM pg_advisory_xact_lock(hashtextextended('magic_link:' || p_player_id::text || ':email', 0::bigint));
+  PERFORM pg_advisory_xact_lock(hashtextextended('magic_link:' || p_player_id::text || ':whatsapp', 0::bigint));
+  DELETE FROM public.magic_links WHERE player_id = p_player_id AND consumed_at IS NULL;
+  GET DIAGNOSTICS v_count = ROW_COUNT;
+  RETURN v_count;
+END
+$fn$;
+
 -- Prunes the OTP send ledger (worker_rw, the minute sweeper): rows older than 24 hours count for no cap any more
 -- (otp.phone_window_seconds is at most 86400 s, the global breaker counts 10 minutes), so only those go. The
 -- worker cannot delete a newer row, which would reset a phone's cap or the breaker. Returns how many went.
@@ -812,6 +846,7 @@ REVOKE ALL ON FUNCTION public.prepare_player_login(text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.player_for_login(text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.issue_magic_link(uuid, text, bytea) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.consume_magic_link(bytea, text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.revoke_player_magic_links(uuid) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.magic_link_login_user(bytea, text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.player_login_label(text) FROM PUBLIC;
 -- US-026 BLOCK END.
@@ -926,7 +961,7 @@ REVOKE ALL ON FUNCTION public.record_waha_ack(text, text) FROM PUBLIC;
 
 -- record_waha_session_state: the limits WhatsApp puts on a number, as a VERIFIED session.status webhook reports them (WAHA docs, Sessions: Reachout timelock,
 -- Message capping: data.reachoutTimelock {isActive, timeEnforcementEnds} and data.messageCapping {cappingStatus, totalQuota, usedQuota, cycleEnd}; the shapes are
--- UNVERIFIED until US-005). The route calls it AFTER it verified the HMAC of the body, like record_waha_ack; only a session name that belongs to exactly ONE
+-- the same objects GET /api/sessions/:session answers, RECORDED in US-005; a real webhook delivery is verified on staging). The route calls it AFTER it verified the HMAC of the body, like record_waha_ack; only a session name that belongs to exactly ONE
 -- active session is updated (the same name on two servers is ambiguous, the health poll sorts it out), every value is checked here (bounded numbers, an
 -- upper-case status word) and a block never lasts more than 31 days. It only ever EXTENDS the block (reachout_until moves forward; the poll and the clock end
 -- it) and sets the warning level; it writes nothing else. Returns whether a session was updated; the worker's poll raises the alerts on a change.

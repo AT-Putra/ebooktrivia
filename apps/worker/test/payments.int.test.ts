@@ -2,10 +2,11 @@
 // worker_rw login and infra/midtrans-stub. Every decision is taken on the RE-QUERIED status; the inbox
 // rows here carry no body at all.
 import { randomBytes } from "node:crypto";
-import { afterAll, describe, expect, it } from "vitest";
+import { getTransactionStatus } from "@ebooktrivia/adapters";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import { inertFailpoint } from "../src/failpoint.ts";
 import { createOutboxProcessor } from "../src/outbox-consumer.ts";
-import { applyRequery, createPaymentNotificationConsumer, EFFECT_CANCELLED, PAYMENT_MAX_ATTEMPTS, type MidtransSource } from "../src/payments.ts";
+import { applyRequery, createPaymentNotificationConsumer, EFFECT_CANCELLED, PAYMENT_MAX_ATTEMPTS, type MidtransSource, requeryInstant } from "../src/payments.ts";
 import { expireLeases } from "../src/sweepers.ts";
 import { first, sql } from "./support/db.ts";
 import {
@@ -459,6 +460,255 @@ describe("refunds and chargebacks (criterion 3)", () => {
   });
 });
 
+describe("Owner D10: a card capture with fraud accept is PAID (US-005 recorded capture at once, settlement the next day)", () => {
+  const paymentRow = async (orderId: string) =>
+    first(await sql<{ transaction_status: string; settled_at: Date | null }[]>`SELECT transaction_status, settled_at FROM payments WHERE order_id = ${orderId}`);
+
+  it("pays at the capture and stamps paid_at and payments.settled_at; the next day's settlement changes nothing (no ET081, no alert, no second effect)", async () => {
+    const stub = midtransStub();
+    const order = await createOrder(shop);
+    await stub.create(order.midtransId());
+    await settle(stub, order, { transaction_status: "capture", fraud_status: "accept", payment_type: "credit_card" });
+    const paid = await effectsOf(order.id);
+    expect(paid).toMatchObject({ status: "paid", deliveries: 2, mt: ["meta", "s2s", "tiktok"], paid_transitions: 1, order_paid_outbox: 1 });
+    expect(paid.paid_at).not.toBeNull();
+    const captured = await paymentRow(order.id);
+    expect(captured.transaction_status).toBe("capture");
+    expect(captured.settled_at).not.toBeNull();
+
+    await settle(stub, order, { transaction_status: "settlement", payment_type: "credit_card" });
+    const later = await effectsOf(order.id);
+    expect(later).toMatchObject({ status: "paid", deliveries: 2, mt: ["meta", "s2s", "tiktok"], paid_transitions: 1, order_paid_outbox: 1 });
+    // The stamps are set once: the same instants after the settlement.
+    expect(later.paid_at).toEqual(paid.paid_at);
+    const settled = await paymentRow(order.id);
+    expect(settled.transaction_status).toBe("settlement");
+    expect(settled.settled_at).toEqual(captured.settled_at);
+    expect(await alertsFor(order.id)).toEqual([]);
+  });
+
+  it("a capture with challenge never pays (review, warning) and one with deny leaves the order pending", async () => {
+    const stub = midtransStub();
+    const challenged = await createOrder(shop);
+    await stub.create(challenged.midtransId());
+    await settle(stub, challenged, { transaction_status: "capture", fraud_status: "challenge", payment_type: "credit_card" });
+    expect(await effectsOf(challenged.id)).toMatchObject({ status: "review", deliveries: 0, mt: [], paid_at: null });
+    expect(await alertsFor(challenged.id)).toEqual([expect.objectContaining({ kind: "payment_review", severity: "warning" })]);
+    expect((await paymentRow(challenged.id)).settled_at).toBeNull();
+
+    const denied = await createOrder(shop);
+    await stub.create(denied.midtransId());
+    await settle(stub, denied, { transaction_status: "capture", fraud_status: "deny", payment_type: "credit_card" });
+    expect(await effectsOf(denied.id)).toMatchObject({ status: "pending", deliveries: 0, mt: [], paid_at: null });
+    expect((await paymentRow(denied.id)).settled_at).toBeNull();
+  });
+
+  it("a capture of a wrong amount or currency is review, never paid", async () => {
+    const stub = midtransStub();
+    const order = await createOrder(shop);
+    await stub.create(order.midtransId());
+    await settle(stub, order, { transaction_status: "capture", fraud_status: "accept", payment_type: "credit_card", gross_amount: "1000.00" });
+    expect(await effectsOf(order.id)).toMatchObject({ status: "review", deliveries: 0, paid_at: null });
+    expect(await alertsFor(order.id)).toEqual([expect.objectContaining({ kind: "payment_settlement_review", severity: "critical" })]);
+  });
+});
+
+describe("Owner D9: Midtrans reverses a payment we counted (Permata VA, Mandiri Bill, Indomaret: settlement, then deny within minutes)", () => {
+  const PERMATA = { transaction_status: "settlement", payment_type: "bank_transfer", bank: "permata" } as const;
+  const liveLinks = async (playerId: string) =>
+    first(await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM magic_links WHERE player_id = ${playerId} AND consumed_at IS NULL`).n;
+  const addLinks = (playerId: string) =>
+    sql`INSERT INTO magic_links (player_id, channel, token_hash, expires_at)
+        VALUES (${playerId}, 'email', ${randomBytes(32)}, now() + interval '72 hours'), (${playerId}, 'whatsapp', ${randomBytes(32)}, now() + interval '72 hours')`;
+
+  async function paidOrder(stub: MidtransStub, state: Record<string, unknown> = PERMATA, options: Parameters<typeof createOrder>[1] = {}): Promise<Order> {
+    const order = await createOrder(shop, options);
+    await stub.create(order.midtransId());
+    await settle(stub, order, state);
+    return order;
+  }
+
+  it.each(["deny", "expire", "failure", "cancel"])(
+    "%s of the paid attempt: review, eligibility suspended, live links revoked, a persisted CRITICAL alert, the sent e-mail is NOT recalled and the unsent WhatsApp is cancelled",
+    async (status) => {
+      const stub = midtransStub();
+      const order = await paidOrder(stub);
+      const player = (await effectsOf(order.id)).player_id ?? "";
+      expect((await eligibilityOf(player, shop.programId)).eligible).toBe(true);
+      const winner = await crownWinner(shop, player, { confirmed: false });
+      await addLinks(player);
+      expect(await liveLinks(player)).toBe(2);
+      // Instant delivery: the e-mail went out already; the WhatsApp opener waits its 3 minutes.
+      await sql`UPDATE deliveries SET status = 'sent', sent_at = now() WHERE order_id = ${order.id} AND channel = 'email'`;
+
+      await settle(stub, order, { transaction_status: status });
+
+      expect(await effectsOf(order.id)).toMatchObject({ status: "review", refunded_at: null, reversals: [] });
+      expect((await eligibilityOf(player, shop.programId)).eligible).toBe(false);
+      expect(await liveLinks(player)).toBe(0);
+      expect((await effectRows(order.id)).deliveries).toEqual([
+        { channel: "email", status: "sent", last_error: null },
+        { channel: "whatsapp", status: "cancelled", last_error: EFFECT_CANCELLED },
+      ]);
+      // The MTs that may have reached their sinks are NOT reversed (no reversal row): only a later refund does that.
+      expect((await effectsOf(order.id)).reversals).toEqual([]);
+      expect(await winnerOf(winner)).toEqual({ status: "flagged", flag_reason: "no_paid_order" });
+      const alerts = await alertsFor(order.id);
+      expect(alerts.filter((a) => a.kind === "payment_paid_reversed")).toEqual([
+        expect.objectContaining({ severity: "critical", payload: expect.objectContaining({ from: "paid", to: "review", event: status, magic_links_revoked: 2 }) as unknown }),
+      ]);
+      expect(alerts.map((a) => a.kind)).not.toContain("payment_review");
+    },
+  );
+
+  it("review is the Owner's: a repeated notification changes nothing, and a later settlement of the same payment restores the order (effects back, eligibility back)", async () => {
+    const stub = midtransStub();
+    const order = await paidOrder(stub);
+    const player = (await effectsOf(order.id)).player_id ?? "";
+    await settle(stub, order, { transaction_status: "deny", payment_type: "bank_transfer", bank: "permata" });
+    expect((await effectsOf(order.id)).status).toBe("review");
+    // The same deny again (a replay): still review, one alert.
+    await settle(stub, order, { transaction_status: "deny", payment_type: "bank_transfer", bank: "permata" });
+    expect((await effectsOf(order.id)).status).toBe("review");
+    expect((await alertsFor(order.id)).filter((a) => a.kind === "payment_paid_reversed")).toHaveLength(1);
+    // Midtrans settles it after all.
+    await settle(stub, order, { transaction_status: "settlement", payment_type: "bank_transfer", bank: "permata" });
+    expect(await effectsOf(order.id)).toMatchObject({ status: "paid", paid_transitions: 2 });
+    expect((await eligibilityOf(player, shop.programId)).eligible).toBe(true);
+    expect((await effectRows(order.id)).deliveries.map((d) => d.status)).toEqual(["pending", "pending"]);
+  });
+
+  it("a deny on an attempt that never held money does not touch a paid order (the buyer retried with another method)", async () => {
+    const stub = midtransStub();
+    const order = await createOrder(shop, { attempts: ["created", "created"] });
+    await stub.create(order.midtransId(1));
+    await stub.create(order.midtransId(2));
+    await settle(stub, order, { transaction_status: "settlement", payment_type: "qris" }, 1);
+    // Attempt 2 (never settled) is denied: it is not the money.
+    await settle(stub, order, { transaction_status: "deny", payment_type: "credit_card" }, 2);
+    expect((await effectsOf(order.id)).status).toBe("paid");
+    expect(await alertsFor(order.id)).toEqual([]);
+    // A deny of attempt 1, which DID hold the money, is a reversal.
+    await settle(stub, order, { transaction_status: "deny", payment_type: "qris" }, 1);
+    expect((await effectsOf(order.id)).status).toBe("review");
+  });
+
+  it("fails closed: an intermediate pending or unknown status after the settlement cannot hide a later deny (the held fact is the attempt's payments.settled_at)", async () => {
+    const stub = midtransStub();
+    const order = await paidOrder(stub);
+    const [payment] = await sql<{ settled_at: Date | null }[]>`SELECT settled_at FROM payments WHERE order_id = ${order.id}`;
+    expect(payment?.settled_at).not.toBeNull();
+    // Midtrans answers pending (a lagging or odd re-query), then a status we do not know, and the attempt's stored status is no longer "settlement".
+    await settle(stub, order, { transaction_status: "pending", payment_type: "bank_transfer", bank: "permata" });
+    expect((await effectsOf(order.id)).status).toBe("paid");
+    await settle(stub, order, { transaction_status: "authorize", payment_type: "bank_transfer", bank: "permata" });
+    expect((await effectsOf(order.id)).status).toBe("paid");
+    expect(first(await sql<{ gateway_status: string }[]>`SELECT gateway_status FROM midtrans_attempts WHERE id = ${order.attempts.get(1) ?? ""}`).gateway_status).toBe("authorize");
+    await settle(stub, order, { transaction_status: "deny", payment_type: "bank_transfer", bank: "permata" });
+    expect((await effectsOf(order.id)).status).toBe("review");
+    expect((await alertsFor(order.id)).map((a) => [a.kind, a.severity])).toContainEqual(["payment_paid_reversed", "critical"]);
+    // The settled_at stamp itself is never cleared by the later statuses.
+    expect(first(await sql<{ settled_at: Date | null }[]>`SELECT settled_at FROM payments WHERE order_id = ${order.id}`).settled_at).toEqual(payment?.settled_at);
+  });
+
+  it("a cancel is gated on held money too: a cancel of an attempt that never held money leaves a paid order alone (it used to send it to review)", async () => {
+    const stub = midtransStub();
+    const order = await createOrder(shop, { attempts: ["created", "created"] });
+    await stub.create(order.midtransId(1));
+    await stub.create(order.midtransId(2));
+    await settle(stub, order, { transaction_status: "settlement", payment_type: "qris" }, 1);
+    // Attempt 1 holds the money: a cancel of attempt 2 is a doubt on a double payment at most (a warning), never a reversal.
+    await settle(stub, order, { transaction_status: "cancel", payment_type: "credit_card" }, 2);
+    expect((await effectsOf(order.id)).status).toBe("paid");
+    expect((await alertsFor(order.id)).map((a) => a.kind)).not.toContain("payment_paid_reversed");
+    // Attempt 1 then answers an intermediate pending (so no OTHER attempt counts as settled any more) and a fresh attempt-2 cancel arrives:
+    // it still never held money, so the order stays paid and nothing is raised (it used to go to review).
+    await settle(stub, order, { transaction_status: "pending", payment_type: "qris" }, 1);
+    await sql`DELETE FROM alerts WHERE payload ->> 'order_id' = ${order.id}`;
+    await settle(stub, order, { transaction_status: "failure", payment_type: "credit_card" }, 2);
+    await settle(stub, order, { transaction_status: "cancel", payment_type: "credit_card" }, 2);
+    expect((await effectsOf(order.id)).status).toBe("paid");
+    expect(await alertsFor(order.id)).toEqual([]);
+  });
+
+  it("revokes no link while the player still has an eligible program row (another paid order stands), but still alerts critical", async () => {
+    const stub = midtransStub();
+    const reversed = await paidOrder(stub);
+    const standing = await paidOrder(stub, { transaction_status: "settlement", payment_type: "qris" }, { phone: reversed.phone });
+    const player = (await effectsOf(reversed.id)).player_id ?? "";
+    expect((await effectsOf(standing.id)).player_id).toBe(player);
+    await addLinks(player);
+    await settle(stub, reversed, { transaction_status: "deny", payment_type: "bank_transfer", bank: "permata" });
+    expect((await effectsOf(reversed.id)).status).toBe("review");
+    expect((await eligibilityOf(player, shop.programId)).eligible).toBe(true);
+    expect(await liveLinks(player)).toBe(2);
+    expect((await alertsFor(reversed.id)).filter((a) => a.kind === "payment_paid_reversed")).toEqual([
+      expect.objectContaining({ severity: "critical", payload: expect.objectContaining({ magic_links_revoked: 0 }) as unknown }),
+    ]);
+  });
+
+  it("a double payment: when the OTHER attempt still holds money, the reversal of one only alerts (a warning) and the order stays paid", async () => {
+    const stub = midtransStub();
+    const order = await createOrder(shop, { attempts: ["created", "created"] });
+    await stub.create(order.midtransId(1));
+    await stub.create(order.midtransId(2));
+    await settle(stub, order, { transaction_status: "settlement", payment_type: "qris" }, 1);
+    await settle(stub, order, { transaction_status: "settlement", payment_type: "gopay" }, 2);
+    await settle(stub, order, { transaction_status: "deny", payment_type: "qris" }, 1);
+    expect((await effectsOf(order.id)).status).toBe("paid");
+    const kinds = (await alertsFor(order.id)).map((a) => a.kind);
+    expect(kinds).toContain("payment_double_settlement");
+    expect(kinds).not.toContain("payment_paid_reversed");
+  });
+
+  it("a capture that is later cancelled (the card never settles) also goes to review with the critical alert", async () => {
+    const stub = midtransStub();
+    const order = await paidOrder(stub, { transaction_status: "capture", fraud_status: "accept", payment_type: "credit_card" });
+    expect((await effectsOf(order.id)).status).toBe("paid");
+    await settle(stub, order, { transaction_status: "cancel", payment_type: "credit_card" });
+    expect((await effectsOf(order.id)).status).toBe("review");
+    expect((await alertsFor(order.id)).map((a) => [a.kind, a.severity])).toContainEqual(["payment_paid_reversed", "critical"]);
+  });
+
+  it("a re-query by the nightly reconciliation reverses the same way (one code path)", async () => {
+    const stub = midtransStub();
+    const order = await paidOrder(stub);
+    await stub.setState(order.midtransId(), { transaction_status: "deny" });
+    const status = await getTransactionStatus(await stub.source(workerSql), order.midtransId());
+    if (status === undefined) throw new Error("expected a status");
+    const attempt = { id: order.attempts.get(1) ?? "", orderId: order.id, n: 1, midtransOrderId: order.midtransId() };
+    const outcome = await workerSql.begin((tx) => applyRequery(tx, attempt, status, new Date(), { waDelayMs: WA_DELAY_MS, source: "reconciliation" }));
+    expect(outcome).toMatchObject({ kind: "applied", from: "paid", to: "review", event: "deny" });
+    expect((await effectsOf(order.id)).status).toBe("review");
+  });
+});
+
+describe("the stale guard orders re-queries by the DATABASE clock (security review, US-005)", () => {
+  it("a worker whose own clock is years off still stamps gateway_checked_at with the database's instant (an older answer can never look newer)", async () => {
+    const stub = midtransStub();
+    const order = await createOrder(shop);
+    await stub.create(order.midtransId());
+    vi.useFakeTimers({ toFake: ["Date"], now: new Date("2031-06-01T00:00:00Z") });
+    try {
+      await settle(stub, order, { transaction_status: "pending" });
+    } finally {
+      vi.useRealTimers();
+    }
+    const row = first(
+      await sql<{ checked: Date; now: Date }[]>`SELECT gateway_checked_at AS checked, clock_timestamp() AS now FROM midtrans_attempts WHERE id = ${order.attempts.get(1) ?? ""}`,
+    );
+    expect(Math.abs(row.now.getTime() - row.checked.getTime())).toBeLessThan(60_000);
+  });
+
+  it("requeryInstant reads the database clock, unless a clock is injected (the tests)", async () => {
+    const before = Date.now();
+    const instant = await requeryInstant(workerSql);
+    expect(Math.abs(instant.getTime() - before)).toBeLessThan(60_000);
+    const fixed = new Date("2030-01-01T00:00:00Z");
+    expect(await requeryInstant(workerSql, () => fixed)).toBe(fixed);
+  });
+});
+
 describe("re-query failures (criterion 2, criterion 4)", () => {
   it.each(["503", "network", "404"] as const)("a re-query failure (%s) is retried with backoff, then the order is paid", async (failure) => {
     const stub = midtransStub();
@@ -522,15 +772,13 @@ describe("re-query failures (criterion 2, criterion 4)", () => {
     expect((await effectsOf(order.id)).status).toBe("paid");
   });
 
-  it("m10: an accepted card capture of a pending order waits for the settlement without an alert", async () => {
+  it("Owner D10: an accepted card capture pays the order at once, without an alert", async () => {
     const stub = midtransStub();
     const order = await createOrder(shop);
     await stub.create(order.midtransId());
     await settle(stub, order, { transaction_status: "capture", fraud_status: "accept", payment_type: "credit_card" });
-    expect((await effectsOf(order.id)).status).toBe("pending");
+    expect(await effectsOf(order.id)).toMatchObject({ status: "paid", deliveries: 2, mt: ["meta", "s2s", "tiktok"], paid_transitions: 1 });
     expect(await alertsFor(order.id)).toEqual([]);
-    await settle(stub, order, { transaction_status: "settlement" });
-    expect((await effectsOf(order.id)).status).toBe("paid");
   });
 
   it("a refused server key alerts at once (configuration), and is retried", async () => {

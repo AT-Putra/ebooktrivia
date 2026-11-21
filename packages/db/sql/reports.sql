@@ -73,10 +73,13 @@ AS $fn$
 $fn$;
 
 -- The Snap method codes (core MIDTRANS_METHODS, the keys of midtrans.fees) a stored Midtrans payment_type may be.
--- UNVERIFIED until the US-005 sandbox recordings (like the code list itself). payments keeps only payment_type, not
+-- Checked against the sandbox in US-005 (docs/spikes/R12.md, 2026-11-21). payments keeps only payment_type, not
 -- the bank of a virtual account, so a bank_transfer may be any virtual-account code: the dearest configured one
 -- applies (never understate). A type that is its own code (gopay, shopeepay, echannel, credit_card, akulaku,
 -- kredivo) maps to itself; an unknown type maps to a code that is not configured, so it counts as fee_missing.
+-- qris is TWO codes (Owner-approved, US-005): the QRIS tile (other_qris) AND the GoPay tile (gopay), because on
+-- a desktop the GoPay tile shows a QR that Midtrans records as payment_type qris (acquirer gopay). A method the
+-- Owner switched off keeps its fee here: an old order paid with it is still priced (fees are never dropped).
 CREATE OR REPLACE FUNCTION public.midtrans_method_codes(p_payment_type text)
   RETURNS text[]
   LANGUAGE sql
@@ -85,7 +88,7 @@ CREATE OR REPLACE FUNCTION public.midtrans_method_codes(p_payment_type text)
   SET search_path = pg_catalog, pg_temp
 AS $fn$
   SELECT CASE p_payment_type
-           WHEN 'qris' THEN ARRAY['other_qris']
+           WHEN 'qris' THEN ARRAY['other_qris', 'gopay']
            WHEN 'bank_transfer' THEN ARRAY['bca_va', 'bni_va', 'bri_va', 'permata_va', 'cimb_va', 'other_va']
            WHEN 'cstore' THEN ARRAY['indomaret']
            ELSE CASE WHEN p_payment_type IS NULL THEN ARRAY[]::text[] ELSE ARRAY[p_payment_type] END

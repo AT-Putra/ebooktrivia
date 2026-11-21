@@ -9,7 +9,8 @@
 //     settles an unknown PDF reply from the number's outgoing messages.
 import { randomBytes } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { createEbookFiles, createMailSender } from "../src/delivery/access.ts";
+import { createMailSender } from "../src/delivery/access.ts";
+import { testFiles } from "./support/files.ts";
 import { createDeliveryPort } from "../src/delivery/index.ts";
 import { createLogger } from "../src/log.ts";
 import { proactiveDelayMs } from "../src/payments.ts";
@@ -87,7 +88,7 @@ function deliveryPorts() {
     config,
     waha: waha.access,
     mail: createMailSender({ sql: stubPool, opener, config: { dev: config.dev, smtpTimeoutMs: config.smtpTimeoutMs } }),
-    files: createEbookFiles(config),
+    files: testFiles(config),
     magicLinks: magic,
   });
 }

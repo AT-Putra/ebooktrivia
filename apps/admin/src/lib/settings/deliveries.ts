@@ -7,6 +7,7 @@
 //   Staff and Owner (delivery.resend):          a FAILED delivery (nothing reached the buyer for sure);
 //   Owner only (delivery.resend_unknown):       an UNKNOWN delivery, only with the explicit confirmation that the buyer may already have it.
 // Every resend is audited in the same transaction, with the status it had and the error as a code, never a message or a buyer's detail.
+import { DELIVERED_WRONG_FILE } from "@ebooktrivia/core";
 import type { FieldKind } from "../audit.ts";
 import type { Sql } from "../db.ts";
 import { auditedChange } from "./audited.ts";
@@ -47,4 +48,35 @@ export async function resendDelivery(sql: Sql, id: string, options: { readonly c
     },
     RESEND_MESSAGES,
   );
+}
+
+/** The audit action of "mark handled": the delivery report leaves a delivery with such an entry out of "Needs attention" (lib/reports/delivery-source.ts). */
+export const WRONG_FILE_HANDLED_ACTION = "delivery.wrong_file_handled";
+
+const HANDLED_FIELDS: Readonly<Record<string, FieldKind>> = { attention: "value" };
+
+/**
+ * The Owner has seen a `sent` delivery whose WhatsApp file arrived wrong (last_error delivered_wrong_file, US-005 R11) and dealt with it (or decided to leave it): it
+ * leaves "Needs attention". DISPLAY ONLY: nothing about the delivery changes (a `sent` row stays final, admin_rw has no write on deliveries), the only record is the audit
+ * entry, written in the same transaction, which the report reads. Refused for anything else, and for a delivery already handled.
+ */
+export async function markWrongFileHandled(sql: Sql, id: string): Promise<void> {
+  await auditedChange(sql, async (tx, audit) => {
+    const [row] = await tx<{ channel: string; order_id: string; status: string; last_error: string | null; handled: boolean }[]>`
+      SELECT d.channel::text AS channel, d.order_id, d.status::text AS status, d.last_error,
+             EXISTS (SELECT 1 FROM public.audit_log a WHERE a.action = ${WRONG_FILE_HANDLED_ACTION} AND a.entity_type = 'delivery' AND a.entity_id = d.id::text) AS handled
+        FROM public.deliveries d WHERE d.id = ${id}`;
+    if (row === undefined) throw new InvalidInput(RESEND_MESSAGES["ET010"] ?? "");
+    if (row.status !== "sent" || row.last_error !== DELIVERED_WRONG_FILE) throw new InvalidInput("Only a delivery that WhatsApp delivered as a wrong file can be marked as handled.");
+    if (row.handled) throw new InvalidInput("This delivery is already marked as handled.");
+    audit({
+      action: WRONG_FILE_HANDLED_ACTION,
+      entityType: "delivery",
+      entityId: id,
+      fields: HANDLED_FIELDS,
+      before: { attention: "wrong_file" },
+      after: { attention: "handled" },
+      facts: { channel: row.channel, order_id: row.order_id },
+    });
+  });
 }

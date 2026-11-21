@@ -51,6 +51,14 @@ export interface MailSender {
   send(message: OutgoingMail): Promise<void>;
 }
 
+/**
+ * What a pre-flight of the signed file URL found. `ok` means: HTTP 200, `application/pdf`, a Content-Length equal to the stored file's size and the `%PDF`
+ * magic bytes. `size` is that stored size (the expected size of what WAHA will deliver). Otherwise `reason` is a short code (never a URL or a body).
+ */
+export type FilePreflight =
+  | { readonly ok: true; readonly size: number }
+  | { readonly ok: false; readonly reason: "unreachable" | "status" | "content_type" | "content_length" | "magic" };
+
 /** The ebook PDF: its bytes (for an attachment) and a signed download URL (for WAHA, and the e-mail fallback). */
 export interface EbookFiles {
   /** Size in bytes of the stored file; throws when it is missing. */
@@ -58,6 +66,12 @@ export interface EbookFiles {
   read(storagePath: string): Promise<Uint8Array>;
   /** A signed https URL under api.<DOMAIN>/files for the stored file. */
   signedUrl(storagePath: string, now: Date, ttlSeconds?: number): string;
+  /**
+   * Fetches the first bytes of the file through its own signed URL, as WAHA will (US-005 R11: WAHA does NOT refuse a URL it cannot fetch, it delivers the
+   * error page as the document). The pre-flight signs a URL of its own, with a short life, so it is counted apart from the URL WAHA gets (the route caps the
+   * downloads of ONE signed URL) and cannot use up WAHA's. Throws only when the stored file is missing (ENOENT, like size()); every other problem is a result.
+   */
+  preflight(storagePath: string, now: Date): Promise<FilePreflight>;
 }
 
 /**

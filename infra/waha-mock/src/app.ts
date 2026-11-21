@@ -27,8 +27,13 @@ export interface WahaMockOptions {
   webhookHmacSecret: string;
   /** Delay used by the "timeout" fault, in ms. Default 60000. */
   timeoutMs?: number;
-  /** sendFile downloads `file.url` (GET through fetchImpl) first, like real WAHA, and answers 422 when that fails. Default false. */
-  fetchFiles?: boolean;
+  /**
+   * sendFile downloads `file.url` (GET through fetchImpl) first, as WAHA does. Default false (the file is not fetched).
+   *   true     a download that fails is REFUSED with 422 (what US-025 assumed; NOT what the Owner's WEBJS does).
+   *   "webjs"  what the Owner's WEBJS 2026.10.1 RECORDED (US-005, docs/spikes/R11.md): a URL that answers 404 is not an error. WAHA takes the 404 PAGE as the
+   *            file, sends it as a document under the requested filename and answers 201: the buyer gets a broken file and the send looks successful.
+   */
+  fetchFiles?: boolean | "webjs";
   fetchImpl?: typeof fetch;
 }
 
@@ -41,6 +46,9 @@ interface RecordedMessage {
   filename?: string;
   url?: string;
   caption?: string;
+  mimetype?: string;
+  /** The bytes the download of `url` returned (only when the mock downloads files): WEBJS reports them as _data.size. */
+  size?: number;
 }
 
 interface SessionState {
@@ -78,8 +86,9 @@ export function createWahaMockApp(opts: WahaMockOptions): Hono {
     calls.push({ method, path, body });
   };
 
-  const messageId = (chatId: string): string =>
-    `true_${chatId}_${randomBytes(8).toString("hex").toUpperCase()}`;
+  // The key of a WEBJS message is 22 upper-case hex digits (recorded).
+  const messageKey = (): string => randomBytes(11).toString("hex").toUpperCase();
+  const messageId = (chatId: string): string => `true_${chatId}_${messageKey()}`;
   const session = (name: string): SessionState => {
     let s = sessions.get(name);
     if (!s) {
@@ -95,9 +104,59 @@ export function createWahaMockApp(opts: WahaMockOptions): Hono {
   // WhatsApp refusing a message to a new contact (463 / 475): the session stays WORKING and the send did not happen.
   const banned = (c: Context) =>
     faults.ban === null ? undefined : c.json({ message: `server returned error ${faults.ban}`, statusCode: 500 }, 500);
-  const me = (name: string) => ({ id: "628111111111@c.us", pushName: `mock-${name}` });
+  const me = (name: string) => ({ id: "628111111111@c.us", lid: "300000000000001@lid", pushName: `mock-${name}` });
   // A session that is not WORKING (stopped, failed, waiting for its QR code) refuses every send: WAHA answers 422 (US-025: a killed session).
   const notWorking = (c: Context) => c.json({ message: "Session status is not as expected", statusCode: 422 }, 422);
+
+  // The documented WAMessage as the instance LISTS and GETS a message (recorded on the Owner's WEBJS, scrubbed): our own messages have source "api" and
+  // ack 2 DEVICE, the buyer's have source "app" and ack 0 PENDING.
+  const waMessage = (m: RecordedMessage, sessionName: string) => ({
+    id: m.id,
+    timestamp: m.timestamp,
+    from: m.fromMe ? me(sessionName).lid : m.chatId,
+    fromMe: m.fromMe,
+    source: m.fromMe ? "api" : "app",
+    to: m.fromMe ? m.chatId : me(sessionName).id,
+    body: m.body ?? m.caption ?? "",
+    hasMedia: m.url !== undefined,
+    media: m.url === undefined ? null : { url: null, mimetype: m.mimetype ?? "application/octet-stream", ...(m.filename !== undefined && { filename: m.filename }) },
+    ack: m.fromMe ? 2 : 0,
+    ackName: m.fromMe ? "DEVICE" : "PENDING",
+    location: null,
+    vCards: [],
+    // Recorded: every message carries its raw engine data, and a file's carries the delivered size (the real one is about 3 KB; only what is used is kept).
+    _data: m.url === undefined ? { type: "chat" } : { type: "document", mimetype: m.mimetype ?? "application/octet-stream", ...(m.filename !== undefined && { filename: m.filename }), ...(m.size !== undefined && { size: m.size }) },
+  });
+  // The answer of POST /api/sendText and /api/sendFile on WEBJS is NOT a WAMessage: it is the raw whatsapp-web.js message (recorded): `id` is an
+  // OBJECT whose `_serialized` is the string id, `ack` is 0, there is no `source`, and a file answer also carries `mediaKey`.
+  const rawWebjsSend = (m: RecordedMessage, sessionName: string, file: boolean) => {
+    const key = m.id.slice(m.id.lastIndexOf("_") + 1);
+    return {
+      _data: { id: { fromMe: true, remote: m.chatId, id: key, _serialized: m.id }, type: file ? "document" : "chat", t: m.timestamp, ack: 0, ...(file && m.size !== undefined && { size: m.size }) },
+      ...(file && { mediaKey: "bW9jay1tZWRpYS1rZXk=" }),
+      id: { fromMe: true, remote: m.chatId, id: key, $1: m.id, _serialized: m.id },
+      ack: 0,
+      hasMedia: file,
+      body: m.body ?? m.caption ?? "",
+      type: file ? "document" : "chat",
+      timestamp: m.timestamp,
+      from: me(sessionName).lid,
+      to: m.chatId,
+      deviceType: "web",
+      isForwarded: false,
+      forwardingScore: 0,
+      isStatus: false,
+      isStarred: false,
+      fromMe: true,
+      hasQuotedMsg: false,
+      hasReaction: false,
+      vCards: [],
+      mentionedIds: [],
+      groupMentions: [],
+      isGif: false,
+      links: [],
+    };
+  };
 
   app.get("/healthz", (c) => c.json({ ok: true }));
 
@@ -148,7 +207,7 @@ export function createWahaMockApp(opts: WahaMockOptions): Hono {
     return c.json({ timelock: s.timelock, capping: s.capping });
   });
 
-  // What GET /api/contacts/check-exists answers for a phone (WAHA docs, Contacts; shapes UNVERIFIED until US-005): by default every number exists and its
+  // What GET /api/contacts/check-exists answers for a phone (WAHA docs, Contacts; shapes RECORDED in US-005): by default every number exists and its
   // chat id is `<digits>@c.us`; `numberExists: false` is a phone that is not on WhatsApp; `chatId` can be `<lid>@lid` (WhatsApp's LID rollout: a first contact
   // must be sent to the chat id returned, never to a built `<phone>@c.us`).
   app.post("/__mock/contacts", async (c) => {
@@ -195,8 +254,9 @@ export function createWahaMockApp(opts: WahaMockOptions): Hono {
       session: sessionName,
       me: me(sessionName),
       payload,
-      engine: "GOWS",
-      environment: { tier: "CORE", version: "mock", engine: "GOWS", browser: null },
+      // The Owner's instance (recorded, US-005): WAHA 2026.10.1, engine WEBJS, tier CORE. The webhook body itself was NOT recorded (no public URL).
+      engine: "WEBJS",
+      environment: { tier: "CORE", version: "2026.10.1", engine: "WEBJS" },
     });
     const res = await doFetch(targetUrl, {
       method: "POST",
@@ -230,11 +290,18 @@ export function createWahaMockApp(opts: WahaMockOptions): Hono {
     record("POST", "/api/sendText", { session: body["session"], chatId });
     const id = messageId(chatId);
     const timestamp = Math.floor(Date.now() / 1000);
-    messages.push({ id, timestamp, chatId, fromMe: true, body: text });
-    return c.json({ id, timestamp });
+    const stored: RecordedMessage = { id, timestamp, chatId, fromMe: true, body: text };
+    messages.push(stored);
+    return c.json(rawWebjsSend(stored, str(body["session"]) ?? "default", false), 201);
   });
 
-  // --- human-like sending: seen, typing, presence (WAHA docs "How to avoid blocking", "Presence", "Chats"; request bodies UNVERIFIED until US-005) ---
+  // --- human-like sending: seen, typing, presence. The answers are what the Owner's WEBJS instance (2026.10.1) RECORDED in US-005 (docs/spikes/R11.md): ---
+  //   POST /api/sendSeen            201 {"ids": null} without messageIds, 201 with NO BODY with them
+  //   POST /api/startTyping|stopTyping   201 {"result": true}
+  //   POST /api/{session}/presence  201 with NO BODY (typing, paused, recording, online, offline)
+  //                                 a presence WEBJS does not support: 501; typing / recording / paused without chatId: 400 {"detail": ...}
+  //   GET  /api/{session}/presence  501 (not implemented by WEBJS)
+  const WEBJS_PRESENCES = ["online", "offline", "typing", "recording", "paused"];
   const presenceFault = async (c: Context) => {
     if (faults.presence === "http500") return c.json({ message: "Internal Server Error" }, 500);
     if (faults.presence === "timeout") {
@@ -247,25 +314,27 @@ export function createWahaMockApp(opts: WahaMockOptions): Hono {
     const failed = await presenceFault(c);
     if (failed !== undefined) return failed;
     const body = await readJson(c.req.raw);
-    if (!str(body["session"]) || !str(body["chatId"])) return c.json({ message: "session, chatId required" }, 422);
-    record("POST", "/api/sendSeen", { session: body["session"], chatId: body["chatId"], ...(Array.isArray(body["messageIds"]) && { messageIds: body["messageIds"] }) });
-    return c.json({});
+    // Recorded: a missing chatId is a 500 with the engine's exception (WAHA does not validate it).
+    if (!str(body["session"]) || !str(body["chatId"])) return c.json({ statusCode: 500, exception: { message: "Cannot read properties of undefined (reading 'includes')", name: "TypeError" } }, 500);
+    const messageIds = Array.isArray(body["messageIds"]);
+    record("POST", "/api/sendSeen", { session: body["session"], chatId: body["chatId"], ...(messageIds && { messageIds: body["messageIds"] }) });
+    return messageIds ? c.body(null, 201) : c.json({ ids: null }, 201);
   });
   api.post("/startTyping", async (c) => {
     const failed = await presenceFault(c);
     if (failed !== undefined) return failed;
     const body = await readJson(c.req.raw);
-    if (!str(body["session"]) || !str(body["chatId"])) return c.json({ message: "session, chatId required" }, 422);
+    if (!str(body["session"]) || !str(body["chatId"])) return c.json({ statusCode: 500, exception: { message: "Cannot read properties of undefined (reading 'includes')", name: "TypeError" } }, 500);
     record("POST", "/api/startTyping", { session: body["session"], chatId: body["chatId"] });
-    return c.json({});
+    return c.json({ result: true }, 201);
   });
   api.post("/stopTyping", async (c) => {
     const failed = await presenceFault(c);
     if (failed !== undefined) return failed;
     const body = await readJson(c.req.raw);
-    if (!str(body["session"]) || !str(body["chatId"])) return c.json({ message: "session, chatId required" }, 422);
+    if (!str(body["session"]) || !str(body["chatId"])) return c.json({ statusCode: 500, exception: { message: "Cannot read properties of undefined (reading 'includes')", name: "TypeError" } }, 500);
     record("POST", "/api/stopTyping", { session: body["session"], chatId: body["chatId"] });
-    return c.json({});
+    return c.json({ result: true }, 201);
   });
   api.post("/:session/presence", async (c) => {
     const failed = await presenceFault(c);
@@ -273,12 +342,18 @@ export function createWahaMockApp(opts: WahaMockOptions): Hono {
     const body = await readJson(c.req.raw);
     const presence = str(body["presence"]);
     const chatId = str(body["chatId"]);
-    if (presence === undefined || !["online", "offline", "typing", "recording", "paused"].includes(presence)) return c.json({ message: "presence must be online, offline, typing, recording or paused" }, 422);
-    // Documented: online / offline carry no chatId; typing, recording and paused need one.
-    if ((presence === "typing" || presence === "recording" || presence === "paused") && chatId === undefined) return c.json({ message: "chatId is required" }, 422);
+    if (presence === undefined || !WEBJS_PRESENCES.includes(presence)) {
+      return c.json({ message: `WEBJS engine doesn't support '${presence ?? ""}' presence. The method is not implemented by 'WEBJS' engine. Check the docs and try another engine: https://waha.devlike.pro/`, error: "Not Implemented", statusCode: 501 }, 501);
+    }
+    // Recorded: typing, recording and paused need a chatId (400); online and offline carry none.
+    if ((presence === "typing" || presence === "recording" || presence === "paused") && chatId === undefined) return c.json({ detail: `'${presence}' presence requires 'chatId' field.` }, 400);
     record("POST", `/api/${c.req.param("session")}/presence`, { presence, ...(chatId !== undefined && { chatId }) });
-    return c.json({});
+    return c.body(null, 201);
   });
+  // Recorded: reading everybody's presence is not implemented by WEBJS.
+  api.get("/:session/presence", (c) =>
+    c.json({ message: "The method is not implemented by 'WEBJS' engine. Check the docs and try another engine: https://waha.devlike.pro/", error: "Not Implemented", statusCode: 501 }, 501),
+  );
   api.post("/:session/chats/:chatId/messages/read", async (c) => {
     const failed = await presenceFault(c);
     if (failed !== undefined) return failed;
@@ -303,13 +378,21 @@ export function createWahaMockApp(opts: WahaMockOptions): Hono {
     const refused = banned(c);
     if (refused !== undefined) return refused;
     record("POST", "/api/sendFile", { session: body["session"], chatId });
-    // Real WAHA downloads the file from its URL before it sends it, and refuses the send when that fails (US-025): with fetchFiles the
-    // mock does the same GET (through fetchImpl), so a download URL that cannot be fetched is a failed send here too.
-    if (opts.fetchFiles === true) {
+    // fetchFiles: the mock does the GET of the URL (through fetchImpl) first, as WAHA does. true: a failed download refuses the send (422, what US-025 assumed).
+    // "webjs": what the Owner's WEBJS recorded (US-005): a download that answers an error status is NOT an error, the answer page is sent as the document.
+    let downloaded: number | undefined;
+    if (opts.fetchFiles === "webjs") {
+      try {
+        downloaded = (await (await doFetch(url, { method: "GET" })).arrayBuffer()).byteLength;
+      } catch {
+        // A host that cannot be reached at all was not recorded; it is refused like a transport failure.
+        return c.json({ message: "Failed to download the file", statusCode: 422 }, 422);
+      }
+    } else if (opts.fetchFiles === true) {
       let download: Response | undefined;
       try {
         download = await doFetch(url, { method: "GET" });
-        await download.arrayBuffer();
+        downloaded = (await download.arrayBuffer()).byteLength;
       } catch {
         download = undefined;
       }
@@ -318,24 +401,42 @@ export function createWahaMockApp(opts: WahaMockOptions): Hono {
       }
     }
     const filename = isRecord(file) ? str(file["filename"]) : undefined;
+    const mimetype = isRecord(file) ? str(file["mimetype"]) : undefined;
     const caption = str(body["caption"]);
     const id = messageId(chatId);
     const timestamp = Math.floor(Date.now() / 1000);
-    messages.push({
+    const stored: RecordedMessage = {
       id,
       timestamp,
       chatId,
       fromMe: true,
       url,
       ...(filename !== undefined && { filename }),
+      ...(mimetype !== undefined && { mimetype }),
       ...(caption !== undefined && { caption }),
-    });
-    return c.json({ id, timestamp });
+      ...(downloaded !== undefined && { size: downloaded }),
+    };
+    messages.push(stored);
+    return c.json(rawWebjsSend(stored, str(body["session"]) ?? "default", true), 201);
   });
 
   api.get("/sessions/:session", (c) => {
     const name = c.req.param("session");
-    return c.json({ name, status: session(name).status, me: me(name) });
+    const state = session(name);
+    // The recorded GET /api/sessions/{session} of WEBJS (the config, which holds webhook URLs and HMAC keys, is not part of what is replayed).
+    return c.json({
+      name,
+      status: state.status,
+      config: { metadata: {}, webhooks: [] },
+      me: {
+        ...me(name),
+        reachoutTimelock: state.timelock.isActive ? { enforcementType: "DEFAULT", isActive: true, timeEnforcementEnds: state.timelock.timeEnforcementEnds } : null,
+        messageCapping: { cappingStatus: state.capping.cappingStatus, totalQuota: -1, usedQuota: 0, cycleStart: 1_793_000_000, cycleEnd: state.capping.cycleEnd ?? 1_795_600_000, mvStatus: "NOT_ELIGIBLE", oteStatus: "NOT_ELIGIBLE" },
+      },
+      presence: "offline",
+      timestamps: { activity: 1_760_000_000_000 },
+      engine: { engine: "WEBJS", WWebVersion: "2.3000.0", state: "CONNECTED" },
+    });
   });
 
   api.get("/contacts/check-exists", async (c) => {
@@ -347,6 +448,8 @@ export function createWahaMockApp(opts: WahaMockOptions): Hono {
     const known = contacts.get(phone);
     if (known?.numberExists === false) return c.json({ numberExists: false });
     const chatId = known?.chatId ?? `${phone}@c.us`;
+    // LIVE FACT (US-005 R11): for a contact whose chat id is a @lid the instance answers {numberExists, chatId} and NO `pn`.
+    if (chatId.endsWith("@lid") && known?.pn === undefined) return c.json({ numberExists: true, chatId });
     return c.json({ numberExists: true, chatId, pn: known?.pn ?? `${phone}@c.us` });
   });
 
@@ -358,12 +461,19 @@ export function createWahaMockApp(opts: WahaMockOptions): Hono {
   api.get("/sessions/:session/capping", (c) => {
     const { cappingStatus, cycleEnd } = session(c.req.param("session")).capping;
     // LIVE FACT: an account with no capping state answers 200 {cappingStatus: "NONE", totalQuota: -1, mvStatus: "NOT_ELIGIBLE", ...}.
-    return c.json({ cappingStatus, totalQuota: -1, usedQuota: 0, mvStatus: "NOT_ELIGIBLE", cycleStart: null, cycleEnd });
+    return c.json({ cappingStatus, totalQuota: -1, usedQuota: 0, mvStatus: "NOT_ELIGIBLE", oteStatus: "NOT_ELIGIBLE", cycleStart: 1_793_000_000, cycleEnd });
   });
 
+  // LIVE FACT (US-005 R11): an unknown LID is 200 {lid, pn: null}, never a 404; the lookup by phone answers {lid, pn} (or {lid: null, pn} when unknown).
   api.get("/:session/lids/:lid", (c) => {
     const lid = c.req.param("lid");
     return c.json({ lid, pn: lids.get(lid) ?? null });
+  });
+  api.get("/:session/lids/pn/:phone", (c) => {
+    const phone = c.req.param("phone");
+    const pn = phone.endsWith("@c.us") ? phone : `${phone}@c.us`;
+    const found = [...lids.entries()].find(([, mapped]) => mapped === pn);
+    return c.json({ lid: found?.[0] ?? null, pn });
   });
 
   api.get("/:session/chats/:chatId/messages", (c) => {
@@ -378,30 +488,15 @@ export function createWahaMockApp(opts: WahaMockOptions): Hono {
       .filter((m) => m.chatId === chatId && (fromMe === undefined || String(m.fromMe) === fromMe))
       .reverse()
       .slice(offset, offset + limit)
-      .map((m) => ({
-        id: m.id,
-        timestamp: m.timestamp,
-        fromMe: m.fromMe,
-        body: m.body ?? m.caption ?? "",
-        hasMedia: m.url !== undefined,
-        ...(m.filename !== undefined && { media: { filename: m.filename, url: m.url } }),
-      }));
+      .map((m) => waMessage(m, c.req.param("session")));
     return c.json(out);
   });
 
   api.get("/:session/chats/:chatId/messages/:messageId", (c) => {
-    const chatId = c.req.param("chatId");
-    const m = messages.find((x) => x.id === c.req.param("messageId") && x.chatId === chatId);
-    if (!m) return c.json({ message: "Message not found" }, 404);
-    return c.json({
-      id: m.id,
-      timestamp: m.timestamp,
-      from: m.fromMe ? me(c.req.param("session")).id : m.chatId,
-      fromMe: m.fromMe,
-      body: m.body ?? m.caption ?? "",
-      hasMedia: m.url !== undefined,
-      ...(m.filename !== undefined && { media: { filename: m.filename, url: m.url } }),
-    });
+    // LIVE FACT (US-005 R11): WEBJS looks a message up by its id and ignores the chat in the path, so a message is found through any chat id.
+    const m = messages.find((x) => x.id === c.req.param("messageId"));
+    if (!m) return c.json({ message: "Message not found", error: "Not Found", statusCode: 404 }, 404);
+    return c.json(waMessage(m, c.req.param("session")));
   });
 
   app.route("/api", api);

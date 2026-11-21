@@ -9,7 +9,6 @@ import { createSecretSealer, generateScopeKeyPair } from "@ebooktrivia/crypto";
 import { PG_CONNECTION_OPTIONS } from "@ebooktrivia/db/connection";
 import postgres from "postgres";
 import { afterAll, beforeAll, beforeEach, describe, expect, inject, it } from "vitest";
-import { createEbookFiles } from "../src/delivery/access.ts";
 import { createDelivery, type Delivery } from "../src/delivery/deliver.ts";
 import { createInboundConsumer } from "../src/delivery/inbound.ts";
 import { createDatabaseMagicLinks } from "../src/delivery/magic-links.ts";
@@ -22,6 +21,7 @@ import { createValkey, type Valkey } from "../../public/src/lib/valkey.ts";
 import { inertFailpoint } from "../src/failpoint.ts";
 import { createOutboxProcessor } from "../src/outbox-consumer.ts";
 import { createDeliveryShop, createSession, createWahaFake, type DeliveryShop, deliveryConfig, deliveryOf, paidOrder, recordingMail, retireDeliveries, retireSessions, storeInbound, type WahaFake } from "./support/delivery.ts";
+import { testFiles } from "./support/files.ts";
 import { first, sql } from "./support/db.ts";
 import { silentLog, workerPool } from "./support/midtrans.ts";
 
@@ -90,7 +90,7 @@ function linkIn(text: string): { readonly channel: string; readonly token: strin
 /** The buyer writes to a number (with the order code): the buyer-first path claims the delivery and answers with the PDF and the link. */
 async function buyerReplies(delivery: Delivery, waha: WahaFake, order: { readonly chatId: string; readonly code: string }, sessionName: string): Promise<void> {
   const config = deliveryConfig(shop);
-  const consumer = createInboundConsumer({ sql: workerSql, log: silentLog, config, waha: waha.access, delivery, files: createEbookFiles(config), random: () => 0 });
+  const consumer = createInboundConsumer({ sql: workerSql, log: silentLog, config, waha: waha.access, delivery, files: testFiles(config), random: () => 0 });
   const heard = await storeInbound({ sessionName, messageId: await waha.inbound({ session: sessionName, chatId: order.chatId, body: `Halo, kode pesanan saya ${order.code}` }), fromJid: order.chatId });
   await createOutboxProcessor(consumer, { sql: workerSql, failpoint: inertFailpoint, log: silentLog })({ id: heard.outboxId });
 }
@@ -107,7 +107,7 @@ describe("the links the deliveries send are the links US-026 accepts", () => {
       config,
       waha: waha.access,
       mail,
-      files: createEbookFiles(config),
+      files: testFiles(config),
       magicLinks: createDatabaseMagicLinks({ sql: workerSql, playOrigin: PLAY_ORIGIN }),
       enqueue: () => Promise.resolve(),
       random: () => 0,
@@ -172,7 +172,7 @@ describe("the links the deliveries send are the links US-026 accepts", () => {
       config,
       waha: waha.access,
       mail: recordingMail(),
-      files: createEbookFiles(config),
+      files: testFiles(config),
       magicLinks: createDatabaseMagicLinks({ sql: workerSql, playOrigin: PLAY_ORIGIN }),
       enqueue: () => Promise.resolve(),
       random: () => 0,

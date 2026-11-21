@@ -148,7 +148,8 @@ describe("the gateway fee: flat + ceil(amount * bps / 10000), whole rupiah", () 
     const rows = await sql<{ t: string | null; codes: string[] }[]>`
       SELECT t, public.midtrans_method_codes(t) AS codes FROM unnest(ARRAY['qris', 'bank_transfer', 'cstore', 'gopay', 'credit_card', 'echannel', NULL]::text[]) AS t`;
     const byType = new Map(rows.map((r) => [r.t, r.codes]));
-    expect(byType.get("qris")).toEqual(["other_qris"]);
+    // US-005 (R12): a desktop GoPay tile shows a QR that Midtrans records as payment_type qris (acquirer gopay), so qris is BOTH codes.
+    expect(byType.get("qris")).toEqual(["other_qris", "gopay"]);
     expect(byType.get("bank_transfer")).toEqual(["bca_va", "bni_va", "bri_va", "permata_va", "cimb_va", "other_va"]);
     expect(byType.get("cstore")).toEqual(["indomaret"]);
     expect(byType.get("gopay")).toEqual(["gopay"]);
@@ -169,15 +170,16 @@ describe("refresh_report_rollups: the per-order metrics, grouped", () => {
     });
     const D1 = "2026-11-18";
     const D2 = "2026-11-19";
-    // D1 / adnet A / "promo-a" / paid: o1 (qris, fee 343, MT sent payout 5000), o2 (gopay, fee 980, MT failed and not counted: payout 0)
+    // A qris payment carries the fee of the DEARER of other_qris (343 on 49000) and gopay (980): a desktop GoPay tile arrives as qris (US-005), so the report never understates.
+    // D1 / adnet A / "promo-a" / paid: o1 (qris, fee 980, MT sent payout 5000), o2 (gopay, fee 980, MT failed and not counted: payout 0)
     await mkOrder({ day: D1, adnet: adnetA, clickid: "c1", utm: "Promo-A", paymentType: "qris", mt: { status: "sent", counted: true, payout: 5000 } });
     await mkOrder({ day: D1, adnet: adnetA, clickid: "c2", utm: " promo-a ", paymentType: "gopay", mt: { status: "failed", counted: false, payout: 5000 } });
-    // D1 / A / promo-a / refunded: o3 (qris fee 343: the gateway keeps it; MT sent 5000, the reversal acknowledged: CPA 0)
+    // D1 / A / promo-a / refunded: o3 (qris fee 980: the gateway keeps it; MT sent 5000, the reversal acknowledged: CPA 0)
     await mkOrder({
       status: "refunded", day: D1, adnet: adnetA, clickid: "c3", utm: "promo-a", paymentType: "qris",
       mt: { status: "sent", counted: true, payout: 5000 }, reversal: { status: "sent" },
     });
-    // D2 / B / promo-b / paid: o4 (bank_transfer: the dearest VA fee 4400, MT sent 7500); refunded: o5 (qris 343, no reversal row: CPA 7500 stays)
+    // D2 / B / promo-b / paid: o4 (bank_transfer: the dearest VA fee 4400, MT sent 7500); refunded: o5 (qris 980, no reversal row: CPA 7500 stays)
     await mkOrder({ day: D2, adnet: adnetB, clickid: "c4", utm: "promo-b", paymentType: "bank_transfer", mt: { status: "sent", counted: true, payout: 7500 } });
     await mkOrder({ status: "refunded", day: D2, adnet: adnetB, clickid: "c5", utm: "promo-b", paymentType: "qris", mt: { status: "sent", counted: true, payout: 7500 } });
     // D2 / Organic / no campaign: o6 paid by card (fee 2000 + 1421 = 3421); o7 has an adnet but NO click id (Organic), paid in a store
@@ -206,13 +208,13 @@ describe("refresh_report_rollups: the per-order metrics, grouped", () => {
       if (row === undefined) throw new Error(`no group ${day} ${status} ${String(adnet)} ${utm}`);
       return row;
     };
-    // D1 A promo-a paid: o1 + o2. orders 2, mo 2, mt 2, amount 98000, revenue 98000, fee 343 + 980 = 1323, payout 5000 + 0.
-    expect(pick(D1, "paid", adnetA, "promo-a")).toMatchObject({ orders: 2, mo: 2, mt: 2, amount_idr: "98000", revenue_idr: "98000", fee_idr: "1323", fee_missing: 0, payout_idr: "5000" });
+    // D1 A promo-a paid: o1 + o2. orders 2, mo 2, mt 2, amount 98000, revenue 98000, fee 980 + 980 = 1960, payout 5000 + 0.
+    expect(pick(D1, "paid", adnetA, "promo-a")).toMatchObject({ orders: 2, mo: 2, mt: 2, amount_idr: "98000", revenue_idr: "98000", fee_idr: "1960", fee_missing: 0, payout_idr: "5000" });
     // D1 A promo-a refunded: o3. Not revenue, the fee stands, the reversal was acknowledged.
-    expect(pick(D1, "refunded", adnetA, "promo-a")).toMatchObject({ orders: 1, mo: 1, mt: 0, amount_idr: "49000", revenue_idr: "0", fee_idr: "343", payout_idr: "0" });
+    expect(pick(D1, "refunded", adnetA, "promo-a")).toMatchObject({ orders: 1, mo: 1, mt: 0, amount_idr: "49000", revenue_idr: "0", fee_idr: "980", payout_idr: "0" });
     // D2 B promo-b paid: o4 (4400, payout 7500); refunded: o5 (343, payout 7500: no reversal was ever acknowledged).
     expect(pick(D2, "paid", adnetB, "promo-b")).toMatchObject({ orders: 1, mt: 1, revenue_idr: "49000", fee_idr: "4400", payout_idr: "7500" });
-    expect(pick(D2, "refunded", adnetB, "promo-b")).toMatchObject({ revenue_idr: "0", fee_idr: "343", payout_idr: "7500" });
+    expect(pick(D2, "refunded", adnetB, "promo-b")).toMatchObject({ revenue_idr: "0", fee_idr: "980", payout_idr: "7500" });
     // D2 Organic: o6 (card, 3421) and o7 (adnet without a click id, store method not configured) are ONE group: 2 orders, revenue 98000.
     expect(pick(D2, "paid", null, "")).toMatchObject({ orders: 2, mo: 2, mt: 2, revenue_idr: "98000", fee_idr: "3421", fee_missing: 1, payout_idr: "0" });
     // D3 (the WIB day of 20:30 UTC): pending and expired have an MO and no MT, snap_create_failed no MO; the order in review is no revenue but pays its fee (980) and CPA (5000).
@@ -220,9 +222,9 @@ describe("refresh_report_rollups: the per-order metrics, grouped", () => {
     expect(pick(D3, "expired", adnetA, "promo-a")).toMatchObject({ orders: 1, mo: 1, mt: 0 });
     expect(pick(D3, "snap_create_failed", null, "")).toMatchObject({ orders: 1, mo: 0, mt: 0, amount_idr: "49000", revenue_idr: "0" });
     expect(pick(D3, "review", adnetA, "promo-a")).toMatchObject({ orders: 1, mo: 1, mt: 0, revenue_idr: "0", fee_idr: "980", payout_idr: "5000" });
-    // D3 promo-c: o12 paid (qris 343, failed-but-counted MT: 5000), o13 refunded (343, the reversal still pending: 5000).
-    expect(pick(D3, "paid", adnetA, "promo-c")).toMatchObject({ orders: 1, revenue_idr: "49000", fee_idr: "343", payout_idr: "5000" });
-    expect(pick(D3, "refunded", adnetA, "promo-c")).toMatchObject({ revenue_idr: "0", fee_idr: "343", payout_idr: "5000" });
+    // D3 promo-c: o12 paid (qris 980, failed-but-counted MT: 5000), o13 refunded (980, the reversal still pending: 5000).
+    expect(pick(D3, "paid", adnetA, "promo-c")).toMatchObject({ orders: 1, revenue_idr: "49000", fee_idr: "980", payout_idr: "5000" });
+    expect(pick(D3, "refunded", adnetA, "promo-c")).toMatchObject({ revenue_idr: "0", fee_idr: "980", payout_idr: "5000" });
     // Totals of the program: 13 orders; revenue o1 + o2 + o4 + o6 + o7 + o12 = 6 x 49000.
     expect(rows.reduce((n, r) => n + r.orders, 0)).toBe(13);
     expect(rows.reduce((n, r) => n + Number(r.revenue_idr), 0)).toBe(6 * 49000);
@@ -268,7 +270,8 @@ describe("refresh_report_rollups: the per-order metrics, grouped", () => {
 
 describe("bounded refresh: the trailing window and the days touched since the last run; older days are frozen", () => {
   const NOW = at("2026-11-20", 12);
-  const FEES_A = { other_qris: { flat_idr: 0, percent_bps: 70 }, gopay: { flat_idr: 0, percent_bps: 200 } };
+  // The card's fee, not gopay's, is the second one: a qris payment reads the fees of other_qris AND gopay (US-005), so the qris orders here stay at 343.
+  const FEES_A = { other_qris: { flat_idr: 0, percent_bps: 70 }, credit_card: { flat_idr: 0, percent_bps: 200 } };
   let solo: Base;
   const ids: Record<string, string> = {};
 
@@ -328,14 +331,14 @@ describe("bounded refresh: the trailing window and the days touched since the la
     await refresh(NOW, 30);
     const before = await versions(OLD);
     await sql`UPDATE conversion_events SET reported_payout_idr = 6000, updated_at = clock_timestamp() WHERE order_id = ${ids["b"] ?? ""} AND kind = 'mt'`;
-    await sql`UPDATE payments SET payment_type = 'gopay', updated_at = clock_timestamp() WHERE order_id = ${ids["c"] ?? ""}`;
+    await sql`UPDATE payments SET payment_type = 'credit_card', updated_at = clock_timestamp() WHERE order_id = ${ids["c"] ?? ""}`;
     await refresh(NOW, 30);
     const after = await versions(OLD);
     expect(after[OLD[0]]).toBe(before[OLD[0]]);
     expect(after[OLD[1]]).not.toBe(before[OLD[1]]);
     expect(after[OLD[2]]).not.toBe(before[OLD[2]]);
     expect((await dayRows(OLD[1]))[0]).toMatchObject({ payout: "6000" });
-    // gopay: 2.00 % of 49000 = 980 (it was qris 343).
+    // credit_card: 2.00 % of 49000 = 980 (it was qris 343).
     expect((await dayRows(OLD[2]))[0]).toMatchObject({ fee: "980" });
   });
 
@@ -611,5 +614,49 @@ describe("who may touch the rollups", () => {
     expect(labels?.p).not.toContain("81234567890");
     expect(await sqlState(asRole("worker_rw", (tx) => tx`SELECT public.mask_name('Budi')`))).toBe("42501");
     expect(await sqlState(asRole("public_rw", (tx) => tx`SELECT public.report_source_label(NULL)`))).toBe("42501");
+  });
+});
+
+describe("Owner D11 and the QRIS mapping (US-005): reports price by payment_type from the fees, whatever the Owner switched off", () => {
+  const KEY = "midtrans.enabled_methods";
+  let solo: Base;
+  let savedMethods: unknown;
+  const feeOf = async (programId: string) => {
+    await refresh(at("2026-11-20", 12));
+    const rows = await rowsOf(programId);
+    return { fee: rows.reduce((n, r) => n + Number(r.fee_idr), 0), missing: rows.reduce((n, r) => n + r.fee_missing, 0) };
+  };
+
+  beforeAll(async () => {
+    const { productId, programId } = await createProgram();
+    solo = { landingPageId: await createLandingPage(programId), programId, productId };
+    savedMethods = first(await sql<{ value: unknown }[]>`SELECT value FROM app_settings WHERE key = ${KEY}`).value;
+    await mkOrder({ day: "2026-11-18", paymentType: "qris" }, solo);
+  });
+  afterAll(async () => {
+    await sql`UPDATE app_settings SET value = ${sql.json(savedMethods as Parameters<typeof sql.json>[0])} WHERE key = ${KEY}`;
+  });
+
+  it("a desktop GoPay payment arrives as qris and is priced with the GoPay fee when that is the only one configured (it used to be fee_missing)", async () => {
+    await setFees({ gopay: { flat_idr: 0, percent_bps: 200 } });
+    expect(await feeOf(solo.programId)).toEqual({ fee: 980, missing: 0 }); // 2.00 % of 49000
+  });
+
+  it("with both configured the dearer applies (never understate); with neither the order is fee_missing", async () => {
+    await setFees({ other_qris: { flat_idr: 0, percent_bps: 70 }, gopay: { flat_idr: 0, percent_bps: 200 } });
+    expect(await feeOf(solo.programId)).toEqual({ fee: 980, missing: 0 });
+    await setFees({ other_qris: { flat_idr: 0, percent_bps: 70 } });
+    expect(await feeOf(solo.programId)).toEqual({ fee: 343, missing: 0 });
+    await setFees({});
+    expect(await feeOf(solo.programId)).toEqual({ fee: 0, missing: 1 });
+  });
+
+  it("a method the Owner switched OFF still prices its old orders: the report reads the fees, never the enabled list", async () => {
+    await setFees({ gopay: { flat_idr: 0, percent_bps: 200 }, other_qris: { flat_idr: 0, percent_bps: 70 } });
+    // Neither QR method is enabled any more (a list of the other methods only).
+    await sql`UPDATE app_settings SET value = '["bca_va", "credit_card"]'::jsonb WHERE key = ${KEY}`;
+    expect(await feeOf(solo.programId)).toEqual({ fee: 980, missing: 0 });
+    await sql`UPDATE app_settings SET value = '[]'::jsonb WHERE key = ${KEY}`;
+    expect(await feeOf(solo.programId)).toEqual({ fee: 980, missing: 0 });
   });
 });

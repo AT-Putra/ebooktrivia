@@ -7,7 +7,7 @@
 //   - numberExists false: `no_whatsapp`, final: no failover (no number would change it), no health penalty, no alert; the e-mail has the ebook and the order
 //     page's WhatsApp button stays;
 //   - a failing lookup (5xx, timeout) throws the adapter's WahaError: nothing was sent, so the caller makes it not_attempted (never maybe_sent).
-// The phone and the chat id are personal data: they live in wa_contacts only, never in a log or an alert. UNVERIFIED shapes until US-005.
+// The phone and the chat id are personal data: they live in wa_contacts only, never in a log or an alert. The WAHA shapes are RECORDED (US-005, docs/spikes/R11.md).
 import { type WahaClient, WahaError } from "@ebooktrivia/adapters";
 import { contactCacheFresh } from "@ebooktrivia/core";
 import type postgres from "postgres";

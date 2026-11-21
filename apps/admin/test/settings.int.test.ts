@@ -25,7 +25,7 @@ import type { RouteContext } from "../src/lib/next/route.ts";
 import { auditedChange, CONCURRENT_SAVE } from "../src/lib/settings/audited.ts";
 import { InvalidInput } from "../src/lib/settings/fields.ts";
 import { createLandingPage, registerDomain } from "../src/lib/settings/landing-pages.ts";
-import { serverKeyStatuses, setEnvironment, setServerKey } from "../src/lib/settings/midtrans.ts";
+import { getMidtransSettings, serverKeyStatuses, setEnvironment, setServerKey, updateMethodsAndFees } from "../src/lib/settings/midtrans.ts";
 import { createProduct, updateProductCommerce } from "../src/lib/settings/products.ts";
 import { cloneProgram, createProgram, rescheduleProgram, salesWindow, setProgramStatus, updateProgram, type ProgramFields } from "../src/lib/settings/programs.ts";
 import { getSmtp, parseSmtp, saveSmtp, setSmtpPassword } from "../src/lib/settings/smtp.ts";
@@ -118,6 +118,76 @@ describe("write-only secrets (AC-A1/A2, plan M2.3)", () => {
     const [audit] = await root<{ changes: unknown }[]>`SELECT changes FROM audit_log WHERE action = 'app_setting.update' AND entity_id = 'midtrans.environment' ORDER BY id DESC LIMIT 1`;
     expect(audit?.changes).toEqual({ value: { before: "sandbox", after: "production" } });
     await as(() => setEnvironment(rt.sql, ownerId, "sandbox"));
+  });
+
+  describe("Owner D11: the per-method switch of the payment methods (Owner only, audited)", () => {
+    const KEYS = ["midtrans.enabled_methods", "midtrans.fees"] as const;
+    const saved = new Map<string, unknown>();
+    const settingOf = async (key: string) => (await root<{ value: unknown }[]>`SELECT value FROM app_settings WHERE key = ${key}`)[0]?.value;
+    const auditOf = async (key: string) =>
+      root<{ changes: { value: { before: unknown; after: unknown } } }[]>`SELECT changes FROM audit_log WHERE action = 'app_setting.update' AND entity_id = ${key} ORDER BY id DESC LIMIT 1`;
+
+    beforeAll(async () => {
+      for (const key of KEYS) saved.set(key, await settingOf(key));
+    });
+    afterAll(async () => {
+      for (const key of KEYS) await root`UPDATE app_settings SET value = ${root.json(saved.get(key) as postgres.JSONValue)} WHERE key = ${key}`;
+    });
+
+    it("a switched-off method's fee is saved like any row's (the form submits every row; old orders are still priced), and both changes are audited", async () => {
+      const qris = { flat_idr: 0, percent_bps: 70 };
+      const gopay = { flat_idr: 0, percent_bps: 200 };
+      const none = { flat_idr: 0, percent_bps: 0 };
+      await root`UPDATE app_settings SET value = '{}'::jsonb WHERE key = 'midtrans.fees'`; // other test files of this database leave fees behind
+      await as(() => updateMethodsAndFees(rt.sql, ownerId, { enabledMethods: ["other_qris", "gopay"], fees: { other_qris: qris, gopay } }));
+      // gopay is switched OFF; the form still submits its row (with the fee it shows), and every other row blank (0 + 0 %).
+      await as(() => updateMethodsAndFees(rt.sql, ownerId, { enabledMethods: ["other_qris"], fees: { other_qris: qris, gopay, shopeepay: none, kredivo: none } }));
+      const settings = await as(() => getMidtransSettings(rt.sql));
+      expect(settings.enabledMethods).toEqual(["other_qris"]);
+      // gopay keeps its fee; the blank rows of methods nobody ticked and nobody priced stay "not configured" (never saved as 0: the report would call them free).
+      expect(settings.fees).toEqual({ other_qris: qris, gopay });
+      expect((await auditOf("midtrans.enabled_methods"))[0]?.changes).toEqual({ value: { before: ["other_qris", "gopay"], after: ["other_qris"] } });
+      expect((await auditOf("midtrans.fees"))[0]?.changes).toBeDefined();
+
+      // An unticked row that the Owner types a fee into is saved ...
+      await as(() => updateMethodsAndFees(rt.sql, ownerId, { enabledMethods: ["other_qris"], fees: { other_qris: qris, gopay, kredivo: { flat_idr: 0, percent_bps: 230 } } }));
+      expect((await as(() => getMidtransSettings(rt.sql))).fees.kredivo).toEqual({ flat_idr: 0, percent_bps: 230 });
+      // ... and an unticked row whose saved fee is changed (even to 0) takes the new value: the Owner's explicit entry wins.
+      await as(() => updateMethodsAndFees(rt.sql, ownerId, { enabledMethods: ["other_qris"], fees: { other_qris: qris, gopay: none, kredivo: { flat_idr: 0, percent_bps: 230 } } }));
+      expect((await as(() => getMidtransSettings(rt.sql))).fees.gopay).toEqual(none);
+      // A caller that leaves a row out keeps what was saved for it.
+      await as(() => updateMethodsAndFees(rt.sql, ownerId, { enabledMethods: ["other_qris"], fees: { other_qris: qris } }));
+      expect((await as(() => getMidtransSettings(rt.sql))).fees).toEqual({ other_qris: qris, gopay: none, kredivo: { flat_idr: 0, percent_bps: 230 } });
+      // Switching a method on again with a new fee replaces the kept one.
+      await as(() => updateMethodsAndFees(rt.sql, ownerId, { enabledMethods: ["other_qris", "gopay"], fees: { other_qris: qris, gopay: { flat_idr: 500, percent_bps: 100 } } }));
+      expect((await as(() => getMidtransSettings(rt.sql))).fees.gopay).toEqual({ flat_idr: 500, percent_bps: 100 });
+    });
+
+    it("the seed moves only the untouched pre-D11 default, and never a list an admin saved", async () => {
+      const seed = await readFile(new URL("../../../packages/db/sql/seed.sql", import.meta.url), "utf8");
+      const statement = /UPDATE public\.app_settings[\s\S]*?midtrans\.enabled_methods[\s\S]*?::jsonb;/.exec(seed)?.[0];
+      if (statement === undefined) throw new Error("seed.sql has no midtrans.enabled_methods migration");
+      const OLD = ["other_qris", "gopay", "shopeepay", "bca_va", "bni_va", "bri_va", "permata_va", "echannel"];
+      const NEW = ["other_qris", "gopay", "bca_va", "bni_va", "permata_va", "echannel", "other_va", "credit_card", "indomaret", "akulaku"];
+      const attempt = async (updatedBy: string | null, value: string[]) => {
+        let after: unknown;
+        await root
+          .begin(async (tx) => {
+            await tx`UPDATE app_settings SET value = ${tx.json(value)}, updated_by_admin_user_id = ${updatedBy} WHERE key = 'midtrans.enabled_methods'`;
+            await tx.unsafe(statement);
+            after = (await tx<{ value: unknown }[]>`SELECT value FROM app_settings WHERE key = 'midtrans.enabled_methods'`)[0]?.value;
+            throw new Error("rollback");
+          })
+          .catch((e: unknown) => {
+            if ((e as Error).message !== "rollback") throw e;
+          });
+        return after;
+      };
+      expect(await attempt(null, OLD)).toEqual(NEW);
+      // An Owner who saved exactly the old list keeps it; so does one who saved anything else.
+      expect(await attempt(ownerId, OLD)).toEqual(OLD);
+      expect(await attempt(null, ["gopay"])).toEqual(["gopay"]);
+    });
   });
 
   it("the SMTP password is bound to the SMTP host and removed when the host changes", async () => {

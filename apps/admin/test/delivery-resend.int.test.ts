@@ -4,7 +4,8 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { can } from "../src/lib/policy.ts";
 import { InvalidInput } from "../src/lib/settings/fields.ts";
-import { resendDelivery } from "../src/lib/settings/deliveries.ts";
+import { attentionList } from "../src/lib/reports/delivery-source.ts";
+import { markWrongFileHandled, resendDelivery } from "../src/lib/settings/deliveries.ts";
 import { asAdmin, createTestAdmin, newRuntime, root, suffix } from "./support.ts";
 
 const rt = newRuntime();
@@ -128,5 +129,46 @@ describe("what the database refuses, whoever asks", () => {
       "UPDATE public.waha_sends SET outcome = 'sent' WHERE delivery_id = $1",
     ]) await expect(rt.sql.unsafe(statement, [id]), statement).rejects.toMatchObject({ code: "42501" });
     expect((await state(id))?.status).toBe("failed");
+  });
+});
+
+describe("a WhatsApp file that arrived wrong (US-005 R11): the Owner marks it handled, display only", () => {
+  const WRONG = "delivered_wrong_file";
+  const handled = (id: string) =>
+    root<{ actor_kind: string; actor_admin_user_id: string | null; changes: Record<string, unknown> }[]>`SELECT actor_kind, actor_admin_user_id, changes FROM audit_log WHERE action = 'delivery.wrong_file_handled' AND entity_id = ${id}`;
+
+  it("only the Owner may: a permission of its own", () => {
+    expect(can("owner", "delivery.wrong_file_handled")).toBe(true);
+    expect(can("staff", "delivery.wrong_file_handled")).toBe(false);
+  });
+
+  it("takes the delivery off Needs attention with an audit entry in the same transaction, and changes nothing about the delivery (it stays sent; no resend exists for it)", async () => {
+    const { id, orderId } = await delivery({ status: "sent", channel: "whatsapp", lastError: WRONG });
+    const before = await attentionList(rt.sql, 500);
+    expect(before.rows.find((r) => r.id === id)).toMatchObject({ status: "sent", errorCode: WRONG });
+    await asAdmin(ownerId, () => markWrongFileHandled(rt.sql, id));
+    const after = await attentionList(rt.sql, 500);
+    expect(after.rows.map((r) => r.id)).not.toContain(id);
+    expect(after.wrongFile).toBe(before.wrongFile - 1);
+    expect([after.failed, after.unknown]).toEqual([before.failed, before.unknown]);
+    // The delivery is exactly as it was, and the console still cannot resend it (a sent row is final).
+    expect(await state(id)).toEqual({ status: "sent", attempts: 3, attempts_base: 0, last_error: WRONG });
+    await expect(asAdmin(ownerId, () => resendDelivery(rt.sql, id, { confirmUnknown: true }))).rejects.toThrow(/Only a failed delivery/);
+    const [audit] = await handled(id);
+    expect(audit).toMatchObject({ actor_kind: "admin", actor_admin_user_id: ownerId });
+    expect(audit?.changes).toMatchObject({ attention: { before: "wrong_file", after: "handled" }, channel: "whatsapp", order_id: orderId });
+  });
+
+  it("is refused for anything else (a failed or plain sent delivery, a sent one with another code, an unknown id) and when it is already handled; nothing is audited then", async () => {
+    const failed = await delivery({ status: "failed", lastError: WRONG });
+    const plain = await delivery({ status: "sent" });
+    const other = await delivery({ status: "sent", lastError: "waha_error" });
+    for (const { id } of [failed, plain, other]) await expect(asAdmin(ownerId, () => markWrongFileHandled(rt.sql, id)), id).rejects.toThrow(/wrong file can be marked/);
+    await expect(asAdmin(ownerId, () => markWrongFileHandled(rt.sql, "00000000-0000-4000-8000-000000000000"))).rejects.toThrow(/no longer exists/);
+    expect(await root`SELECT 1 FROM audit_log WHERE action = 'delivery.wrong_file_handled' AND entity_id = ANY (${[failed.id, plain.id, other.id]})`).toEqual([]);
+    const wrong = await delivery({ status: "sent", channel: "whatsapp", lastError: WRONG });
+    await asAdmin(ownerId, () => markWrongFileHandled(rt.sql, wrong.id));
+    await expect(asAdmin(ownerId, () => markWrongFileHandled(rt.sql, wrong.id))).rejects.toThrow(/already marked as handled/);
+    expect(await handled(wrong.id)).toHaveLength(1);
   });
 });

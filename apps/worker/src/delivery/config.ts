@@ -7,9 +7,10 @@
 //   WORKER_DATA_DIR                where the ebook PDFs live, `deliverables/<id>.pdf` under it (default /srv/data; the quadlet
 //                                  mounts /srv/data/deliverables read-only).
 //   WORKER_DELIVERY_LEASE_MS       how long a claimed delivery is `sending` before the lease sweeper calls it unknown
-//                                  (default 200000). It covers the longest wait for a send slot (core POOL_MAX_WAIT_MS), the wait for a contact gap
-//                                  (CONTACT_MAX_WAIT_MS), the human-like pauses and presence calls (HUMAN_MAX_MS) and
-//                                  WORKER_WAHA_TIMEOUT_MS, with a margin.
+//                                  (default 210000). It covers the longest wait for a send slot (core POOL_MAX_WAIT_MS), the wait for a contact gap
+//                                  (CONTACT_MAX_WAIT_MS), the lookup of a first contact (LOOKUP_MAX_MS), the pre-flight of a file send (PREFLIGHT_TIMEOUT_MS), the
+//                                  human-like pauses and presence calls (HUMAN_MAX_MS), WORKER_WAHA_TIMEOUT_MS and the read-back after a file send
+//                                  (READBACK_TIMEOUT_MS), with a margin.
 //   WORKER_WAHA_TIMEOUT_MS         whole-request timeout of a WAHA send (default 60000: WAHA downloads the PDF, then uploads it).
 //   WORKER_SMTP_TIMEOUT_MS         per-phase SMTP timeout (default 30000: the ebook is attached).
 //   WORKER_EMAIL_ATTACH_MAX_BYTES  an ebook larger than this goes as a signed link instead of an attachment (default 15 MiB: base64
@@ -19,7 +20,7 @@
 //   WORKER_WA_WARNING_FACTORS      "first,second": the share of a number's daily budget of NEW contacts (waha_sessions.new_contact_cap) that WhatsApp's
 //                                  FIRST_WARNING and SECOND_WARNING leave it (default 0.5,0.25).
 // The signed-URL key is derived from SECRETS_PAYMENT_PRIVATE_KEY (packages/crypto file-url-key.ts), which public.env holds too.
-import { CONTACT_MAX_WAIT_MS, DEFAULT_WARNING_CAP_FACTORS, HUMAN_MAX_MS, POOL_MAX_WAIT_MS, normalizeHost } from "@ebooktrivia/core";
+import { CONTACT_MAX_WAIT_MS, DEFAULT_WARNING_CAP_FACTORS, HUMAN_MAX_MS, HUMAN_PRESENCE_TIMEOUT_MS, POOL_MAX_WAIT_MS, normalizeHost } from "@ebooktrivia/core";
 import { fileUrlKeyFromEnv } from "@ebooktrivia/crypto";
 import { ConfigError, type Env, int, optional } from "../env.ts";
 import type { WorkerConfig } from "../worker-config.ts";
@@ -51,8 +52,24 @@ export const LEASE_MARGIN_MS = 10_000;
 /** The longest a check-exists lookup (WhatsApp is asked where a first contact lives) can take before the send: the adapter's budget. */
 export const LOOKUP_MAX_MS = 10_000;
 
-/** The shortest lease that covers the worst-case sequence before and during a send (core human-send): slot, contact gap, the lookup, the pauses, the request. */
-export const leaseFloorMs = (wahaTimeoutMs: number): number => wahaTimeoutMs + POOL_MAX_WAIT_MS + CONTACT_MAX_WAIT_MS + LOOKUP_MAX_MS + HUMAN_MAX_MS + LEASE_MARGIN_MS;
+/**
+ * The longest the pre-flight of a file send (the worker fetches its own signed URL, US-005 R11) can take: its own whole-request budget (connect, headers, the first
+ * bytes), short on purpose: WAHA's own download of the PDF is not what is being waited for, only a route that answers.
+ */
+export const PREFLIGHT_TIMEOUT_MS = 5000;
+
+/** The longest the read-back of a file send (getMessage: the size WAHA delivered, US-005 R11) can take: a best-effort call like the presence ones. */
+export const READBACK_TIMEOUT_MS = HUMAN_PRESENCE_TIMEOUT_MS;
+
+/**
+ * The shortest lease that covers the worst-case sequence before and during a send (core human-send): slot, contact gap, the lookup (an opener), the pre-flight (a
+ * file), the pauses, the request and the read-back after it (a file). Both are counted although no one flow has both the lookup and the pre-flight.
+ */
+export const leaseFloorMs = (wahaTimeoutMs: number): number =>
+  wahaTimeoutMs + POOL_MAX_WAIT_MS + CONTACT_MAX_WAIT_MS + LOOKUP_MAX_MS + PREFLIGHT_TIMEOUT_MS + HUMAN_MAX_MS + READBACK_TIMEOUT_MS + LEASE_MARGIN_MS;
+
+/** The default lease: round, and never below the floor of the default WAHA timeout. */
+export const DEFAULT_LEASE_MS = 210_000;
 
 /**
  * WORKER_WA_WARNING_FACTORS="first,second": the share of a number's daily budget of NEW contacts that WhatsApp's FIRST_WARNING and SECOND_WARNING leave it
@@ -75,9 +92,11 @@ export function loadDeliveryConfig(env: Env, worker: Pick<WorkerConfig, "dev">):
   const fileUrlKey = fileUrlKeyFromEnv(env);
   if (fileUrlKey === undefined) throw new ConfigError("SECRETS_PAYMENT_PRIVATE_KEY is required for deliveries (the signed ebook URLs are keyed from it)");
   const wahaTimeoutMs = int(env, "WORKER_WAHA_TIMEOUT_MS", 60_000, 1000, 300_000);
-  const leaseMs = int(env, "WORKER_DELIVERY_LEASE_MS", Math.max(200_000, leaseFloorMs(wahaTimeoutMs)), 10_000, 3_600_000);
+  const leaseMs = int(env, "WORKER_DELIVERY_LEASE_MS", Math.max(DEFAULT_LEASE_MS, leaseFloorMs(wahaTimeoutMs)), 10_000, 3_600_000);
   if (leaseMs < leaseFloorMs(wahaTimeoutMs)) {
-    throw new ConfigError(`WORKER_DELIVERY_LEASE_MS must be at least WORKER_WAHA_TIMEOUT_MS + ${String(leaseFloorMs(0))} ms (the waits for a send slot, the contact gap and the human-like pauses, and a margin)`);
+    throw new ConfigError(
+      `WORKER_DELIVERY_LEASE_MS must be at least WORKER_WAHA_TIMEOUT_MS + ${String(leaseFloorMs(0))} ms (the waits for a send slot, the contact gap, the lookup and the file pre-flight, the human-like pauses, the read-back, and a margin)`,
+    );
   }
   return {
     playOrigin: `https://play.${domain}`,

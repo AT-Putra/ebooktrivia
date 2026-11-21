@@ -71,7 +71,7 @@ describe("the ebook files", () => {
       const now = new Date();
       const url = new URL(files.signedUrl(`deliverables/${id}.pdf`, now));
       expect(url.origin + url.pathname).toBe(`https://api.example.test/files/deliverables/${id}.pdf`);
-      expect(verifyFileUrl({ path: url.pathname, exp: url.searchParams.get("exp"), sig: url.searchParams.get("sig"), key, now })).toEqual({ ok: true, path: `/files/deliverables/${id}.pdf` });
+      expect(verifyFileUrl({ path: url.pathname, exp: url.searchParams.get("exp"), sig: url.searchParams.get("sig"), nonce: url.searchParams.get("n"), key, now })).toEqual({ ok: true, path: `/files/deliverables/${id}.pdf` });
       const long = new URL(files.signedUrl(`deliverables/${id}.pdf`, now, 72 * 3600));
       expect(Number(long.searchParams.get("exp")) - Math.floor(now.getTime() / 1000)).toBe(72 * 3600);
       for (const bad of ["../etc/passwd", "deliverables/../x.pdf", "deliverables/notauuid.pdf", `uploads/${id}.pdf`, `deliverables/${id}.png`, `/deliverables/${id}.pdf`]) {

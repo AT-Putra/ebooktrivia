@@ -46,6 +46,12 @@
 export const DELIVERY_STATUSES = ["pending", "sending", "sent", "failed", "unknown", "cancelled"] as const;
 export type DeliveryStatus = (typeof DELIVERY_STATUSES)[number];
 
+/**
+ * `last_error` of a delivery that is `sent` but whose WhatsApp file arrived with the wrong size (US-005, R11: WAHA's WEBJS sends the answer page of a file URL it cannot
+ * fetch). Written by the worker (apps/worker/src/delivery/deliver.ts), listed by the console's delivery report under "Needs attention"; a `sent` row stays final (ET130).
+ */
+export const DELIVERED_WRONG_FILE = "delivered_wrong_file";
+
 /** deliveries_channel_check. */
 export const DELIVERY_CHANNELS = ["whatsapp", "email"] as const;
 export type DeliveryChannel = (typeof DELIVERY_CHANNELS)[number];

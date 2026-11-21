@@ -181,6 +181,72 @@ describe("magic links", () => {
   });
 });
 
+describe("revoke_player_magic_links (Owner D9, US-005: Midtrans reversed a payment we counted)", () => {
+  const revoke = (playerId: string | null) => asRole("worker_rw", async (tx) => first(await tx<{ n: number }[]>`SELECT revoke_player_magic_links(${playerId}) AS n`).n);
+  const liveLinks = async (playerId: string): Promise<number> => first(await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM magic_links WHERE player_id = ${playerId} AND consumed_at IS NULL`).n;
+
+  /** The payment consumer suspends first (no paid order left), then revokes. */
+  const suspend = (playerId: string) => sql`UPDATE player_programs SET eligible = false WHERE player_id = ${playerId}`;
+  const restore = (playerId: string) => sql`UPDATE player_programs SET eligible = true WHERE player_id = ${playerId}`;
+
+  it("does nothing (0, no link deleted) while the player still has an eligible player_programs row: another paid order stands", async () => {
+    const { playerId } = await createPlayer({ programId, eligible: true });
+    await issue(playerId, "email", hash(newToken()));
+    await issue(playerId, "whatsapp", hash(newToken()));
+    expect(await revoke(playerId)).toBe(0);
+    expect(await liveLinks(playerId)).toBe(2);
+    // Once the player is suspended the same call deletes both.
+    await suspend(playerId);
+    expect(await revoke(playerId)).toBe(2);
+    expect(await liveLinks(playerId)).toBe(0);
+  });
+
+  it("deletes every unconsumed link of a SUSPENDED player on both channels, and nothing of another player or of a consumed link", async () => {
+    const { playerId } = await createPlayer({ programId, eligible: true });
+    const other = await createPlayer({ programId, eligible: true });
+    const emailToken = newToken();
+    await issue(playerId, "email", hash(emailToken));
+    await issue(playerId, "whatsapp", hash(newToken()));
+    await issue(other.playerId, "email", hash(newToken()));
+    const consumedToken = newToken();
+    const consumedPlayer = await createPlayer({ programId, eligible: true });
+    await issue(consumedPlayer.playerId, "email", hash(consumedToken));
+    expect(await consume(hash(consumedToken), "email")).not.toBeNull();
+    await suspend(playerId);
+    await suspend(other.playerId);
+    await suspend(consumedPlayer.playerId);
+
+    expect(await revoke(playerId)).toBe(2);
+    expect(await liveLinks(playerId)).toBe(0);
+    // The revoked link is gone: it cannot be consumed, even by its holder.
+    expect(await consume(hash(emailToken), "email")).toBeNull();
+    // Another player's links are untouched (this call is for one player), and so are consumed links.
+    expect(await liveLinks(other.playerId)).toBe(1);
+    expect(await revoke(consumedPlayer.playerId)).toBe(0);
+    expect(first(await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM magic_links WHERE player_id = ${consumedPlayer.playerId} AND consumed_at IS NOT NULL`).n).toBe(1);
+    // Nothing left to revoke: 0, no error. A NULL player is 0 too.
+    expect(await revoke(playerId)).toBe(0);
+    expect(await revoke(null)).toBe(0);
+  });
+
+  it("a restored player can be issued a fresh link (nothing here issues one: the delivery or the Owner does)", async () => {
+    const { playerId } = await createPlayer({ programId, eligible: true });
+    await issue(playerId, "email", hash(newToken()));
+    await suspend(playerId);
+    expect(await revoke(playerId)).toBe(1);
+    await restore(playerId);
+    const fresh = newToken();
+    await issue(playerId, "email", hash(fresh));
+    expect(await consume(hash(fresh), "email")).not.toBeNull();
+  });
+
+  it("only worker_rw may call it (the other roles and PUBLIC have no EXECUTE)", async () => {
+    for (const role of ["public_rw", "admin_rw", "internal_rw"] as const) {
+      expect(await sqlState(rolledBack(role, (tx) => tx`SELECT public.revoke_player_magic_links(gen_random_uuid())`)), role).toBe("42501");
+    }
+  });
+});
+
 describe("privileges (US-009 carry-over: public_rw has no read path into players)", () => {
   it.each([
     ["read a player's phone", "SELECT phone FROM public.players"],

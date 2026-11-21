@@ -7,12 +7,12 @@
 // Shape of a Snap `redirect_url`, from Midtrans' own documentation:
 //   - https://docs.midtrans.com/docs/snap-snap-integration-guide ... https://app.sandbox.midtrans.com/snap/v2/vtweb/{token}
 //   - https://docs.midtrans.com/reference/backend-integration ...... https://app.sandbox.midtrans.com/snap/v3/redirection/{snap_token}
-//   - what the sandbox returns today (infra/midtrans-stub/fixtures/snap-create.json) ... /snap/v4/redirection/{token}
+//   - what the sandbox returns (recorded in US-005, 2026-11-21, on dozens of transactions;infra/midtrans-stub/fixtures/snap-create.json)
+//     ... https://app.sandbox.midtrans.com/snap/v4/redirection/{uuid}, no query, no fragment
 // i.e. `/snap/v<N>/(redirection|vtweb)/<token>` where the token is a UUID. The documentation does
-// not state this shape as a contract, so the STRICT path and the no-query rule are unverified until
-// they are confirmed against the real sandbox in US-005, and MUST be confirmed there before
-// production: a real Snap URL that this refuses would turn every payment into the error state. Until
-// then any version number is accepted.
+// not state this shape as a contract, so any version number is accepted; the sandbox shape is confirmed, the PRODUCTION
+// host's (app.midtrans.com) is not (no production credential was used): check one real Snap URL on the first production
+// order, because a real Snap URL that this refuses would turn every payment into the error state.
 import { SDK_LIMITS, type SdkLpConfig } from "@ebooktrivia/core/sdk-contract";
 
 const SNAP_HOSTS: Readonly<Record<SdkLpConfig["midtrans_env"], string>> = {
