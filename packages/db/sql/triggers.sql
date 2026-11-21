@@ -33,6 +33,7 @@
 -- ET106 deadline extension written outside the Owner's tool, ET108 play timestamp or answer changed by the
 -- caller, ET109 a pick after the deadline + 1500 ms, ET110 a start or serve at or after the grace end,
 -- ET111 deadline extension ledger changed (US-028).
+-- ET160 a landing page's current version that is not one of its own versions (US-023).
 
 SELECT pg_catalog.set_config('search_path', 'pg_catalog, pg_temp', false);
 
@@ -1279,6 +1280,39 @@ $fn$;
 CREATE OR REPLACE TRIGGER fulfillments_halt_guard
   BEFORE INSERT OR UPDATE ON public.fulfillments
   FOR EACH ROW EXECUTE FUNCTION public.fulfillments_halt_guard();
+
+-- ---------------------------------------------------------------------------------------------
+-- US-023 (M6e LP ZIP hosting) BLOCK BEGIN.
+-- ET160: a landing page's current version must be one of ITS OWN versions (a rollback cannot make
+-- another page's files live on this page's domains).
+CREATE OR REPLACE FUNCTION public.landing_pages_current_version_guard()
+  RETURNS trigger
+  LANGUAGE plpgsql
+  SET search_path = pg_catalog, pg_temp
+AS $fn$
+BEGIN
+  IF NEW.current_version_id IS NOT NULL AND NOT EXISTS (
+       SELECT 1 FROM public.lp_versions v WHERE v.id = NEW.current_version_id AND v.landing_page_id = NEW.id) THEN
+    RAISE EXCEPTION 'the current version belongs to another landing page' USING ERRCODE = 'ET160';
+  END IF;
+  RETURN NEW;
+END
+$fn$;
+REVOKE ALL ON FUNCTION public.landing_pages_current_version_guard() FROM PUBLIC;
+
+CREATE OR REPLACE TRIGGER landing_pages_current_version_guard
+  BEFORE INSERT OR UPDATE OF current_version_id ON public.landing_pages
+  FOR EACH ROW EXECUTE FUNCTION public.landing_pages_current_version_guard();
+
+-- The ask cache of the internal process (apps/worker/src/domains.ts) is the set public.lp_served_hosts()
+-- returns, so it must hear of every change to that set: lp_domains already NOTIFYs lp_domains_changed
+-- (migration 0003); a landing page that is deactivated or reactivated, changes its hosting, or gets a
+-- new / rolled-back current version (an UPDATE of these columns, also through the FK's SET NULL) or is
+-- deleted NOTIFYs the same channel. Statement level: one notification per statement, on commit.
+CREATE OR REPLACE TRIGGER landing_pages_hosts_notify
+  AFTER UPDATE OF active, hosting, current_version_id OR DELETE ON public.landing_pages
+  FOR EACH STATEMENT EXECUTE FUNCTION public.lp_domains_notify();
+-- US-023 BLOCK END.
 
 -- ---------------------------------------------------------------------------------------------
 -- Fire every trigger on our tables in ALL session_replication_role modes. The default (ENABLE,

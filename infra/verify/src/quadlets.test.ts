@@ -223,11 +223,12 @@ describe("quadlets", () => {
     expect(readQuadlet("postgres.container").get("Container", "Tmpfs")).toEqual(["/var/run/postgresql:rw,mode=1777,size=1m"]);
   });
 
-  it("mount data by need: deliverables read-only for public and the worker, everything for admin, LP content for Caddy and the worker, the SDK files for Caddy only", () => {
+  it("mount data by need: deliverables read-only for public and the worker, everything for admin, LP content for admin (writes) and Caddy (reads), the SDK files for Caddy only", () => {
     const mounts = (name: string) => unit(name).q.get("Container", "Volume").filter((v) => v.startsWith("/srv/")).sort();
     expect(mounts("public@a")).toEqual(["/srv/data/deliverables:/srv/data/deliverables:ro,z"]);
-    expect(mounts("admin")).toEqual(["/srv/data:/srv/data:z"]);
-    expect(mounts("worker")).toEqual(["/srv/data/deliverables:/srv/data/deliverables:ro,z", "/srv/lp:/srv/lp:z"]);
+    expect(mounts("admin")).toEqual(["/srv/data:/srv/data:z", "/srv/lp:/srv/lp:z"]);
+    // US-023: the worker holds the private keys, so it never handles uploaded LP ZIPs.
+    expect(mounts("worker")).toEqual(["/srv/data/deliverables:/srv/data/deliverables:ro,z"]);
     expect(mounts("caddy")).toEqual(["/srv/lp:/srv/lp:ro,z", "/srv/sdk:/srv/sdk:ro,z"]);
     for (const name of ["internal", "postgres", "valkey", "migrate"]) expect(mounts(name), name).toEqual([]);
   });

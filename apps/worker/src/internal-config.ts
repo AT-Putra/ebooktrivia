@@ -1,5 +1,5 @@
 // Internal role configuration (internal.env). The internal process holds NO keys: it connects as a
-// login role in group internal_rw (SELECT lp_domains, INSERT alerts) and knows only the SHA-256 of
+// login role in group internal_rw (EXECUTE lp_served_hosts, INSERT alerts) and knows only the SHA-256 of
 // the GlitchTip hook token, never the token. Its environment is an ALLOWLIST (security review
 // US-013 #3a): every name outside INTERNAL_ENV and RUNTIME_ENV is refused, checked by name without
 // reading the value, so a misplaced line of another process's env (a key, a database URL, a token
@@ -58,7 +58,7 @@ export interface InternalConfig {
   readonly hookTokenSha256: Buffer;
   readonly host: string;
   readonly port: number;
-  /** Safety-net full reload of the lp_domains host set (NOTIFY does the fast path). */
+  /** Safety-net full reload of the served-hosts set (NOTIFY does the fast path). */
   readonly domainsReloadMs: number;
   readonly hookRatePerMinute: number;
 }

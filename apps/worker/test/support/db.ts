@@ -56,6 +56,26 @@ export async function createCatalog(opts: { salesEndAt?: Date; graceDays?: numbe
   return { productId: product.id, programId: program.id, landingPageId: lp.id };
 }
 
+/**
+ * Makes a landing page a served ZIP-hosted page (US-023): hosting 'zip', active, with a live
+ * version (an lp_zip upload row and an lp_versions row). Only such pages' domains get a certificate.
+ * Returns the version's id.
+ */
+export async function hostLandingPage(landingPageId: string, version = 1): Promise<string> {
+  const upload = first(
+    await sql<{ id: string }[]>`
+      INSERT INTO uploads (kind, storage_path, content_type, size_bytes, sha256)
+      VALUES ('lp_zip', ${`lp-zips/${suffix()}${suffix()}.zip`}, 'application/zip', 1, sha256('x'::bytea)) RETURNING id`,
+  );
+  const row = first(
+    await sql<{ id: string }[]>`
+      INSERT INTO lp_versions (landing_page_id, version, upload_id, file_count, uncompressed_bytes)
+      VALUES (${landingPageId}, ${version}, ${upload.id}, 1, 1) RETURNING id`,
+  );
+  await sql`UPDATE landing_pages SET hosting = 'zip', active = true, current_version_id = ${row.id} WHERE id = ${landingPageId}`;
+  return row.id;
+}
+
 /** `n` orders of the catalog in one statement. */
 export async function createOrders(catalog: Catalog, n: number, opts: { status?: string; expiresAt?: Date } = {}): Promise<string[]> {
   const rows = await sql<{ id: string }[]>`

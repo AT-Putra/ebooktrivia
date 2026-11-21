@@ -137,6 +137,8 @@ jobs:
         run: bash infra/verify/local/caddy-adapt.sh --check
       - name: SDK route headers in a real Caddy 2.11.9 (immutable versions, 5 minute alias, no cached 404)
         run: bash infra/verify/local/sdk-headers.sh
+      - name: LP site in a real Caddy 2.11.9 (fixed types, CSP, refusals, atomic symlink swaps; US-023)
+        run: bash infra/verify/local/lp-headers.sh
       - name: Quadlet generator dry run (AlmaLinux 10.2, podman 5.8)
         run: bash infra/verify/local/quadlet-dryrun.sh
 

@@ -1,4 +1,6 @@
-// Chunked, resumable ebook PDF upload (AC-D7, plan M2.5 / §10 item 9; US-017).
+// Chunked, resumable ebook PDF upload (AC-D7, plan M2.5 / §10 item 9; US-017). Landing-page ZIPs
+// (US-023, kind lp_zip) go up through the same sessions, chunks, quota and sweeper; their completion
+// is lib/settings/lp-hosting.ts (completeLpZipUpload), which claims the session here.
 //
 // Why chunks: Caddy's read_body timeout (30 s) is global (Caddy 2.11.9 has no per-route body
 // timeout), so no single request may carry a large body. The browser sends 1 MiB chunks (8.4 s
@@ -50,6 +52,7 @@ import { PDF_WARN_BYTES, type SettingsConfig } from "./env.ts";
 import { InvalidInput, singleLine } from "./fields.ts";
 
 export const CHUNK_BYTES = 1024 * 1024;
+export type UploadSessionKind = "pdf" | "lp_zip";
 const SESSION_TTL_HOURS = 24;
 /** A claim older than this belongs to a crashed completion: the sweeper may remove the session. */
 const STALE_COMPLETION_MINUTES = 60;
@@ -112,15 +115,33 @@ export function parseInit(body: unknown): InitRequest {
 
 /** Starts (or resumes) an upload for `adminUserId`. */
 export async function initPdfUpload(sql: Sql, settings: SettingsConfig, adminUserId: string, req: InitRequest): Promise<InitResult> {
-  const dir = dataDir(settings);
   if (req.size > settings.pdfMaxBytes) return { kind: "too_large", maxBytes: settings.pdfMaxBytes };
   if (req.size > PDF_WARN_BYTES && !req.confirmLarge) return { kind: "needs_confirmation", warnBytes: PDF_WARN_BYTES };
+  return openSession(sql, settings, adminUserId, { kind: "pdf", target: req.productId, filename: req.filename, size: req.size, sha256: req.sha256, largeConfirmed: req.size > PDF_WARN_BYTES && req.confirmLarge });
+}
+
+interface OpenRequest {
+  readonly kind: UploadSessionKind;
+  /** The product (pdf) or landing page (lp_zip). */
+  readonly target: string;
+  readonly filename: string;
+  readonly size: number;
+  readonly sha256: string;
+  readonly largeConfirmed: boolean;
+}
+
+/** Resumes an open session of the same target, size and hash, or opens a new one within the quota. */
+export async function openSession(sql: Sql, settings: SettingsConfig, adminUserId: string, req: OpenRequest): Promise<InitResult> {
+  const dir = dataDir(settings);
   await sweepUploads(sql, settings).catch((error: unknown) => {
     logEvent("warn", "admin.upload_sweep_failed", {}, error);
   });
+  const productId = req.kind === "pdf" ? req.target : null;
+  const landingPageId = req.kind === "lp_zip" ? req.target : null;
   const [resumable] = await sql<{ id: string; chunk_bytes: number; received_chunks: number[] }[]>`
     SELECT id, chunk_bytes, received_chunks FROM public.upload_sessions
-     WHERE product_id = ${req.productId} AND created_by_admin_user_id = ${adminUserId} AND size_bytes = ${req.size}
+     WHERE kind = ${req.kind} AND product_id IS NOT DISTINCT FROM ${productId}::uuid AND landing_page_id IS NOT DISTINCT FROM ${landingPageId}::uuid
+       AND created_by_admin_user_id = ${adminUserId} AND size_bytes = ${req.size}
        AND sha256 = ${Buffer.from(req.sha256, "hex")} AND completed_at IS NULL AND completing_at IS NULL
        AND expires_at > clock_timestamp()
      ORDER BY created_at DESC LIMIT 1`;
@@ -146,12 +167,12 @@ export async function initPdfUpload(sql: Sql, settings: SettingsConfig, adminUse
       if ((usage?.staged ?? 0) + (usage?.superseded ?? 0) + req.size > settings.uploadMaxStagedBytes) {
         throw new InvalidInput("The server's upload space is full: wait for unfinished uploads to finish or expire (24 hours), and replaced PDFs to be removed (about an hour).");
       }
-      const [product] = await tx`SELECT 1 FROM public.products WHERE id = ${req.productId}`;
-      if (product === undefined) throw new InvalidInput("This product no longer exists.");
+      const [target] = req.kind === "pdf" ? await tx`SELECT 1 FROM public.products WHERE id = ${req.target}` : await tx`SELECT 1 FROM public.landing_pages WHERE id = ${req.target}`;
+      if (target === undefined) throw new InvalidInput(req.kind === "pdf" ? "This product no longer exists." : "This landing page no longer exists.");
       await tx`
-        INSERT INTO public.upload_sessions (id, kind, product_id, filename, size_bytes, sha256, chunk_bytes, large_confirmed, created_by_admin_user_id, expires_at)
-        VALUES (${id}, 'pdf', ${req.productId}, ${req.filename}, ${req.size}, ${Buffer.from(req.sha256, "hex")}, ${CHUNK_BYTES},
-                ${req.size > PDF_WARN_BYTES && req.confirmLarge}, ${adminUserId}, clock_timestamp() + make_interval(hours => ${SESSION_TTL_HOURS}))`;
+        INSERT INTO public.upload_sessions (id, kind, product_id, landing_page_id, filename, size_bytes, sha256, chunk_bytes, large_confirmed, created_by_admin_user_id, expires_at)
+        VALUES (${id}, ${req.kind}, ${productId}, ${landingPageId}, ${req.filename}, ${req.size}, ${Buffer.from(req.sha256, "hex")}, ${CHUNK_BYTES},
+                ${req.largeConfirmed}, ${adminUserId}, clock_timestamp() + make_interval(hours => ${SESSION_TTL_HOURS}))`;
       const file = await open(staging, "wx", 0o600);
       try {
         await file.truncate(req.size);
@@ -162,7 +183,10 @@ export async function initPdfUpload(sql: Sql, settings: SettingsConfig, adminUse
         action: "upload.start",
         entityType: "upload_session",
         entityId: id,
-        facts: { kind: "pdf", product_id: req.productId, size_bytes: req.size, large: req.size > PDF_WARN_BYTES, large_confirmed: req.size > PDF_WARN_BYTES && req.confirmLarge },
+        facts:
+          req.kind === "pdf"
+            ? { kind: "pdf", product_id: req.target, size_bytes: req.size, large: req.size > PDF_WARN_BYTES, large_confirmed: req.largeConfirmed }
+            : { kind: "lp_zip", landing_page_id: req.target, size_bytes: req.size },
       });
     });
   } catch (error) {
@@ -170,6 +194,55 @@ export async function initPdfUpload(sql: Sql, settings: SettingsConfig, adminUse
     throw error;
   }
   return { kind: "ready", sessionId: id, chunkBytes: CHUNK_BYTES, chunkCount: chunkCount(req.size, CHUNK_BYTES), received: [] };
+}
+
+/** A claimed lp_zip session (completeLpZipUpload in lp-hosting.ts). */
+export interface ClaimedLpZip {
+  readonly landingPageId: string;
+  readonly filename: string;
+  readonly size: number;
+  readonly sha256: Buffer;
+  readonly staging: string;
+  /** Gives the session back (e.g. a publish failed for a reason the uploader can retry). */
+  release(): Promise<void>;
+  /** Deletes the session and its staging file (a refused or corrupt ZIP). */
+  discard(): Promise<void>;
+  /** Marks the session completed with the uploads row it became, and removes the staging file. */
+  finish(uploadId: string): Promise<void>;
+}
+
+/** Claims a fully received lp_zip session of `adminUserId` (one claim wins; chunk writes stop). */
+export async function claimLpZipSession(sql: Sql, settings: SettingsConfig, adminUserId: string, sessionId: string): Promise<ClaimedLpZip> {
+  const staging = stagingPath(dataDir(settings), sessionId);
+  const [session] = await sql<{ id: string; landing_page_id: string; filename: string; size_bytes: number; sha256: Uint8Array; chunk_bytes: number; received_chunks: number[] }[]>`
+    UPDATE public.upload_sessions SET completing_at = clock_timestamp()
+     WHERE id = ${sessionId} AND kind = 'lp_zip' AND created_by_admin_user_id = ${adminUserId} AND completed_at IS NULL
+       AND completing_at IS NULL AND expires_at > clock_timestamp()
+    RETURNING id, landing_page_id, filename, size_bytes::float8 AS size_bytes, sha256, chunk_bytes, received_chunks`;
+  if (session === undefined) throw new InvalidInput(REFUSED);
+  const release = async (): Promise<void> => {
+    await sql`UPDATE public.upload_sessions SET completing_at = NULL WHERE id = ${session.id} AND completed_at IS NULL`;
+  };
+  if (session.received_chunks.length !== chunkCount(session.size_bytes, session.chunk_bytes)) {
+    await release();
+    throw new InvalidInput("Some chunks are missing: resume the upload.");
+  }
+  return {
+    landingPageId: session.landing_page_id,
+    filename: session.filename,
+    size: session.size_bytes,
+    sha256: Buffer.from(session.sha256),
+    staging,
+    release,
+    discard: async () => {
+      await sql`DELETE FROM public.upload_sessions WHERE id = ${session.id} AND completed_at IS NULL`;
+      await rm(staging, { force: true });
+    },
+    finish: async (uploadId) => {
+      await sql`UPDATE public.upload_sessions SET completed_at = clock_timestamp(), upload_id = ${uploadId} WHERE id = ${session.id}`;
+      await rm(staging, { force: true });
+    },
+  };
 }
 
 interface SessionRow {
@@ -190,7 +263,7 @@ export async function writeChunk(
   sql: Sql,
   settings: SettingsConfig,
   adminUserId: string,
-  chunk: { readonly sessionId: string; readonly index: number; readonly sha256: string; readonly bytes: Uint8Array },
+  chunk: { readonly sessionId: string; readonly index: number; readonly sha256: string; readonly bytes: Uint8Array; readonly kind?: UploadSessionKind },
   hooks: UploadTestHooks = {},
 ): Promise<{ readonly received: number; readonly chunkCount: number }> {
   const dir = dataDir(settings);
@@ -200,7 +273,7 @@ export async function writeChunk(
     // Held until commit: a `complete` claim waits for this write, and none starts after the claim.
     const [session] = await tx<{ size_bytes: number; chunk_bytes: number }[]>`
       SELECT size_bytes::float8 AS size_bytes, chunk_bytes FROM public.upload_sessions
-       WHERE id = ${chunk.sessionId} AND created_by_admin_user_id = ${adminUserId} AND completed_at IS NULL
+       WHERE id = ${chunk.sessionId} AND kind = ${chunk.kind ?? "pdf"} AND created_by_admin_user_id = ${adminUserId} AND completed_at IS NULL
          AND completing_at IS NULL AND expires_at > clock_timestamp()
          FOR NO KEY UPDATE`;
     if (session === undefined) throw new InvalidInput(REFUSED);
@@ -274,7 +347,7 @@ export function completeUpload(sql: Sql, settings: SettingsConfig, adminUserId: 
   return oneAtATime(async () => {
     const [session] = await sql<SessionRow[]>`
       UPDATE public.upload_sessions SET completing_at = clock_timestamp()
-       WHERE id = ${sessionId} AND created_by_admin_user_id = ${adminUserId} AND completed_at IS NULL
+       WHERE id = ${sessionId} AND kind = 'pdf' AND created_by_admin_user_id = ${adminUserId} AND completed_at IS NULL
          AND completing_at IS NULL AND expires_at > clock_timestamp()
       RETURNING id, product_id, filename, size_bytes::float8 AS size_bytes, sha256, chunk_bytes, received_chunks, large_confirmed`;
     if (session === undefined) throw new InvalidInput(REFUSED);

@@ -27,6 +27,7 @@ Staging: follow [docs/runbooks/staging-provision.md](../docs/runbooks/staging-pr
 - **Config files.** `/etc/ebooktrivia` belongs to root (group `ebt`, files `0640`); secrets in its `*.env` files are generated on the VM, never in the repository or a unit file. Under the app user's home only the app user writes.
 - **SDK.** `/srv/sdk` holds the landing-page SDK files (`sudo infra/provision/build-images.sh sdk`): the app user writes them, Caddy mounts them read-only and serves them at `api.<DOMAIN>/sdk/`, versioned files immutable for a year and the `v1.js` alias for 5 minutes. Old versions stay (pages hold them).
 - **Data.** `/srv/data/deliverables` (ebook PDFs) is read-only for public and the worker; the rest of `/srv/data` is admin's.
+- **Landing pages.** `/srv/lp` is written by admin only (US-023: `versions/<lpId>/<n>` per uploaded ZIP, `hosts/<host>/current` a symlink swapped by rename) and read by Caddy, which serves it on the registered LP domains with on-demand TLS. The worker, which holds the private keys, has no access.
 - **Memory.** Limits follow the plan M4.2 budget: PostgreSQL 2 GB, Valkey 512 MB, public 2 × 700 MB, admin 600 MB, worker 600 MB, internal 120 MB, Caddy 150 MB.
 
 ## Local verification of the VM infrastructure
@@ -38,6 +39,7 @@ Staging: follow [docs/runbooks/staging-provision.md](../docs/runbooks/staging-pr
 | `infra/verify/local/quadlet-dryrun.sh` | the quadlet generator of `podman-5.8.2-12.el10_2.alma.1` accepts every unit (CI) |
 | `infra/verify/local/sdk-headers.sh` | the `/sdk/*` block of the real Caddyfile in Caddy 2.11.9: a versioned file `public, max-age=31536000, immutable`, the `v1.js` alias 5 minutes, a missing file never cached as immutable, hidden files and path tricks refused, gzip (US-019; needs Docker) |
 | `infra/verify/local/order-headers.sh` | the `order.<DOMAIN>` site of the real Caddyfile in Caddy 2.11.9: exactly one `Referrer-Policy` (strict-origin), HSTS and nosniff, no `Set-Cookie`, and an access log without the order's public id (path, Midtrans `order_id`) or a Referer (US-022; needs Docker) |
+| `infra/verify/local/lp-headers.sh` | the LP site of the real Caddyfile in Caddy 2.11.9: the fixed Content-Type of each allowed extension, nosniff, the default page CSP and the SVG sandbox, 404 for anything off the allowlist (a `.php`, dot files, listings, traversal, POST, an unlinked or upper-case host), and no failed request while `current` is swapped 100 times by rename (US-023; needs Docker) |
 | `infra/verify/local/edge-smoke.sh [public\|admin]` | the production server entry on a `next build`: /livez, the page, the listener address (CI job `edge-smoke`) |
 | `pnpm test` (`infra/verify/src`) | adapted Caddy JSON: strict SNI, admin off, `/internal` blocked, ask URL, log redaction, LB `/livez`, trusted proxy; quadlet budget, addresses, pg_hba, hardening |
 | `pnpm --filter @ebooktrivia/worker test:chaos` | includes the production Valkey ACL with BullMQ (Docker) |

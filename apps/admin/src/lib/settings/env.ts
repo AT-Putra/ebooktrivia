@@ -9,6 +9,12 @@
 //   ADMIN_DATA_DIR       absolute path of the data directory (/srv/data on the VM): ebook PDFs go to
 //                        <dir>/deliverables, chunked uploads are staged in <dir>/upload-staging.
 //                        Unset: uploads are unavailable.
+//   ADMIN_LP_DIR         absolute path of the landing-page root (/srv/lp on the VM, US-023): uploaded LP
+//                        ZIPs are extracted to <dir>/versions/<lpId>/<version> (staged in
+//                        <dir>/.staging on the same filesystem) and each domain's <dir>/hosts/<host>/current
+//                        symlink is switched to the live version; Caddy serves <dir>/hosts read-only.
+//                        The uploaded ZIP itself is kept in ADMIN_DATA_DIR/lp-zips. Unset (or no
+//                        ADMIN_DATA_DIR): LP hosting is unavailable.
 //   ADMIN_PDF_MAX_BYTES  the PDF hard cap (plan M2.5; default and maximum 100 MiB, at least 1 MiB).
 //                        PDFs over 20 MiB need the uploader's confirmation of the size warning.
 //                        The assembled file is streamed (hashed and copied), never held in memory.
@@ -37,6 +43,7 @@ const PDF_MAX_RANGE = { min: MiB, max: 100 * MiB } as const;
 export interface SettingsConfig {
   readonly domain: string | null;
   readonly dataDir: string | null;
+  readonly lpDir: string | null;
   readonly pdfMaxBytes: number;
   readonly uploadMaxOpenSessions: number;
   readonly uploadMaxStagedBytes: number;
@@ -51,6 +58,7 @@ export const DEFAULT_UPLOAD_MAX_STAGED_BYTES = 300 * MiB;
 export const NO_SETTINGS: SettingsConfig = Object.freeze({
   domain: null,
   dataDir: null,
+  lpDir: null,
   pdfMaxBytes: DEFAULT_PDF_MAX_BYTES,
   uploadMaxOpenSessions: DEFAULT_UPLOAD_MAX_OPEN_SESSIONS,
   uploadMaxStagedBytes: DEFAULT_UPLOAD_MAX_STAGED_BYTES,
@@ -92,6 +100,8 @@ export function loadSettingsConfig(env: Env): SettingsConfig {
   }
   const dataDir = value(env, "ADMIN_DATA_DIR");
   if (dataDir !== undefined && !isAbsolute(dataDir)) throw new AdminConfigError("ADMIN_DATA_DIR must be an absolute path");
+  const lpDir = value(env, "ADMIN_LP_DIR");
+  if (lpDir !== undefined && !isAbsolute(lpDir)) throw new AdminConfigError("ADMIN_LP_DIR must be an absolute path");
   const pdfMaxBytes = bounded(env, "ADMIN_PDF_MAX_BYTES", DEFAULT_PDF_MAX_BYTES, PDF_MAX_RANGE.min, PDF_MAX_RANGE.max, "bytes (1 MiB to 100 MiB)");
   const uploadMaxOpenSessions = bounded(env, "ADMIN_UPLOAD_MAX_OPEN_SESSIONS", DEFAULT_UPLOAD_MAX_OPEN_SESSIONS, 1, 20, "sessions");
   const uploadMaxStagedBytes = bounded(env, "ADMIN_UPLOAD_MAX_STAGED_BYTES", DEFAULT_UPLOAD_MAX_STAGED_BYTES, pdfMaxBytes, 2048 * MiB, "bytes (the PDF cap to 2 GiB)");
@@ -104,5 +114,5 @@ export function loadSettingsConfig(env: Env): SettingsConfig {
       throw error;
     }
   }
-  return { domain: parseDomain(value(env, "DOMAIN")), dataDir: dataDir ?? null, pdfMaxBytes, uploadMaxOpenSessions, uploadMaxStagedBytes, sealer };
+  return { domain: parseDomain(value(env, "DOMAIN")), dataDir: dataDir ?? null, lpDir: lpDir ?? null, pdfMaxBytes, uploadMaxOpenSessions, uploadMaxStagedBytes, sealer };
 }

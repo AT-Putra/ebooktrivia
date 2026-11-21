@@ -2,19 +2,23 @@ import type { Metadata } from "next";
 import { Badge } from "@ebooktrivia/ui/components/badge";
 import { Card, CardDescription, CardTitle } from "@ebooktrivia/ui/components/card";
 import { ActionForm } from "../../../../components/settings/action-form.tsx";
+import { LpZipUpload } from "../../../../components/settings/lp-zip-upload.tsx";
 import { CheckboxField, PageHeading, SecretBadge, SelectField, TextField } from "../../../../components/settings/fields.tsx";
 import { requireAdmin } from "../../../../lib/next/require-admin.ts";
 import { getRuntime } from "../../../../lib/next/runtime.ts";
 import { can } from "../../../../lib/policy.ts";
 import { CAPI_LABELS, CAPI_PLATFORMS, capiTokenStatuses } from "../../../../lib/settings/conversions.ts";
 import { listLandingPages, snippet } from "../../../../lib/settings/landing-pages.ts";
+import { LP_VERSION_RETENTION, listLpVersions, type LpVersionRow } from "../../../../lib/settings/lp-hosting.ts";
 import {
+  activateLpVersionAction,
   clearCapiTokenAction,
   createLandingPageAction,
   registerDomainAction,
   removeDomainAction,
   renameLandingPageAction,
   setCapiTokenAction,
+  stopLpHostingAction,
   updateLandingPageSettingsAction,
   updatePixelsAction,
 } from "./actions.ts";
@@ -39,6 +43,9 @@ export default async function LandingPagesPage() {
   const domains = can(admin.role, "lp_domain.register");
   const programOptions = programs.map((p) => ({ value: p.id, label: p.name }));
   const domain = rt.settings.domain;
+  const hosting = can(admin.role, "lp_zip.publish");
+  const versions: Map<string, LpVersionRow[]> = hosting ? await listLpVersions(rt.sql) : new Map<string, LpVersionRow[]>();
+  const hostingReady = rt.settings.lpDir !== null && rt.settings.dataDir !== null && domain !== null;
   // Write-only CAPI access tokens: only whether each is set (and its last 4), never a sealed column (Owner only).
   const tokens: Awaited<ReturnType<typeof capiTokenStatuses>> = pixels ? await capiTokenStatuses(rt.sql, pages) : new Map();
   const sealing = rt.settings.sealer?.scopes.includes("conversions") === true;
@@ -162,6 +169,41 @@ export default async function LandingPagesPage() {
               </ActionForm>
             ) : null}
           </div>
+          {hosting ? (
+            <div className="flex flex-col gap-3 border-t pt-4" data-testid="lp-hosting">
+              <span className="text-sm font-medium">Hosted ZIP</span>
+              <CardDescription>
+                A static site served on this page&apos;s domains: index.html at the top; HTML, CSS, JS, JSON, text, images, SVG, fonts and video only. Every HTML page gets the SDK tag before its
+                &lt;/head&gt;. The last {LP_VERSION_RETENTION} versions are kept for rollback.
+              </CardDescription>
+              {hostingReady ? <LpZipUpload id={`lp-zip-${page.id}`} landingPageId={page.id} /> : <CardDescription>Uploads need ADMIN_LP_DIR, ADMIN_DATA_DIR and DOMAIN on the server.</CardDescription>}
+              {(versions.get(page.id) ?? []).length === 0 ? <span className="text-xs text-muted-foreground">No version uploaded.</span> : null}
+              <ul className="flex flex-col gap-2" data-testid="lp-versions">
+                {(versions.get(page.id) ?? []).map((v) => (
+                  <li key={v.id} className="flex flex-wrap items-center gap-3 text-sm">
+                    <span className="font-medium">Version {v.version}</span>
+                    <span className="text-muted-foreground">
+                      {v.fileCount} files, {(v.uncompressedBytes / 1024 / 1024).toFixed(1)} MB, {v.createdAt.toISOString().slice(0, 16).replace("T", " ")} UTC
+                    </span>
+                    {v.live ? (
+                      <Badge variant="success">Live</Badge>
+                    ) : (
+                      <ActionForm action={activateLpVersionAction} submitLabel="Make live" variant="ghost" className="flex items-center gap-2">
+                        <input type="hidden" name="landingPageId" value={page.id} />
+                        <input type="hidden" name="versionId" value={v.id} />
+                      </ActionForm>
+                    )}
+                  </li>
+                ))}
+              </ul>
+              {page.active ? null : <CardDescription>The page is inactive: its domains serve nothing until it is active again.</CardDescription>}
+              {page.hosting === "zip" ? (
+                <ActionForm action={stopLpHostingAction} submitLabel="Stop hosting (back to external)" variant="ghost" className="flex items-center gap-2">
+                  <input type="hidden" name="landingPageId" value={page.id} />
+                </ActionForm>
+              ) : null}
+            </div>
+          ) : null}
         </Card>
       ))}
     </>

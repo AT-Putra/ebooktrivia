@@ -16,7 +16,7 @@
 --   worker_rw   what jobs need: outbox, deliveries, conversions, waha_*, payments and order state,
 --               eligibility, finalize/snapshot, alerts, heartbeats, each Midtrans attempt's
 --               re-queried status and the payment reconciliation (US-021).
---   internal_rw SELECT lp_domains, INSERT alerts. Nothing else.
+--   internal_rw EXECUTE lp_served_hosts() (US-023), INSERT alerts. Nothing else.
 --   trivia_override (not a group, owns override_question_scoring only; sql/override.sql): the
 --               columns that function reads and writes, nothing more.
 -- admin_rw writes no play rows and no results snapshot (US-018): deleting or moving an attempt
@@ -323,7 +323,9 @@ GRANT EXECUTE ON FUNCTION public.lock_program_contest(uuid),
 -- ---------------------------------------------------------------------------------------------
 -- internal_rw (apps/worker --role=internal: Caddy ask, GlitchTip hook). No keys.
 
-GRANT SELECT ON public.lp_domains TO internal_rw;
+-- The served LP hosts through public.lp_served_hosts() only (US-023): an exact registered host of an
+-- ACTIVE zip-hosted landing page with a live version; no table read of lp_domains.
+GRANT EXECUTE ON FUNCTION public.lp_served_hosts() TO internal_rw;
 GRANT INSERT (source, kind, severity, dedupe_key, message, payload) ON public.alerts TO internal_rw;
 
 -- ---------------------------------------------------------------------------------------------
@@ -509,3 +511,12 @@ GRANT EXECUTE ON FUNCTION public.lock_program_contest_shared(uuid),
 -- the job; the worker issues the links (issue_magic_link, already worker_rw's) and sends them.
 GRANT EXECUTE ON FUNCTION public.enqueue_magic_link_resend(text) TO public_rw;
 -- US-027 BLOCK END.
+
+
+-- ---------------------------------------------------------------------------------------------
+-- US-023 (M6e LP ZIP hosting) BLOCK BEGIN.
+-- admin_rw (the console publishes and switches the host links) uses public.lp_served_hosts() too, the
+-- function internal_rw (Caddy's ask) reads the hosts through (internal_rw section above), so what is
+-- linked on disk and what gets a certificate are one set.
+GRANT EXECUTE ON FUNCTION public.lp_served_hosts() TO admin_rw;
+-- US-023 BLOCK END.

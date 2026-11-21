@@ -48,6 +48,10 @@ const RULES = {
   "winners.export": "owner",
   // LP domain registration (§10 item 18).
   "lp_domain.register": "owner",
+  // Publishing a landing-page ZIP and switching its live version (US-023): the files become a public site
+  // that runs scripts next to the checkout on a registered domain, so it is the domain owner's call, not
+  // AC-A1 "content" (product texts, templates, trivia). Owner only.
+  "lp_zip.publish": "owner",
   // Creating a landing page and binding it to a program / gateway / allowed adnets (US-017): not
   // content, so Owner-only. Staff may rename it (landing_page.content.edit).
   "landing_page.settings.edit": "owner",

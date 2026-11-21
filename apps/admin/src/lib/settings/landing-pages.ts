@@ -178,14 +178,16 @@ export interface LandingPageRow {
   readonly programId: string;
   readonly programName: string;
   readonly active: boolean;
+  /** 'external' (the page loads the snippet itself) or 'zip' (hosted here, US-023). */
+  readonly hosting: string;
   readonly pixels: Pixels;
   readonly adnetIds: readonly string[];
   readonly domains: readonly { readonly id: string; readonly host: string }[];
 }
 
 export async function listLandingPages(sql: Sql): Promise<LandingPageRow[]> {
-  const rows = await sql<{ id: string; lp_key: string; name: string; program_id: string; program_name: string; active: boolean; pixels: Record<string, unknown>; adnet_ids: string[]; domains: { id: string; host: string }[] }[]>`
-    SELECT lp.id, lp.lp_key, lp.name, lp.program_id, p.name AS program_name, lp.active, lp.pixels,
+  const rows = await sql<{ id: string; lp_key: string; name: string; program_id: string; program_name: string; active: boolean; hosting: string; pixels: Record<string, unknown>; adnet_ids: string[]; domains: { id: string; host: string }[] }[]>`
+    SELECT lp.id, lp.lp_key, lp.name, lp.program_id, p.name AS program_name, lp.active, lp.hosting, lp.pixels,
            coalesce((SELECT array_agg(a.adnet_id ORDER BY a.adnet_id) FROM public.landing_page_adnets a WHERE a.landing_page_id = lp.id), '{}') AS adnet_ids,
            coalesce((SELECT json_agg(json_build_object('id', d.id, 'host', d.host) ORDER BY d.host) FROM public.lp_domains d WHERE d.landing_page_id = lp.id), '[]') AS domains
       FROM public.landing_pages lp JOIN public.programs p ON p.id = lp.program_id
@@ -198,6 +200,7 @@ export async function listLandingPages(sql: Sql): Promise<LandingPageRow[]> {
     programId: r.program_id,
     programName: r.program_name,
     active: r.active,
+    hosting: r.hosting,
     pixels: { meta: str(r.pixels["meta"]), tiktok: str(r.pixels["tiktok"]), gtag: str(r.pixels["gtag"]), gtag_label: str(r.pixels["gtag_label"]) },
     adnetIds: r.adnet_ids,
     domains: r.domains,

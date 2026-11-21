@@ -1,5 +1,6 @@
 # Worker (outbox relay, consumers, sweepers, heartbeat). On the edge network for egress only (it
-# listens nowhere); writes LP releases to /srv/lp and reads the ebook files it sends. It has no
+# listens nowhere); reads the ebook files it sends. It holds the private keys, so it never touches the
+# uploaded landing-page ZIPs (/srv/lp is the admin app's, US-023). It has no
 # health endpoint: Uptime Kuma's push monitor and the deep /healthz (a later story) watch its
 # heartbeat; systemd restarts it when it exits.
 [Unit]
@@ -18,7 +19,6 @@ EnvironmentFile=/etc/ebooktrivia/worker.env
 Environment=NODE_OPTIONS=--max-old-space-size=448
 UserNS=keep-id:uid=1000,gid=1000
 Volume=/srv/data/deliverables:/srv/data/deliverables:ro,z
-Volume=/srv/lp:/srv/lp:z
 LogDriver=journald
 Memory=600m
 ReadOnly=true

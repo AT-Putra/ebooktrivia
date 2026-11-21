@@ -2,7 +2,9 @@
 # (ebt-admin) and listening on that address only, so the admin IP allowlist in the Caddyfile cannot
 # be bypassed from another container (review S2). Same edge listener as public: /livez, drain,
 # X-Forwarded-For from Caddy's 10.89.52.2 only (the admin login rate limit keys on it). Mounts all
-# of /srv/data: it writes the ebook files (deliverables), imports and proofs.
+# of /srv/data: it writes the ebook files (deliverables), imports and proofs. Writes the landing-page
+# sites to /srv/lp (US-023: the uploaded ZIP is checked and extracted here, in the process that holds no
+# private key, and the hosts/<host>/current links are switched here); Caddy reads /srv/lp.
 [Unit]
 Description=ebooktrivia admin app
 Wants=postgres.service valkey.service
@@ -19,6 +21,7 @@ Environment=EDGE_HOST=10.89.52.13 TRUSTED_PROXY_IP=10.89.52.2 EDGE_PORT=3000 EDG
 Environment=NODE_OPTIONS=--max-old-space-size=384
 UserNS=keep-id:uid=1000,gid=1000
 Volume=/srv/data:/srv/data:z
+Volume=/srv/lp:/srv/lp:z
 Tmpfs=/app/apps/admin/.next/cache:rw,size=64m,mode=1777
 # bash, not curl (the image has none); the address it listens on.
 HealthCmd=bash -c 'exec 3<>/dev/tcp/10.89.52.13/3000 && printf "GET /livez HTTP/1.0\r\n\r\n" >&3 && head -1 <&3 | grep -q " 200 "'

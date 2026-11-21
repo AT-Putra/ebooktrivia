@@ -439,9 +439,10 @@ describe("internal_rw", () => {
     expect(await sqlState(asRole("internal_rw", (tx) => tx`SELECT * FROM get_payment_secret()`))).toBe("42501");
   });
 
-  it("can SELECT lp_domains and INSERT alerts", async () => {
+  // US-023: the served hosts through the function only (no table read of lp_domains any more).
+  it("can EXECUTE lp_served_hosts and INSERT alerts", async () => {
     await asRole("internal_rw", async (tx) => {
-      await tx`SELECT host FROM public.lp_domains`;
+      await tx`SELECT host FROM public.lp_served_hosts()`;
       await tx`INSERT INTO public.alerts (source, kind, message) VALUES ('glitchtip', 'error', 'probe')`;
     });
   });
@@ -450,6 +451,8 @@ describe("internal_rw", () => {
     ["read alerts", "SELECT id FROM public.alerts"],
     ["forge alert delivery state", "INSERT INTO public.alerts (source, kind, message, notified_at) VALUES ('internal', 'x', 'y', now())"],
     ["read landing pages", "SELECT id FROM public.landing_pages"],
+    ["read lp_domains (US-023: lp_served_hosts only)", "SELECT host FROM public.lp_domains"],
+    ["read lp_versions", "SELECT id FROM public.lp_versions"],
     ["read orders", "SELECT id FROM public.orders"],
     ["read settings_secrets", "SELECT id FROM public.settings_secrets"],
     ["INSERT outbox", "INSERT INTO public.outbox (topic, dedupe_key) VALUES ('alert.notify', 'forged')"],

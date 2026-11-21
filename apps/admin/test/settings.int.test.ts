@@ -46,7 +46,7 @@ let ownerId = "";
 beforeAll(async () => {
   dataDir = await mkdtemp(join(tmpdir(), "ebt-admin-data-"));
   // Generous quotas here; the quota test uses its own strict settings.
-  settings = { domain: "example.test", dataDir, pdfMaxBytes: 30 * 1024 * 1024, uploadMaxOpenSessions: 20, uploadMaxStagedBytes: 1024 * 1024 * 1024, sealer };
+  settings = { domain: "example.test", dataDir, lpDir: null, pdfMaxBytes: 30 * 1024 * 1024, uploadMaxOpenSessions: 20, uploadMaxStagedBytes: 1024 * 1024 * 1024, sealer };
   rt = newRuntime(undefined, settings);
   ownerId = (await createTestAdmin(rt, "owner")).userId;
 });

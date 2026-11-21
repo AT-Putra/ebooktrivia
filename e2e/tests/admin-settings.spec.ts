@@ -1,8 +1,9 @@
 import { generateKeyPairSync } from "node:crypto";
-import { mkdtemp, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Browser, type BrowserContext, expect, type Page, request, test } from "@playwright/test";
+import { makeZip } from "../../packages/uploads/test/zip-fixture.ts";
 import { type AdminEnv, freshTotp, runAdminCli, startAdminEnv } from "../support/admin.ts";
 
 /**
@@ -10,7 +11,9 @@ import { type AdminEnv, freshTotp, runAdminCli, startAdminEnv } from "../support
  *   - program field lock after the first PAID order + extend-only reschedule, enforced by the server;
  *   - a 21 MiB PDF shows the size warning, is accepted after confirmation and goes up in chunks;
  *   - a template test-send enqueues a worker job (outbox row) and the preview cannot run script;
- *   - Staff cannot register LP domains: the control is hidden and the action answers 403.
+ *   - Staff cannot register LP domains: the control is hidden and the action answers 403;
+ *   - US-023: the Owner uploads a landing-page ZIP: a refused one lists its problems and publishes
+ *     nothing, a valid one goes live on the domain's link, a second one replaces it, rollback.
  * DOMAIN is a reserved test name (RFC 6761); the sealing keys are generated per run (public halves
  * only reach the app).
  */
@@ -27,6 +30,7 @@ const MiB = 1024 * 1024;
 let admin: AdminEnv;
 let started = false;
 let dataDir = "";
+let lpDir = "";
 const secrets: Record<string, string> = {};
 const usedCodes = new Map<string, Set<string>>();
 const used = (who: string): Set<string> => {
@@ -79,11 +83,13 @@ let programId = "";
 test.beforeAll(async ({ browser }) => {
   test.setTimeout(240_000);
   dataDir = await mkdtemp(join(tmpdir(), "ebt-e2e-data-"));
+  lpDir = await mkdtemp(join(tmpdir(), "ebt-e2e-lp-"));
   admin = await startAdminEnv({
     port: PORT,
     extraEnv: {
       DOMAIN,
       ADMIN_DATA_DIR: dataDir,
+      ADMIN_LP_DIR: lpDir,
       SECRETS_PAYMENT_PUBLIC_KEY: publicKey(),
       SECRETS_MESSAGING_PUBLIC_KEY: publicKey(),
       SECRETS_CONVERSIONS_PUBLIC_KEY: publicKey(),
@@ -109,6 +115,7 @@ test.afterAll(async () => {
   await ownerContext.close();
   if (started) await admin.stop();
   await rm(dataDir, { recursive: true, force: true });
+  await rm(lpDir, { recursive: true, force: true });
 });
 
 test("program lock: after the first PAID order the locked fields refuse changes on the server, and reschedule only extends", async () => {
@@ -318,4 +325,39 @@ test("Staff cannot register LP domains: the control is hidden and the action is 
   expect((await admin.sql<{ n: number }[]>`SELECT count(*)::int AS n FROM lp_domains WHERE landing_page_id = ${lp.id}`)[0]?.n).toBe(1);
   await api.dispose();
   await staffContext.close();
+});
+
+test("US-023: the Owner publishes a landing-page ZIP, sees why a bad one is refused, and rolls back", async () => {
+  const lp = await one(admin.sql<{ id: string; lp_key: string }[]>`SELECT id, lp_key FROM landing_pages WHERE name = 'LP Uji'`);
+  await owner.goto("/settings/landing-pages");
+  const card = owner.getByTestId(`lp-${lp.lp_key}`);
+  const hosting = card.getByTestId("lp-hosting");
+  await expect(hosting).toContainText("No version uploaded.");
+  const input = hosting.getByLabel("Upload a new version (ZIP, up to 25 MB)");
+  const page = (label: string): Buffer => Buffer.from(`<!doctype html><html><head><title>${label}</title></head><body>${label}</body></html>`);
+
+  await input.setInputFiles({ name: "bad.zip", mimeType: "application/zip", buffer: makeZip([{ name: "index.html", data: page("x") }, { name: "shell.php", data: Buffer.from("<?php") }]) });
+  const issues = hosting.getByTestId("lp-zip-issues");
+  await expect(issues).toContainText("nothing was published");
+  await expect(issues).toContainText("shell.php: the file type .php is not allowed");
+  expect(await admin.sql`SELECT 1 FROM lp_versions WHERE landing_page_id = ${lp.id}`).toHaveLength(0);
+
+  await input.setInputFiles({ name: "v1.zip", mimeType: "application/zip", buffer: makeZip([{ name: "index.html", data: page("v1") }]) });
+  await expect(hosting.getByRole("status")).toHaveText("Version 1 is live.");
+  await expect(hosting.getByTestId("lp-versions")).toContainText("Version 1");
+  await expect(hosting.getByTestId("lp-versions").getByText("Live")).toHaveCount(1);
+  const tag = `<script src="https://api.${DOMAIN}/sdk/v1.js" data-lp="${lp.lp_key}" async></script>`;
+  const served = () => readFile(join(lpDir, "hosts", "promo.brand.example", "current", "index.html"), "utf8");
+  expect(await served()).toBe(`<!doctype html><html><head><title>v1</title>${tag}</head><body>v1</body></html>`);
+
+  await input.setInputFiles({ name: "v2.zip", mimeType: "application/zip", buffer: makeZip([{ name: "index.html", data: page("v2") }]) });
+  await expect(hosting.getByRole("status")).toHaveText("Version 2 is live.");
+  expect(await served()).toContain("<body>v2</body>");
+  await hosting.getByRole("listitem").filter({ hasText: "Version 1" }).getByRole("button", { name: "Make live" }).click();
+  // The live row shows the badge instead of its button (the form, and its status line, are replaced).
+  await expect(hosting.getByRole("listitem").filter({ hasText: "Version 1" }).getByText("Live", { exact: true })).toBeVisible();
+  await expect(hosting.getByRole("listitem").filter({ hasText: "Version 2" }).getByRole("button", { name: "Make live" })).toBeVisible();
+  expect(await served()).toContain("<body>v1</body>");
+  const actions = await admin.sql<{ action: string }[]>`SELECT action FROM audit_log WHERE entity_id = ${lp.id} AND action LIKE 'lp_version.%' ORDER BY id`;
+  expect(actions.map((a) => a.action)).toEqual(["lp_version.reject", "lp_version.publish", "lp_version.publish", "lp_version.activate"]);
 });

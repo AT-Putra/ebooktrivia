@@ -16,7 +16,7 @@ Exec=caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
 EnvironmentFile=/etc/ebooktrivia/caddy.env
 # Provisioned config: root-owned, labeled container_file_t by infra/provision, never relabeled here.
 Volume=/etc/ebooktrivia/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
-# LP content, written by the worker (shared label).
+# LP content, written by the admin app (shared label).
 Volume=/srv/lp:/srv/lp:ro,z
 # The landing-page SDK (api.<DOMAIN>/sdk/), written by infra/provision/build-images.sh sdk.
 Volume=/srv/sdk:/srv/sdk:ro,z

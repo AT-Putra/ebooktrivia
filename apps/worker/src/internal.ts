@@ -2,7 +2,7 @@
 // `ask` and the GlitchTip alert hook, bound to INTERNAL_HOST (default 127.0.0.1). It holds no keys
 // and imports nothing that could hold one (no @ebooktrivia/crypto, no settings secrets, no
 // adapters or BullMQ): the database login must be in internal_rw only (checked at startup:
-// SELECT lp_domains, INSERT alerts), and
+// EXECUTE lp_served_hosts, INSERT alerts), and
 // the hook token is known only by its SHA-256. test/internal.int.test.ts records its module graph.
 import { serve } from "@hono/node-server";
 import { PG_CONNECTION_OPTIONS } from "@ebooktrivia/db/connection";
@@ -34,7 +34,18 @@ export async function startInternal(config: InternalConfig, log: Logger): Promis
     await sql.end({ timeout: 5 });
     throw error;
   }
-  const domains = await startDomainSet(sql, { reloadMs: config.domainsReloadMs, log });
+  const domains = await startDomainSet(sql, {
+    reloadMs: config.domainsReloadMs,
+    log,
+    // internal_rw may INSERT these columns only; if the database is what failed, this fails too (logged).
+    onAlert: async (failures) => {
+      await sql`
+        INSERT INTO public.alerts (source, kind, severity, dedupe_key, message, payload)
+        VALUES ('internal', 'lp_ask_reload_failed', 'critical', 'lp_ask_reload_failed',
+                ${`The Caddy ask cache could not reload ${String(failures)} times in a row: new LP certificates are refused until it does.`},
+                ${JSON.stringify({ failures })}::text::jsonb)`;
+    },
+  });
   const app = createInternalApp({
     hasHost: (host) => domains.has(host),
     insertAlert: async (row) => {

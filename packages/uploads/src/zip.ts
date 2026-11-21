@@ -31,6 +31,10 @@ export class ZipError extends Error {
 
 export interface ZipEntry {
   readonly name: string;
+  /** "Version made by": the high byte is the host system (3 = Unix, 19 = OS X), which says how to read `externalAttributes`. */
+  readonly versionMadeBy: number;
+  /** External file attributes: MS-DOS attributes in the low byte; on a Unix host, the st_mode in the high 16 bits. */
+  readonly externalAttributes: number;
   readonly method: number;
   readonly flags: number;
   readonly crc32: number;
@@ -155,6 +159,8 @@ export function readZipEntries(zip: Buffer, maxEntries: number): ZipEntry[] {
     if (commentLength !== 0) throw invalid(`entry comments are not allowed (${centralName})`);
     checkExtraField(zip, at + CENTRAL_BYTES + nameLength, extraLength, centralName);
     const entry: ZipEntry = {
+      versionMadeBy: zip.readUInt16LE(at + 4),
+      externalAttributes: zip.readUInt32LE(at + 38),
       flags: zip.readUInt16LE(at + 8),
       method: zip.readUInt16LE(at + 10),
       crc32: zip.readUInt32LE(at + 16),
@@ -243,38 +249,43 @@ function located(zip: Buffer, entries: readonly ZipEntry[], centralOffset: numbe
   return data;
 }
 
-/** Inflates `data` and counts the output, failing once it exceeds `budget`; output is discarded. */
-function measure(data: Buffer, method: number, budget: number): Promise<{ size: number; crc: number }> {
+/**
+ * Inflates `data` and counts the output, failing once it exceeds `budget`. The output is discarded,
+ * or with `keep` collected and returned (never more than `budget` bytes are held).
+ */
+function inflate(data: Buffer, method: number, budget: number, keep: boolean): Promise<{ size: number; crc: number; bytes: Buffer | null }> {
   if (method === STORED) {
     if (data.length > budget) return Promise.reject(new ZipError("too_large_uncompressed", "uncompressed size over the limit"));
-    return Promise.resolve({ size: data.length, crc: crc32(data) });
+    return Promise.resolve({ size: data.length, crc: crc32(data), bytes: keep ? Buffer.from(data) : null });
   }
   return new Promise((resolve, reject) => {
-    const inflate = createInflateRaw();
+    const inflater = createInflateRaw();
+    const chunks: Buffer[] = [];
     let size = 0;
     let crc = 0;
-    inflate.on("data", (chunk: Buffer) => {
-      if (inflate.destroyed) return;
+    inflater.on("data", (chunk: Buffer) => {
+      if (inflater.destroyed) return;
       size += chunk.length;
       if (size > budget) {
-        inflate.destroy(new ZipError("too_large_uncompressed", "uncompressed size over the limit"));
+        inflater.destroy(new ZipError("too_large_uncompressed", "uncompressed size over the limit"));
         return;
       }
       crc = crc32(chunk, crc);
+      if (keep) chunks.push(chunk);
     });
-    inflate.on("error", (error) => {
+    inflater.on("error", (error) => {
       reject(error instanceof ZipError ? error : invalid("corrupt deflate data"));
     });
-    inflate.on("end", () => {
+    inflater.on("end", () => {
       // zlib stops at the end of the deflate stream and ignores what follows; a streaming parser
       // without a central directory would read those bytes as the next entry (re-check C, C2).
-      if (inflate.bytesWritten !== data.length) {
+      if (inflater.bytesWritten !== data.length) {
         reject(invalid("bytes after the end of the deflate stream"));
         return;
       }
-      resolve({ size, crc });
+      resolve({ size, crc, bytes: keep ? Buffer.concat(chunks, size) : null });
     });
-    inflate.end(data);
+    inflater.end(data);
   });
 }
 
@@ -350,11 +361,33 @@ export async function inspectZip(
   for (const entry of entries) {
     const bytes = data.get(entry);
     if (bytes === undefined) throw invalid(`no data for ${entry.name}`);
-    const measured = await measure(bytes, entry.method, limits.maxUncompressedBytes - total);
+    const measured = await inflate(bytes, entry.method, limits.maxUncompressedBytes - total, false);
     if (measured.size !== entry.uncompressedSize || measured.crc !== entry.crc32) {
       throw invalid(`${entry.name}: size or CRC-32 differs from its header`);
     }
     total += measured.size;
   }
   return { entries, uncompressedBytes: total, canonical: canonicalZip(entries, data) };
+}
+
+/**
+ * The entries with their compressed bytes, after every structural check of `inspectZip` (end
+ * record, directory, local headers, descriptors, tiling, names). Nothing is inflated yet.
+ */
+export function readZip(zip: Buffer, maxEntries: number): { entries: ZipEntry[]; data: ReadonlyMap<ZipEntry, Buffer> } {
+  const entries = readZipEntries(zip, maxEntries);
+  return { entries, data: located(zip, entries, zip.readUInt32LE(findEndOfCentralDirectory(zip) + 16)) };
+}
+
+/**
+ * Inflates one entry of `readZip`, holding at most `budget` bytes: the stream is stopped as soon as
+ * the output crosses the budget (ZipError too_large_uncompressed), whatever the headers claim. The
+ * result must then have exactly the size and CRC-32 of the headers (invalid_zip otherwise).
+ */
+export async function inflateEntry(entry: ZipEntry, data: Buffer, budget: number): Promise<Buffer> {
+  const out = await inflate(data, entry.method, budget, true);
+  if (out.size !== entry.uncompressedSize || out.crc !== entry.crc32 || out.bytes === null) {
+    throw invalid(`${entry.name}: size or CRC-32 differs from its header`);
+  }
+  return out.bytes;
 }

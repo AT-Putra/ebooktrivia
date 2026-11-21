@@ -5,6 +5,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { LP_FILE_TYPES } from "../../../packages/uploads/src/lp-zip.ts";
 import { readQuadlet } from "./quadlet.ts";
 
 const caddyfilePath = new URL("../../caddy/Caddyfile", import.meta.url);
@@ -140,6 +141,70 @@ describe("adapted Caddyfile", () => {
     expect(handlers([site(null)]).find((h) => h.handler === "vars")?.["root"]).toBe("/srv/lp/hosts/{http.request.host}/current");
     // Caddy adds its own config file to `hide`.
     expect(handlers([site(null)]).find((h) => h.handler === "file_server")?.["hide"]).toEqual([".*", "/etc/caddy/Caddyfile"]);
+  });
+
+
+  // US-023: LP files only on LP hosts, each allowed extension with a fixed Content-Type, default page CSP,
+  // sandboxed SVG (infra/verify/local/lp-headers.sh runs the block in a real Caddy).
+  describe("LP site (US-023)", () => {
+    const lpRoute = routes([site(null)]).find((r) => r.match?.[0]?.["expression"] !== undefined);
+    const lpHandlers = handlers([lpRoute ?? {}]);
+    const allowed = (lpRoute?.match?.[0]?.["path_regexp"] as { pattern: string } | undefined)?.pattern ?? "";
+    const responseSets = routes([lpRoute ?? {}]).flatMap((r) =>
+      (r.handle ?? []).filter((h) => h.handler === "headers").map((h) => ({ match: r.match?.[0], set: (h["response"] as { set?: Record<string, string[]> }).set ?? {} })),
+    );
+    /** A Go regexp of the config as a JS one (only the leading (?i) flag differs here). */
+    const goRegExp = (pattern: string): RegExp => (pattern.startsWith("(?i)") ? new RegExp(pattern.slice(4), "i") : new RegExp(pattern));
+    const cspFor = (svg: boolean): string | undefined =>
+      responseSets.find((r) => r.set["Content-Security-Policy"] !== undefined && JSON.stringify(r.match ?? {}).includes('"not"') !== svg)?.set["Content-Security-Policy"]?.[0];
+
+    it("serves only folder paths and exactly the extensions an LP ZIP may hold (LP_FILE_TYPES)", () => {
+      const pattern = goRegExp(allowed);
+      for (const ext of Object.keys(LP_FILE_TYPES)) {
+        expect(pattern.test(`/a/b${ext}`), ext).toBe(true);
+        expect(pattern.test(`/a/b${ext.toUpperCase()}`), ext).toBe(true);
+      }
+      for (const path of ["/", "/promo", "/promo/"]) expect(pattern.test(path), path).toBe(true);
+      for (const path of ["/x.php", "/x.xml", "/x.pdf", "/.env", "/a.html.bak", "/x.shtml", "/x.svgz", "/x.wasm"]) expect(pattern.test(path), path).toBe(false);
+    });
+
+    it("sets each extension's fixed Content-Type from the same table the upload checks against", () => {
+      const map = lpHandlers.find((h) => h.handler === "map") as { mappings: { input_regexp: string; outputs: string[] }[]; defaults: string[]; destinations: string[] } | undefined;
+      expect(map?.destinations).toEqual(["{lp_content_type}"]);
+      expect(map?.defaults).toEqual(["text/html; charset=utf-8"]);
+      for (const [ext, type] of Object.entries(LP_FILE_TYPES)) {
+        const hit = map?.mappings.find((m) => goRegExp(m.input_regexp).test(`/x${ext}`));
+        expect(hit?.outputs, ext).toEqual([type.contentType]);
+      }
+      expect(responseSets.find((r) => r.match === undefined && r.set["Content-Type"] !== undefined)?.set["Content-Type"]).toEqual(["{lp_content_type}"]);
+    });
+
+    it("gives pages the default CSP (SDK, Cap and pixels allowed; frames, plugins, base and form targets restricted) and SVGs a sandbox", () => {
+      const page = cspFor(false) ?? "";
+      for (const directive of [
+        "default-src 'self'",
+        "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' https://api.example.test https://connect.facebook.net https://analytics.tiktok.com https://www.googletagmanager.com",
+        "connect-src 'self' https://api.example.test",
+        "worker-src blob:",
+        "object-src 'none'",
+        "base-uri 'self'",
+        "form-action 'self'",
+        "frame-ancestors 'self'",
+      ]) {
+        expect(page, directive).toContain(directive);
+      }
+      expect(page).not.toContain("'unsafe-eval'");
+      expect(cspFor(true)).toBe("sandbox; default-src 'none'; img-src data:; style-src 'unsafe-inline'");
+    });
+
+    it("runs file_server only: no directory listing, no templates, no reverse proxy to an app", () => {
+      const names = new Set(handlers([site(null)]).map((h) => h.handler));
+      expect(names.has("templates")).toBe(false);
+      expect(names.has("reverse_proxy")).toBe(false);
+      expect(lpHandlers.find((h) => h.handler === "file_server")?.["browse"]).toBeUndefined();
+      // A folder serves index.html only (security review M1: not index.txt as text/html).
+      expect(lpHandlers.find((h) => h.handler === "file_server")?.["index_names"]).toEqual(["index.html"]);
+    });
   });
 
   // US-019: the landing-page SDK, static files from /srv/sdk (infra/verify/local/sdk-headers.sh runs
@@ -300,7 +365,7 @@ describe("adapted Caddyfile", () => {
     for (const host of ["admin.example.test", "play.example.test", "api.example.test"]) expect(policies(host), host).toEqual([["strict-origin-when-cross-origin"]]);
   });
 
-  it("sets HSTS, nosniff and frame-ancestors 'none' on the app hosts, frame-ancestors 'self' on LP hosts", () => {
+  it("sets HSTS, nosniff and frame-ancestors 'none' on the app hosts, HSTS and nosniff on LP hosts", () => {
     for (const host of APP_HOSTS) {
       const response = handlers([site(host)]).find((h) => h.handler === "headers" && h["response"] !== undefined)?.["response"] as Json;
       expect(response, host).toMatchObject({
@@ -310,7 +375,7 @@ describe("adapted Caddyfile", () => {
       });
     }
     const lp = handlers([site(null)]).find((h) => h.handler === "headers")?.["response"] as Json;
-    expect(lp).toMatchObject({ set: { "Content-Security-Policy": ["frame-ancestors 'self'; base-uri 'self'; object-src 'none'"] } });
+    expect(lp).toMatchObject({ deferred: true, set: { "Strict-Transport-Security": ["max-age=31536000"], "X-Content-Type-Options": ["nosniff"] } });
   });
 
   it("redacts the GlitchTip token and every /files URI, query included, from every log", () => {

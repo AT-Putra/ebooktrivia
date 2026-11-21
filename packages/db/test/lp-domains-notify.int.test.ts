@@ -98,3 +98,52 @@ describe("lp_domains NOTIFY trigger (migration 0003)", () => {
     ]);
   });
 });
+
+// US-023: the ask set is public.lp_served_hosts(), so a landing page's active / hosting / current
+// version change and its deletion NOTIFY the same channel; ET160 keeps a page's current version its own.
+describe("landing page hosting (US-023)", () => {
+  async function version(lp: string, n: number): Promise<string> {
+    const upload = first(await sql<{ id: string }[]>`
+      INSERT INTO uploads (kind, storage_path, content_type, size_bytes, sha256)
+      VALUES ('lp_zip', ${`lp-zips/${suffix()}.zip`}, 'application/zip', 1, sha256('x'::bytea)) RETURNING id`);
+    return first(await sql<{ id: string }[]>`
+      INSERT INTO lp_versions (landing_page_id, version, upload_id, file_count, uncompressed_bytes)
+      VALUES (${lp}, ${n}, ${upload.id}, 1, 1) RETURNING id`).id;
+  }
+  const served = async () => (await asRole("internal_rw", (tx) => tx<{ host: string; landing_page_id: string; version: number }[]>`SELECT * FROM public.lp_served_hosts()`)).filter((r) => r.landing_page_id === landingPageId);
+
+  it("NOTIFYs once per statement on active / hosting / current version changes and on delete, not on other columns", async () => {
+    const v1 = await version(landingPageId, 1);
+    expect(await notificationsOf(() => sql`UPDATE landing_pages SET current_version_id = ${v1}, hosting = 'zip' WHERE id = ${landingPageId}`)).toEqual(["UPDATE"]);
+    expect(await notificationsOf(() => sql`UPDATE landing_pages SET active = false WHERE id = ${landingPageId}`)).toEqual(["UPDATE"]);
+    expect(await notificationsOf(() => sql`UPDATE landing_pages SET active = true WHERE id = ${landingPageId}`)).toEqual(["UPDATE"]);
+    expect(await notificationsOf(() => sql`UPDATE landing_pages SET name = 'renamed' WHERE id = ${landingPageId}`)).toEqual([]);
+    const { programId } = await createProgram();
+    const other = await createLandingPage(programId);
+    expect(await notificationsOf(() => sql`DELETE FROM landing_pages WHERE id = ${other}`)).toEqual(["DELETE"]);
+  });
+
+  it("serves exactly the registered hosts of an active zip page with a live version, to internal_rw, which cannot read the tables", async () => {
+    const h = host();
+    await sql`INSERT INTO lp_domains (landing_page_id, host) VALUES (${landingPageId}, ${h})`;
+    const v2 = await version(landingPageId, 2);
+    await sql`UPDATE landing_pages SET current_version_id = ${v2}, hosting = 'zip', active = true WHERE id = ${landingPageId}`;
+    expect((await served()).find((r) => r.host === h)).toEqual({ host: h, landing_page_id: landingPageId, version: 2 });
+    await sql`UPDATE landing_pages SET active = false WHERE id = ${landingPageId}`;
+    expect(await served()).toEqual([]);
+    await sql`UPDATE landing_pages SET active = true, hosting = 'external' WHERE id = ${landingPageId}`;
+    expect(await served()).toEqual([]);
+    await sql`UPDATE landing_pages SET hosting = 'zip' WHERE id = ${landingPageId}`;
+    for (const table of ["lp_domains", "landing_pages", "lp_versions"]) {
+      await expect(asRole("internal_rw", (tx) => tx.unsafe(`SELECT 1 FROM public.${table} LIMIT 1`)), table).rejects.toMatchObject({ code: "42501" });
+    }
+    await expect(asRole("public_rw", (tx) => tx`SELECT * FROM public.lp_served_hosts()`)).rejects.toMatchObject({ code: "42501" });
+  });
+
+  it("refuses another page's version as the current one (ET160)", async () => {
+    const { programId } = await createProgram();
+    const other = await createLandingPage(programId);
+    const foreign = await version(other, 1);
+    await expect(sql`UPDATE landing_pages SET current_version_id = ${foreign} WHERE id = ${landingPageId}`).rejects.toMatchObject({ code: "ET160" });
+  });
+});

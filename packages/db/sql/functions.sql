@@ -1051,3 +1051,29 @@ REVOKE ALL ON FUNCTION public.enqueue_waha_inbound(uuid) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.enqueue_mo(uuid) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.get_payment_secret() FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.order_source_label(uuid, text) FROM PUBLIC;
+
+-- ---------------------------------------------------------------------------------------------
+-- US-023 (M6e LP ZIP hosting) BLOCK BEGIN.
+-- The hosts a hosted landing page is served on, with the version that is live there: one row per
+-- registered domain of an ACTIVE landing page whose hosting is 'zip' and that has a current version
+-- (of its own). It is the one definition of "served" for both sides:
+--   - internal_rw: Caddy's on-demand TLS ask (apps/worker/src/domains.ts) approves exactly these hosts;
+--   - admin_rw: the console makes /srv/lp/hosts/{host}/current point at exactly these versions and
+--     removes every other host directory (apps/admin/src/lib/settings/lp-hosting.ts).
+-- An external landing page, an inactive one, or one without an uploaded version gets no certificate
+-- and no content. SECURITY DEFINER so internal_rw needs no read of landing_pages / lp_versions.
+CREATE OR REPLACE FUNCTION public.lp_served_hosts()
+  RETURNS TABLE (host text, landing_page_id uuid, version integer)
+  LANGUAGE sql
+  STABLE
+  SECURITY DEFINER
+  SET search_path = pg_catalog, pg_temp
+AS $fn$
+  SELECT d.host, lp.id, v.version
+    FROM public.lp_domains d
+    JOIN public.landing_pages lp ON lp.id = d.landing_page_id
+    JOIN public.lp_versions v ON v.id = lp.current_version_id AND v.landing_page_id = lp.id
+   WHERE lp.active AND lp.hosting = 'zip'
+$fn$;
+REVOKE ALL ON FUNCTION public.lp_served_hosts() FROM PUBLIC;
+-- US-023 BLOCK END.

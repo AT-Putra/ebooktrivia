@@ -5,4 +5,6 @@ export async function register(): Promise<void> {
   if (process.env["NEXT_PHASE"] === "phase-production-build") return;
   const { startUploadSweeper } = await import("./lib/next/upload-sweeper.ts");
   startUploadSweeper();
+  const { startLpHostingSweeper } = await import("./lib/next/lp-hosting-sweeper.ts");
+  startLpHostingSweeper();
 }

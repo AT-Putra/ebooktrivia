@@ -3,7 +3,7 @@
 import { createHash } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { afterAll, beforeAll, describe, expect, inject, it } from "vitest";
-import { createCatalog, createOutboxRows, first, sql, suffix, waitFor } from "./support/db.ts";
+import { createCatalog, createOutboxRows, first, hostLandingPage, sql, suffix, waitFor } from "./support/db.ts";
 import { PROBE_TOPIC } from "./support/probe.ts";
 import { type Child, HARNESS, kill, MAIN, spawnNode, waitForLine, workerEnv } from "./support/processes.ts";
 import { type Sink, startSink } from "./support/sink.ts";
@@ -19,6 +19,7 @@ const hosts: string[] = [];
 beforeAll(async () => {
   sink = await startSink();
   const { landingPageId } = await createCatalog();
+  await hostLandingPage(landingPageId);
   for (let i = 0; i < 50; i++) hosts.push(`load-${suffix()}.example.com`);
   await sql`INSERT INTO lp_domains (landing_page_id, host) SELECT ${landingPageId}, unnest(${hosts}::text[])`;
   internal = spawnNode([MAIN, "--role=internal"], {

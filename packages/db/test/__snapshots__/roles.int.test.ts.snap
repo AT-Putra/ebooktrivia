@@ -2,7 +2,6 @@
 
 exports[`hardening > pins the column list of every table public_rw / internal_rw reach by a table-level grant 1`] = `
 [
-  "internal_rw SELECT public.lp_domains: id, landing_page_id, host, created_at",
   "public_rw DELETE player_auth.account: id, accountId, providerId, userId, accessToken, refreshToken, idToken, accessTokenExpiresAt, refreshTokenExpiresAt, scope, password, createdAt, updatedAt",
   "public_rw DELETE player_auth.session: id, expiresAt, token, createdAt, updatedAt, ipAddress, userAgent, userId",
   "public_rw DELETE player_auth.session_state: session_id, login_at",
@@ -102,6 +101,7 @@ exports[`hardening > pins the full privilege matrix 1`] = `
   "admin_rw EXECUTE public.extend_open_question_deadlines(p_program_id uuid, p_outage_started_at timestamp with time zone, p_outage_ended_at timestamp with time zone, p_reason text, p_actor_admin_user_id text, p_request_id text, p_ip inet)",
   "admin_rw EXECUTE public.gateway_fee_idr(p_amount bigint, p_flat bigint, p_bps integer)",
   "admin_rw EXECUTE public.lock_program_contest(p_program_id uuid)",
+  "admin_rw EXECUTE public.lp_served_hosts()",
   "admin_rw EXECUTE public.mask_name(p_name text)",
   "admin_rw EXECUTE public.mask_phone(p_phone text)",
   "admin_rw EXECUTE public.midtrans_method_codes(p_payment_type text)",
@@ -437,13 +437,13 @@ exports[`hardening > pins the full privilege matrix 1`] = `
   "delivery_resend UPDATE public.orders(updated_at)",
   "delivery_resend USAGE SCHEMA public",
   "internal_rw CONNECT DATABASE",
+  "internal_rw EXECUTE public.lp_served_hosts()",
   "internal_rw INSERT public.alerts(dedupe_key)",
   "internal_rw INSERT public.alerts(kind)",
   "internal_rw INSERT public.alerts(message)",
   "internal_rw INSERT public.alerts(payload)",
   "internal_rw INSERT public.alerts(severity)",
   "internal_rw INSERT public.alerts(source)",
-  "internal_rw SELECT public.lp_domains",
   "internal_rw USAGE SCHEMA public",
   "public_rw CONNECT DATABASE",
   "public_rw DELETE player_auth.account",

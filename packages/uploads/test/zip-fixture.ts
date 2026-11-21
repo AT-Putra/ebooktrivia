@@ -30,6 +30,10 @@ export interface FixtureEntry {
   readonly localFlags?: number;
   /** Per-entry comment in the central directory record. */
   readonly fileComment?: string;
+  /** "Version made by" in the central directory (high byte: host system, 3 = Unix). Default 20. */
+  readonly versionMadeBy?: number;
+  /** External file attributes in the central directory (Unix st_mode << 16 | MS-DOS bits). Default 0. */
+  readonly externalAttributes?: number;
 }
 
 /** One extra-field block: header id, size, data. */
@@ -103,7 +107,7 @@ export function makeZip(entries: readonly FixtureEntry[], options: FixtureOption
 
     const central = Buffer.alloc(46);
     central.writeUInt32LE(0x02014b50, 0);
-    central.writeUInt16LE(20, 4);
+    central.writeUInt16LE(entry.versionMadeBy ?? 20, 4);
     central.writeUInt16LE(20, 6);
     central.writeUInt16LE(flags, 8);
     central.writeUInt16LE(method, 10);
@@ -113,6 +117,7 @@ export function makeZip(entries: readonly FixtureEntry[], options: FixtureOption
     central.writeUInt16LE(name.length, 28);
     central.writeUInt16LE(extra.length, 30);
     central.writeUInt16LE(fileComment.length, 32);
+    central.writeUInt32LE(entry.externalAttributes ?? 0, 38);
     central.writeUInt32LE(offset, 42);
 
     const gap = entry.gapAfter ?? Buffer.alloc(0);

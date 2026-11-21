@@ -338,10 +338,24 @@ api.{$DOMAIN} {
 	}
 }
 
-# LP domains (any other host): on-demand certificates gated by the internal ask, static files from
-# /srv/lp/hosts/<host>/current. `current` is a relative symlink to a release directory, swapped
-# atomically on publish. Only lowercase stored-form hosts map to a directory (browsers send the
-# host lowercased; anything else, including "..", is a 404 before a path is built).
+# LP domains (any other host, US-023): on-demand certificates gated by the internal ask, which approves
+# exactly the hosts of public.lp_served_hosts() (registered domains of ACTIVE landing pages hosted as a
+# ZIP with a live version). Static files only, from /srv/lp/hosts/<host>/current: a relative symlink to
+# ../../versions/<lpId>/<version>, switched by an atomic rename by the admin app
+# (apps/admin/src/lib/settings/lp-hosting.ts), which also removes the host directory of a removed domain
+# or an inactive page. Only lowercase stored-form hosts map to a directory (browsers send the host
+# lowercased; anything else, including "..", is a 404 before a path is built).
+#   - Only folder paths and the extensions an LP ZIP may hold (packages/uploads/src/lp-zip.ts
+#     LP_FILE_TYPES) are served, each with its fixed Content-Type from the map below (charset=utf-8 on
+#     text: the upload accepts UTF-8 only) and nosniff; any other path is a 404. A folder path serves its
+#     index.html only. No directory listing,
+#     no dot files, no templates / server-side includes: file_server only.
+#   - Pages get a default CSP (docs/runbooks/landing-pages.md): scripts from the page itself (inline
+#     too: the author's own static page), the SDK and Cap on api.<DOMAIN> ('wasm-unsafe-eval' for the
+#     solver, blob: workers) and the three pixel vendors' script hosts; requests only to the page, the
+#     API and the vendors' report hosts; forms post to the page only; never framed by another origin.
+#     A page may tighten it with its own CSP (a browser enforces both).
+#   - An SVG gets `sandbox` and no script at all when opened directly (it is also checked on upload).
 https:// {
 	import https
 	import access_log
@@ -353,19 +367,48 @@ https:// {
 		Strict-Transport-Security "max-age=31536000"
 		X-Content-Type-Options nosniff
 		Referrer-Policy strict-origin-when-cross-origin
-		Content-Security-Policy "frame-ancestors 'self'; base-uri 'self'; object-src 'none'"
 		-Server
 	}
 	import blocked_paths
 	@lp {
 		method GET HEAD
 		expression `{http.request.host}.matches("^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$")`
+		path_regexp lpfile (?i)(?:/[^/.]*|\.(?:html?|css|m?js|json|map|txt|svg|png|jpe?g|gif|webp|avif|ico|woff2?|ttf|otf|mp4|webm))$
 	}
 	handle @lp {
 		root * /srv/lp/hosts/{http.request.host}/current
+		map {path} {lp_content_type} {
+			~(?i)\.html?$ "text/html; charset=utf-8"
+			~(?i)\.css$ "text/css; charset=utf-8"
+			~(?i)\.m?js$ "text/javascript; charset=utf-8"
+			~(?i)\.(?:json|map)$ application/json
+			~(?i)\.txt$ "text/plain; charset=utf-8"
+			~(?i)\.svg$ image/svg+xml
+			~(?i)\.png$ image/png
+			~(?i)\.jpe?g$ image/jpeg
+			~(?i)\.gif$ image/gif
+			~(?i)\.webp$ image/webp
+			~(?i)\.avif$ image/avif
+			~(?i)\.ico$ image/x-icon
+			~(?i)\.woff$ font/woff
+			~(?i)\.woff2$ font/woff2
+			~(?i)\.ttf$ font/ttf
+			~(?i)\.otf$ font/otf
+			~(?i)\.mp4$ video/mp4
+			~(?i)\.webm$ video/webm
+			default "text/html; charset=utf-8"
+		}
+		header Content-Type {lp_content_type}
+		@svg path_regexp (?i)\.svg$
+		header @svg Content-Security-Policy "sandbox; default-src 'none'; img-src data:; style-src 'unsafe-inline'"
+		@page not path_regexp (?i)\.svg$
+		header @page Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' https://api.{$DOMAIN} https://connect.facebook.net https://analytics.tiktok.com https://www.googletagmanager.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: https:; media-src 'self'; connect-src 'self' https://api.{$DOMAIN} https://www.facebook.com https://connect.facebook.net https://analytics.tiktok.com https://analytics-ipv6.tiktokw.us https://www.googletagmanager.com https://www.googleadservices.com https://googleads.g.doubleclick.net https://pagead2.googlesyndication.com https://www.google.com https://www.google.co.id https://ad.doubleclick.net; worker-src blob:; frame-src https://www.youtube-nocookie.com https://www.youtube.com; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'; upgrade-insecure-requests"
 		encode zstd gzip
+		# index.html only: a folder holding just an index.txt (or another index.* Caddy would try) is a
+		# 404, never served under the folder path's text/html type (security review US-023 M1).
 		file_server {
 			hide .*
+			index index.html
 		}
 	}
 	handle {

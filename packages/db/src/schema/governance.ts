@@ -413,9 +413,10 @@ export const uploadSessions = pgTable(
   {
     id: id(),
     kind: text("kind").notNull(),
-    productId: uuid("product_id")
-      .notNull()
-      .references(() => products.id, { onDelete: "cascade" }),
+    /** The product of a `pdf` upload. */
+    productId: uuid("product_id").references(() => products.id, { onDelete: "cascade" }),
+    /** The landing page of an `lp_zip` upload (US-023). */
+    landingPageId: uuid("landing_page_id").references(() => landingPages.id, { onDelete: "cascade" }),
     filename: text("filename").notNull(),
     sizeBytes: bigint("size_bytes", { mode: "number" }).notNull(),
     sha256: bytea("sha256").notNull(),
@@ -435,7 +436,11 @@ export const uploadSessions = pgTable(
     createdAt: createdAt(),
   },
   (t) => [
-    inCheck("upload_sessions_kind_check", t.kind, ["pdf"]),
+    inCheck("upload_sessions_kind_check", t.kind, ["pdf", "lp_zip"]),
+    check(
+      "upload_sessions_target_check",
+      sql`(${t.kind} = 'pdf' AND ${t.productId} IS NOT NULL AND ${t.landingPageId} IS NULL) OR (${t.kind} = 'lp_zip' AND ${t.landingPageId} IS NOT NULL AND ${t.productId} IS NULL)`,
+    ),
     check("upload_sessions_size_bytes_check", sql`${t.sizeBytes} > 0`),
     check("upload_sessions_sha256_check", sql`octet_length(${t.sha256}) = 32`),
     check("upload_sessions_chunk_bytes_check", sql`${t.chunkBytes} > 0`),
@@ -457,7 +462,7 @@ export const alerts = pgTable(
     resolvedAt: tstz("resolved_at"),
   },
   (t) => [
-    inCheck("alerts_source_check", t.source, ["internal", "glitchtip", "worker", "monitor"]),
+    inCheck("alerts_source_check", t.source, ["internal", "glitchtip", "worker", "monitor", "admin"]),
     inCheck("alerts_severity_check", t.severity, ["info", "warning", "critical"]),
     jsonObject("alerts_payload_check", t.payload),
     index("alerts_dedupe_idx").on(t.dedupeKey, t.createdAt),

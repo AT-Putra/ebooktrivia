@@ -130,14 +130,22 @@ function isSvgText(text: string): boolean {
  * encodes another character with a byte below 0x80, so a byte scan is exact. */
 const isBinaryControl = (byte: number): boolean => byte < 0x20 && byte !== 0x09 && byte !== 0x0a && byte !== 0x0d;
 
-function sniffText(bytes: Buffer): FileType | null {
+/**
+ * The text of `bytes` when they are valid UTF-8 (a leading BOM is dropped) with no NUL or other C0
+ * control but TAB, LF and CR; otherwise null. Also used for the text files of an LP ZIP (lp-zip.ts).
+ */
+export function utf8Text(bytes: Buffer): string | null {
   if (bytes.some(isBinaryControl)) return null;
-  let text: string;
   try {
-    text = new TextDecoder("utf-8", { fatal: true }).decode(bytes); // drops a leading BOM
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes); // drops a leading BOM
   } catch {
     return null;
   }
+}
+
+function sniffText(bytes: Buffer): FileType | null {
+  const text = utf8Text(bytes);
+  if (text === null) return null;
   if (text.trimStart().startsWith("<")) return isSvgText(text) ? "svg" : null; // other markup: never CSV
   return text.trim() === "" ? null : "csv";
 }

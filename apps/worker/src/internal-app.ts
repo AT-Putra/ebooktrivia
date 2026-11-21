@@ -1,7 +1,7 @@
 // HTTP app of the internal process (Hono). Two routes, everything else 404:
 //
 //   GET  /caddy/ask?domain=<host>   Caddy on-demand TLS: 200 when the normalized host is in the
-//                                   in-memory lp_domains set (src/domains.ts), 404 when not, 400
+//                                   in-memory served-hosts set (src/domains.ts), 404 when not, 400
 //                                   for input that is not a plain DNS name. No DB access per request.
 //   POST /hooks/glitchtip/:token    sha256(token) compared in constant time with the configured
 //                                   hash; a wrong token is 404 (the route is not revealed). Body at

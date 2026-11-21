@@ -135,16 +135,25 @@ BEGIN
     WITH p AS (INSERT INTO products (title, price_idr) VALUES ('vm-sim ebook', 49000) RETURNING id),
          g AS (INSERT INTO programs (product_id, slug, name, status, sales_start_at, sales_end_at, grace_days)
                SELECT id, 'vm-sim', 'vm-sim', 'published', now() - interval '1 day', now() + interval '30 days', 30 FROM p RETURNING id),
-         l AS (INSERT INTO landing_pages (lp_key, name, program_id) SELECT 'lp_vmsim0001', 'vm-sim LP', id FROM g RETURNING id)
+         l AS (INSERT INTO landing_pages (id, lp_key, name, program_id, hosting)
+               SELECT '00000000-0000-4000-8000-00000000a001', 'lp_vmsim0001', 'vm-sim LP', id, 'zip' FROM g RETURNING id)
     INSERT INTO lp_domains (landing_page_id, host) SELECT id, 'lp-ok.example.test' FROM l;
+    -- US-023: only an active zip-hosted page with a live version is served (public.lp_served_hosts()).
+    INSERT INTO uploads (id, kind, storage_path, content_type, size_bytes, sha256) VALUES
+      ('00000000-0000-4000-8000-00000000b001', 'lp_zip', 'lp-zips/00000000-0000-4000-8000-00000000b001.zip', 'application/zip', 1, sha256('1'::bytea)),
+      ('00000000-0000-4000-8000-00000000b002', 'lp_zip', 'lp-zips/00000000-0000-4000-8000-00000000b002.zip', 'application/zip', 1, sha256('2'::bytea));
+    INSERT INTO lp_versions (id, landing_page_id, version, upload_id, file_count, uncompressed_bytes) VALUES
+      ('00000000-0000-4000-8000-00000000c001', '00000000-0000-4000-8000-00000000a001', 1, '00000000-0000-4000-8000-00000000b001', 1, 1),
+      ('00000000-0000-4000-8000-00000000c002', '00000000-0000-4000-8000-00000000a001', 2, '00000000-0000-4000-8000-00000000b002', 1, 1);
+    UPDATE landing_pages SET current_version_id = '00000000-0000-4000-8000-00000000c001' WHERE id = '00000000-0000-4000-8000-00000000a001';
   END IF;
 END
 $seed$;
 SQL
   # shellcheck disable=SC2016 # expanded by the shell inside the sim
-  as_ebt bash -c 'set -e; d=/srv/lp/hosts/lp-ok.example.test; mkdir -p $d/releases/r1 $d/releases/r2
-    printf "<p>release one</p>\n" > $d/releases/r1/index.html; printf "<p>release two</p>\n" > $d/releases/r2/index.html
-    ln -sfn releases/r1 $d/current'
+  as_ebt bash -c 'set -e; v=/srv/lp/versions/00000000-0000-4000-8000-00000000a001; d=/srv/lp/hosts/lp-ok.example.test
+    mkdir -p $v/1 $v/2 $d; printf "<p>release one</p>\n" > $v/1/index.html; printf "<p>release two</p>\n" > $v/2/index.html
+    ln -sfn ../../versions/00000000-0000-4000-8000-00000000a001/1 $d/current'
 
   printf '\n### Caddy against Pebble (test-only drop-in and issuer lines)\n'
   sim grep -q 'pebble:14000' /etc/ebooktrivia/caddy/Caddyfile ||
@@ -165,7 +174,7 @@ EOF
   local unit
   for unit in internal worker admin public@a public@b caddy; do wait_active "$unit.service"; done
   for _ in $(seq 1 60); do
-    [[ $(curl_from "$CLIENT" -o /dev/null -w '%{http_code}' https://admin.example.test/ || true) == 200 ]] && break
+    [[ $(curl_from "$CLIENT" -o /dev/null -w '%{http_code}' https://admin.example.test/login || true) == 200 ]] && break
     sleep 2
   done
 }
@@ -295,7 +304,8 @@ check() {
   printf '\n### checks\n'
   sim /opt/ebooktrivia/infra/verify/client-ip-probe.sh start
   wait_active public@b.service
-  as_ebt ln -sfn releases/r1 /srv/lp/hosts/lp-ok.example.test/current
+  psql_app_db <<<"UPDATE landing_pages SET current_version_id = '00000000-0000-4000-8000-00000000c001' WHERE id = '00000000-0000-4000-8000-00000000a001';" >/dev/null
+  as_ebt ln -sfn ../../versions/00000000-0000-4000-8000-00000000a001/1 /srv/lp/hosts/lp-ok.example.test/current
   expect "db-roles second run" "summary: 0 changed" "$(tail -1 "$OUT/db-roles-2.log")"
 
   # Real client address (criterion 5): the probe on public@b reports what an app sees.
@@ -335,7 +345,10 @@ check() {
   expect "lp-ok.example.test/internal blocked" 404 "$(curl_from "$CLIENT" -o /dev/null -w '%{http_code}' https://lp-ok.example.test/internal/x)"
 
   # Admin allowlist.
-  expect "admin from 192.0.2.100 (allowed)" 200 "$(curl_from "$CLIENT" -o /dev/null -w '%{http_code}' https://admin.example.test/)"
+  # The console's / needs a session: an anonymous client is sent to /login (Next redirect, 307), which is
+  # a page anyone allowed may load.
+  expect "admin from 192.0.2.100 (allowed): /login" 200 "$(curl_from "$CLIENT" -o /dev/null -w '%{http_code}' https://admin.example.test/login)"
+  expect_match "admin from 192.0.2.100 (allowed): / sends an anonymous client to /login" '^307 https://admin\.example\.test/login$' "$(curl_from "$CLIENT" -o /dev/null -w '%{http_code} %{redirect_url}' https://admin.example.test/)"
   SIM_IP=198.51.100.10 expect "admin from 198.51.100.20 (not allowed)" 404 \
     "$(SIM_IP=198.51.100.10 curl_from "$GLITCHTIP" -o /dev/null -w '%{http_code}' --resolve admin.example.test:443:198.51.100.10 https://admin.example.test/)"
 
@@ -344,8 +357,10 @@ check() {
 
   # LP domains: on-demand TLS gated by the internal process; symlink-swapped roots.
   expect_match "LP host in lp_domains: certificate on demand, content served" 'release one' "$(curl_from "$CLIENT" https://lp-ok.example.test/)"
-  expect_match "LP headers: frame-ancestors 'self'" "frame-ancestors 'self'; base-uri 'self'; object-src 'none'" "$(curl_from "$CLIENT" -D - -o /dev/null https://lp-ok.example.test/)"
-  as_ebt bash -c 'cd /srv/lp/hosts/lp-ok.example.test && ln -s releases/r2 current.new && mv -T current.new current'
+  expect_match "LP headers: the default page CSP" "object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'" "$(curl_from "$CLIENT" -D - -o /dev/null https://lp-ok.example.test/)"
+  # What the admin app does on Make live: the version in the database, then the link by rename.
+  psql_app_db <<<"UPDATE landing_pages SET current_version_id = '00000000-0000-4000-8000-00000000c002' WHERE id = '00000000-0000-4000-8000-00000000a001';" >/dev/null
+  as_ebt bash -c 'cd /srv/lp/hosts/lp-ok.example.test && ln -s ../../versions/00000000-0000-4000-8000-00000000a001/2 current.new && mv -T current.new current'
   expect_match "LP symlink swap serves the new release" 'release two' "$(curl_from "$CLIENT" https://lp-ok.example.test/)"
   local code
   code=$(curl_from "$CLIENT" -o /dev/null -w '%{http_code}' https://lp-no.example.test/ 2>&1 || true)

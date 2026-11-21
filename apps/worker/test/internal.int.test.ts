@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, inject, it } from "vitest";
 import { INTERNAL_ENV } from "../src/internal-config.ts";
-import { createCatalog, letters, sleep, sql, suffix, waitFor } from "./support/db.ts";
+import { createCatalog, hostLandingPage, letters, sleep, sql, suffix, waitFor } from "./support/db.ts";
 import { type Child, kill, MAIN, RECORD_GRAPH, spawnNode, waitForLine } from "./support/processes.ts";
 
 const TOKEN = `gt-${randomBytes(16).toString("hex")}`;
@@ -39,6 +39,7 @@ const recordFile = join(recordDir, "graph.txt");
 
 beforeAll(async () => {
   landingPageId = (await createCatalog()).landingPageId;
+  await hostLandingPage(landingPageId);
   await sql`INSERT INTO lp_domains (landing_page_id, host) VALUES (${landingPageId}, ${`preloaded-${suffix()}.example.com`})`;
   child = spawnNode(["--import", `./${RECORD_GRAPH}`, MAIN, "--role=internal"], internalEnv({ RECORD_GRAPH_FILE: recordFile }));
   const listening = await waitForLine(child, (l) => l["msg"] === "internal listening");

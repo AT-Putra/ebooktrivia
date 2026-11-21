@@ -27,6 +27,7 @@ const STAFF_EXPECTED: Readonly<Record<Permission, boolean | "unlocked">> = {
   "sales.export": false,
   "winners.export": false,
   "lp_domain.register": false,
+  "lp_zip.publish": false,
   "landing_page.settings.edit": false,
   "program.edit": false,
   "program.reschedule": false,
