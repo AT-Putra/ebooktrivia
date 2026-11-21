@@ -381,6 +381,9 @@ importers:
       '@ebooktrivia/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@ebooktrivia/i18n':
+        specifier: workspace:*
+        version: link:../../packages/i18n
       '@hono/node-server':
         specifier: 2.1.6
         version: 2.1.6(hono@4.13.17)

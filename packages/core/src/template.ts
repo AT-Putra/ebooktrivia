@@ -201,7 +201,8 @@ const HTML_ESCAPES: Readonly<Record<string, string>> = {
   "'": "&#39;",
 };
 
-function escapeHtml(value: string): string {
+/** The five characters that matter in HTML text and in a quoted attribute: & < > " '. */
+export function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/g, (c) => HTML_ESCAPES[c] ?? c);
 }
 

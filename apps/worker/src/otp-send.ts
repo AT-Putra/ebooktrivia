@@ -28,7 +28,8 @@ export const OTP_TOPIC = "otp.send";
  * life, so an undeliverable code always ends as a drop (processed, sealed wiped) before this cap.
  */
 export const OTP_MAX_ATTEMPTS = 6;
-const OTP_LEASE_MS = 30_000;
+/** Covers the worst case of the human-like sequence (typing, a short pause, three best-effort presence calls) on up to three numbers (US-025). */
+const OTP_LEASE_MS = 90_000;
 const CODE = /^[0-9]{6}$/;
 
 export interface OtpMessage {

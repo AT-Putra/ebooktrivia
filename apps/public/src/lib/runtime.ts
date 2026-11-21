@@ -2,7 +2,7 @@
 // `next build` and the pages need no database, Valkey or keys). A failed start is retried on the next
 // request; until then the API answers 503. Kept on globalThis so `next dev` module reloads reuse it.
 import { createSafeFetch, type HttpFetch } from "@ebooktrivia/adapters";
-import { openerFromEnv, sealerFromEnv, type SecretSealer } from "@ebooktrivia/crypto";
+import { fileUrlKeyFromEnv, openerFromEnv, sealerFromEnv, type SecretSealer } from "@ebooktrivia/crypto";
 import { capProviders, type CapRouteDeps } from "./cap-routes.ts";
 import { createMidtransKeyCache } from "./checkout/data.ts";
 import { type CheckoutDeps, SNAP_TIMEOUT_MS } from "./checkout/handler.ts";
@@ -15,7 +15,9 @@ import { createPlayAuth } from "./play/auth.ts";
 import { createPlayDb } from "./play/db.ts";
 import { loadOtpSettings, type PlayDeps } from "./play/handlers.ts";
 import { createValkey } from "./valkey.ts";
+import type { FilesDeps } from "./files.ts";
 import type { MidtransWebhookDeps } from "./webhooks/midtrans.ts";
+import type { WahaWebhookDeps } from "./webhooks/waha.ts";
 
 export interface PublicRuntime {
   readonly checkout: CheckoutDeps;
@@ -24,6 +26,10 @@ export interface PublicRuntime {
   readonly sdk: SdkRouteDeps;
   /** The Midtrans notification inbox (US-021). */
   readonly webhooks: MidtransWebhookDeps;
+  /** The WAHA webhook (US-025): buyer-first messages and delivery acks. */
+  readonly wahaWebhook: WahaWebhookDeps;
+  /** The signed ebook download URLs (US-025). */
+  readonly files: FilesDeps;
   /** The order status page (US-022): its routes, the proxy's lookups and the legal pages. */
   readonly order: OrderDeps;
   /**
@@ -104,6 +110,8 @@ export async function createRuntime(env: Env): Promise<PublicRuntime> {
     cap: { sql, valkey, capFor, log: logEvent },
     sdk: { sql, valkey, domain: config.domain, configCache: createConfigCache(), configLimit: createTokenBuckets(CONFIG_BUCKET), log: logEvent },
     webhooks: { sql, valkey, opener, serverKey: createMidtransKeyCache(), log: logEvent },
+    wahaWebhook: { sql, valkey, hmacSecret: config.wahaWebhookSecret, log: logEvent },
+    files: { valkey, domain: config.domain, dataDir: config.dataDir, key: fileUrlKeyFromEnv(env), log: logEvent },
     order: { sql, valkey, domain: config.domain, log: logEvent },
     play,
     close,

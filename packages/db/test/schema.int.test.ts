@@ -48,6 +48,9 @@ const PLAN_TABLES = {
     "waha_servers",
     "waha_sessions",
     "waha_inbound",
+    "waha_sends",
+    "delivery_openers", // US-025 (D7): the short opener of a WhatsApp delivery
+    "wa_contacts", // US-025: what WAHA said about a phone (check-exists), the lid link
     // infra & governance
     "outbox",
     "admin_profiles",

@@ -670,7 +670,7 @@ describe("upload quota and sweeper (security review US-017 M1, code review M1)",
 describe("message templates (AC-A10)", () => {
   it("the seeded Bahasa Indonesia templates pass the editor's own checks", async () => {
     const templates = await listTemplates(rt.sql);
-    expect(templates.map((t) => `${t.key}/${t.channel}`).sort()).toEqual(["delivery/email", "delivery/whatsapp", "delivery_without_link/whatsapp", "otp/whatsapp"]);
+    expect(templates.map((t) => `${t.key}/${t.channel}`).sort()).toEqual(["delivery/email", "delivery/whatsapp", "delivery_opener_1/whatsapp", "delivery_opener_2/whatsapp", "delivery_opener_3/whatsapp", "otp/whatsapp"]);
     for (const t of templates) expect(() => parseTemplate(t.key, t.channel, { subject: t.subject ?? "", body: t.body }), t.key).not.toThrow();
   });
 

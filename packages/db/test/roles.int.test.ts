@@ -19,14 +19,25 @@ const CONTEST_FUNCTIONS = [
 ];
 /** US-024: the Owner's conversion re-fire (sql/conversions.sql), owned by conversion_refire. */
 const REFIRE_FUNCTION = "public.refire_conversion(p_id uuid, p_resend_sent boolean DEFAULT false)";
+/** US-025 / US-029: the explicit resend of a delivery (sql/delivery-resend.sql), owned by delivery_resend. */
+const RESEND_FUNCTION = "public.resend_delivery(p_id uuid, p_confirm_unknown boolean DEFAULT false)";
 const ownerOf = (sig: string): string =>
-  sig === OVERRIDE_FUNCTION ? "trivia_override" : CONTEST_FUNCTIONS.includes(sig) ? "contest_results" : sig === REFIRE_FUNCTION ? "conversion_refire" : "migrator";
+  sig === OVERRIDE_FUNCTION
+    ? "trivia_override"
+    : CONTEST_FUNCTIONS.includes(sig)
+      ? "contest_results"
+      : sig === REFIRE_FUNCTION
+        ? "conversion_refire"
+        : sig === RESEND_FUNCTION
+          ? "delivery_resend"
+          : "migrator";
 const DEFINER_FUNCTIONS = [
   "public.enqueue_mo(p_order_id uuid)",
   "public.enqueue_notification(p_inbox_id uuid)",
   "public.enqueue_otp(p_otp_id uuid)",
   "public.enqueue_waha_inbound(p_inbound_id uuid)",
   "public.get_payment_secret()",
+  "public.record_waha_ack(p_message_id text, p_ack text)",
 ];
 
 /** Every privilege held by anyone but the owner, one line each, sorted. */
@@ -152,7 +163,7 @@ describe("group roles (roles.sql)", () => {
     expect(await groupMemberships()).toEqual([]);
   });
 
-  it.each(["trivia_override", "contest_results", "conversion_refire"])("creates %s NOLOGIN, with no members and a member of nothing (US-018, US-028, US-024)", async (name) => {
+  it.each(["trivia_override", "contest_results", "conversion_refire", "delivery_resend"])("creates %s NOLOGIN, with no members and a member of nothing (US-018, US-028, US-024, US-025)", async (name) => {
     const [role] = await sql`
       SELECT rolcanlogin, rolsuper, rolcreatedb, rolcreaterole, rolreplication, rolbypassrls,
              (SELECT count(*)::int FROM pg_auth_members am WHERE am.roleid = r.oid OR am.member = r.oid) AS memberships
@@ -160,7 +171,7 @@ describe("group roles (roles.sql)", () => {
     expect(role).toEqual({ rolcanlogin: false, rolsuper: false, rolcreatedb: false, rolcreaterole: false, rolreplication: false, rolbypassrls: false, memberships: 0 });
   });
 
-  it.each(["trivia_override", "contest_results", "conversion_refire"])("removes any membership in %s on a re-run (a member could SET ROLE to it)", async (name) => {
+  it.each(["trivia_override", "contest_results", "conversion_refire", "delivery_resend"])("removes any membership in %s on a re-run (a member could SET ROLE to it)", async (name) => {
     await sql.unsafe(`GRANT ${name} TO admin_rw`);
     try {
       await runMigrations(inject("dbUrl"));
@@ -191,9 +202,10 @@ describe("group roles (roles.sql)", () => {
         { nspname: "public", relname: "extend_open_question_deadlines", owner: "contest_results" },
         { nspname: "public", relname: "program_winners_banner", owner: "contest_results" },
         { nspname: "public", relname: "refire_conversion", owner: "conversion_refire" },
+        { nspname: "public", relname: "resend_delivery", owner: "delivery_resend" },
       ]),
     );
-    expect(rows).toHaveLength(6);
+    expect(rows).toHaveLength(7);
   });
 });
 
@@ -259,6 +271,7 @@ describe("SECURITY DEFINER functions (functions.sql, triggers.sql)", () => {
         "public.confirm_program_winners(uuid, text, text, inet)",
         "public.extend_open_question_deadlines(uuid, timestamptz, timestamptz, text, text, text, inet)",
         "public.program_winners_banner(uuid)",
+        "public.record_waha_ack(text, text)",
       ]}::text[]) fn
       CROSS JOIN unnest(${[...APP_ROLES]}::text[]) r
       WHERE has_function_privilege(r, fn, 'EXECUTE') ORDER BY 1, 2`;
@@ -283,6 +296,7 @@ describe("SECURITY DEFINER functions (functions.sql, triggers.sql)", () => {
       "admin_rw public.override_question_scoring(uuid, uuid, uuid, integer, integer, uuid, text, text, text, inet)",
       "admin_rw public.program_winners_banner(uuid)",
       "public_rw public.program_winners_banner(uuid)",
+      "public_rw public.record_waha_ack(text, text)",
       "worker_rw public.sweep_login_throttle(integer)",
     ]);
   });

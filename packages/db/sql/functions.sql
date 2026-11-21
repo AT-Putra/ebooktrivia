@@ -34,6 +34,8 @@
 --   consistent with their snapshot), ET106 a deadline extension written outside the Owner's tool,
 --   ET108-ET110 play timestamps (set by the database; a pick after the deadline; play after the
 --   grace end), ET111 the deadline extension ledger is append-only;
+--   triggers.sql ET130 (US-025) a delivery that went out (or may have) put back on the send path, ET131 an opener sent again;
+--   sql/delivery-resend.sql ET132 an unknown delivery resent without confirmation, ET133 a delivery that is not failed or unknown, ET134 a delivery whose lease has not ended;
 --   roles.sql: ET090 foreign-owned object.
 --   US-026 (player authentication, below): ET120 issue_magic_link arguments out of scope (channel, token
 --   hash), ET121 the player may not log in (unknown, anonymized, eligible for no program), ET122 a
@@ -811,6 +813,160 @@ REVOKE ALL ON FUNCTION public.consume_magic_link(bytea, text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.magic_link_login_user(bytea, text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.player_login_label(text) FROM PUBLIC;
 -- US-026 BLOCK END.
+
+-- --- US-025 the WAHA ack webhook (AC-D6) ----------------------------------------------------------------------
+-- record_waha_ack: moves a WhatsApp delivery's ack forward (queued -> sent -> delivered -> read) from the message id
+-- its send returned. The webhook route calls it AFTER it verified the HMAC of the body; the function changes
+-- deliveries.wa_ack (and updated_at) and nothing else, and never backwards: an ack that is not ahead of the stored
+-- one changes nothing, and `failed` only counts before the message was delivered. Whether anything changed is
+-- the answer (an unknown message id, a repeat and a late ack all say false: the route acknowledges every
+-- verified webhook either way). Executable by public_rw only (grants.sql); it reads no personal data.
+-- For US-029 (the delivery report): an ack that arrives BEFORE the worker has stored wa_message_id finds no row and is dropped, so a
+-- delivered message can show no ack until its next one. The report must not read a NULL wa_ack as "never delivered": status is the truth.
+CREATE OR REPLACE FUNCTION public.record_waha_ack(p_message_id text, p_ack text)
+  RETURNS boolean
+  LANGUAGE plpgsql
+  VOLATILE
+  SECURITY DEFINER
+  SET search_path = pg_catalog, pg_temp
+AS $fn$
+DECLARE
+  v_changed integer;
+BEGIN
+  IF p_message_id IS NULL OR p_message_id = '' OR p_ack IS NULL
+     OR p_ack NOT IN ('queued', 'sent', 'delivered', 'read', 'failed') THEN
+    RETURN false;
+  END IF;
+  UPDATE public.deliveries d
+     SET wa_ack = p_ack, updated_at = pg_catalog.clock_timestamp()
+   WHERE d.wa_message_id = p_message_id
+     AND d.channel = 'whatsapp'
+     AND (
+       (p_ack = 'failed' AND (d.wa_ack IS NULL OR d.wa_ack IN ('queued', 'sent')))
+       OR (p_ack <> 'failed' AND (
+         d.wa_ack IS NULL OR d.wa_ack = 'failed'
+         OR pg_catalog.array_position(ARRAY['queued', 'sent', 'delivered', 'read'], d.wa_ack)
+            < pg_catalog.array_position(ARRAY['queued', 'sent', 'delivered', 'read'], p_ack)))
+     );
+  GET DIAGNOSTICS v_changed = ROW_COUNT;
+  RETURN v_changed > 0;
+END
+$fn$;
+REVOKE ALL ON FUNCTION public.record_waha_ack(text, text) FROM PUBLIC;
+
+-- record_waha_session_state: the limits WhatsApp puts on a number, as a VERIFIED session.status webhook reports them (WAHA docs, Sessions: Reachout timelock,
+-- Message capping: data.reachoutTimelock {isActive, timeEnforcementEnds} and data.messageCapping {cappingStatus, totalQuota, usedQuota, cycleEnd}; the shapes are
+-- UNVERIFIED until US-005). The route calls it AFTER it verified the HMAC of the body, like record_waha_ack; only a session name that belongs to exactly ONE
+-- active session is updated (the same name on two servers is ambiguous, the health poll sorts it out), every value is checked here (bounded numbers, an
+-- upper-case status word) and a block never lasts more than 31 days. It only ever EXTENDS the block (reachout_until moves forward; the poll and the clock end
+-- it) and sets the warning level; it writes nothing else. Returns whether a session was updated; the worker's poll raises the alerts on a change.
+CREATE OR REPLACE FUNCTION public.record_waha_session_state(p_session_name text, p_timelock jsonb, p_capping jsonb)
+  RETURNS boolean
+  LANGUAGE plpgsql
+  VOLATILE
+  SECURITY DEFINER
+  SET search_path = pg_catalog, pg_temp
+AS $fn$
+DECLARE
+  v_ids uuid[];
+  v_now timestamptz := pg_catalog.clock_timestamp();
+  v_active boolean;
+  v_ends timestamptz;
+  v_status text;
+  v_cycle timestamptz;
+  v_total integer;
+  v_used integer;
+  v_until timestamptz;
+  v_has_timelock boolean := false;
+  v_has_capping boolean := false;
+BEGIN
+  IF p_session_name IS NULL OR p_session_name !~ '^[A-Za-z0-9_-]{1,64}$' THEN
+    RETURN false;
+  END IF;
+  SELECT pg_catalog.array_agg(s.id) INTO v_ids
+    FROM public.waha_sessions s JOIN public.waha_servers w ON w.id = s.server_id
+   WHERE s.session_name = p_session_name AND s.active AND w.active;
+  IF v_ids IS NULL OR pg_catalog.cardinality(v_ids) <> 1 THEN
+    RETURN false;
+  END IF;
+  IF pg_catalog.jsonb_typeof(p_timelock) = 'object' AND pg_catalog.jsonb_typeof(p_timelock -> 'isActive') = 'boolean' THEN
+    v_has_timelock := true;
+    v_active := (p_timelock ->> 'isActive')::boolean;
+    IF pg_catalog.jsonb_typeof(p_timelock -> 'timeEnforcementEnds') = 'number' AND (p_timelock ->> 'timeEnforcementEnds')::numeric BETWEEN 1 AND 4102444800 THEN
+      v_ends := pg_catalog.to_timestamp((p_timelock ->> 'timeEnforcementEnds')::double precision);
+    END IF;
+  END IF;
+  IF pg_catalog.jsonb_typeof(p_capping) = 'object' AND (p_capping ->> 'cappingStatus') ~ '^[A-Z_]{1,32}$' THEN
+    v_has_capping := true;
+    v_status := p_capping ->> 'cappingStatus';
+    IF pg_catalog.jsonb_typeof(p_capping -> 'cycleEnd') = 'number' AND (p_capping ->> 'cycleEnd')::numeric BETWEEN 1 AND 4102444800 THEN
+      v_cycle := pg_catalog.to_timestamp((p_capping ->> 'cycleEnd')::double precision);
+    END IF;
+    IF pg_catalog.jsonb_typeof(p_capping -> 'totalQuota') = 'number' AND (p_capping ->> 'totalQuota')::numeric BETWEEN -1 AND 1000000 THEN
+      v_total := (p_capping ->> 'totalQuota')::numeric::integer;
+    END IF;
+    IF pg_catalog.jsonb_typeof(p_capping -> 'usedQuota') = 'number' AND (p_capping ->> 'usedQuota')::numeric BETWEEN 0 AND 1000000 THEN
+      v_used := (p_capping ->> 'usedQuota')::numeric::integer;
+    END IF;
+  END IF;
+  IF NOT v_has_timelock AND NOT v_has_capping THEN
+    RETURN false;
+  END IF;
+  -- Where the number may not send a new contact until: the timelock's end while it is active, the cycle's end while capped (an hour when WAHA names none).
+  v_until := greatest(
+    CASE WHEN v_has_timelock AND v_active THEN coalesce(v_ends, v_now + interval '1 hour') END,
+    CASE WHEN v_has_capping AND v_status = 'CAPPED' THEN coalesce(v_cycle, v_now + interval '1 hour') END);
+  -- (LEAST ignores NULL: with no block at all v_until stays NULL and nothing is extended.) A webhook event (a verified one, but public_rw's own door into
+  -- waha_sessions) extends the block by at most 24 hours per event: the worker's poll of the timelock and the capping is the authority for anything longer,
+  -- and CLEARS the block when WAHA says the number is not limited.
+  IF v_until IS NOT NULL THEN
+    v_until := least(v_until, v_now + interval '24 hours');
+  END IF;
+  UPDATE public.waha_sessions s
+     SET timelock_active = CASE WHEN v_has_timelock THEN v_active ELSE s.timelock_active END,
+         timelock_ends_at = CASE WHEN v_has_timelock THEN v_ends ELSE s.timelock_ends_at END,
+         capping_status = CASE WHEN v_has_capping THEN v_status ELSE s.capping_status END,
+         capping_total_quota = CASE WHEN v_has_capping THEN v_total ELSE s.capping_total_quota END,
+         capping_used_quota = CASE WHEN v_has_capping THEN v_used ELSE s.capping_used_quota END,
+         capping_cycle_end = CASE WHEN v_has_capping THEN v_cycle ELSE s.capping_cycle_end END,
+         warning_level = CASE WHEN v_has_capping THEN (CASE v_status WHEN 'FIRST_WARNING' THEN 'first' WHEN 'SECOND_WARNING' THEN 'second' ELSE 'none' END) ELSE s.warning_level END,
+         reachout_until = CASE WHEN v_until IS NULL THEN s.reachout_until ELSE greatest(s.reachout_until, v_until) END,
+         limits_checked_at = v_now
+   WHERE s.id = v_ids[1];
+  RETURN true;
+END
+$fn$;
+REVOKE ALL ON FUNCTION public.record_waha_session_state(text, jsonb, jsonb) FROM PUBLIC;
+
+-- waha_reply_expected: does this chat owe us a reply? (Owner decision D7: the proactive WhatsApp message is a short opener that asks the buyer to reply, with no
+-- order code in it, so the reply carries none either.) True when a WhatsApp opener went out (or may have) from a number of this session name to this chat,
+-- whose delivery still awaits the buyer: the chat is the order's phone (@c.us), or a @lid that is the phone's (wa_contacts) or that we do not know yet (a reply
+-- may arrive from a lid check-exists did not teach us; the worker then asks WAHA who it is). The webhook route uses it to keep a code-less message that is a
+-- reply, and to drop every other chatter as before. Reads no more than the one boolean; public_rw cannot read these tables itself.
+CREATE OR REPLACE FUNCTION public.waha_reply_expected(p_session_name text, p_from_jid text)
+  RETURNS boolean
+  LANGUAGE sql
+  STABLE
+  SECURITY DEFINER
+  SET search_path = pg_catalog, pg_temp
+AS $fn$
+  SELECT p_session_name IS NOT NULL AND p_from_jid IS NOT NULL AND EXISTS (
+    SELECT 1
+      FROM public.delivery_openers p
+      JOIN public.waha_sessions s ON s.id = p.session_id AND s.session_name = p_session_name
+      JOIN public.deliveries d ON d.id = p.delivery_id AND d.channel = 'whatsapp' AND d.status = 'pending'
+      JOIN public.orders o ON o.id = d.order_id
+     WHERE p.status IN ('sent', 'unknown')
+       AND p.updated_at > pg_catalog.clock_timestamp() - interval '30 days'
+       AND (
+         ('+' OPERATOR(pg_catalog.||) pg_catalog.substring(p_from_jid, '^([0-9]{5,20})@c\.us$')) = o.buyer_phone
+         OR EXISTS (SELECT 1 FROM public.wa_contacts c WHERE c.lid = p_from_jid AND c.phone = o.buyer_phone)
+         OR (p_from_jid ~ '^[0-9]{5,20}@lid$' AND NOT EXISTS (SELECT 1 FROM public.wa_contacts c2 WHERE c2.lid = p_from_jid))
+       )
+  )
+$fn$;
+REVOKE ALL ON FUNCTION public.waha_reply_expected(text, text) FROM PUBLIC;
+-- --- end US-025 ------------------------------------------------------------------------------------------
 
 REVOKE ALL ON FUNCTION public.setting_positive_int(text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.score_answer(integer, integer, uuid, uuid, timestamptz, timestamptz, timestamptz, integer) FROM PUBLIC;

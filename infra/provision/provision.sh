@@ -508,8 +508,8 @@ step_config_files() {
   step "Caddy"
   put_file "$ETC/caddy/Caddyfile" 640 root "$APP" <"$REPO/infra/caddy/Caddyfile"
   restart_needed caddy.service
-  put_file "$ETC/caddy.env" 640 root "$APP" < <(printf 'DOMAIN=%s\nACME_EMAIL=%s\nADMIN_ALLOWED_CIDRS=%s\nGLITCHTIP_ALLOWED_CIDRS=%s\n' \
-    "$CFG_DOMAIN" "$CFG_ACME_EMAIL" "$CFG_ADMIN_ALLOWED_CIDRS" "$CFG_GLITCHTIP_ALLOWED_CIDRS")
+  put_file "$ETC/caddy.env" 640 root "$APP" < <(printf 'DOMAIN=%s\nACME_EMAIL=%s\nADMIN_ALLOWED_CIDRS=%s\nGLITCHTIP_ALLOWED_CIDRS=%s\nWAHA_ALLOWED_CIDRS=%s\n' \
+    "$CFG_DOMAIN" "$CFG_ACME_EMAIL" "$CFG_ADMIN_ALLOWED_CIDRS" "$CFG_GLITCHTIP_ALLOWED_CIDRS" "$CFG_WAHA_ALLOWED_CIDRS")
   restart_needed caddy.service
 
   step "Valkey (ACL users with password hashes, noeviction, AOF)"

@@ -19,6 +19,7 @@ import { createWahaOtpSender, otpFromEnv } from "../src/otp-senders.ts";
 import { createOutboxProcessor } from "../src/outbox-consumer.ts";
 import { sweepExpiredOtps } from "../src/sweepers.ts";
 import { first, sql, suffix } from "./support/db.ts";
+import { createSession, createWahaFake } from "./support/delivery.ts";
 
 const workerSql = postgres(inject("workerDbUrl"), { ...PG_CONNECTION_OPTIONS, max: 4, onnotice: () => undefined });
 afterAll(async () => {
@@ -209,36 +210,85 @@ describe("the OTP expiry sweeper", () => {
   });
 });
 
-describe("the minimal WAHA OTP sender (US-025 swaps in its pool)", () => {
-  it("needs an active session; it sends through the audited WAHA path (key bound to the server's host)", async () => {
-    // The shared test database: the sessions other files made are switched off for this test only, and
-    // this test's server and session are removed afterwards.
-    const active = (await sql<{ id: string }[]>`SELECT id FROM waha_sessions WHERE active`).map((r) => r.id);
-    await sql`UPDATE waha_sessions SET active = false WHERE id = ANY(${active}::uuid[])`;
+/** The shared test database: the sessions other files made are switched off for the test, and put back afterwards. */
+async function withOnlyTheseSessions<T>(use: () => Promise<T>): Promise<T> {
+  const active = (await sql<{ id: string }[]>`SELECT id FROM waha_sessions WHERE active`).map((r) => r.id);
+  await sql`UPDATE waha_sessions SET active = false WHERE id = ANY(${active}::uuid[])`;
+  try {
+    return await use();
+  } finally {
+    await sql`UPDATE waha_sessions SET active = false WHERE id <> ALL(${active}::uuid[])`;
+    await sql`UPDATE waha_sessions SET active = true WHERE id = ANY(${active}::uuid[])`;
+  }
+}
+
+describe("the OTP sender on the delivery pool (US-025): the audited WAHA access, a number picked by weight, caps and health", () => {
+  it("needs a WORKING number; it sends through the audited WAHA path (key bound to the server's host)", async () => {
     let serverId = "";
-    try {
-      const sender = createWahaOtpSender({ sql: workerSql, opener, dev: { allowHttp: false, allowLoopback: false, allowPlaintextSmtp: false } });
-      const message = { phone: phoneFor(), text: "x" };
-      await expect(sender.send(message, AbortSignal.timeout(5000))).rejects.toMatchObject({ code: "no_session" });
-      serverId = first(await sql<{ id: string }[]>`INSERT INTO waha_servers (name, base_url, base_url_host) VALUES (${`O${suffix()}`}, 'https://waha-otp.invalid/', 'waha-otp.invalid') RETURNING id`).id;
-      await sql`INSERT INTO waha_sessions (server_id, session_name, status) VALUES (${serverId}, 'default', 'WORKING')`;
-      await expect(sender.send(message, AbortSignal.timeout(5000))).rejects.toMatchObject({ code: "waha_key_missing" });
-      const sealed = sealer.sealSecret({ scope: "messaging", name: SECRET_NAMES.wahaApiKey(serverId), adnetId: null, boundHost: "waha-otp.invalid", plaintext: "waha-api-key-otp-0001" });
-      await sql`
-        INSERT INTO settings_secrets (id, scope, name, adnet_id, bound_host, ciphertext, nonce, sealed_dek, key_id, last4)
-        VALUES (${sealed.id}, ${sealed.scope}, ${sealed.name}, ${sealed.adnetId}, ${sealed.boundHost}, ${sealed.ciphertext}, ${sealed.nonce}, ${sealed.sealedDek}, ${sealed.keyId}, ${sealed.last4})`;
-      // The host does not resolve: a WAHA failure, as an error code only.
-      await expect(sender.send(message, AbortSignal.timeout(5000))).rejects.toMatchObject({ code: "waha_failed" });
-      expect(await sql`SELECT 1 FROM waha_sessions WHERE active`).toHaveLength(1);
-    } finally {
-      if (serverId !== "") {
-        await sql`DELETE FROM settings_secrets WHERE name = ${SECRET_NAMES.wahaApiKey(serverId)}`;
-        await sql`DELETE FROM waha_sessions WHERE server_id = ${serverId}`;
-        await sql`DELETE FROM waha_servers WHERE id = ${serverId}`;
+    await withOnlyTheseSessions(async () => {
+      try {
+        const sender = createWahaOtpSender({ sql: workerSql, log: capturedLog().log, opener, dev: { allowHttp: false, allowLoopback: false, allowPlaintextSmtp: false } });
+        const message = { phone: phoneFor(), text: "x" };
+        await expect(sender.send(message, AbortSignal.timeout(5000))).rejects.toMatchObject({ code: "no_session" });
+        serverId = first(await sql<{ id: string }[]>`INSERT INTO waha_servers (name, base_url, base_url_host) VALUES (${`O${suffix()}`}, 'https://waha-otp.invalid/', 'waha-otp.invalid') RETURNING id`).id;
+        await sql`INSERT INTO waha_sessions (server_id, session_name, status, status_at) VALUES (${serverId}, 'default', 'WORKING', now())`;
+        await expect(sender.send(message, AbortSignal.timeout(5000))).rejects.toMatchObject({ code: "waha_key_missing" });
+        const sealed = sealer.sealSecret({ scope: "messaging", name: SECRET_NAMES.wahaApiKey(serverId), adnetId: null, boundHost: "waha-otp.invalid", plaintext: "waha-api-key-otp-0001" });
+        await sql`
+          INSERT INTO settings_secrets (id, scope, name, adnet_id, bound_host, ciphertext, nonce, sealed_dek, key_id, last4)
+          VALUES (${sealed.id}, ${sealed.scope}, ${sealed.name}, ${sealed.adnetId}, ${sealed.boundHost}, ${sealed.ciphertext}, ${sealed.nonce}, ${sealed.sealedDek}, ${sealed.keyId}, ${sealed.last4})`;
+        // The host does not resolve: a WAHA failure, as an error code only.
+        await expect(sender.send(message, AbortSignal.timeout(5000))).rejects.toMatchObject({ code: "waha_failed" });
+        expect(await sql`SELECT 1 FROM waha_sessions WHERE active`).toHaveLength(1);
+      } finally {
+        if (serverId !== "") {
+          await sql`DELETE FROM waha_sends WHERE session_id IN (SELECT id FROM waha_sessions WHERE server_id = ${serverId})`;
+          await sql`DELETE FROM settings_secrets WHERE name = ${SECRET_NAMES.wahaApiKey(serverId)}`;
+          await sql`DELETE FROM waha_sessions WHERE server_id = ${serverId}`;
+          await sql`DELETE FROM waha_servers WHERE id = ${serverId}`;
+        }
       }
-      await sql`UPDATE waha_sessions SET active = true WHERE id = ANY(${active}::uuid[])`;
-    }
-    expect((await sql<{ id: string }[]>`SELECT id FROM waha_sessions WHERE active`).map((r) => r.id).sort()).toEqual([...active].sort());
+    });
+  });
+
+  it("sends from a pool number and records the send in the ledger as `otp` (it counts against the number's daily cap)", async () => {
+    await withOnlyTheseSessions(async () => {
+      const wahaFake = createWahaFake();
+      const number = await createSession({ dailyCap: 2 });
+      const sender = createWahaOtpSender({ sql: workerSql, log: capturedLog().log, opener, dev: { allowHttp: false, allowLoopback: false, allowPlaintextSmtp: false }, waha: wahaFake.access, random: () => 0 });
+      const phone = phoneFor();
+      await sender.send({ phone, text: "kode 123456" }, AbortSignal.timeout(10_000));
+      expect(wahaFake.sent).toEqual([expect.objectContaining({ kind: "text", session: number.name, chatId: toWaChatId(phone), text: "kode 123456" })]);
+      expect(await sql`SELECT kind, delivery_id FROM waha_sends WHERE session_id = ${number.id}`).toEqual([{ kind: "otp", delivery_id: null }]);
+      await sender.send({ phone: phoneFor(), text: "kode 2" }, AbortSignal.timeout(10_000));
+      // The daily cap of 2 is spent: no third code from this number (and so no_session for the consumer, which retries or drops by the code's expiry).
+      await expect(sender.send({ phone: phoneFor(), text: "kode 3" }, AbortSignal.timeout(10_000))).rejects.toMatchObject({ code: "no_session" });
+      expect(wahaFake.sent).toHaveLength(2);
+    });
+  });
+
+  it("fails over to another number when WAHA refuses the send, and never to a second number once a send may have gone out", async () => {
+    await withOnlyTheseSessions(async () => {
+      const wahaFake = createWahaFake();
+      const refusing = await createSession({ weight: 5 });
+      const other = await createSession({ weight: 1 });
+      const sender = createWahaOtpSender({ sql: workerSql, log: capturedLog().log, opener, dev: { allowHttp: false, allowLoopback: false, allowPlaintextSmtp: false }, waha: wahaFake.access, random: () => 0 });
+      wahaFake.fault(refusing.name, "unauthorized");
+      await sender.send({ phone: phoneFor(), text: "kode a" }, AbortSignal.timeout(10_000));
+      expect(wahaFake.sent).toEqual([expect.objectContaining({ session: other.name })]);
+      // The refusal counted against the refusing number's health, not the other's.
+      expect(first(await sql<{ fail_streak: number }[]>`SELECT fail_streak FROM waha_sessions WHERE id = ${refusing.id}`).fail_streak).toBe(1);
+      expect(first(await sql<{ fail_streak: number }[]>`SELECT fail_streak FROM waha_sessions WHERE id = ${other.id}`).fail_streak).toBe(0);
+
+      // A timeout after the request left: the code MAY be on its way. The second number is never asked (the player would get two codes).
+      wahaFake.fault(refusing.name, "timeout_after_send");
+      await sql`UPDATE waha_sessions SET cooldown_until = NULL, fail_streak = 0, next_send_at = NULL`;
+      const before = wahaFake.sent.length;
+      await expect(sender.send({ phone: phoneFor(), text: "kode b" }, AbortSignal.timeout(10_000))).rejects.toMatchObject({ code: "waha_maybe_sent" });
+      expect(wahaFake.sent.slice(before)).toEqual([expect.objectContaining({ session: refusing.name })]);
+      expect(wahaFake.sent.filter((s) => s.session === other.name)).toHaveLength(1);
+      expect((await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM waha_sends WHERE session_id = ${other.id}`)[0]?.n).toBe(1);
+    });
   });
 
   it("is wired from worker.env only with the messaging private key", () => {
@@ -246,7 +296,7 @@ describe("the minimal WAHA OTP sender (US-025 swaps in its pool)", () => {
     expect(otpFromEnv({}, dev)).toBeUndefined();
     const port = otpFromEnv({ SECRETS_MESSAGING_PRIVATE_KEY: keys.privateKey.toString("base64url") }, dev);
     expect(port?.opener).toBeDefined();
-    expect(port?.sender(workerSql)).toBeDefined();
+    expect(port?.sender(workerSql, capturedLog().log)).toBeDefined();
     expect(OTP_TOPIC).toBe("otp.send");
   });
 });

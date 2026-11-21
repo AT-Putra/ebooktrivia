@@ -41,7 +41,7 @@ export {
   type SnapTransaction,
   verifySignature,
 } from "./midtrans.ts";
-export { FILE_URL_TTL_SECONDS, type FileUrlCheck, signFileUrl, verifyFileUrl } from "./signed-url.ts";
+export { FILE_URL_TTL_SECONDS, type FileUrlCheck, MAX_FILE_URL_TTL_SECONDS, signFileUrl, verifyFileUrl } from "./signed-url.ts";
 export {
   type AckEvent,
   type ChatRef,

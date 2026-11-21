@@ -6,17 +6,29 @@ import { Card, CardDescription, CardTitle } from "@ebooktrivia/ui/components/car
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@ebooktrivia/ui/components/table";
 import { DateInput, EmptyState, FilterForm, FilterSelect, Pager } from "../../../../components/reports/report-ui.tsx";
 import { PageHeading } from "../../../../components/settings/fields.tsx";
+import { ResendForm } from "../../../../components/reports/resend-form.tsx";
 import { formatBps, formatInt, formatWibTime } from "../../../../lib/format.ts";
 import { requireAdmin } from "../../../../lib/next/require-admin.ts";
+import { can } from "../../../../lib/policy.ts";
 import { getRuntime } from "../../../../lib/next/runtime.ts";
 import { pageOf, type Query } from "../../../../lib/reports/common.ts";
-import { channelCounts, deliveryList, parseDeliveryFilters, perNumberStats } from "../../../../lib/reports/delivery-source.ts";
+import { attentionList, channelCounts, deliveryList, parseDeliveryFilters, perNumberStats } from "../../../../lib/reports/delivery-source.ts";
+import { resendDeliveryAction, resendUnknownDeliveryAction } from "./actions.ts";
 
 export const metadata: Metadata = { title: "Delivery report | Admin Console" };
 export const dynamic = "force-dynamic";
 
 const CHANNEL_LABELS: Readonly<Record<string, string>> = { whatsapp: "WhatsApp", email: "E-mail" };
 const STATUS_LABELS: Readonly<Record<string, string>> = { pending: "Pending", sending: "Sending", sent: "Sent", failed: "Failed", unknown: "Unknown", cancelled: "Cancelled" };
+/** The WhatsApp opener (Owner decision D7): the short message that asks the buyer to reply; the ebook follows the reply. */
+const OPENER_LABELS: Readonly<Record<string, string>> = {
+  pending: "Opener waiting",
+  sending: "Opener sending",
+  sent: "Opener sent, no reply yet",
+  unknown: "Opener may have been sent",
+  failed: "No opener (not on WhatsApp, or given up)",
+  expired: "Opener not needed",
+};
 
 function StatusBadge({ status }: { status: string }) {
   if (status === "sent") {
@@ -47,23 +59,26 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 /**
- * The delivery report (AC-A6): per-order WhatsApp and e-mail status, the sender number and the retries, and the volume and failure
- * rate of every pool number. Staff view it (reports.view); buyers appear masked (SQL mask_name / mask_phone). The figures come from
- * lib/reports/delivery-source.ts (the one place that knows where deliveries are recorded).
+ * The delivery report (AC-A6): per-order WhatsApp and e-mail status, the sender number and the retries, the volume and failure
+ * rate of every pool number (from the send ledger), and the failed deliveries with their resend (AC-A1: Staff manage resends). Staff
+ * view it (reports.view); buyers appear masked (SQL mask_name / mask_phone) and an error is only ever shown as its code. The figures come
+ * from lib/reports/delivery-source.ts (the one place that knows where deliveries are recorded).
  */
 export default async function DeliveryPage({ searchParams }: { searchParams: Promise<Query> }) {
-  await requireAdmin({ permission: "reports.view" });
+  const admin = await requireAdmin({ permission: "reports.view" });
+  const canResend = can(admin.role, "delivery.resend");
+  const canResendUnknown = can(admin.role, "delivery.resend_unknown");
   const { sql } = await getRuntime();
   const query = await searchParams;
   const { filters, error } = parseDeliveryFilters(query, new Date());
   const page = pageOf(query);
-  const [numbers, channels, list] = await Promise.all([perNumberStats(sql, filters), channelCounts(sql, filters), deliveryList(sql, filters, page)]);
+  const [numbers, channels, list, attention] = await Promise.all([perNumberStats(sql, filters), channelCounts(sql, filters), deliveryList(sql, filters, page), attentionList(sql)]);
   const keep: Record<string, string> = { from: filters.from, to: filters.to, channel: filters.channel ?? "", status: filters.status ?? "", number: filters.sessionId ?? "" };
   return (
     <>
       <PageHeading
         title="Delivery report"
-        description="WhatsApp and e-mail deliveries of the orders created in the range (WIB): who got the ebook, from which number, after how many tries, and how each sender number is doing."
+        description="WhatsApp and e-mail deliveries of the orders created in the range (WIB): who got the ebook, from which number, after how many tries, how each sender number is doing, and the failed deliveries to resend."
       />
       {error === null ? null : (
         <p role="alert" className="rounded-md border border-destructive/60 bg-destructive-soft px-3 py-2 text-sm text-destructive-soft-foreground" data-testid="filter-error">
@@ -88,8 +103,8 @@ export default async function DeliveryPage({ searchParams }: { searchParams: Pro
       <Card data-testid="delivery-numbers">
         <CardTitle className="text-base">Per sender number</CardTitle>
         <CardDescription>
-          Every attempt of a number counts: a number that was left for the next one after a failure has a failed attempt. Volume = sent + failed + unknown; failure rate = failed / volume. Attempts still in
-          flight are in neither.
+          Every message a number sent in the range (openers, ebooks, replies and login codes; the send ledger keeps 31 days): a message WhatsApp refused for sure is a failed attempt. Volume = sent + failed +
+          unknown; failure rate = failed / volume. Messages still in flight are in neither.
         </CardDescription>
         {numbers.length === 0 ? (
           <EmptyState testId="numbers-empty">No sender number is set up yet.</EmptyState>
@@ -130,6 +145,56 @@ export default async function DeliveryPage({ searchParams }: { searchParams: Pro
                       </Badge>
                     ) : null}
                   </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        )}
+      </Card>
+
+      <Card data-testid="delivery-attention">
+        <CardTitle className="text-base">Needs attention</CardTitle>
+        <CardDescription>
+          {`${formatInt(attention.failed)} failed and ${formatInt(attention.unknown)} unknown deliveries of paid orders (all dates; the newest ${formatInt(attention.rows.length)} are listed). A failed delivery had nothing delivered: Staff and the Owner can resend it. An unknown one may already have reached the buyer: only the Owner can resend it, after confirming that. A resent e-mail goes out within a minute; a resent WhatsApp ebook goes out when the buyer writes to one of the numbers.`}
+        </CardDescription>
+        {attention.rows.length === 0 ? (
+          <EmptyState testId="attention-empty">Nothing needs a resend.</EmptyState>
+        ) : (
+          <Table aria-label="Deliveries that need attention">
+            <TableHeader>
+              <TableRow className="hover:bg-transparent">
+                <TableHead>Created</TableHead>
+                <TableHead>Order</TableHead>
+                <TableHead>Buyer</TableHead>
+                <TableHead>Channel</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead>Error code</TableHead>
+                {canResend ? <TableHead>Resend</TableHead> : null}
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {attention.rows.map((r) => (
+                <TableRow key={r.id} data-testid="attention-row">
+                  <TableCell className="tabular whitespace-nowrap">{formatWibTime(r.createdAt)}</TableCell>
+                  <TableCell className="font-mono">{r.orderCode}</TableCell>
+                  <TableCell>
+                    {r.buyerName}
+                    <span className="block text-xs text-muted-foreground">{r.buyerPhone ?? ""}</span>
+                  </TableCell>
+                  <TableCell>{CHANNEL_LABELS[r.channel] ?? r.channel}</TableCell>
+                  <TableCell>
+                    <StatusBadge status={r.status} />
+                  </TableCell>
+                  <TableCell className="font-mono text-xs" data-testid="attention-error">
+                    {r.errorCode ?? "-"}
+                  </TableCell>
+                  {canResend ? (
+                    <TableCell>
+                      {r.status === "failed" ? <ResendForm id={r.id} unknown={false} action={resendDeliveryAction} /> : null}
+                      {r.status === "unknown" && canResendUnknown ? <ResendForm id={r.id} unknown action={resendUnknownDeliveryAction} /> : null}
+                      {r.status === "unknown" && !canResendUnknown ? <span className="text-xs text-muted-foreground">The Owner decides</span> : null}
+                    </TableCell>
+                  ) : null}
                 </TableRow>
               ))}
             </TableBody>
@@ -207,8 +272,9 @@ export default async function DeliveryPage({ searchParams }: { searchParams: Pro
                     {r.channel === "whatsapp" && r.numbersTried > 1 ? <span className="block text-xs text-muted-foreground">{`${String(r.numbersTried)} numbers`}</span> : null}
                   </TableCell>
                   <TableCell className="max-w-64 text-xs text-muted-foreground">
+                    {r.channel === "whatsapp" && r.opener !== null ? `${OPENER_LABELS[r.opener] ?? r.opener}. ` : ""}
                     {r.ack === null ? "" : `Ack ${r.ack}. `}
-                    {r.lastError ?? ""}
+                    {r.errorCode === null ? "" : <span className="font-mono">{r.errorCode}</span>}
                     {r.sentAt === null ? "" : ` Sent ${formatWibTime(r.sentAt)}.`}
                   </TableCell>
                 </TableRow>

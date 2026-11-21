@@ -172,6 +172,17 @@
     "rateLimited": "Too many requests. Wait a moment, then try again.",
     "unavailable": "The service is busy. Try again shortly."
   },
+  "delivery": {
+    "emailDownloadNotice": "This ebook is too large to attach to an email. Download it with this link (valid for 72 hours):",
+    "emailDownloadLabel": "Download the ebook",
+    "replyMismatch": "This number is not the number of the buyer of that order, so we did not send the ebook here. The ebook is sent to the buyer's number automatically.",
+    "replyGeneric": "We have received your message. If you are the buyer, the ebook is sent automatically to the WhatsApp number and email you gave when you bought it.",
+    "replyAlreadySent": "The ebook for this order has been or is being sent to the buyer's number. Please check your WhatsApp and email.",
+    "replyNotPaid": "We have not received the payment for this order yet. The ebook is sent automatically once the payment is confirmed.",
+    "replyNotAvailable": "We cannot process this order by chat. Please contact the organiser.",
+    "replyNeedsHelp": "We could not send the ebook by WhatsApp yet. Please check your email or contact the organiser.",
+    "replyPdfOnly": "Here is the ebook you asked for."
+  },
   "legal": {
     "terms": "Terms and Conditions",
     "privacy": "Privacy Policy",

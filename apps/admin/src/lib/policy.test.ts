@@ -39,6 +39,7 @@ const STAFF_EXPECTED: Readonly<Record<Permission, boolean | "unlocked">> = {
   "deletion_request.process": false,
   "conversion.refire": false,
   "delivery.mark_unknown_sent": false,
+  "delivery.resend_unknown": false,
   "order.review.resolve": false,
   "ad_spend.edit": false,
   "roi.view": false,
@@ -118,6 +119,9 @@ describe("plan denials for Staff (AC-A1, plan M5a.3, §10 item 18)", () => {
   it("may resend deliveries and view reports (AC-A1)", () => {
     expect(can("staff", "delivery.resend")).toBe(true);
     expect(can("staff", "reports.view")).toBe(true);
+    // ... but never a delivery that may already have reached the buyer: that is the Owner's, with a confirmation.
+    expect(can("staff", "delivery.resend_unknown")).toBe(false);
+    expect(can("owner", "delivery.resend_unknown")).toBe(true);
   });
 });
 

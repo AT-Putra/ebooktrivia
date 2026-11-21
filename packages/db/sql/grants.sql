@@ -107,7 +107,8 @@ GRANT UPDATE (status, snap_token, redirect_url, error, updated_at) ON public.mid
 GRANT SELECT ON public.payment_notifications, public.waha_inbound TO public_rw;
 GRANT INSERT (midtrans_order_id, transaction_status, status_code, signature, raw)
   ON public.payment_notifications TO public_rw;
-GRANT INSERT (message_id, session_id, session_name, from_jid, body, raw) ON public.waha_inbound TO public_rw;
+-- No `body` (US-025 review): the webhook route stores no message text, the worker re-fetches the message from WAHA by id, so public_rw may not write it.
+GRANT INSERT (message_id, session_id, session_name, from_jid, raw) ON public.waha_inbound TO public_rw;
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA player_auth TO public_rw;
 
@@ -249,6 +250,49 @@ GRANT UPDATE (updated_at) ON public.orders TO conversion_refire;
 GRANT UPDATE (status, next_attempt_at, lease_until, failed_at, sent_at, last_error, last_http_status, updated_at)
   ON public.conversion_events TO conversion_refire;
 -- --- end US-024 -------------------------------------------------------------------------------------------
+
+-- --- US-025 (delivery over WhatsApp and e-mail) ------------------------------------------------------------------
+-- The pool: the worker paces and rests a number (next_send_at, fail_streak, cooldown_until, next to the status it polls),
+-- appends every claimed send to waha_sends (the daily cap and the round-robin count it) and prunes old rows. waha_sends
+-- is append-only for the console (it reads it for the delivery report, US-029). The worker records what it did with an
+-- inbound WhatsApp message and claims its one text reply (waha_inbound.outcome, replied_at); the webhook route's
+-- INSERT grant (public_rw, above) is unchanged. record_waha_ack (functions.sql) is how the verified ack webhook moves
+-- deliveries.wa_ack: public_rw cannot UPDATE deliveries.
+GRANT UPDATE (next_send_at, fail_streak, cooldown_until, reachout_until, warning_level, timelock_active, timelock_ends_at, capping_status, capping_total_quota,
+              capping_used_quota, capping_cycle_end, limits_checked_at, ban_463_count, ban_475_count) ON public.waha_sessions TO worker_rw;
+-- What WAHA said about a phone (check-exists, the lid link): the worker reads and writes it; it holds personal data, so nobody else touches it.
+GRANT SELECT, INSERT ON public.wa_contacts TO worker_rw;
+GRANT UPDATE (number_exists, chat_id, lid, checked_at, lid_checked_at) ON public.wa_contacts TO worker_rw;
+REVOKE INSERT, UPDATE, DELETE ON public.wa_contacts FROM admin_rw;
+-- The webhook route records the limits a verified session.status event carries (record_waha_session_state, functions.sql).
+GRANT EXECUTE ON FUNCTION public.record_waha_session_state(text, jsonb, jsonb) TO public_rw;
+-- ... and keeps a code-less message that answers a WhatsApp opener (waha_reply_expected, functions.sql).
+GRANT EXECUTE ON FUNCTION public.waha_reply_expected(text, text) TO public_rw;
+GRANT SELECT, INSERT, DELETE ON public.waha_sends TO worker_rw;
+-- ... and writes how each send ended (outcome: sent, unknown, failed), which the delivery report counts per number; nothing else of a row changes.
+GRANT UPDATE (outcome) ON public.waha_sends TO worker_rw;
+REVOKE INSERT, UPDATE, DELETE ON public.waha_sends FROM admin_rw;
+-- The opener of a WhatsApp delivery (Owner decision D7): the worker creates it at its first claim and moves it (pending -> sending -> sent / unknown /
+-- failed / expired; delivery_openers_final_guard, ET131, refuses a way back). The console reads it (the delivery report, US-029) and never writes it.
+GRANT SELECT, INSERT ON public.delivery_openers TO worker_rw;
+GRANT UPDATE (status, attempts, session_id, tried_session_ids, next_attempt_at, lease_until, wa_message_id, sent_at, last_error, updated_at) ON public.delivery_openers TO worker_rw;
+REVOKE INSERT, UPDATE, DELETE ON public.delivery_openers FROM admin_rw;
+GRANT UPDATE (outcome, replied_at) ON public.waha_inbound TO worker_rw;
+GRANT EXECUTE ON FUNCTION public.record_waha_ack(text, text) TO public_rw;
+-- The console reads deliveries (the failed-deliveries list, US-029) but never writes them: a delivery's state is the worker's, and the one way
+-- back from `sent` / `unknown` / `failed` is public.resend_delivery (ET130). admin_rw keeps SELECT only (and EXECUTE on that function).
+REVOKE INSERT, UPDATE, DELETE ON public.deliveries FROM admin_rw;
+-- delivery_resend: the owner of public.resend_delivery (sql/delivery-resend.sql), which runs as it. It reads a delivery and writes only what a resend
+-- resets (the machine's columns, never the ack, the message id, the order or the channel). UPDATE (updated_at) on orders is only for the FOR SHARE row lock.
+REVOKE ALL ON ALL TABLES IN SCHEMA public, player_auth, admin_auth FROM delivery_resend;
+REVOKE ALL ON ALL SEQUENCES IN SCHEMA public, player_auth, admin_auth FROM delivery_resend;
+REVOKE ALL ON ALL FUNCTIONS IN SCHEMA public FROM delivery_resend;
+REVOKE ALL ON SCHEMA player_auth, admin_auth, drizzle FROM delivery_resend;
+GRANT SELECT ON public.deliveries TO delivery_resend;
+GRANT UPDATE (status, not_before, lease_until, session_id, tried_session_ids, attempts_base, last_error, sent_at, updated_at) ON public.deliveries TO delivery_resend;
+GRANT SELECT (id, status) ON public.orders TO delivery_resend;
+GRANT UPDATE (updated_at) ON public.orders TO delivery_resend;
+-- --- end US-025 -------------------------------------------------------------------------------------------------
 
 -- ---------------------------------------------------------------------------------------------
 -- trivia_override: the owner of public.override_question_scoring (sql/override.sql), which runs as

@@ -172,6 +172,17 @@
     "rateLimited": "Terlalu banyak permintaan. Tunggu sebentar, lalu coba lagi.",
     "unavailable": "Layanan sedang sibuk. Coba lagi sebentar lagi."
   },
+  "delivery": {
+    "emailDownloadNotice": "Ebook ini terlalu besar untuk dilampirkan di email. Unduh lewat tautan berikut (berlaku 72 jam):",
+    "emailDownloadLabel": "Unduh ebook",
+    "replyMismatch": "Nomor ini tidak sama dengan nomor pembeli pesanan tersebut, jadi ebook tidak kami kirim ke sini. Ebook dikirim otomatis ke nomor pembeli.",
+    "replyGeneric": "Pesan Anda sudah kami terima. Jika Anda pembeli, ebook dikirim otomatis ke nomor WhatsApp dan email yang Anda isi saat membeli.",
+    "replyAlreadySent": "Ebook untuk pesanan ini sudah atau sedang kami kirim ke nomor pembeli. Silakan cek WhatsApp dan email Anda.",
+    "replyNotPaid": "Pembayaran untuk pesanan ini belum kami terima. Ebook dikirim otomatis begitu pembayaran terkonfirmasi.",
+    "replyNotAvailable": "Pesanan ini tidak dapat kami proses lewat chat. Silakan hubungi penyelenggara.",
+    "replyNeedsHelp": "Ebook belum bisa kami kirim lewat WhatsApp. Silakan cek email Anda atau hubungi penyelenggara.",
+    "replyPdfOnly": "Berikut ebook yang Anda minta."
+  },
   "legal": {
     "terms": "Syarat dan Ketentuan",
     "privacy": "Kebijakan Privasi",

@@ -9,6 +9,12 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import { assertSecretKey } from "@ebooktrivia/core";
 
 export const FILE_URL_TTL_SECONDS = 600;
+/**
+ * The longest a URL may live: the 72-hour link of the e-mail fallback for an ebook the SMTP server refused to carry
+ * (US-025) fits; WAHA gets the default 10 minutes. Signing refuses a longer one, and so does verifying (a URL whose expiry is
+ * further out than this, signed by whoever held the key, is not one of ours).
+ */
+export const MAX_FILE_URL_TTL_SECONDS = 72 * 3600;
 
 const DOMAIN = "ebooktrivia/files/v1";
 const SAFE_PATH = /^\/files\/[A-Za-z0-9._~-]+(?:\/[A-Za-z0-9._~-]+)*$/;
@@ -27,7 +33,7 @@ export function signFileUrl(input: { origin: string; path: string; key: Uint8Arr
   assertSecretKey(input.key, "file URL key");
   if (!isSafePath(input.path)) throw new RangeError("invalid file path");
   const ttl = input.ttlSeconds ?? FILE_URL_TTL_SECONDS;
-  if (!Number.isInteger(ttl) || ttl < 1 || ttl > 3600) throw new RangeError("ttlSeconds must be 1..3600");
+  if (!Number.isInteger(ttl) || ttl < 1 || ttl > MAX_FILE_URL_TTL_SECONDS) throw new RangeError(`ttlSeconds must be 1..${String(MAX_FILE_URL_TTL_SECONDS)}`);
   const exp = Math.floor(input.now.getTime() / 1000) + ttl;
   const url = new URL(input.path, input.origin);
   if (url.protocol !== "https:") throw new RangeError("file URLs must be https");
@@ -50,6 +56,8 @@ export function verifyFileUrl(input: { path: string; exp: string | null; sig: st
   const exp = Number(input.exp);
   const expected = signature(input.key, input.path, exp);
   if (given.length !== expected.length || !timingSafeEqual(given, expected)) return { ok: false, reason: "bad_signature" };
-  if (Math.floor(input.now.getTime() / 1000) >= exp) return { ok: false, reason: "expired" };
+  const nowSeconds = Math.floor(input.now.getTime() / 1000);
+  if (nowSeconds >= exp) return { ok: false, reason: "expired" };
+  if (exp > nowSeconds + MAX_FILE_URL_TTL_SECONDS) return { ok: false, reason: "malformed" };
   return { ok: true, path: input.path };
 }

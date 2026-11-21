@@ -26,7 +26,9 @@
 -- ET049 a Midtrans attempt whose midtrans_order_id is not {public_id}-{n} of its order.
 -- ET080 a delivery / MT conversion row of an unpaid order, ET081 orders.paid_at / refunded_at changed
 -- once set, ET082 a fulfillment change of a flagged or revoked winner (US-021),
--- ET083 a conversion that the sink acknowledged (sent) moved out of sent (US-024).
+-- ET083 a conversion that the sink acknowledged (sent) moved out of sent (US-024),
+-- ET130 a delivery that went out (or may have: unknown, failed) put back on the send path (US-025),
+-- ET131 an opener that went out (or may have) sent again (US-025, D7).
 -- ET104 results snapshot changed (immutable), ET105 winner deleted, changed or inconsistent with its snapshot,
 -- ET106 deadline extension written outside the Owner's tool, ET108 play timestamp or answer changed by the
 -- caller, ET109 a pick after the deadline + 1500 ms, ET110 a start or serve at or after the grace end,
@@ -1169,6 +1171,64 @@ CREATE OR REPLACE TRIGGER conversion_events_sent_final_guard
   BEFORE UPDATE OF status ON public.conversion_events
   FOR EACH ROW WHEN (OLD.status = 'sent' AND NEW.status IS DISTINCT FROM 'sent') EXECUTE FUNCTION public.conversion_events_sent_final_guard();
 -- --- end US-024 ------------------------------------------------------------------------------------------
+
+-- --- US-025 exactly-once deliveries -------------------------------------------------------------------------
+-- A delivery that went out (`sent`), or that may have (`unknown`, `failed`: an uncertain or a permanently failed
+-- send), never goes back on the send path through any code path of the worker or the admin app (ET130): a `sent` row
+-- stays sent, an `unknown` / `failed` row never becomes `pending` or `sending` again, so no retry, claim, sweep or
+-- direct UPDATE can send it a second time. (An `unknown` row can still be settled as `sent` or left for the Owner.)
+-- Nor does it leave through a side door: an `unknown` or `failed` row may only become `sent` (the late outcome, or the
+-- outgoing-message lookup), never `cancelled` (which payments could revive to `pending`, a two-step detour back onto
+-- the send path), and a `sent` row never changes status at all.
+-- The one way back is an explicit Owner or Staff resend, which US-029 builds as a SECURITY DEFINER function owned by the
+-- NOLOGIN, member-less role delivery_resend (roles.sql; the conversion_refire pattern): inside it current_user is that role,
+-- which no login can be and no session can SET ROLE to. A superuser (operations, repairs by hand) passes too. SECURITY INVOKER
+-- for that reason (like the content-lock and the conversion guards): the trigger must see the caller, not its own owner.
+-- A cancelled row (payments' own mark) is not covered by the WHEN below: payments revives it when its order is paid again.
+CREATE OR REPLACE FUNCTION public.deliveries_final_guard()
+  RETURNS trigger
+  LANGUAGE plpgsql
+  SET search_path = pg_catalog, pg_temp
+AS $fn$
+BEGIN
+  IF current_user = 'delivery_resend' OR EXISTS (SELECT 1 FROM pg_catalog.pg_roles r WHERE r.rolname = current_user AND r.rolsuper) THEN
+    RETURN NEW;
+  END IF;
+  IF OLD.status = 'sent' OR (OLD.status IN ('unknown', 'failed') AND NEW.status <> 'sent') THEN
+    RAISE EXCEPTION 'a delivery that went out, or may have, is never put back on the send path: only an explicit resend does' USING ERRCODE = 'ET130';
+  END IF;
+  RETURN NEW;
+END
+$fn$;
+
+-- Named so that it fires AFTER deliveries_paid_status_guard (triggers fire by name): a delivery of an order that is not paid is refused with ET080 first.
+CREATE OR REPLACE TRIGGER deliveries_status_final_guard
+  BEFORE UPDATE OF status ON public.deliveries
+  FOR EACH ROW WHEN (OLD.status IN ('sent', 'unknown', 'failed') AND NEW.status IS DISTINCT FROM OLD.status) EXECUTE FUNCTION public.deliveries_final_guard();
+
+-- The opener of a WhatsApp delivery (Owner decision D7) is exactly-once on its own: a `sent` opener never changes, a `failed` or `expired` one is final, and an
+-- `unknown` one (it may have gone out) can only become `sent` (the late outcome of the send itself), never `pending` or `sending` again: no code path
+-- sends an opener a second time (ET131). There is no resend of an opener (US-029's resend is the PDF's), so only a superuser (operations) passes.
+CREATE OR REPLACE FUNCTION public.delivery_openers_final_guard()
+  RETURNS trigger
+  LANGUAGE plpgsql
+  SET search_path = pg_catalog, pg_temp
+AS $fn$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_catalog.pg_roles r WHERE r.rolname = current_user AND r.rolsuper) THEN
+    RETURN NEW;
+  END IF;
+  IF OLD.status IN ('sent', 'failed', 'expired') OR (OLD.status = 'unknown' AND NEW.status <> 'sent') THEN
+    RAISE EXCEPTION 'an opener that went out, or may have, is never sent again' USING ERRCODE = 'ET131';
+  END IF;
+  RETURN NEW;
+END
+$fn$;
+
+CREATE OR REPLACE TRIGGER delivery_openers_status_final_guard
+  BEFORE UPDATE OF status ON public.delivery_openers
+  FOR EACH ROW WHEN (OLD.status IN ('sent', 'failed', 'expired', 'unknown') AND NEW.status IS DISTINCT FROM OLD.status) EXECUTE FUNCTION public.delivery_openers_final_guard();
+-- --- end US-025 ------------------------------------------------------------------------------------------
 
 CREATE OR REPLACE FUNCTION public.orders_payment_stamps_guard()
   RETURNS trigger

@@ -82,7 +82,11 @@ export function createOrderPaidConsumer(nudges: readonly OrderPaidNudge[]): Outb
     leaseMs: 30_000,
     async perform(row) {
       const orderId = orderIdOf(ORDER_PAID_TOPIC, row.payload);
-      for (const nudge of nudges) await nudge(orderId);
+      // Every nudge runs (a conversion nudge failing must not hold back the delivery's, or the other way round); a failure of any of them
+      // still fails the row, which the outbox retries (each nudge is idempotent: enqueueFresh).
+      const settled = await Promise.allSettled(nudges.map((nudge) => nudge(orderId)));
+      const failed = settled.find((result): result is PromiseRejectedResult => result.status === "rejected");
+      if (failed !== undefined) throw failed.reason;
       return undefined;
     },
   };

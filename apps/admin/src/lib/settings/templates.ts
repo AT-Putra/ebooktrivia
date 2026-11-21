@@ -40,7 +40,11 @@ export type TemplateChannel = "whatsapp" | "email";
 
 export const TEMPLATE_CATALOG: Readonly<Record<string, { readonly label: string; readonly variables: readonly MessageVariable[]; readonly required: readonly MessageVariable[] }>> = {
   delivery: { label: "Ebook delivery (file + trivia link)", variables: ["nama", "judul_ebook", "order_id", "link_trivia"], required: [] },
-  delivery_without_link: { label: "Ebook delivery without the login link (buyer-first reply, sender not verified)", variables: ["nama", "judul_ebook", "order_id"], required: [] },
+  // The short opener (Owner decision D7): the one WhatsApp message to a buyer who has not written first. Text only: no file and no login link (it cannot have
+  // {link_trivia}); {nama} is the buyer's FIRST name; it asks the buyer to reply, and the ebook follows the reply. The worker picks one variant at random.
+  delivery_opener_1: { label: "WhatsApp opener, variant 1 (short, asks the buyer to reply; no file, no link)", variables: ["nama", "judul_ebook", "order_id"], required: [] },
+  delivery_opener_2: { label: "WhatsApp opener, variant 2 (short, asks the buyer to reply; no file, no link)", variables: ["nama", "judul_ebook", "order_id"], required: [] },
+  delivery_opener_3: { label: "WhatsApp opener, variant 3 (short, asks the buyer to reply; no file, no link)", variables: ["nama", "judul_ebook", "order_id"], required: [] },
   otp: { label: "Trivia login code", variables: ["kode_otp"], required: ["kode_otp"] },
 };
 

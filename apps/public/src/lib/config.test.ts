@@ -31,6 +31,8 @@ describe("public config", () => {
         otpPepper: Buffer.from(base.PLAYER_OTP_PEPPER, "hex"),
       },
       playUnavailable: null,
+      wahaWebhookSecret: undefined,
+      dataDir: "/srv/data",
     });
   });
 
@@ -52,6 +54,13 @@ describe("public config", () => {
     expect(() => loadPublicConfig({ ...base, PUBLIC_DEV_PLAY_ORIGIN: "http://127.0.0.1:3103" })).toThrow(/dev-only/);
     for (const url of ["http://10.0.0.1:3103", "http://127.0.0.1:3103/", "ftp://127.0.0.1", "nope"]) {
       expect(() => loadPublicConfig({ ...base, NODE_ENV: "development", PUBLIC_DEV_PLAY_ORIGIN: url }), url).toThrow(/loopback/);
+    }
+  });
+
+  it("takes the WAHA webhook secret (16 to 256 printable characters) and the data directory", () => {
+    expect(loadPublicConfig({ ...base, WAHA_WEBHOOK_HMAC_SECRET: "x".repeat(32), PUBLIC_DATA_DIR: "/data" })).toMatchObject({ wahaWebhookSecret: "x".repeat(32), dataDir: "/data" });
+    for (const bad of ["short", "x".repeat(257), `${"x".repeat(20)} spaced`, `${"x".repeat(20)}\n`]) {
+      expect(() => loadPublicConfig({ ...base, WAHA_WEBHOOK_HMAC_SECRET: bad }), bad).toThrow(/WAHA_WEBHOOK_HMAC_SECRET/);
     }
   });
 

@@ -247,6 +247,8 @@ CFG_SSH_ALLOWED_CIDRS=""
 CFG_ADMIN_ALLOWED_CIDRS=""
 # shellcheck disable=SC2034 # used by provision.sh, which sources this file
 CFG_GLITCHTIP_ALLOWED_CIDRS=""
+# shellcheck disable=SC2034 # used by provision.sh, which sources this file
+CFG_WAHA_ALLOWED_CIDRS=""
 CFG_APP_USER="ebt"
 
 valid_cidrs() {
@@ -273,7 +275,7 @@ load_config() {
     value=${BASH_REMATCH[2]}
     if [[ $value =~ ^\"(.*)\"$ ]]; then value=${BASH_REMATCH[1]}; fi
     case $key in
-      DOMAIN | ACME_EMAIL | ADMIN_SSH_USER | SSH_ALLOWED_CIDRS | ADMIN_ALLOWED_CIDRS | GLITCHTIP_ALLOWED_CIDRS | APP_USER)
+      DOMAIN | ACME_EMAIL | ADMIN_SSH_USER | SSH_ALLOWED_CIDRS | ADMIN_ALLOWED_CIDRS | GLITCHTIP_ALLOWED_CIDRS | WAHA_ALLOWED_CIDRS | APP_USER)
         printf -v "CFG_$key" '%s' "$value"
         ;;
       *) die "$file: unknown key $key" ;;
@@ -286,7 +288,7 @@ load_config() {
   [[ $CFG_APP_USER =~ ^[a-z_][a-z0-9_-]{0,31}$ && $CFG_APP_USER != root && $CFG_APP_USER != "$CFG_ADMIN_SSH_USER" ]] ||
     die "APP_USER must be a user name other than root and ADMIN_SSH_USER"
   local name
-  for name in SSH_ALLOWED_CIDRS ADMIN_ALLOWED_CIDRS GLITCHTIP_ALLOWED_CIDRS; do
+  for name in SSH_ALLOWED_CIDRS ADMIN_ALLOWED_CIDRS GLITCHTIP_ALLOWED_CIDRS WAHA_ALLOWED_CIDRS; do
     local var="CFG_$name"
     valid_cidrs "${!var}" || die "$name must be a space-separated list of CIDRs (address/prefix, host bits zero)"
     # Canonical form (2001:DB8::/32 -> 2001:db8::/32), so comparisons with firewalld are exact.

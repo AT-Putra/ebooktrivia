@@ -83,6 +83,10 @@ export interface SweepDeps {
   readonly conversionQueue?: Queue;
   /** Present only with a delivery consumer (US-025). */
   readonly deliveryQueue?: Queue;
+  /** Present with the delivery runtime (US-025): the WhatsApp deliveries' own queue. */
+  readonly deliveryWaQueue?: Queue;
+  /** More minute sweeps of a story's own, by name (US-025: the unknown-send lookup). */
+  readonly extraSweeps?: Readonly<Record<string, () => Promise<unknown>>>;
   readonly sinkDedupesByTxid?: SinkDedupePolicy;
 }
 
@@ -193,13 +197,19 @@ export async function sweepDueConversions(deps: Pick<SweepDeps, "sql" | "log" | 
   return rows.length;
 }
 
-export async function sweepDueDeliveries(deps: Pick<SweepDeps, "sql" | "log" | "deliveryQueue">): Promise<number> {
+export async function sweepDueDeliveries(deps: Pick<SweepDeps, "sql" | "log" | "deliveryQueue" | "deliveryWaQueue">): Promise<number> {
   if (deps.deliveryQueue === undefined) return 0;
-  const rows = await deps.sql<{ id: string; attempts: number }[]>`
-    SELECT id, attempts FROM public.deliveries
-     WHERE status = 'pending' AND not_before <= now()
-     ORDER BY not_before LIMIT ${BATCH * 2}`;
-  await enqueueFresh(deps.deliveryQueue, rows.map((r) => ({ jobId: rowJobId(r.id, r.attempts), data: { id: r.id } })));
+  // A WhatsApp delivery whose opener already went out, is in flight or was given up (US-025, Owner decision D7) waits for the buyer's reply: not a job.
+  const rows = await deps.sql<{ id: string; attempts: number; channel: string }[]>`
+    SELECT d.id, d.attempts, d.channel FROM public.deliveries d
+     WHERE d.status = 'pending' AND d.not_before <= now()
+       AND (d.channel <> 'whatsapp' OR NOT EXISTS (SELECT 1 FROM public.delivery_openers o WHERE o.delivery_id = d.id AND (o.status <> 'pending' OR o.next_attempt_at > now())))
+     ORDER BY d.not_before LIMIT ${BATCH * 2}`;
+  // US-025: WhatsApp deliveries go to their own queue when there is one (their sends wait for a number's slot; e-mail never queues behind them).
+  const jobOf = (r: { id: string; attempts: number }) => ({ jobId: rowJobId(r.id, r.attempts), data: { id: r.id } });
+  const toWa = deps.deliveryWaQueue === undefined ? [] : rows.filter((r) => r.channel === "whatsapp");
+  await enqueueFresh(deps.deliveryQueue, rows.filter((r) => !toWa.includes(r)).map(jobOf));
+  if (deps.deliveryWaQueue !== undefined && toWa.length > 0) await enqueueFresh(deps.deliveryWaQueue, toWa.map(jobOf));
   return rows.length;
 }
 
@@ -362,6 +372,7 @@ export function deliveryColumns(set: DeliveryPatch, now: Date): Record<string, s
     ...(set.notBefore === undefined ? {} : { not_before: set.notBefore }),
     ...(set.leaseUntil === undefined ? {} : { lease_until: set.leaseUntil }),
     ...(set.attempts === undefined ? {} : { attempts: set.attempts }),
+    ...(set.attemptsBase === undefined ? {} : { attempts_base: set.attemptsBase }),
     ...(set.sessionId === undefined ? {} : { session_id: set.sessionId }),
     ...(set.triedSessionIds === undefined ? {} : { tried_session_ids: set.triedSessionIds }),
     ...(set.sentAt === undefined ? {} : { sent_at: set.sentAt }),
@@ -473,6 +484,7 @@ export async function runSweeps(deps: SweepDeps): Promise<void> {
   sweepers.push(["grace_end", () => endGracePeriods(deps.sql, deps.log)]);
   sweepers.push(["login_throttle", () => sweepLoginThrottle(deps.sql)]);
   sweepers.push(["otp_expiry", () => sweepExpiredOtps(deps.sql)]);
+  for (const [name, run] of Object.entries(deps.extraSweeps ?? {})) sweepers.push([name, run]);
   for (const [sweeper, run] of sweepers) {
     try {
       const result = await run();

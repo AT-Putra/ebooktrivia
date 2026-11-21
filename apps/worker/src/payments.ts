@@ -81,7 +81,7 @@ const MONEY_LABELS: readonly string[] = ["settlement", "capture", "refund", "par
 export type MidtransSource = (sql: postgres.Sql) => Promise<MidtransConfig>;
 
 export interface PaymentOptions {
-  /** AC-D8: the proactive WhatsApp send waits this long after PAID. */
+  /** AC-D8: the proactive WhatsApp send waits this long after PAID while the admin setting delivery.wa_delay_seconds is missing (WORKER_WA_DELAY_MS). */
   readonly waDelayMs: number;
   /** What re-queried the status (audit and alert payloads). */
   readonly source: "notification" | "reconciliation";
@@ -167,8 +167,19 @@ async function refreshEligibility(tx: postgres.TransactionSql, playerId: string,
   return row?.eligible === true;
 }
 
+/**
+ * The proactive WhatsApp delay in ms (AC-D8): the admin setting delivery.wa_delay_seconds (US-025, bounded 0..86400 by
+ * the database), read when the order is paid so a change applies to the next paid order. `fallbackMs` (the
+ * WORKER_WA_DELAY_MS env, default 3 minutes) stands in only while the setting is missing or malformed.
+ */
+export async function proactiveDelayMs(db: postgres.Sql | postgres.TransactionSql, fallbackMs: number): Promise<number> {
+  const [row] = await db<{ value: unknown }[]>`SELECT value FROM public.app_settings WHERE key = 'delivery.wa_delay_seconds'`;
+  const seconds = row?.value;
+  return typeof seconds === "number" && Number.isSafeInteger(seconds) && seconds >= 0 && seconds <= 86_400 ? seconds * 1000 : fallbackMs;
+}
+
 /** The PAID effects (AC-S7, AC-T4, AC-D1): each an INSERT ... ON CONFLICT DO NOTHING on its unique key. */
-async function paidEffects(tx: postgres.TransactionSql, order: OrderRow, waDelayMs: number): Promise<void> {
+async function paidEffects(tx: postgres.TransactionSql, order: OrderRow, waDelayFallbackMs: number): Promise<void> {
   const { now } = order;
   // One buyer (WhatsApp phone) = one player (spec, AC-Q1); the profile of an existing player is kept.
   await tx`INSERT INTO public.players (phone, name, email) VALUES (${order.buyer_phone}, ${order.buyer_name}, ${order.buyer_email}) ON CONFLICT (phone) DO NOTHING`;
@@ -178,7 +189,7 @@ async function paidEffects(tx: postgres.TransactionSql, order: OrderRow, waDelay
     UPDATE public.orders SET player_id = coalesce(player_id, ${player.id}) WHERE id = ${order.id} RETURNING player_id`;
   await refreshEligibility(tx, linked?.player_id ?? player.id, order.program_id, now, true);
 
-  const schedule = deliverySchedule(now, waDelayMs);
+  const schedule = deliverySchedule(now, await proactiveDelayMs(tx, waDelayFallbackMs));
   await tx`
     INSERT INTO public.deliveries (order_id, channel, not_before)
     VALUES (${order.id}, 'email', ${schedule.email}), (${order.id}, 'whatsapp', ${schedule.whatsapp})

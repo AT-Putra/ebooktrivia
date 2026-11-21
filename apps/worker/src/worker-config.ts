@@ -40,7 +40,11 @@ export interface WorkerConfig {
   readonly failpoint: FailpointName | undefined;
   /** Dev / test only (refused in production): http(s)://<loopback>:<port> of infra/midtrans-stub; the sandbox hosts go there. */
   readonly midtransStubUrl: string | null;
-  /** AC-D8: the proactive WhatsApp delivery waits this long after PAID (0 = at once). */
+  /**
+   * AC-D8: the proactive WhatsApp delivery waits this long after PAID (0 = at once). Since US-025 the Owner sets it in the
+   * console (app_settings delivery.wa_delay_seconds, default 3 minutes, read at every PAID); this env value
+   * (WORKER_WA_DELAY_MS) is only the fallback while that setting is missing.
+   */
   readonly waDelayMs: number;
   /** How often the worker checks whether the nightly payment reconciliation is due. */
   readonly reconcileIntervalMs: number;

@@ -45,6 +45,12 @@ ON CONFLICT (key) DO NOTHING;
 INSERT INTO public.app_settings (key, value) VALUES ('trivia.extension_max_minutes', '60')
 ON CONFLICT (key) DO NOTHING;
 
+-- Delivery (US-025; AC-D8): the proactive WhatsApp send waits 3 minutes after PAID (the buyer may message first); the
+-- Owner may set 0 (at once) up to a day. The worker reads it when an order is paid (WORKER_WA_DELAY_MS stays as the
+-- fallback while the setting is missing).
+INSERT INTO public.app_settings (key, value) VALUES ('delivery.wa_delay_seconds', '180')
+ON CONFLICT (key) DO NOTHING;
+
 -- Midtrans (AC-S10, US-017): sandbox until the Owner switches (audited, and only once the
 -- production server key is set); the methods offered in Snap; per-method fees (flat IDR + basis
 -- points, packages/core money.ts) start empty. Not secret (public_rw reads app_settings); the
@@ -62,8 +68,18 @@ INSERT INTO public.message_templates (key, channel, locale, subject, body) VALUE
    E'Halo {nama}, terima kasih sudah membeli *{judul_ebook}*.\n\nEbook terlampir di pesan ini. Masuk ke trivia lewat tautan ini: {link_trivia}\n\nKode pesanan: {order_id}'),
   ('delivery', 'email', 'id', 'Ebook {judul_ebook} untuk {nama}',
    E'<p>Halo {nama},</p>\n<p>Terima kasih sudah membeli <strong>{judul_ebook}</strong>. Ebook terlampir di email ini.</p>\n<p><a href="{link_trivia}">Masuk ke trivia</a></p>\n<p>Kode pesanan: {order_id}</p>'),
-  ('delivery_without_link', 'whatsapp', 'id', NULL,
-   E'Halo {nama}, berikut ebook *{judul_ebook}* untuk pesanan {order_id}. Tautan masuk trivia kami kirim lewat email.'),
+  -- The short opener (US-025, Owner decision D7): the proactive WhatsApp message to a buyer who has not written first. Text only (no file, no
+  -- link); it asks the buyer to reply, and the ebook and the login link follow the reply. The worker picks one variant at random for each
+  -- buyer; {nama} is the buyer's FIRST name here. Add or edit variants freely (keys delivery_opener_1 .. delivery_opener_3).
+  ('delivery_opener_1', 'whatsapp', 'id', NULL,
+   E'Halo {nama}, pembayaran Anda untuk {judul_ebook} sudah kami terima. Balas pesan ini ya, ebooknya langsung kami kirim ke sini.'),
+  ('delivery_opener_2', 'whatsapp', 'id', NULL,
+   E'Hai {nama}, terima kasih sudah membeli {judul_ebook}. Silakan balas pesan ini supaya ebooknya bisa kami kirim lewat WhatsApp.'),
+  ('delivery_opener_3', 'whatsapp', 'id', NULL,
+   E'Selamat datang {nama}! Pesanan {judul_ebook} sudah lunas. Balas pesan ini dengan satu kata saja, nanti ebooknya kami kirim di chat ini.'),
   ('otp', 'whatsapp', 'id', NULL,
    E'Kode masuk trivia Anda: {kode_otp}. Berlaku 5 menit. Jangan berikan kode ini kepada siapa pun.')
 ON CONFLICT (key, channel, locale) DO NOTHING;
+-- The first pass of US-025 had a link-free ebook template for a sender nobody confirmed; Owner decision D6 replaced it with a fixed caption (no name, no
+-- link, packages/i18n), so the row is not used by anything.
+DELETE FROM public.message_templates WHERE key = 'delivery_without_link';

@@ -11,7 +11,7 @@ afterAll(async () => {
 });
 
 export type Tx = postgres.TransactionSql;
-export type AppRole = "public_rw" | "admin_rw" | "worker_rw" | "internal_rw" | "migrator";
+export type AppRole = "public_rw" | "admin_rw" | "worker_rw" | "internal_rw" | "migrator" | "delivery_resend";
 export const APP_ROLES = ["public_rw", "admin_rw", "worker_rw", "internal_rw"] as const;
 
 /** Runs `fn` in a transaction as `role` (SET LOCAL ROLE) and commits. */

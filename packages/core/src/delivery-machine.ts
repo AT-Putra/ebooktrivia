@@ -12,6 +12,9 @@
 //             A sender that resolves to another phone than the order's is rejected, row untouched.
 //             reply.withoutLink: the worker must render a link-free WhatsApp template
 //             (renderMessage throws missing_value when {link_trivia} has no value).
+//             Owner decision D6 (US-025 review): the worker no longer claims the row for an `unresolved` @lid sender (it cannot be
+//             told from a stranger). It sends the PDF as an EXTRA reply with no name and no link, and the row stays pending for the
+//             proactive send. The `unresolved` branch of this machine stays, tested, for a caller that does want to claim.
 //   outcome   sent              -> sent
 //             retryable failure -> WA: back to pending at once on another number, up to
 //                                  WA_MAX_SESSIONS numbers (AC-D4), then failed. "At once"
@@ -21,14 +24,20 @@
 //                                  EMAIL_MAX_ATTEMPTS attempts (first try + 3 retries), then failed.
 //             permanent failure -> failed (the message definitely did not go out; no retry helps)
 //             maybe sent        -> unknown (e.g. a timeout after the request left)
+//             not attempted     -> pending after NOT_ATTEMPTED_DELAY_MS, as if the claim never happened: the RETRY BUDGET is given back
+//                                  (attempts_base grows) and the number leaves tried_session_ids. The attempt NUMBER is never reused:
+//                                  `attempts` only ever increases (a claim, a resend, a retry), so a stale finisher of an old claim can never
+//                                  record its outcome onto a newer one. For a failure BEFORE anything was sent that is nobody's fault but ours
+//                                  (the login link could not be issued, the template did not render, the PDF could not be read): it must
+//                                  neither burn a failover slot nor count against the number's health.
 //   lease     sending with an expired lease -> unknown (the worker may have sent before dying)
 //   unknown   never resent automatically. After the lease has expired, a WA row is resolved by
 //             the session's recent outgoing messages to the chat: a message with the same
 //             filename inside the lease window -> sent; otherwise (and always for email) the
 //             row waits for Owner review. The window is derived from lease_until - leaseMs; a
 //             deliveries.claimed_at column (M8) would make it exact if lease lengths change.
-// Owner transitions (manual resend of failed / unknown rows with a fresh retry budget, marking
-// an unknown row as sent after review) are M8/M10 admin actions and not part of this machine yet.
+// The retry budget of an e-mail is `attempts - attempts_base` (a resend, public.resend_delivery, moves attempts_base up to attempts: a fresh budget, and `attempts`
+// keeps increasing). Marking an unknown row as sent after review is an admin action and not part of this machine yet.
 // Every decision returns the expected current status and attempt count; the caller applies the
 // update with `UPDATE ... WHERE id = $1 AND status = $expect.status AND attempts = $expect.attempts`
 // so a stale worker or a concurrent sweeper cannot overwrite a newer state.
@@ -54,6 +63,8 @@ export interface DeliveryRow {
   readonly notBefore: Date;
   readonly leaseUntil: Date | null;
   readonly attempts: number;
+  /** The attempts that no longer count against the retry budget (given back by a not-attempted claim, or by a resend). Default 0. */
+  readonly attemptsBase?: number;
   readonly sessionId: string | null;
   readonly triedSessionIds: readonly string[];
   readonly waChatId: string | null;
@@ -65,6 +76,7 @@ export interface DeliveryPatch {
   readonly notBefore?: Date;
   readonly leaseUntil?: Date | null;
   readonly attempts?: number;
+  readonly attemptsBase?: number;
   readonly sessionId?: string | null;
   readonly triedSessionIds?: readonly string[];
   readonly sentAt?: Date;
@@ -115,11 +127,15 @@ export type DeliveryDecision =
     }
   | { readonly ok: false; readonly reason: DeliveryRejection };
 
+/** A claim that failed before it sent anything is tried again after this (not a number's fault, so no failover). */
+export const NOT_ATTEMPTED_DELAY_MS = 60_000;
+
 export type DeliveryOutcome =
   | { readonly kind: "sent"; readonly waMessageId?: string }
   | { readonly kind: "retryable_failure"; readonly error: string }
   | { readonly kind: "permanent_failure"; readonly error: string }
-  | { readonly kind: "maybe_sent"; readonly error: string };
+  | { readonly kind: "maybe_sent"; readonly error: string }
+  | { readonly kind: "not_attempted"; readonly error: string };
 
 /** One message from the WAHA "recent outgoing messages to this chat" lookup. */
 export interface OutgoingMessage {
@@ -143,9 +159,21 @@ function assertPositiveMs(value: number, name: string): void {
 
 const later = (at: Date, ms: number): Date => new Date(at.getTime() + ms);
 
+/** The attempts that count against the retry budget. */
+const spent = (row: DeliveryRow): number => row.attempts - (row.attemptsBase ?? 0);
+
 export function claimDelivery(
   row: DeliveryRow,
-  ctx: { readonly now: Date; readonly leaseMs: number; readonly sessionId?: string },
+  ctx: {
+    readonly now: Date;
+    readonly leaseMs: number;
+    readonly sessionId?: string;
+    /**
+     * A pool with no number left that this delivery has not tried may try the same one again (the worker lets it, after a backoff, while
+     * fewer than WA_MAX_SESSIONS attempts were made): the number goes into tried_session_ids once more, so the budget of 3 stays 3.
+     */
+    readonly retrySameSession?: boolean;
+  },
 ): DeliveryDecision {
   assertPositiveMs(ctx.leaseMs, "leaseMs");
   if (row.status !== "pending") return reject("not_pending");
@@ -153,11 +181,11 @@ export function claimDelivery(
   const lease = { status: "sending", leaseUntil: later(ctx.now, ctx.leaseMs), attempts: row.attempts + 1 } as const;
   if (row.channel === "email") {
     if (ctx.sessionId !== undefined) return reject("session_not_allowed");
-    if (row.attempts >= EMAIL_MAX_ATTEMPTS) return reject("attempts_exhausted");
+    if (spent(row) >= EMAIL_MAX_ATTEMPTS) return reject("attempts_exhausted");
     return accept(row, lease);
   }
   if (ctx.sessionId === undefined || ctx.sessionId === "") return reject("session_required");
-  if (row.triedSessionIds.includes(ctx.sessionId)) return reject("session_already_tried");
+  if (row.triedSessionIds.includes(ctx.sessionId) && ctx.retrySameSession !== true) return reject("session_already_tried");
   if (row.triedSessionIds.length >= WA_MAX_SESSIONS) return reject("attempts_exhausted");
   if (row.waChatId === null || row.filename === null) return reject("missing_target");
   return accept(row, { ...lease, sessionId: ctx.sessionId, triedSessionIds: [...row.triedSessionIds, ctx.sessionId] });
@@ -228,6 +256,22 @@ export function recordDeliveryOutcome(
       return accept(row, { status: "failed", leaseUntil: null, lastError: outcome.error });
     case "retryable_failure":
       return retryOrFail(row, ctx.now, outcome.error);
+    case "not_attempted": {
+      // As if the claim had not happened, but not at once: the same fault would just repeat.
+      const retryAt = later(ctx.now, NOT_ATTEMPTED_DELAY_MS);
+      const tried = [...row.triedSessionIds];
+      const at = row.sessionId === null ? -1 : tried.lastIndexOf(row.sessionId);
+      if (at >= 0) tried.splice(at, 1);
+      return accept(row, {
+        status: "pending",
+        notBefore: retryAt.getTime() > row.notBefore.getTime() ? retryAt : row.notBefore,
+        leaseUntil: null,
+        attemptsBase: (row.attemptsBase ?? 0) + 1,
+        sessionId: null,
+        triedSessionIds: tried,
+        lastError: outcome.error,
+      });
+    }
   }
 }
 
@@ -241,8 +285,8 @@ function retryOrFail(row: DeliveryRow, now: Date, error: string): DeliveryDecisi
     const notBefore = now.getTime() < row.notBefore.getTime() ? row.notBefore : now;
     return accept(row, { status: "pending", notBefore, leaseUntil: null, sessionId: null, lastError: error });
   }
-  const delay = EMAIL_RETRY_DELAYS_MS[row.attempts - 1];
-  if (row.attempts >= EMAIL_MAX_ATTEMPTS || delay === undefined) {
+  const delay = EMAIL_RETRY_DELAYS_MS[spent(row) - 1];
+  if (spent(row) >= EMAIL_MAX_ATTEMPTS || delay === undefined) {
     return accept(row, { status: "failed", leaseUntil: null, lastError: error });
   }
   return accept(row, { status: "pending", notBefore: later(now, delay), leaseUntil: null, lastError: error });

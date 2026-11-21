@@ -22,4 +22,5 @@ export {
   type StoredSecretRow,
 } from "./secrets.ts";
 export { createSecretOpener, openerFromEnv } from "./opener.ts";
+export { deriveFileUrlKey, FILE_URL_KEY_BYTES, fileUrlKeyFromEnv } from "./file-url-key.ts";
 export { assertWahaTarget, type WahaSecretBinding, type WahaServerTarget } from "./waha-target.ts";

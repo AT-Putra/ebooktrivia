@@ -72,7 +72,7 @@ RUN mkdir -p /out \
  && cp -a package.json pnpm-workspace.yaml node_modules /out/ \
  && mkdir -p /out/apps /out/packages \
  && cp -a apps/worker /out/apps/ \
- && for p in adapters core crypto db; do cp -a "packages/$p" /out/packages/; done \
+ && for p in adapters core crypto db i18n; do cp -a "packages/$p" /out/packages/; done \
  && rm -rf /out/apps/worker/test /out/apps/worker/coverage \
  && find /out/apps /out/packages -name '*.test.ts' -delete
 

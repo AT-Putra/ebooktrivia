@@ -64,6 +64,9 @@ const RULES = {
   "deletion_request.process": "owner",
   "conversion.refire": "owner",
   "delivery.mark_unknown_sent": "owner",
+  // Resending a delivery that MAY already have reached the buyer (an unknown send), after the Owner's explicit confirmation (US-025): a failed delivery is
+  // `delivery.resend` (Staff, AC-A1), an unknown one can duplicate the ebook or a login link, so it is not covered by AC-A1's "resends" for Staff.
+  "delivery.resend_unknown": "owner",
   "order.review.resolve": "owner",
   "ad_spend.edit": "owner",
   // The profit / ROI view (US-029, AC-A8): it shows adnet payouts (CPA), gateway fees and ad spend, which are Owner-only

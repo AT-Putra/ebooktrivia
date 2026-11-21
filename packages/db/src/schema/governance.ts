@@ -333,6 +333,8 @@ export const APP_SETTING_BOUNDS = {
   // US-028: the longest outage the Owner's deadline-extension tool covers: its outage start lies at
   // most this far back (read by SQL, extend_open_question_deadlines).
   "trivia.extension_max_minutes": [1, 1440],
+  // US-025: the proactive WhatsApp delivery waits this long after PAID (AC-D8; 0 sends at once). Read by the worker.
+  "delivery.wa_delay_seconds": [0, 86_400],
 } as const satisfies Readonly<Record<string, readonly [number, number]>>;
 
 const boundsCase = Object.entries(APP_SETTING_BOUNDS)
@@ -354,6 +356,11 @@ export const appSettings = pgTable(
     check(
       "app_settings_positive_int_check",
       sql`(${t.key} NOT LIKE 'otp.%' AND ${t.key} NOT LIKE 'orders.%' AND ${t.key} NOT LIKE 'checkout.%' AND ${t.key} NOT LIKE 'captcha.%' AND ${t.key} <> 'trivia.extension_max_minutes') OR (jsonb_typeof(${t.value}) = 'number' AND (${t.value} #>> '{}')::numeric > 0 AND (${t.value} #>> '{}')::numeric = trunc((${t.value} #>> '{}')::numeric))`,
+    ),
+    // US-025: the proactive WhatsApp delay is a whole number of seconds (0 is allowed, so it is not in the positive-integer check above).
+    check(
+      "app_settings_wa_delay_whole_check",
+      sql`${t.key} <> 'delivery.wa_delay_seconds' OR (jsonb_typeof(${t.value}) = 'number' AND (${t.value} #>> '{}')::numeric = trunc((${t.value} #>> '{}')::numeric))`,
     ),
     // Each bounded key within APP_SETTING_BOUNDS (CASE, so a non-number is never cast).
     check(

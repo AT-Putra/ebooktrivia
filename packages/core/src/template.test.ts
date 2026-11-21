@@ -1,6 +1,7 @@
 import fc from "fast-check";
 import { describe, expect, it, vi } from "vitest";
 import {
+  escapeHtml,
   postbackSecretNames,
   renderMessage,
   renderMessageRedacted,
@@ -32,6 +33,13 @@ function codeOf(fn: () => unknown): TemplateErrorCode | undefined {
   }
   return undefined;
 }
+
+describe("escapeHtml (the one encoder of the e-mail's HTML values, shared with the delivery code)", () => {
+  it("escapes the five characters that matter in HTML text and in a quoted attribute, and nothing else", () => {
+    expect(escapeHtml(`<a href="x" onclick='y'>&</a>`)).toBe("&lt;a href=&quot;x&quot; onclick=&#39;y&#39;&gt;&amp;&lt;/a&gt;");
+    expect(escapeHtml("plain text 123 / ? = %")).toBe("plain text 123 / ? = %");
+  });
+});
 
 describe("message templates (AC-A10 variables)", () => {
   const wa = "Halo {nama}, terima kasih telah membeli {judul_ebook}.\nPesanan: {order_id}\nMain trivia: {link_trivia}";

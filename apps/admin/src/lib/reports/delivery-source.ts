@@ -1,13 +1,14 @@
-// The delivery report's queries (AC-A6): per-order WhatsApp and e-mail status with the sender number and the retries, and the
-// volume and failure rate of every pool number. ONE small module on purpose: today it reads the `deliveries` table (the numbers a
-// delivery tried are its tried_session_ids), and when US-025's send ledger (waha_sends: one row per send attempt per number) is
-// merged, only this file changes (the page and the figures it shows stay).
+// The delivery report's queries (AC-A6): per-order WhatsApp and e-mail status with the sender number and the retries, the volume and failure
+// rate of every pool number, and the failed deliveries a Staff or Owner can resend. ONE small module on purpose: it is the one place that knows where
+// deliveries are recorded.
 //
-// Per number, over the WhatsApp deliveries CREATED in the range (WIB): an attempt is one entry of tried_session_ids. A number that is
-// not the LAST one tried was left after a retryable failure (the next number is only tried after one), so it counts as a FAILED
-// attempt; the last number's attempt is the delivery's own outcome (sent, failed, unknown, or still in flight). volume = sent + failed
-// + unknown, failure rate = failed / volume (core rateBps), so a number that keeps failing over to the next one shows it.
-// An attempt still pending or sending is "in flight" and in no rate. Buyers are shown masked (SQL mask_name / mask_phone).
+// Per number, from the SEND LEDGER (waha_sends, US-025: one row per claimed send of a number, whatever the kind: opener, reply, text, OTP) over the sends
+// CLAIMED in the range (WIB): `outcome` says how each ended. volume = sent + failed + unknown, failure rate = failed / volume (core rateBps). A `failed`
+// send is one WAHA refused for sure (the number's own failure: the delivery went on to another number); `unknown` may have gone out; `reserved` is in
+// flight and in no rate. What is not the number's doing (a phone that is not on WhatsApp, WhatsApp's own limit on new contacts, a fault of ours) takes its row
+// back and is in no figure. The ledger keeps 31 days: a longer range shows the last 31.
+// Buyers are shown masked (SQL mask_name / mask_phone), and an error is shown as its CODE only: `last_error` is a short code by design, but the report does not
+// trust a column that a future writer could fill with a message (security review US-029 L2): anything that is not a lower-case code is shown as `other`.
 import { DELIVERY_CHANNELS, DELIVERY_STATUSES, type DeliveryStatus, isUuid, rateBps, reportRange, wibDateOf, addDays, REPORT_DEFAULT_DAYS } from "@ebooktrivia/core";
 import type { Sql } from "../db.ts";
 import { PAGE_SIZE, param, type Query, wibInstants } from "./common.ts";
@@ -65,21 +66,15 @@ export interface NumberStats {
 export async function perNumberStats(sql: Sql, f: Pick<DeliveryFilters, "from" | "to">): Promise<NumberStats[]> {
   const { start, end } = wibInstants(f);
   const rows = await sql<{ id: string; session_name: string; phone: string | null; active: boolean; sent: number; failed: number; unknown: number; in_flight: number }[]>`
-    WITH att AS (
-      SELECT t.sid,
-             CASE WHEN t.ord < cardinality(d.tried_session_ids) THEN 'failed' ELSE d.status::text END AS outcome
-        FROM public.deliveries d
-        CROSS JOIN LATERAL unnest(d.tried_session_ids) WITH ORDINALITY AS t(sid, ord)
-       WHERE d.channel = 'whatsapp' AND d.created_at >= ${start} AND d.created_at < ${end}
-    )
     SELECT s.id, s.session_name, s.phone, s.active,
-           (count(att.sid) FILTER (WHERE att.outcome = 'sent'))::int AS sent,
-           (count(att.sid) FILTER (WHERE att.outcome = 'failed'))::int AS failed,
-           (count(att.sid) FILTER (WHERE att.outcome = 'unknown'))::int AS unknown,
-           (count(att.sid) FILTER (WHERE att.outcome IN ('pending', 'sending')))::int AS in_flight
-      FROM public.waha_sessions s LEFT JOIN att ON att.sid = s.id
+           (count(x.id) FILTER (WHERE x.outcome = 'sent'))::int AS sent,
+           (count(x.id) FILTER (WHERE x.outcome = 'failed'))::int AS failed,
+           (count(x.id) FILTER (WHERE x.outcome = 'unknown'))::int AS unknown,
+           (count(x.id) FILTER (WHERE x.outcome = 'reserved'))::int AS in_flight
+      FROM public.waha_sessions s
+      LEFT JOIN public.waha_sends x ON x.session_id = s.id AND x.created_at >= ${start} AND x.created_at < ${end}
      GROUP BY s.id
-     ORDER BY (count(att.sid) FILTER (WHERE att.outcome IN ('sent', 'failed', 'unknown'))) DESC, s.session_name`;
+     ORDER BY (count(x.id) FILTER (WHERE x.outcome IN ('sent', 'failed', 'unknown'))) DESC, s.session_name`;
   return rows.map((r) => {
     const volume = r.sent + r.failed + r.unknown;
     return { sessionId: r.id, session: r.session_name, phone: r.phone, active: r.active, sent: r.sent, failed: r.failed, unknown: r.unknown, inFlight: r.in_flight, volume, failureBps: rateBps(r.failed, volume) };
@@ -120,7 +115,10 @@ export interface DeliveryRow {
   readonly attempts: number;
   readonly numbersTried: number;
   readonly ack: string | null;
-  readonly lastError: string | null;
+  /** The error as a CODE (`other` for anything that is not one), never the stored text. */
+  readonly errorCode: string | null;
+  /** The state of the short WhatsApp opener (Owner decision D7) of a WhatsApp delivery: pending, sending, sent (no reply yet), unknown, failed (given up, or the phone is not on WhatsApp), expired. */
+  readonly opener: string | null;
   readonly sentAt: Date | null;
 }
 
@@ -135,7 +133,7 @@ export async function deliveryList(sql: Sql, f: DeliveryFilters, page: number): 
     d.created_at >= ${start} AND d.created_at < ${end}
     ${f.channel === null ? sql`` : sql`AND d.channel = ${f.channel}`}
     ${f.status === null ? sql`` : sql`AND d.status = ${f.status}`}
-    ${f.sessionId === null ? sql`` : sql`AND ${f.sessionId}::uuid = ANY (d.tried_session_ids)`}`;
+    ${f.sessionId === null ? sql`` : sql`AND EXISTS (SELECT 1 FROM public.waha_sends x WHERE x.delivery_id = d.id AND x.session_id = ${f.sessionId}::uuid)`}`;
   const [rows, [total]] = await Promise.all([
     sql<
       {
@@ -150,7 +148,8 @@ export async function deliveryList(sql: Sql, f: DeliveryFilters, page: number): 
         attempts: number;
         numbers_tried: number;
         wa_ack: string | null;
-        last_error: string | null;
+        error_code: string | null;
+        opener: string | null;
         sent_at: Date | null;
       }[]
     >`
@@ -160,11 +159,13 @@ export async function deliveryList(sql: Sql, f: DeliveryFilters, page: number): 
          LIMIT ${PAGE_SIZE} OFFSET ${(page - 1) * PAGE_SIZE}
       )
       SELECT d.id, d.created_at, o.order_code, public.mask_name(o.buyer_name) AS buyer_name, public.mask_phone(o.buyer_phone) AS buyer_phone, d.channel, d.status,
-             s.phone AS sender, d.attempts, cardinality(d.tried_session_ids) AS numbers_tried, d.wa_ack, left(d.last_error, 200) AS last_error, d.sent_at
+             s.phone AS sender, d.attempts, cardinality(d.tried_session_ids) AS numbers_tried, d.wa_ack,
+             CASE WHEN d.last_error IS NULL THEN NULL WHEN d.last_error ~ '^[a-z0-9_]{1,64}$' THEN d.last_error ELSE 'other' END AS error_code, op.status AS opener, d.sent_at
         FROM page
         JOIN public.deliveries d ON d.id = page.id
         JOIN public.orders o ON o.id = d.order_id
-        LEFT JOIN public.waha_sessions s ON s.id = coalesce(d.session_id, d.tried_session_ids[cardinality(d.tried_session_ids)])
+        LEFT JOIN public.delivery_openers op ON op.delivery_id = d.id
+        LEFT JOIN public.waha_sessions s ON s.id = coalesce(d.session_id, op.session_id, d.tried_session_ids[cardinality(d.tried_session_ids)])
        ORDER BY d.created_at DESC, d.id DESC`,
     sql<{ n: number }[]>`SELECT count(*)::int AS n FROM public.deliveries d WHERE ${where()}`,
   ]);
@@ -181,9 +182,60 @@ export async function deliveryList(sql: Sql, f: DeliveryFilters, page: number): 
       attempts: r.attempts,
       numbersTried: r.numbers_tried,
       ack: r.wa_ack,
-      lastError: r.last_error,
+      errorCode: r.error_code,
+      opener: r.opener,
       sentAt: r.sent_at,
     })),
     count: total?.n ?? 0,
+  };
+}
+
+/** A delivery that needs a person: failed for good, or a send that may have gone out (unknown). */
+export interface AttentionRow {
+  readonly id: string;
+  readonly createdAt: Date;
+  readonly orderCode: string;
+  readonly buyerName: string;
+  readonly buyerPhone: string | null;
+  readonly channel: "whatsapp" | "email";
+  readonly status: "failed" | "unknown";
+  readonly errorCode: string | null;
+  readonly attempts: number;
+  readonly sender: string | null;
+}
+
+/** How many failed and unknown deliveries of PAID orders wait for a person, and the newest of them (the resend list). */
+export async function attentionList(sql: Sql, limit = PAGE_SIZE): Promise<{ readonly rows: AttentionRow[]; readonly failed: number; readonly unknown: number }> {
+  const [rows, [counts]] = await Promise.all([
+    sql<
+      { id: string; created_at: Date; order_code: string; buyer_name: string; buyer_phone: string | null; channel: "whatsapp" | "email"; status: "failed" | "unknown"; error_code: string | null; attempts: number; sender: string | null }[]
+    >`
+      SELECT d.id, d.created_at, o.order_code, public.mask_name(o.buyer_name) AS buyer_name, public.mask_phone(o.buyer_phone) AS buyer_phone, d.channel, d.status::text AS status,
+             CASE WHEN d.last_error IS NULL THEN NULL WHEN d.last_error ~ '^[a-z0-9_]{1,64}$' THEN d.last_error ELSE 'other' END AS error_code, d.attempts, s.phone AS sender
+        FROM public.deliveries d
+        JOIN public.orders o ON o.id = d.order_id
+        LEFT JOIN public.waha_sessions s ON s.id = coalesce(d.session_id, d.tried_session_ids[cardinality(d.tried_session_ids)])
+       WHERE d.status IN ('failed', 'unknown') AND o.status = 'paid'
+       ORDER BY d.updated_at DESC, d.id DESC
+       LIMIT ${limit}`,
+    sql<{ failed: number; unknown: number }[]>`
+      SELECT (count(*) FILTER (WHERE d.status = 'failed'))::int AS failed, (count(*) FILTER (WHERE d.status = 'unknown'))::int AS unknown
+        FROM public.deliveries d JOIN public.orders o ON o.id = d.order_id WHERE d.status IN ('failed', 'unknown') AND o.status = 'paid'`,
+  ]);
+  return {
+    rows: rows.map((r) => ({
+      id: r.id,
+      createdAt: r.created_at,
+      orderCode: r.order_code,
+      buyerName: r.buyer_name,
+      buyerPhone: r.buyer_phone,
+      channel: r.channel,
+      status: r.status,
+      errorCode: r.error_code,
+      attempts: r.attempts,
+      sender: r.sender,
+    })),
+    failed: counts?.failed ?? 0,
+    unknown: counts?.unknown ?? 0,
   };
 }

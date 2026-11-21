@@ -122,6 +122,16 @@ describe("any other host, or none configured", () => {
     }
   });
 
+  // US-025: the WAHA webhook (server to server) and the signed ebook download (WAHA, and the e-mail fallback link) are api.<DOMAIN> routes. They
+  // pass the gating everywhere except the order origin (the order page and nothing else: the same 404 page as an unknown order); the download route itself answers 404 on any host
+  // but the api host.
+  it("passes the WAHA webhook and the signed file download through, except on the order origin", () => {
+    for (const path of ["/api/v1/webhooks/waha", "/files/deliverables/9b2a6f6e-0f4e-4f6b-8f0e-1f2d3c4b5a69.pdf"]) {
+      for (const host of [`api.${DOMAIN}`, `play.${DOMAIN}`, "lp.example.test", null]) expect(route(host, path), `${String(host)} ${path}`).toEqual({ kind: "pass" });
+      expect(route(`order.${DOMAIN}`, path), path).toEqual({ kind: "orderPage", publicId: null });
+    }
+  });
+
   // US-024: the SDK's config and visit routes are called from the landing pages' own origins against api.<DOMAIN>; the
   // route itself checks the Origin against the page's registered hosts, so host gating must let them through everywhere
   // except the order origin, which serves the order page only.

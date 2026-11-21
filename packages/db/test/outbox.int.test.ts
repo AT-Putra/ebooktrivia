@@ -55,8 +55,8 @@ describe("enqueue_waha_inbound", () => {
     const inboundId = await asRole("public_rw", async (tx) =>
       first(
         await tx<{ id: string }[]>`
-          INSERT INTO public.waha_inbound (message_id, session_name, from_jid, body, raw)
-          VALUES (${messageId}, 'default', '6281234567890@c.us', 'KODE 7ZK4M2QH9R', ${sql.json({})})
+          INSERT INTO public.waha_inbound (message_id, session_name, from_jid, raw)
+          VALUES (${messageId}, 'default', '6281234567890@c.us', ${sql.json({})})
           RETURNING id`,
       ).id,
     );

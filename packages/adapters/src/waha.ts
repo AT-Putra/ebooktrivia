@@ -20,7 +20,16 @@ import { type IdMobileE164, normalizeIdMobile } from "@ebooktrivia/core";
 import { type HttpFetch, type HttpResponse, isRecord, stringField } from "./http.ts";
 import { SafeFetchError } from "./safe-fetch.ts";
 
-export type WahaErrorCode = "unauthorized" | "rejected" | "failed" | "maybe_sent" | "bad_response";
+export type WahaErrorCode =
+  | "unauthorized"
+  | "rejected"
+  | "failed"
+  | "maybe_sent"
+  | "bad_response"
+  /** WhatsApp refused a message to a NEW contact: "server returned error 463" (reachout timelock). The send certainly did not happen; the session stays WORKING. */
+  | "reachout_timelock"
+  /** "server returned error 475" (message capping: the quota of new contacts of this cycle is used). Same: not sent, session WORKING. */
+  | "message_capping";
 
 export class WahaError extends Error {
   readonly code: WahaErrorCode;
@@ -36,6 +45,10 @@ export interface WahaClientConfig {
   readonly target: URL;
   readonly apiKey: string;
   readonly fetch: HttpFetch;
+  /** The time budget of one seen / typing / presence call (they are best effort and never held against a send). Default 3000 ms. */
+  readonly presenceTimeoutMs?: number;
+  /** The time budget of a check-exists lookup (WhatsApp is asked). Default 10000 ms. */
+  readonly lookupTimeoutMs?: number;
 }
 
 export interface SentMessage {
@@ -63,6 +76,16 @@ const CHAT_ID = /^[0-9]{5,20}@(?:c\.us|lid)$/;
 /** WAHA message ids: "{fromMe}_{chatId}_{key}", e.g. "false_628123456789@c.us_3EB0AAAA0001". */
 const MESSAGE_ID = /^(?:true|false)_([0-9]{5,20}@(?:c\.us|lid))_[A-Za-z0-9]{1,64}$/;
 
+export interface ContactCheck {
+  readonly numberExists: boolean;
+  /** Where to send: `<digits>@c.us` or `<lid>@lid`. Null when the number is not on WhatsApp. */
+  readonly chatId: string | null;
+  /** The `<lid>@lid` when the chat id is one (the key of an inbound @lid match). */
+  readonly lid: string | null;
+  /** The phone WAHA reports for the contact (`pn`), when it does. */
+  readonly phone: IdMobileE164 | null;
+}
+
 export interface FetchedMessage {
   readonly messageId: string;
   readonly chat: ChatRef;
@@ -77,13 +100,61 @@ export interface WahaClient {
   sendText(session: string, chatId: string, text: string): Promise<SentMessage>;
   sendFile(session: string, chatId: string, file: FileToSend, caption?: string): Promise<SentMessage>;
   sessionStatus(session: string): Promise<string>;
-  /** The phone (E.164) behind a @lid chat, or null when WAHA cannot resolve it. */
+  /** The phone (E.164) behind a @lid chat, or null when WAHA cannot resolve it (VERIFIED live: an unknown @lid answers 200 {lid, pn: null}, not a 404). */
   resolveLid(session: string, lid: string): Promise<IdMobileE164 | null>;
-  /** Most recent messages this session sent to `chatId`, newest first. */
-  recentOutgoing(session: string, chatId: string, limit?: number): Promise<OutgoingMessage[]>;
+  /**
+   * Messages this session sent to `chatId`, newest first. `limit` is the page size (1..100). With `since` it pages on until the page that reaches back to that
+   * moment (at most RECENT_MAX_PAGES pages), so a chatty buyer cannot push a send out of the window and make an uncertain send look "not sent"; without it, one page.
+   * The filter is WAHA's `filter.fromMe=true` (the instance ignores a bare `fromMe`), and every message is checked on our side again.
+   */
+  recentOutgoing(session: string, chatId: string, limit?: number, since?: Date): Promise<OutgoingMessage[]>;
   /** One message by id, from WAHA itself (the webhook body is only a hint), or null if unknown. */
   getMessage(session: string, messageId: string): Promise<FetchedMessage | null>;
+
+  // --- human-like sending (US-025; WAHA docs "How to avoid blocking", "Presence", "Chats") --------------------------------------------------
+  // Every call below is BEST EFFORT: the caller (apps/worker/src/delivery/human.ts) catches its failure and goes on, and each has a short budget
+  // (presenceTimeoutMs). The exact request bodies are UNVERIFIED until US-005 checks them against the Owner's WAHA instance (its OpenAPI): the
+  // "presence" bodies are the documented ones ({chatId, presence: "typing" | "paused"}, {presence: "offline"}); sendSeen's body is not documented on
+  // the pages we read ({session, chatId, messageIds} is the shape of the other /api/send* calls) and falls back to the documented
+  // POST /api/{session}/chats/{chatId}/messages/read ({}: every unread message of the chat) when WAHA answers 4xx.
+  /** Marks the chat's messages as read (`messageIds`: only these, where the engine supports it). */
+  sendSeen(session: string, chatId: string, messageIds?: readonly string[]): Promise<void>;
+  /** The "typing..." presence in a chat: POST /api/{session}/presence {chatId, presence: "typing"}. */
+  startTyping(session: string, chatId: string): Promise<void>;
+  /** The typing presence ends: POST /api/{session}/presence {chatId, presence: "paused"}. */
+  stopTyping(session: string, chatId: string): Promise<void>;
+  /** The session shows offline again (WAHA: while it shows online the phone gets no notifications): POST /api/{session}/presence {presence: "offline"}. */
+  setOffline(session: string): Promise<void>;
+
+  // --- first contact (WAHA docs, Contacts: check-exists; LIDs) -----------------------------------------------------------------------------------
+  /**
+   * Is `phone` (E.164, with the plus or digits) on WhatsApp, and what is its chat id: GET /api/contacts/check-exists?phone=<digits>&session=<name> answers
+   * {numberExists, chatId, pn}. SEND TO THE RETURNED chatId: since the LID rollout it can be `<lid>@lid`, so a first contact is never addressed as
+   * `<phone>@c.us` by us. `lid` is set when the chat id is a @lid; `phone` is the `pn` WAHA gives back. A failure (5xx, timeout) is a WahaError "failed":
+   * a lookup is never a send, so it is never maybe_sent. UNVERIFIED shape until US-005.
+   */
+  checkExists(session: string, phone: string): Promise<ContactCheck>;
+
+  // --- WhatsApp's ban signals (WAHA docs, Sessions: Reachout timelock, Message capping) -------------------------------------------------------
+  /**
+   * GET /api/sessions/{session}/timelock; null when WAHA has no such state for this engine (a 404). VERIFIED live (US-005 audit, WAHA 2026.10.1, WEBJS and CORE):
+   * an account with no timelock answers 200 {isActive: false, ...}.
+   */
+  reachoutTimelock(session: string): Promise<{ readonly isActive: boolean; readonly endsAt: Date | null } | null>;
+  /**
+   * GET /api/sessions/{session}/capping; null when unsupported (404). `status`: NONE | FIRST_WARNING | SECOND_WARNING | CAPPED (open-ended). VERIFIED live (US-005
+   * audit, WAHA 2026.10.1): an account with no capping state answers 200 {cappingStatus: "NONE", totalQuota: -1, mvStatus: "NOT_ELIGIBLE", ...}.
+   */
+  messageCapping(session: string): Promise<{ readonly status: string; readonly cycleEnd: Date | null; readonly totalQuota: number | null; readonly usedQuota: number | null } | null>;
 }
+
+/** WAHA reports WhatsApp's refusals as an error text: "server returned error 463" / "475". */
+const BAN_SIGNAL = /server returned error (463|475)\b/i;
+const BAN_CODES = { "463": "reachout_timelock", "475": "message_capping" } as const;
+const PRESENCE_TIMEOUT_MS = 3000;
+const LOOKUP_TIMEOUT_MS = 10_000;
+/** The most pages recentOutgoing reads to reach back to its `since` (100 messages each). */
+export const RECENT_MAX_PAGES = 10;
 
 export function createWahaClient(config: WahaClientConfig): WahaClient {
   if (config.target.protocol !== "https:" && config.target.protocol !== "http:") throw new RangeError("target must be an http(s) URL");
@@ -104,18 +175,25 @@ export function createWahaClient(config: WahaClientConfig): WahaClient {
     if (!CHAT_ID.test(chatId)) throw new RangeError("invalid WhatsApp chat id");
   };
 
-  async function call(path: readonly string[], init: { method: string; body?: unknown; query?: Record<string, string>; notFound?: unknown }, sending: boolean): Promise<unknown> {
+  async function call(path: readonly string[], init: { method: "GET" | "POST"; body?: unknown; query?: Record<string, string>; notFound?: unknown; budgetMs?: number }, sending: boolean): Promise<unknown> {
     let response: HttpResponse;
     try {
       response = await config.fetch(url(path, init.query), {
         method: init.method,
         headers: { "x-api-key": config.apiKey, accept: "application/json", "content-type": "application/json" },
         ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
+        ...(init.budgetMs === undefined ? {} : { signal: AbortSignal.timeout(init.budgetMs) }),
       });
     } catch (error) {
       if (error instanceof WahaError) throw error;
       const certain = error instanceof SafeFetchError && NOT_SENT.has(error.code);
       throw new WahaError(sending && !certain ? "maybe_sent" : "failed", "WAHA request failed", { cause: error });
+    }
+    if (sending && response.status >= 400) {
+      // WhatsApp's own refusal of a new contact (463 / 475): WAHA says it in the error text, whatever status carries it (even a 5xx). The message
+      // was NOT sent, so it is a definite failure, never maybe_sent. Only the error text is read, and only to look for the code.
+      const ban = BAN_SIGNAL.exec(await errorText(response));
+      if (ban?.[1] !== undefined) throw new WahaError(BAN_CODES[ban[1] as keyof typeof BAN_CODES], `WhatsApp refused the message (${ban[1]})`);
     }
     if (response.status === 401 || response.status === 403) throw new WahaError("unauthorized", "WAHA refused the API key");
     if (response.status === 404 && init.notFound !== undefined) return init.notFound;
@@ -127,6 +205,18 @@ export function createWahaClient(config: WahaClientConfig): WahaClient {
       throw new WahaError(sending ? "maybe_sent" : "bad_response", "WAHA answered without JSON", { cause: error });
     }
   }
+
+  /** The start of an error answer's text (at most 2 KB), or "" when it cannot be read. */
+  async function errorText(response: HttpResponse): Promise<string> {
+    try {
+      return response.textPrefix === undefined ? (await response.text()).slice(0, 2048) : await response.textPrefix(2048);
+    } catch {
+      return "";
+    }
+  }
+
+  const presenceBudget = config.presenceTimeoutMs ?? PRESENCE_TIMEOUT_MS;
+  const unix = (value: unknown): Date | null => (typeof value === "number" && Number.isFinite(value) && value > 0 ? new Date(value * 1000) : null);
 
   const sent = (body: unknown): SentMessage => {
     if (!isRecord(body)) throw new WahaError("maybe_sent", "WAHA send answer is not an object");
@@ -166,21 +256,30 @@ export function createWahaClient(config: WahaClientConfig): WahaClient {
       if (typeof pn !== "string") throw new WahaError("bad_response", "WAHA lid answer has a non-string pn");
       return phoneOfChat(pn);
     },
-    async recentOutgoing(session, chatId, limit = 20) {
+    async recentOutgoing(session, chatId, limit = 20, since) {
       assertSession(session);
       assertChat(chatId);
       if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new RangeError("limit must be 1..100");
-      const query = { limit: String(limit), fromMe: "true", downloadMedia: "false" };
-      const body = await call(["api", session, "chats", chatId, "messages"], { method: "GET", query }, false);
-      if (!Array.isArray(body)) throw new WahaError("bad_response", "WAHA messages answer is not a list");
-      return body.flatMap((m: unknown): OutgoingMessage[] => {
-        if (!isRecord(m) || m["fromMe"] !== true) return [];
-        const id = stringField(m, "id");
-        const timestamp = m["timestamp"];
-        if (id === undefined || typeof timestamp !== "number") return [];
-        const media = m["media"];
-        return [{ id, timestamp, filename: isRecord(media) ? stringField(media, "filename") : undefined }];
-      });
+      const found: OutgoingMessage[] = [];
+      for (let page = 0; page < (since === undefined ? 1 : RECENT_MAX_PAGES); page++) {
+        const query = { limit: String(limit), ...(page === 0 ? {} : { offset: String(page * limit) }), "filter.fromMe": "true", downloadMedia: "false" };
+        const body = await call(["api", session, "chats", chatId, "messages"], { method: "GET", query }, false);
+        if (!Array.isArray(body)) throw new WahaError("bad_response", "WAHA messages answer is not a list");
+        let oldest = Number.POSITIVE_INFINITY;
+        for (const m of body) {
+          if (!isRecord(m)) continue;
+          const timestamp = m["timestamp"];
+          if (typeof timestamp === "number") oldest = Math.min(oldest, timestamp);
+          const id = stringField(m, "id");
+          // The backstop: whatever the instance did with the filter, only our own messages count.
+          if (m["fromMe"] !== true || id === undefined || typeof timestamp !== "number") continue;
+          const media = m["media"];
+          found.push({ id, timestamp, filename: isRecord(media) ? stringField(media, "filename") : undefined });
+        }
+        // The page reaches back to `since`, or it was the last one: covered.
+        if (since === undefined || body.length < limit || oldest * 1000 < since.getTime()) break;
+      }
+      return found;
     },
     async getMessage(session, messageId) {
       assertSession(session);
@@ -196,6 +295,63 @@ export function createWahaClient(config: WahaClientConfig): WahaClient {
       }
       const text = body["body"];
       return { messageId, chat: parseChatId(chatId), fromMe, body: typeof text === "string" ? text : "", hasMedia: body["hasMedia"] === true, timestamp };
+    },
+
+    async sendSeen(session, chatId, messageIds) {
+      assertSession(session);
+      assertChat(chatId);
+      const ids = messageIds === undefined || messageIds.length === 0 ? undefined : messageIds.filter((id) => MESSAGE_ID.test(id));
+      try {
+        await call(["api", "sendSeen"], { method: "POST", body: { session, chatId, ...(ids === undefined || ids.length === 0 ? {} : { messageIds: ids }) }, budgetMs: presenceBudget }, false);
+      } catch (error) {
+        // An instance without POST /api/sendSeen answers 4xx: the documented "read the chat" call does the same for every unread message.
+        if (!(error instanceof WahaError) || error.code !== "rejected") throw error;
+        await call(["api", session, "chats", chatId, "messages", "read"], { method: "POST", body: {}, budgetMs: presenceBudget }, false);
+      }
+    },
+    async startTyping(session, chatId) {
+      assertSession(session);
+      assertChat(chatId);
+      await call(["api", session, "presence"], { method: "POST", body: { chatId, presence: "typing" }, budgetMs: presenceBudget }, false);
+    },
+    async stopTyping(session, chatId) {
+      assertSession(session);
+      assertChat(chatId);
+      await call(["api", session, "presence"], { method: "POST", body: { chatId, presence: "paused" }, budgetMs: presenceBudget }, false);
+    },
+    async setOffline(session) {
+      assertSession(session);
+      await call(["api", session, "presence"], { method: "POST", body: { presence: "offline" }, budgetMs: presenceBudget }, false);
+    },
+
+    async checkExists(session, phone) {
+      assertSession(session);
+      const digits = phone.replace(/^\+/, "");
+      if (!/^[0-9]{8,15}$/.test(digits)) throw new RangeError("invalid phone number");
+      const body = await call(["api", "contacts", "check-exists"], { method: "GET", query: { phone: digits, session }, budgetMs: config.lookupTimeoutMs ?? LOOKUP_TIMEOUT_MS }, false);
+      if (!isRecord(body) || typeof body["numberExists"] !== "boolean") throw new WahaError("bad_response", "WAHA check-exists answer has no numberExists");
+      if (!body["numberExists"]) return { numberExists: false, chatId: null, lid: null, phone: null };
+      const chatId = stringField(body, "chatId");
+      if (chatId === undefined || !CHAT_ID.test(chatId)) throw new WahaError("bad_response", "WAHA check-exists answer has no usable chatId");
+      const pn = stringField(body, "pn");
+      return { numberExists: true, chatId, lid: chatId.endsWith("@lid") ? chatId : null, phone: pn === undefined ? null : phoneOfChat(pn) };
+    },
+
+    async reachoutTimelock(session) {
+      assertSession(session);
+      const body = await call(["api", "sessions", session, "timelock"], { method: "GET", notFound: null, budgetMs: presenceBudget }, false);
+      if (body === null) return null;
+      if (!isRecord(body) || typeof body["isActive"] !== "boolean") throw new WahaError("bad_response", "WAHA timelock answer has no isActive");
+      return { isActive: body["isActive"], endsAt: unix(body["timeEnforcementEnds"]) };
+    },
+    async messageCapping(session) {
+      assertSession(session);
+      const body = await call(["api", "sessions", session, "capping"], { method: "GET", notFound: null, budgetMs: presenceBudget }, false);
+      if (body === null) return null;
+      const status = isRecord(body) ? stringField(body, "cappingStatus") : undefined;
+      if (!isRecord(body) || status === undefined) throw new WahaError("bad_response", "WAHA capping answer has no cappingStatus");
+      const quota = (v: unknown): number | null => (typeof v === "number" && Number.isInteger(v) && v >= -1 && v <= 1_000_000 ? v : null);
+      return { status, cycleEnd: unix(body["cycleEnd"]), totalQuota: quota(body["totalQuota"]), usedQuota: quota(body["usedQuota"]) };
     },
   };
 }
@@ -228,7 +384,8 @@ export function parseChatId(chatId: string): ChatRef {
 
 /**
  * Verifies X-Webhook-Hmac (hex HMAC-SHA512 of the exact raw body) in constant time. The algorithm
- * header, when present, must say sha512. Verify BEFORE parsing the body.
+ * header (X-Webhook-Hmac-Algorithm), when present, must say sha512. Verify BEFORE parsing the body.
+ * As the WAHA docs describe it; VERIFY WITH A REAL DELIVERY ON STAGING (US-005 has not seen a signed webhook of the Owner's instance yet).
  */
 export function verifyWebhookHmac(rawBody: string | Uint8Array, headers: { hmac: string | undefined; algorithm?: string | undefined }, secret: string): boolean {
   if (headers.hmac === undefined || secret === "") return false;
@@ -284,6 +441,13 @@ export interface SessionStatusEvent {
   readonly session: string;
   readonly eventTimestampMs: number | undefined;
   readonly status: string;
+  /**
+   * WhatsApp's limits on the number, when the event carries them (WAHA docs: payload.data.reachoutTimelock {isActive, timeEnforcementEnds} and
+   * payload.data.messageCapping {cappingStatus, totalQuota, usedQuota, cycleStart, cycleEnd}); the raw objects, which record_waha_session_state checks.
+   * UNVERIFIED shapes until US-005.
+   */
+  readonly reachoutTimelock: Record<string, unknown> | undefined;
+  readonly messageCapping: Record<string, unknown> | undefined;
 }
 
 /**
@@ -315,7 +479,11 @@ export function parseWebhookEvent(body: unknown): InboundMessage | AckEvent | Se
   }
   if (event === "session.status") {
     const status = stringField(payload, "status");
-    return status === undefined ? undefined : { kind: "session.status", session, eventTimestampMs, status };
+    if (status === undefined) return undefined;
+    const data = payload["data"];
+    const timelock = isRecord(data) ? data["reachoutTimelock"] : undefined;
+    const capping = isRecord(data) ? data["messageCapping"] : undefined;
+    return { kind: "session.status", session, eventTimestampMs, status, reachoutTimelock: isRecord(timelock) ? timelock : undefined, messageCapping: isRecord(capping) ? capping : undefined };
   }
   return undefined;
 }

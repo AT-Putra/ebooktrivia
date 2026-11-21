@@ -231,6 +231,9 @@ describe("override reason, limits, prize tiers, legal pages", () => {
   it("limits: every key bounded, all required, cooldown shorter than the code validity", () => {
     const values = Object.fromEntries(LIMITS.map((l) => [l.field, String(l.fallback)]));
     expect(parseLimits(form(values))).toEqual(Object.fromEntries(LIMITS.map((l) => [l.key, l.fallback])));
+    // US-025: the proactive WhatsApp delay may be 0 (at once), and defaults to 3 minutes.
+    expect(parseLimits(form({ ...values, waDelaySeconds: "0" }))["delivery.wa_delay_seconds"]).toBe(0);
+    expect(LIMITS.find((l) => l.key === "delivery.wa_delay_seconds")?.fallback).toBe(180);
     expect(Object.fromEntries(LIMITS.map((l) => [l.key, [l.min, l.max]]))).toEqual({
       "otp.code_ttl_seconds": [60, 900],
       "otp.max_attempts": [1, 5],
@@ -252,6 +255,7 @@ describe("override reason, limits, prize tiers, legal pages", () => {
       "captcha.ip_window_seconds": [60, 86_400],
       "captcha.ip48_cap": [1, 100_000],
       "trivia.extension_max_minutes": [1, 1440],
+      "delivery.wa_delay_seconds": [0, 86_400],
     });
     for (const l of LIMITS) {
       for (const bad of [String(l.min - 1), String(l.max + 1), "", "1.5", "-5", "1e3"]) {

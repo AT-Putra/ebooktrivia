@@ -368,6 +368,7 @@ describe("bounds and precision as CHECKs (every writer)", () => {
       "captcha.ip_window_seconds",
       "captcha.ip48_cap",
       "trivia.extension_max_minutes",
+      "delivery.wa_delay_seconds",
     ]);
   });
 });

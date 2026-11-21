@@ -213,7 +213,7 @@ describe("message templates", () => {
 
   it.each([
     ["a variable the key does not allow", "otp", "whatsapp", "Kode {kode_otp} untuk {nama}", /cannot have/],
-    ["a login link in the no-link template", "delivery_without_link", "whatsapp", "Halo {nama} {link_trivia}", /cannot have/],
+    ["a login link in an opener (it carries no link)", "delivery_opener_1", "whatsapp", "Halo {nama} {link_trivia}", /cannot have/],
     ["an unknown variable", "delivery", "whatsapp", "Halo {name}", /does not exist/],
     ["a stray brace", "delivery", "whatsapp", "Halo {nama", /\{ or \}/],
     ["a variable in an attribute", "delivery", "email", '<p title="{nama}">x</p>', /HTML tag, attribute/],

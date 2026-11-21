@@ -252,6 +252,24 @@ describe("adapted Caddyfile", () => {
     }
   });
 
+  it("routes only POST /api/v1/webhooks/waha from the WAHA hosts (WAHA_ALLOWED_CIDRS) to the public app, 64 KB max; anyone else gets a 404", () => {
+    const outer = routes([site("api.example.test")]).find((r) => JSON.stringify(r.match ?? []).includes("/api/v1/webhooks/waha"));
+    expect(outer?.match).toEqual([{ path: ["/api/v1/webhooks/waha"] }]);
+    const inner = routes(outer?.handle?.flatMap((h) => h.routes ?? []));
+    const allowed = inner.find((r) => JSON.stringify(r.match ?? []).includes("remote_ip"));
+    expect(allowed?.match).toEqual([{ method: ["POST"], remote_ip: { ranges: ["198.51.100.30/32"] } }]);
+    const served = handlers([allowed ?? {}]);
+    expect(served.find((h) => h.handler === "request_body")?.["max_size"]).toBe(64_000);
+    expect(served.filter((h) => h.handler === "reverse_proxy").flatMap(dials)).toEqual(["public-a:3000", "public-b:3000"]);
+    // Everything else under that path: a 404, no upstream at all.
+    const refused = inner.find((r) => r.handle?.some((h) => h.handler === "static_response") === true);
+    expect(refused?.match).toBeUndefined();
+    expect(handlers([refused ?? {}]).map((h) => h["status_code"])).toEqual([404]);
+    expect(handlers([refused ?? {}]).some((h) => h.handler === "reverse_proxy")).toBe(false);
+    // The allowlist is its own address list, not the GlitchTip host's (WAHA may live elsewhere).
+    expect(JSON.stringify(allowed?.match)).not.toContain("198.51.100.20");
+  });
+
   it("answers 404 to admin requests from outside ADMIN_ALLOWED_CIDRS", () => {
     const outside = routes([site("admin.example.test")]).find((r) => JSON.stringify(r.match ?? []).includes('"not"'));
     expect(outside?.match).toEqual([{ not: [{ remote_ip: { ranges: ["192.0.2.0/24", "2001:db8::/32"] } }] }]);

@@ -1,11 +1,11 @@
-// US-029: the delivery report (per-number volume and failure rate, per-order status with the sender number, buyers masked) and the
-// contest report (completion per set, the live and the frozen leaderboard, the winners export), as the admin_rw login. Figures are
+// US-029: the delivery report (per-number volume and failure rate from the send ledger, per-order status with the sender number, buyers masked, errors
+// as codes only, the failed deliveries and their resend) and the contest report (completion per set, the live and the frozen leaderboard, the winners export), as the admin_rw login. Figures are
 // worked out by hand in the comments.
 import { randomBytes } from "node:crypto";
 import Papa from "papaparse";
 import { beforeAll, describe, expect, it } from "vitest";
 import { leaderboard, participation, programChoices } from "../src/lib/reports/contest-report.ts";
-import { channelCounts, deliveryList, parseDeliveryFilters, perNumberStats } from "../src/lib/reports/delivery-source.ts";
+import { attentionList, channelCounts, deliveryList, parseDeliveryFilters, perNumberStats } from "../src/lib/reports/delivery-source.ts";
 import { WINNERS_CSV_HEADER, winnersCsv } from "../src/lib/reports/exports.ts";
 import { newRuntime, root, suffix } from "./support.ts";
 
@@ -28,6 +28,7 @@ describe("the delivery report (AC-A6)", () => {
   const numbers: Record<"n1" | "n2" | "n3", string> = { n1: "", n2: "", n3: "" };
   const PHONES = { n1: "+6281111110001", n2: "+6281111110002", n3: "+6281111110003" } as const;
   const deliveries: Record<string, string> = {};
+  let ids = { programId: "", productId: "", lpId: "" };
 
   async function paidOrder(programId: string, productId: string, lpId: string, day: string, hour: number): Promise<string> {
     const created = at(day, hour);
@@ -46,6 +47,7 @@ describe("the delivery report (AC-A6)", () => {
       INSERT INTO programs (product_id, slug, name, status, sales_start_at, sales_end_at, grace_days)
       VALUES (${product.id}, ${`dlv-${tag}`}, 'Delivery', 'published', now() - interval '60 days', now() + interval '60 days', 30) RETURNING id`);
     const lp = await one(root<Id[]>`INSERT INTO landing_pages (lp_key, name, program_id) VALUES (${`lp_${suffix()}${suffix()}`}, 'LP', ${program.id}) RETURNING id`);
+    ids = { programId: program.id, productId: product.id, lpId: lp.id };
     const server = await one(root<Id[]>`
       INSERT INTO waha_servers (name, base_url, base_url_host) VALUES (${`waha-${tag}`}, ${`https://waha-${tag}.example.test`}, ${`waha-${tag}.example.test`}) RETURNING id`);
     for (const key of ["n1", "n2", "n3"] as const) {
@@ -65,11 +67,28 @@ describe("the delivery report (AC-A6)", () => {
     };
     const { n1, n2, n3 } = numbers;
     // WhatsApp. d1: sent from n1. d2: failed on n1, sent from n2. d3: failed on n1 and n2, failed on n3. d4: n1 timed out (unknown). d5: n2 is sending.
+    // The send ledger (waha_sends) holds one row per send of a number, with how it ended: the figures per number are counted from it.
+    const ledger = async (name: string, session: string, hour: number, outcome: "sent" | "failed" | "unknown" | "reserved") => {
+      await root`
+        INSERT INTO waha_sends (session_id, delivery_id, kind, outcome, send_at, created_at)
+        VALUES (${session}, ${deliveries[name] ?? null}, 'reply', ${outcome}, ${at(DAY1, hour)}, ${at(DAY1, hour)})`;
+    };
     const a = await delivery("d1", "whatsapp", "sent", 9, [n1], n1, null, "delivered");
+    await ledger("d1", n1, 9, "sent");
     await delivery("d2", "whatsapp", "sent", 10, [n1, n2], n2);
+    await ledger("d2", n1, 10, "failed");
+    await ledger("d2", n2, 10, "sent");
     await delivery("d3", "whatsapp", "failed", 11, [n1, n2, n3], n3, "waha_error");
+    await ledger("d3", n1, 11, "failed");
+    await ledger("d3", n2, 11, "failed");
+    await ledger("d3", n3, 11, "failed");
     await delivery("d4", "whatsapp", "unknown", 12, [n1], n1, "timeout");
+    await ledger("d4", n1, 12, "unknown");
     await delivery("d5", "whatsapp", "sending", 13, [n2], n2);
+    await ledger("d5", n2, 13, "reserved");
+    // A send of the numbers that belongs to no delivery (a login code): it is in the number's volume all the same.
+    await root`INSERT INTO waha_sends (session_id, kind, outcome, send_at, created_at) VALUES (${n3}, 'otp', 'sent', ${at(DAY1, 14)}, ${at(DAY1, 14)})`;
+    // A claim that ended with nothing sent takes its row back, so it is in no figure: nothing to insert for it.
     // E-mail: no number.
     await root`
       INSERT INTO deliveries (order_id, channel, status, attempts, created_at, sent_at) VALUES (${a}, 'email', 'sent', 1, ${at(DAY1, 9)}, ${at(DAY1, 9)})`;
@@ -79,15 +98,15 @@ describe("the delivery report (AC-A6)", () => {
 
   const mine = (rows: Awaited<ReturnType<typeof perNumberStats>>) => rows.filter((r) => Object.values(numbers).includes(r.sessionId));
 
-  it("counts every attempt of a number: a number left after a failure has a failed attempt; failure rate = failed / (sent + failed + unknown)", async () => {
+  it("counts every send of a number from the ledger: a number left after a failure has a failed send; failure rate = failed / (sent + failed + unknown)", async () => {
     const stats = mine(await perNumberStats(rt.sql, RANGE));
     const by = new Map(stats.map((s) => [s.phone, s] as const));
     // n1: d1 sent; d2 and d3 left it after a failure (failed x 2); d4 unknown -> sent 1, failed 2, unknown 1: volume 4, 2 / 4 = 50 %.
     expect(by.get(PHONES.n1)).toMatchObject({ sent: 1, failed: 2, unknown: 1, inFlight: 0, volume: 4, failureBps: 5000 });
     // n2: d2 sent; d3 left it after a failure; d5 still sending -> sent 1, failed 1, in flight 1: volume 2, 1 / 2 = 50 %.
     expect(by.get(PHONES.n2)).toMatchObject({ sent: 1, failed: 1, unknown: 0, inFlight: 1, volume: 2, failureBps: 5000 });
-    // n3: only d3 reached it and it failed -> 100 %.
-    expect(by.get(PHONES.n3)).toMatchObject({ sent: 0, failed: 1, unknown: 0, inFlight: 0, volume: 1, failureBps: 10_000 });
+    // n3: d3 reached it and it failed, and a login code (no delivery) went out -> sent 1, failed 1: volume 2, 50 %.
+    expect(by.get(PHONES.n3)).toMatchObject({ sent: 1, failed: 1, unknown: 0, inFlight: 0, volume: 2, failureBps: 5000 });
     // Busiest number first.
     expect(stats.map((s) => s.phone)).toEqual([PHONES.n1, PHONES.n2, PHONES.n3]);
   });
@@ -115,15 +134,56 @@ describe("the delivery report (AC-A6)", () => {
     expect(d2).toMatchObject({ channel: "whatsapp", status: "sent", sender: PHONES.n2, attempts: 2, numbersTried: 2 });
     const d1 = all.rows.find((r) => r.id === deliveries["d1"]);
     expect(d1).toMatchObject({ sender: PHONES.n1, ack: "delivered" });
-    expect(all.rows.find((r) => r.id === deliveries["d3"])).toMatchObject({ status: "failed", lastError: "waha_error", numbersTried: 3 });
+    expect(all.rows.find((r) => r.id === deliveries["d3"])).toMatchObject({ status: "failed", errorCode: "waha_error", numbersTried: 3 });
     const email = await deliveryList(rt.sql, { ...RANGE, channel: "email", status: null, sessionId: null }, 1);
     expect(email.count).toBe(2);
     expect(email.rows.every((r) => r.sender === null)).toBe(true);
     expect((await deliveryList(rt.sql, { ...RANGE, channel: null, status: "unknown", sessionId: null }, 1)).rows.map((r) => r.id)).toEqual([deliveries["d4"]]);
-    // Every delivery that TRIED n3: only d3. Every one that tried n1: d1 d2 d3 d4.
+    // Every delivery with a send of n3 in the ledger: only d3. Every one with a send of n1: d1 d2 d3 d4.
     expect((await deliveryList(rt.sql, { ...RANGE, channel: null, status: null, sessionId: numbers.n3 }, 1)).rows.map((r) => r.id)).toEqual([deliveries["d3"]]);
     expect((await deliveryList(rt.sql, { ...RANGE, channel: null, status: null, sessionId: numbers.n1 }, 1)).count).toBe(4);
     expect((await deliveryList(rt.sql, { ...RANGE, channel: null, status: null, sessionId: null }, 2)).rows).toEqual([]);
+  });
+
+  it("shows an error as a CODE only: a stored text (an address, a phone, a sentence) is never sent to the page", async () => {
+    const order = await paidOrder(ids.programId, ids.productId, ids.lpId, DAY2, 10);
+    const leaky = one(root<Id[]>`
+      INSERT INTO deliveries (order_id, channel, status, attempts, last_error, created_at) VALUES (${order}, 'email', 'failed', 1, 'rejected: budi@example.invalid +6281234500100 mailbox full', ${at(DAY2, 10)}) RETURNING id`);
+    const id = (await leaky).id;
+    const list = await deliveryList(rt.sql, { ...RANGE, channel: "email", status: "failed", sessionId: null }, 1);
+    expect(list.rows.find((r) => r.id === id)).toMatchObject({ errorCode: "other" });
+    expect(JSON.stringify(list.rows)).not.toContain("mailbox");
+    expect(JSON.stringify(list.rows)).not.toContain("budi@example.invalid");
+    const attention = await attentionList(rt.sql, 200);
+    expect(attention.rows.find((r) => r.id === id)).toMatchObject({ errorCode: "other", status: "failed" });
+    expect(JSON.stringify(attention.rows)).not.toContain("mailbox");
+    expect(JSON.stringify(attention.rows)).not.toContain("+6281234500100");
+    // A code is shown as it is.
+    const smtp = (await deliveryList(rt.sql, { ...RANGE, channel: "email", status: "failed", sessionId: null }, 1)).rows.find((r) => r.errorCode === "smtp_refused");
+    expect(smtp).toBeDefined();
+  });
+
+  it("lists the failed and unknown deliveries of PAID orders for a resend, buyers masked, newest first; a delivery of a refunded order is not offered", async () => {
+    const before = await attentionList(rt.sql, 200);
+    const mineFailed = before.rows.filter((r) => [deliveries["d3"], deliveries["d4"]].includes(r.id));
+    expect(mineFailed.map((r) => [r.id, r.status, r.errorCode])).toEqual(expect.arrayContaining([[deliveries["d3"], "failed", "waha_error"], [deliveries["d4"], "unknown", "timeout"]]));
+    expect(before.failed).toBeGreaterThanOrEqual(2);
+    expect(before.unknown).toBeGreaterThanOrEqual(1);
+    expect(JSON.stringify(before.rows)).not.toContain("Budi");
+    expect(JSON.stringify(before.rows)).not.toContain("budi@example.invalid");
+    // The order is refunded: nothing is sent for it, so it is not offered.
+    const refundedOrder = await paidOrder(ids.programId, ids.productId, ids.lpId, DAY2, 11);
+    const refunded = (await one(root<Id[]>`INSERT INTO deliveries (order_id, channel, status, attempts, last_error, created_at) VALUES (${refundedOrder}, 'email', 'failed', 1, 'smtp_refused', ${at(DAY2, 11)}) RETURNING id`)).id;
+    expect((await attentionList(rt.sql, 200)).rows.map((r) => r.id)).toContain(refunded);
+    await root`UPDATE orders SET status = 'refunded', refunded_at = now() WHERE id = ${refundedOrder}`;
+    expect((await attentionList(rt.sql, 200)).rows.map((r) => r.id)).not.toContain(refunded);
+  });
+
+  it("shows the state of the WhatsApp opener next to its delivery (Owner decision D7)", async () => {
+    await root`INSERT INTO delivery_openers (delivery_id, status, attempts) VALUES (${deliveries["d1"] ?? ""}, 'sent', 1) ON CONFLICT DO NOTHING`;
+    const list = await deliveryList(rt.sql, { ...RANGE, channel: "whatsapp", status: null, sessionId: null }, 1);
+    expect(list.rows.find((r) => r.id === deliveries["d1"])?.opener).toBe("sent");
+    expect(list.rows.find((r) => r.id === deliveries["d2"])?.opener).toBeNull();
   });
 
   it("parses its filters strictly (a value that is not ours is an error and the default, never a query)", () => {

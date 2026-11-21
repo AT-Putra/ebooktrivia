@@ -72,18 +72,15 @@ export function preflight(request: Request, origin: string | null): Response {
   });
 }
 
-export type BodyResult = { readonly ok: true; readonly value: unknown } | { readonly ok: false };
-
 /**
- * The JSON body, read up to `maxBytes`: not JSON (content type or syntax) or too large is `{ok: false}`.
- * The JSON content type also forces a CORS preflight for every browser request.
+ * The raw body bytes, read up to `maxBytes` (a signature covers the exact bytes, so a route that verifies one reads them
+ * before parsing anything), or undefined when it is larger or there is none. The declared length is checked first, the
+ * stream is cut off at the limit either way.
  */
-export async function readJsonBody(request: Request, maxBytes = MAX_BODY_BYTES): Promise<BodyResult> {
-  const type = request.headers.get("content-type") ?? "";
-  if (!/^application\/json\s*(;|$)/i.test(type)) return { ok: false };
+export async function readRawBody(request: Request, maxBytes: number): Promise<Uint8Array | undefined> {
   const declared = request.headers.get("content-length");
-  if (declared !== null && (!/^\d+$/.test(declared) || Number(declared) > maxBytes)) return { ok: false };
-  if (request.body === null) return { ok: false };
+  if (declared !== null && (!/^\d+$/.test(declared) || Number(declared) > maxBytes)) return undefined;
+  if (request.body === null) return undefined;
   const reader = request.body.getReader();
   const chunks: Uint8Array[] = [];
   let size = 0;
@@ -93,12 +90,26 @@ export async function readJsonBody(request: Request, maxBytes = MAX_BODY_BYTES):
     size += value.byteLength;
     if (size > maxBytes) {
       await reader.cancel().catch(() => undefined);
-      return { ok: false };
+      return undefined;
     }
     chunks.push(value);
   }
+  return Buffer.concat(chunks);
+}
+
+export type BodyResult = { readonly ok: true; readonly value: unknown } | { readonly ok: false };
+
+/**
+ * The JSON body, read up to `maxBytes`: not JSON (content type or syntax) or too large is `{ok: false}`.
+ * The JSON content type also forces a CORS preflight for every browser request.
+ */
+export async function readJsonBody(request: Request, maxBytes = MAX_BODY_BYTES): Promise<BodyResult> {
+  const type = request.headers.get("content-type") ?? "";
+  if (!/^application\/json\s*(;|$)/i.test(type)) return { ok: false };
+  const bytes = await readRawBody(request, maxBytes);
+  if (bytes === undefined) return { ok: false };
   try {
-    return { ok: true, value: JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks))) };
+    return { ok: true, value: JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) };
   } catch {
     return { ok: false };
   }

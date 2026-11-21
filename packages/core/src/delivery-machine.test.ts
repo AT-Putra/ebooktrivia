@@ -7,6 +7,7 @@ import {
   DELIVERY_STATUSES,
   EMAIL_MAX_ATTEMPTS,
   expireDeliveryLease,
+  NOT_ATTEMPTED_DELAY_MS,
   recordDeliveryOutcome,
   resolveUnknownDelivery,
   WA_MAX_SESSIONS,
@@ -89,6 +90,17 @@ describe("claimDelivery", () => {
     );
   });
 
+  it("lets a pool with nothing untried retry the SAME number, appended once more, while the budget of 3 holds", () => {
+    const tried = wa({ attempts: 1, triedSessionIds: ["s1"] });
+    expect(ok(claimDelivery(tried, { now: T0, leaseMs: LEASE, sessionId: "s1", retrySameSession: true })).triedSessionIds).toEqual(["s1", "s1"]);
+    const third = wa({ attempts: 2, triedSessionIds: ["s1", "s1"] });
+    expect(ok(claimDelivery(third, { now: T0, leaseMs: LEASE, sessionId: "s1", retrySameSession: true })).triedSessionIds).toEqual(["s1", "s1", "s1"]);
+    const full = wa({ attempts: 3, triedSessionIds: ["s1", "s1", "s1"] });
+    expect(reason(claimDelivery(full, { now: T0, leaseMs: LEASE, sessionId: "s1", retrySameSession: true }))).toBe("attempts_exhausted");
+    // Without the flag the same number is refused, as before.
+    expect(reason(claimDelivery(tried, { now: T0, leaseMs: LEASE, sessionId: "s1" }))).toBe("session_already_tried");
+  });
+
   it("enforces email rules: no session, at most 4 attempts", () => {
     expect(reason(claimDelivery(email(), { now: T0, leaseMs: LEASE, sessionId: "s1" }))).toBe("session_not_allowed");
     expect(reason(claimDelivery(email({ attempts: EMAIL_MAX_ATTEMPTS }), { now: T0, leaseMs: LEASE }))).toBe(
@@ -168,6 +180,54 @@ describe("recordDeliveryOutcome", () => {
     );
   });
 
+  it("not attempted (a failure of ours before anything was sent): pending after a backoff, the retry budget given back (the attempt NUMBER is never reused), the number out of tried_session_ids, no failover slot used", () => {
+    const set = ok(recordDeliveryOutcome(sendingWa, { kind: "not_attempted", error: "magic_link_unavailable" }, { now, attempt: 1 }));
+    expect(set).toEqual({
+      status: "pending",
+      notBefore: at(5_000 + NOT_ATTEMPTED_DELAY_MS),
+      leaseUntil: null,
+      attemptsBase: 1,
+      sessionId: null,
+      triedSessionIds: [],
+      lastError: "magic_link_unavailable",
+    });
+    // Only THIS claim's number leaves the list (the last occurrence), earlier failovers stay.
+    const second = { ...sendingWa, attempts: 2, sessionId: "s2", triedSessionIds: ["s1", "s2"] };
+    expect(ok(recordDeliveryOutcome(second, { kind: "not_attempted", error: "x" }, { now, attempt: 2 })).triedSessionIds).toEqual(["s1"]);
+    // The proactive delay is never moved earlier (a buyer-first reply that was not attempted keeps it).
+    const delayed = { ...sendingWa, notBefore: at(30 * 60_000) };
+    expect(ok(recordDeliveryOutcome(delayed, { kind: "not_attempted", error: "x" }, { now, attempt: 1 })).notBefore).toEqual(at(30 * 60_000));
+    // E-mail: the budget is given back too (an outage of the login link must not use up the 4 attempts), the backoff is the same; `attempts` stays 3.
+    expect(ok(recordDeliveryOutcome(sendingEmail(3), { kind: "not_attempted", error: "template_invalid" }, { now, attempt: 3 }))).toEqual({
+      status: "pending",
+      notBefore: at(5_000 + NOT_ATTEMPTED_DELAY_MS),
+      leaseUntil: null,
+      attemptsBase: 1,
+      sessionId: null,
+      triedSessionIds: [],
+      lastError: "template_invalid",
+    });
+    // A row that never had a session (an e-mail) loses nothing from the list, and a stale worker changes nothing.
+    expect(reason(recordDeliveryOutcome(sendingWa, { kind: "not_attempted", error: "x" }, { now, attempt: 2 }))).toBe("stale");
+  });
+
+  it("the retry budget of an e-mail is attempts minus attempts_base: a row given its budget back (a resend, a not-attempted claim) is claimed again and retried from the first delay, while `attempts` only grows", () => {
+    // Four attempts spent, then the budget is given back (as public.resend_delivery does): claimable again, and the attempt number goes on from 5.
+    const resent = email({ status: "pending", attempts: 4, attemptsBase: 4, notBefore: at(0) });
+    expect(ok(claimDelivery(resent, { now, leaseMs: LEASE })).attempts).toBe(5);
+    expect(reason(claimDelivery(email({ status: "pending", attempts: 4, notBefore: at(0) }), { now, leaseMs: LEASE }))).toBe("attempts_exhausted");
+    // The first retry after that claim waits the FIRST delay (1 min), not the one for attempt 5.
+    const sending = email({ status: "sending", attempts: 5, attemptsBase: 4, leaseUntil: at(LEASE) });
+    expect(ok(recordDeliveryOutcome(sending, { kind: "retryable_failure", error: "421" }, { now, attempt: 5 })).notBefore).toEqual(at(5_000 + 60_000));
+    // The fourth attempt of the new budget is the last.
+    const last = email({ status: "sending", attempts: 8, attemptsBase: 4, leaseUntil: at(LEASE) });
+    expect(ok(recordDeliveryOutcome(last, { kind: "retryable_failure", error: "421" }, { now, attempt: 8 })).status).toBe("failed");
+    // A not-attempted claim gives its attempt back to the budget by moving the base, never by reusing the number.
+    const gone = ok(recordDeliveryOutcome(email({ status: "sending", attempts: 3, attemptsBase: 1, leaseUntil: at(LEASE) }), { kind: "not_attempted", error: "x" }, { now, attempt: 3 }));
+    expect(gone).toMatchObject({ status: "pending", attemptsBase: 2 });
+    expect(gone).not.toHaveProperty("attempts");
+  });
+
   it("rejects stale workers and rows that are not sending", () => {
     expect(reason(recordDeliveryOutcome(sendingWa, { kind: "sent" }, { now, attempt: 2 }))).toBe("stale");
     const outcomes: DeliveryOutcome[] = [
@@ -175,6 +235,7 @@ describe("recordDeliveryOutcome", () => {
       { kind: "maybe_sent", error: "t" },
       { kind: "permanent_failure", error: "p" },
       { kind: "retryable_failure", error: "r" },
+      { kind: "not_attempted", error: "n" },
     ];
     for (const status of DELIVERY_STATUSES) {
       for (const outcome of outcomes) {

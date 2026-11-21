@@ -16,6 +16,12 @@
 //                         opens the sealed Midtrans server key (@ebooktrivia/crypto). public.env holds
 //                         the payment private key ONLY (plan M2.3): a messaging or conversions private
 //                         key here stops the app.
+//   WAHA_WEBHOOK_HMAC_SECRET
+//                         optional, at least 16 characters: the secret WAHA signs its webhooks with (X-Webhook-Hmac, HMAC-SHA512 of
+//                         the raw body; a plain env secret, public.env holds no messaging key). Without it POST
+//                         /api/v1/webhooks/waha answers 503 (US-025: buyer-first messages and delivery acks are not taken).
+//   PUBLIC_DATA_DIR       the data directory (default /srv/data): the ebook PDF is read from deliverables/<id>.pdf under it for the
+//                         signed download URLs (GET /files/..., US-025). The quadlet mounts /srv/data/deliverables read-only.
 //   PUBLIC_DEV_MIDTRANS_STUB_URL
 //                         dev / test only: http(s)://<loopback>:<port> of infra/midtrans-stub. The
 //                         sandbox hosts are rewritten to it (the environment stays sandbox, so the
@@ -70,6 +76,10 @@ export interface PublicConfig {
    */
   readonly play: PlayConfig | null;
   readonly playUnavailable: string | null;
+  /** The WAHA webhook HMAC secret (US-025); undefined closes the webhook route. */
+  readonly wahaWebhookSecret: string | undefined;
+  /** Where the ebook files are read from for the signed download URLs (US-025). */
+  readonly dataDir: string;
 }
 
 export interface PlayConfig {
@@ -212,6 +222,12 @@ function playOrigin(env: Env, production: boolean, domain: string): string {
   return url.origin;
 }
 
+function wahaWebhookSecret(env: Env): string | undefined {
+  const secret = value(env, "WAHA_WEBHOOK_HMAC_SECRET");
+  if (secret !== undefined && !/^[\x21-\x7e]{16,256}$/.test(secret)) throw new PublicConfigError("WAHA_WEBHOOK_HMAC_SECRET must be 16 to 256 printable characters");
+  return secret;
+}
+
 export function loadPublicConfig(env: Env): PublicConfig {
   const production = nodeEnv(env);
   const leaked = FOREIGN_PRIVATE_KEYS.filter((name) => env[name] !== undefined);
@@ -238,5 +254,7 @@ export function loadPublicConfig(env: Env): PublicConfig {
     midtransStubUrl: stubUrl(env, production),
     play,
     playUnavailable,
+    wahaWebhookSecret: wahaWebhookSecret(env),
+    dataDir: value(env, "PUBLIC_DATA_DIR") ?? "/srv/data",
   };
 }

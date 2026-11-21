@@ -7,7 +7,7 @@
     "node": ">=26.12.0 <27"
   },
   "scripts": {
-    "lint": "eslint .",
+    "lint": "node --max-old-space-size=6144 node_modules/eslint/bin/eslint.js .",
     "typecheck": "tsc --noEmit -p tsconfig.json && pnpm -r --workspace-concurrency=4 run typecheck",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",

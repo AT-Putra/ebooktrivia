@@ -33,6 +33,7 @@ Replace every value: the example holds only reserved names and documentation add
 | `SSH_ALLOWED_CIDRS` | Sources allowed to reach SSH, space-separated. The script refuses to apply the firewall if your current SSH session does not come from one of them. |
 | `ADMIN_ALLOWED_CIDRS` | Sources that reach `admin.<DOMAIN>`; everyone else gets a 404. Include the Uptime Kuma host. `0.0.0.0/0 ::/0` opens it to all. |
 | `GLITCHTIP_ALLOWED_CIDRS` | Source(s) allowed to POST the GlitchTip hook (the WAHA/GlitchTip box). |
+| `WAHA_ALLOWED_CIDRS` | Source(s) allowed to POST the WAHA webhook `/api/v1/webhooks/waha` (acks and buyer messages; US-025), everyone else gets a 404 from Caddy. The WAHA servers' addresses as Caddy sees them (see `delivery.md`). `0.0.0.0/0 ::/0` leaves only the HMAC. |
 | `APP_USER` | Rootless podman user (default `ebt`). |
 
 Secrets are never typed or committed. The provisioning generates them on the VM into the env
@@ -203,6 +204,7 @@ sudo journalctl CONTAINER_NAME=caddy -o cat | grep remote_ip | tail -3
 ## Routine operations
 
 - **Rotate the GlitchTip token:** run `sudo infra/provision/rotate-glitchtip-token.sh`. It writes a new token file, puts the new SHA-256 in `internal.env` and restarts `internal`; the old token then gets a 404. Put the new URL in GlitchTip and delete the file. Caddy logs never contain the token: the URI of `/hooks/glitchtip/*` is redacted before a log line is written.
+- **Rotate `SECRETS_PAYMENT_PRIVATE_KEY`:** the signed ebook download links (`/files/deliverables/...`, US-025) are signed with a key derived from it, so a rotation **voids every outstanding link**: a WhatsApp send in flight fails its download and is retried through the failover, and the 72-hour link of an e-mail whose PDF was too large stops working (the buyer still has the WhatsApp delivery and the order page; resending is US-029). Rotate when no delivery is in flight (a quiet hour), put the new key in `public.env` and `worker.env` together, and restart both.
 - **Change a setting in `provision.env`:** run `provision.sh` again. It rewrites `caddy.env` (and the sshd `AllowUsers`, firewalld rules) and prints `restart needed: caddy.service`.
 - **Change an env file by hand:** keys you add are kept by later runs. Generated values are never regenerated while present.
 - **Drain one public instance:** `sudo $A systemctl --user restart public@a.service`. On SIGTERM, `/livez` answers 503 for `EDGE_DRAIN_MS` (5 s, more than Caddy's 2 s check + 1 s timeout), Caddy stops sending, in-flight requests finish, then the instance restarts. Local result: 0 failed requests out of 40 during a restart. A manual switch without a restart needs `EDGE_DRAIN_FILE` set in the quadlet (unset by default).

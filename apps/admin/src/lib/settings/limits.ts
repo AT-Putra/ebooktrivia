@@ -31,6 +31,8 @@
 //   trivia.extension_max_minutes 1..1440   the longest outage the Owner's deadline-extension tool
 //                                          covers: its outage start lies at most this far back (60;
 //                                          US-028, read by extend_open_question_deadlines)
+//   delivery.wa_delay_seconds 0..86400     the wait before the proactive WhatsApp delivery after PAID (180 = 3 min,
+//                                          0 = at once; AC-D8, US-025). Applies to orders paid from now on.
 import { APP_SETTING_BOUNDS } from "@ebooktrivia/db";
 import type { AuditRecorder, FieldKind, Tx } from "../audit.ts";
 import type { Sql } from "../db.ts";
@@ -84,6 +86,8 @@ export const LIMITS: readonly LimitSpec[] = [
   limit("captcha.ip48_cap", "captchaIp48Cap", "Captcha challenges and redeems per IPv6 /48 network per captcha window", "requests", 3000),
   // US-028: the longest outage the trivia deadline-extension tool covers (its outage start lies at most this far back).
   limit("trivia.extension_max_minutes", "extensionMaxMinutes", "Longest outage the trivia deadline extension covers", "minutes", 60),
+  // US-025 (AC-D8): the proactive WhatsApp delivery waits this long after PAID (0 = at once); the buyer may message first.
+  limit("delivery.wa_delay_seconds", "waDelaySeconds", "Wait before the proactive WhatsApp delivery", "seconds", 180),
 ];
 
 export const LIMIT_FIELDS: readonly string[] = LIMITS.map((l) => l.field);

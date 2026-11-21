@@ -12,6 +12,7 @@
 #   ACME_EMAIL               ACME account contact
 #   ADMIN_ALLOWED_CIDRS      space-separated; only these may reach admin.{$DOMAIN}
 #   GLITCHTIP_ALLOWED_CIDRS  space-separated; only these may POST the GlitchTip hook
+#   WAHA_ALLOWED_CIDRS       space-separated; only these may POST the WAHA webhook (/api/v1/webhooks/waha, US-025)
 {
 	# No admin endpoint: the config only changes by restarting the unit.
 	admin off
@@ -275,6 +276,25 @@ api.{$DOMAIN} {
 			reverse_proxy internal:9000 {
 				import upstream_headers
 			}
+		}
+		handle {
+			respond 404
+		}
+	}
+	# The WAHA webhook (US-025: message acks and the buyer-first inbound messages): only POST, only from the WAHA hosts, 64 KB max (the route's
+	# own limit), to the public app. Its HMAC-SHA512 over the raw body is the authentication; this is the second lock, so a stranger cannot even
+	# make the route verify a signature. From any other address the path is a 404 here and never reaches an app. WAHA_ALLOWED_CIDRS holds the
+	# WAHA boxes' addresses as Caddy sees them (docs/runbooks/delivery.md: a WAHA on the internal network is seen from its network address).
+	handle /api/v1/webhooks/waha {
+		@waha {
+			method POST
+			remote_ip {$WAHA_ALLOWED_CIDRS}
+		}
+		handle @waha {
+			request_body {
+				max_size 64KB
+			}
+			import public_upstreams
 		}
 		handle {
 			respond 404

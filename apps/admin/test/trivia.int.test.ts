@@ -422,6 +422,7 @@ describe("prize tiers, legal pages, limits (Owner settings, audited before / aft
       RETURNING extract(epoch FROM expires_at - created_at)::int AS ttl`);
     expect(otp.ttl).toBe(120);
     await as(owner, () => saveLimits(rt.sql, owner.userId, current));
-    expect(LIMITS.every((l) => l.min >= 1)).toBe(true);
+    // Every limit is a positive whole number (the database's positive-integer check), except the proactive WhatsApp delay, where 0 means "at once".
+    expect(LIMITS.filter((l) => l.min < 1).map((l) => l.key)).toEqual(["delivery.wa_delay_seconds"]);
   });
 });

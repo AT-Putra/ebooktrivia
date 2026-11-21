@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { FILE_URL_TTL_SECONDS, signFileUrl, verifyFileUrl } from "./signed-url.ts";
+import { FILE_URL_TTL_SECONDS, MAX_FILE_URL_TTL_SECONDS, signFileUrl, verifyFileUrl } from "./signed-url.ts";
 
 const key = randomBytes(32);
 const now = new Date("2027-04-01T03:00:00Z");
@@ -47,12 +47,27 @@ describe("signed file URLs (WAHA sendFile)", () => {
     }
   });
 
+  it("refuses a URL whose expiry is further out than the longest one we mint, even with a valid signature", () => {
+    const max = MAX_FILE_URL_TTL_SECONDS;
+    const nowSeconds = Math.floor(now.getTime() / 1000);
+    const forge = (exp: number) => {
+      const href = signFileUrl({ origin: "https://api.example.id", path: PATH, key, now: new Date(exp * 1000 - 600_000) });
+      return parts(href);
+    };
+    // The longest legal URL verifies at the moment it was minted, one second further does not.
+    const longest = parts(signFileUrl({ origin: "https://api.example.id", path: PATH, key, now, ttlSeconds: max }));
+    expect(verifyFileUrl({ ...longest, key, now })).toEqual({ ok: true, path: PATH });
+    expect(verifyFileUrl({ ...forge(nowSeconds + max + 700), key, now })).toEqual({ ok: false, reason: "malformed" });
+    expect(verifyFileUrl({ ...forge(nowSeconds + 600), key, now })).toEqual({ ok: true, path: PATH });
+  });
+
   it("refuses unsafe inputs when signing", () => {
     expect(() => signFileUrl({ origin: "http://api.example.id", path: PATH, key, now })).toThrow(RangeError);
     expect(() => signFileUrl({ origin: "https://api.example.id", path: "/files/../secret", key, now })).toThrow(RangeError);
     expect(() => signFileUrl({ origin: "https://api.example.id", path: "/other/x.pdf", key, now })).toThrow(RangeError);
     expect(() => signFileUrl({ origin: "https://api.example.id", path: PATH, key: randomBytes(16), now })).toThrow(RangeError);
     expect(() => signFileUrl({ origin: "https://api.example.id", path: PATH, key, now, ttlSeconds: 0 })).toThrow(RangeError);
-    expect(() => signFileUrl({ origin: "https://api.example.id", path: PATH, key, now, ttlSeconds: 7200 })).toThrow(RangeError);
+    expect(() => signFileUrl({ origin: "https://api.example.id", path: PATH, key, now, ttlSeconds: 72 * 3600 + 1 })).toThrow(RangeError);
+    expect(signFileUrl({ origin: "https://api.example.id", path: PATH, key, now, ttlSeconds: 72 * 3600 })).toContain("exp=");
   });
 });

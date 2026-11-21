@@ -14,13 +14,16 @@
 //                    key it does not run and no conversion is sent (in production the worker raises a critical
 //                    `conversions_disabled` alert at start).
 //   orderPaidNudges  what a PAID order's effects need to be hurried along: one nudge per port that has a queue to
-//                    put them on (the conversion queue today; a later story adds its delivery nudge here). The
+//                    put them on (the conversion queue, and since US-025 the delivery nudge of `deliveries`). The
 //                    order.paid consumer is registered when there is at least one nudge, key or no key.
 //   otp              the otp.send consumer (US-026, otp-send.ts): the messaging private key opens the
-//                    sealed codes, the OtpSender sends them (US-025 swaps in its pool). runWorker wires it
+//                    sealed codes, the OtpSender sends them (since US-025 through the delivery pool). runWorker wires it
 //                    when worker.env holds SECRETS_MESSAGING_PRIVATE_KEY; without it otp.send is not relayed.
-//   deliverDelivery  the delivery consumer (US-025). Without it no delivery.send queue exists and
-//                    the deliveries sweeper does not run.
+//   deliveries       deliveries over WhatsApp and e-mail (US-025, delivery/index.ts): the delivery.send and delivery.send.wa
+//                    consumers, the waha.inbound consumer (buyer-first), the delivery nudge, the pool's status poll and the
+//                    unknown-send lookup. runWorker builds it from SECRETS_MESSAGING_PRIVATE_KEY and `magicLinks`.
+//   deliverDelivery  a bare delivery.send processor (tests). Without `deliveries` or it no delivery.send queue exists
+//                    and the deliveries sweeper does not run.
 //   testSend         the senders of admin template test-sends (US-017, template-test-send.ts).
 //                    runWorker wires the real SMTP / WAHA senders when worker.env holds
 //                    SECRETS_MESSAGING_PRIVATE_KEY; without it template.test_send is not relayed.
@@ -46,7 +49,7 @@ import { createLogger, type Logger } from "./log.ts";
 import { assertLoginRole } from "./login-role.ts";
 import { type Loop, startLoop } from "./loop.ts";
 import { createOutboxProcessor, type OutboxConsumer } from "./outbox-consumer.ts";
-import { createQueue, JOB_RETENTION, redisOptions } from "./queues.ts";
+import { createQueue, enqueueFresh, JOB_RETENTION, redisOptions } from "./queues.ts";
 import { relayOnce } from "./relay.ts";
 import { onShutdown } from "./shutdown.ts";
 import { createTemplateTestSendConsumer, type TestSender } from "./template-test-send.ts";
@@ -61,9 +64,12 @@ import { createOtpSendConsumer, OTP_TOPIC } from "./otp-send.ts";
 import { otpFromEnv, type OtpPort } from "./otp-senders.ts";
 import { reconcileIfDue } from "./reconciliation.ts";
 import { refreshReportRollups } from "./rollups.ts";
+import { DELIVERY_QUEUE, DELIVERY_WA_QUEUE, type DeliveryPort, deliveriesFromEnv } from "./delivery/index.ts";
+import { createDatabaseMagicLinks } from "./delivery/magic-links.ts";
+import type { MagicLinksFactory } from "./delivery/ports.ts";
 
 export const RELAY_BATCH = 200;
-export const DELIVERY_QUEUE = "delivery.send";
+export { DELIVERY_QUEUE };
 
 export interface WorkerPorts {
   readonly outboxConsumers?: readonly OutboxConsumer[];
@@ -73,8 +79,19 @@ export interface WorkerPorts {
   readonly conversions?: ConversionPort;
   /** Nudges of a PAID order beyond the conversion queue's own (a later story's delivery nudge): they get the order.paid consumer. */
   readonly orderPaidNudges?: readonly OrderPaidNudge[];
-  /** US-025: processes one delivery.send job ({ id: deliveries.id }); claim and lease per core delivery-machine. */
+  /** A bare delivery.send processor ({ id: deliveries.id }); tests. The real one is `deliveries`. */
   readonly deliverDelivery?: (data: unknown) => Promise<string>;
+  /**
+   * US-025: deliveries over WhatsApp and e-mail (delivery/index.ts): the delivery.send consumer, the waha.inbound consumer (buyer-first),
+   * the delivery nudge of the order.paid consumer, the pool's status poll and the unknown-send lookup. runWorker wires it when worker.env
+   * holds SECRETS_MESSAGING_PRIVATE_KEY.
+   */
+  readonly deliveries?: DeliveryPort;
+  /**
+   * How a player's login link is issued (delivery/ports.ts MagicLinks), as a factory over the worker's pool and the play origin (like testSend);
+   * runWorker builds `deliveries` from it. Default: the database's issue_magic_link (US-026; delivery/magic-links.ts). Tests pass a fake.
+   */
+  readonly magicLinks?: MagicLinksFactory;
   /** US-017: the senders of template.test_send (given the worker's pool). */
   readonly testSend?: (sql: postgres.Sql) => TestSender;
   /** US-021: Midtrans re-queries (payment.notification consumer, nightly reconciliation). */
@@ -92,17 +109,24 @@ export async function startWorker(config: WorkerConfig, ports: WorkerPorts, log:
   // The order.paid nudges come from ONE list: its topic, its consumer and the nudges the consumer runs are all derived
   // from it, so they cannot disagree. One source per port that has a queue to put the effects of a PAID order on, with
   // or without the conversions key; a source makes its nudge once the queues exist.
-  type NudgeSource = (queues: { readonly sql: postgres.Sql; readonly conversionQueue: Queue | undefined }) => OrderPaidNudge;
+  type NudgeSource = (queues: { readonly sql: postgres.Sql; readonly conversionQueue: Queue | undefined; readonly deliveryNudge: OrderPaidNudge | undefined }) => OrderPaidNudge;
   const conversionNudge: NudgeSource = ({ sql: pool, conversionQueue }) => {
     if (conversionQueue === undefined) throw new Error("a conversion nudge needs the conversion queue");
     return nudgeConversions(pool, conversionQueue);
   };
+  // US-025: the delivery nudge is appended to the same list (never a second order.paid consumer).
+  const deliveryNudge: NudgeSource = ({ deliveryNudge: nudge }) => {
+    if (nudge === undefined) throw new Error("a delivery nudge needs the delivery runtime");
+    return nudge;
+  };
   const nudgeSources: readonly NudgeSource[] = [
     ...(ports.fireConversion === undefined && ports.conversions === undefined ? [] : [conversionNudge]),
+    ...(ports.deliveries === undefined ? [] : [deliveryNudge]),
     ...(ports.orderPaidNudges ?? []).map((nudge): NudgeSource => () => nudge),
   ];
   const topics = [
     ...consumers.map((c) => c.topic),
+    ...(ports.deliveries?.topics ?? []),
     ...(ports.testSend === undefined ? [] : ["template.test_send"]),
     ...(ports.payments === undefined ? [] : [PAYMENT_TOPIC]),
     ...(ports.conversions === undefined ? [] : [MO_TOPIC]),
@@ -114,7 +138,7 @@ export async function startWorker(config: WorkerConfig, ports: WorkerPorts, log:
   // One connection per job that can run at once (each BullMQ Worker runs `concurrency` jobs, and a
   // job holds at most one connection at a time), plus the relay, sweeper and heartbeat loops and
   // one spare.
-  const jobQueues = topics.length + (ports.fireConversion === undefined && ports.conversions === undefined ? 0 : 1) + (ports.deliverDelivery === undefined ? 0 : 1);
+  const jobQueues = topics.length + (ports.fireConversion === undefined && ports.conversions === undefined ? 0 : 1) + (ports.deliverDelivery === undefined && ports.deliveries === undefined ? 0 : 1) + (ports.deliveries === undefined ? 0 : 1);
   const sql = postgres(config.databaseUrl, {
     ...PG_CONNECTION_OPTIONS,
     connection: { ...PG_CONNECTION_OPTIONS.connection, application_name: "ebt-worker" },
@@ -193,18 +217,39 @@ export async function startWorker(config: WorkerConfig, ports: WorkerPorts, log:
             ...(sinkDedupesByTxid === undefined ? {} : { sinkDedupesByTxid }),
           }),
         );
+  // The delivery runtime (US-025) puts jobs on the delivery queues (a failover, the nudge), which are created below: a late binding. E-mail
+  // and WhatsApp deliveries have a queue each (the same processor): WhatsApp sends wait for their number's slot and must never hold the
+  // concurrency slots of the e-mail deliveries.
+  const deliveryQueues: { email?: Queue | undefined; whatsapp?: Queue | undefined } = {};
+  const delivery = ports.deliveries?.create({
+    sql,
+    log,
+    enqueue: async (jobs) => {
+      const { email: emailQueue, whatsapp: whatsappQueue } = deliveryQueues;
+      if (emailQueue === undefined || whatsappQueue === undefined) throw new Error("the delivery queues are not up");
+      const wa = jobs.filter((j) => j.channel === "whatsapp");
+      const email = jobs.filter((j) => j.channel !== "whatsapp");
+      if (email.length > 0) await enqueueFresh(emailQueue, email);
+      if (wa.length > 0) await enqueueFresh(whatsappQueue, wa);
+    },
+  });
+  if (delivery !== undefined) consumers.push(...delivery.outboxConsumers);
   if (ports.testSend !== undefined) consumers.push(createTemplateTestSendConsumer({ sql, sender: ports.testSend(sql) }));
   const { payments } = ports;
   if (payments !== undefined) consumers.push(createPaymentNotificationConsumer({ sql, midtrans: payments.midtrans, log, waDelayMs: payments.waDelayMs }));
-  if (ports.otp !== undefined) consumers.push(createOtpSendConsumer({ sql, opener: ports.otp.opener, sender: ports.otp.sender(sql), log }));
+  if (ports.otp !== undefined) consumers.push(createOtpSendConsumer({ sql, opener: ports.otp.opener, sender: ports.otp.sender(sql, log), log }));
   if (ports.conversions !== undefined) consumers.push(createMoConsumer());
-  if (nudgeSources.length > 0) consumers.push(createOrderPaidConsumer(nudgeSources.map((make) => make({ sql, conversionQueue }))));
+  if (nudgeSources.length > 0) consumers.push(createOrderPaidConsumer(nudgeSources.map((make) => make({ sql, conversionQueue, deliveryNudge: delivery?.nudge }))));
   const outboxMaxAttempts = new Map(consumers.flatMap((c): [string, number][] => (c.maxAttempts === undefined ? [] : [[c.topic, c.maxAttempts]])));
   const outboxQueues = new Map<string, Queue>();
   for (const consumer of consumers) {
     outboxQueues.set(consumer.topic, consume(consumer.topic, createOutboxProcessor(consumer, { sql, failpoint, log })));
   }
-  const deliveryQueue = ports.deliverDelivery === undefined ? undefined : consume(DELIVERY_QUEUE, ports.deliverDelivery);
+  const deliverDelivery = delivery?.process ?? ports.deliverDelivery;
+  const deliveryQueue = deliverDelivery === undefined ? undefined : consume(DELIVERY_QUEUE, deliverDelivery);
+  deliveryQueues.email = deliveryQueue;
+  const deliveryWaQueue = delivery === undefined ? undefined : consume(DELIVERY_WA_QUEUE, delivery.process);
+  deliveryQueues.whatsapp = deliveryWaQueue;
 
   const started = Date.now();
   const loops: Loop[] = [
@@ -220,6 +265,8 @@ export async function startWorker(config: WorkerConfig, ports: WorkerPorts, log:
         outboxStaleMs: config.outboxStaleMs,
         ...(conversionQueue === undefined ? {} : { conversionQueue }),
         ...(deliveryQueue === undefined ? {} : { deliveryQueue }),
+        ...(deliveryWaQueue === undefined ? {} : { deliveryWaQueue }),
+        ...(delivery === undefined ? {} : { extraSweeps: delivery.sweeps }),
         ...(sinkDedupesByTxid === undefined ? {} : { sinkDedupesByTxid }),
       });
       return false;
@@ -239,6 +286,7 @@ export async function startWorker(config: WorkerConfig, ports: WorkerPorts, log:
       return false;
     }),
   ];
+  for (const { name, intervalMs, tick } of delivery?.loops ?? []) loops.push(startLoop({ name, intervalMs, log }, tick));
   if (payments !== undefined) {
     // Nightly, once per WIB day across all workers (the run's claim is a row); checked every interval.
     loops.push(
@@ -293,9 +341,21 @@ export async function runWorker(env: Env, ports: WorkerPorts = {}): Promise<void
   // Code review m7: say it at start, not only through the hourly "no consumer" alert.
   if (payments === undefined) log.warn("SECRETS_PAYMENT_PRIVATE_KEY is not set: Midtrans notifications are not processed and no order can become PAID");
   if (conversions === undefined && ports.fireConversion === undefined) log.warn("SECRETS_CONVERSIONS_PRIVATE_KEY is not set: no adnet postback and no CAPI event is sent");
+  // Deliveries (US-025) need the messaging key (the SMTP password and the WAHA keys) and the payment key (the signed download URLs); the
+  // player's login link is issued by the database (US-026's issue_magic_link, delivery/magic-links.ts) unless a test passes its own.
+  // Without the keys nothing is delivered, and the worker says so.
+  const deliveries = ports.deliveries ?? deliveriesFromEnv(env, config, ports.magicLinks ?? createDatabaseMagicLinks);
+  if (deliveries === undefined && ports.deliverDelivery === undefined) log.warn("deliveries are off: SECRETS_MESSAGING_PRIVATE_KEY is not set; no ebook is sent by WhatsApp or e-mail");
   const running = await startWorker(
     config,
-    { ...ports, ...(testSend === undefined ? {} : { testSend }), ...(payments === undefined ? {} : { payments }), ...(conversions === undefined ? {} : { conversions }), ...(otp === undefined ? {} : { otp }) },
+    {
+      ...ports,
+      ...(testSend === undefined ? {} : { testSend }),
+      ...(payments === undefined ? {} : { payments }),
+      ...(conversions === undefined ? {} : { conversions }),
+      ...(otp === undefined ? {} : { otp }),
+      ...(deliveries === undefined ? {} : { deliveries }),
+    },
     log,
   );
   onShutdown(() => running.stop(), log);
