@@ -4,6 +4,7 @@
 export * from "./checkout.ts";
 export * from "./contest.ts";
 export * from "./conversion-machine.ts";
+export * from "./conversions.ts";
 export * from "./delivery-machine.ts";
 export * from "./eligibility.ts";
 export * from "./hosts.ts";

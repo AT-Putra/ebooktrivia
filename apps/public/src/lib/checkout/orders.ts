@@ -86,7 +86,8 @@ interface OpenOrderRow {
   now: Date;
 }
 
-const uaHash = (userAgent: string | null): Buffer | null => (userAgent === null || userAgent === "" ? null : createHash("sha256").update(userAgent).digest());
+/** SHA-256 of the user agent (never the text), or null. Shared with the visit beacon (lib/sdk-routes.ts). */
+export const uaHash = (userAgent: string | null): Buffer | null => (userAgent === null || userAgent === "" ? null : createHash("sha256").update(userAgent).digest());
 
 const lockKey = (landingPageId: string, phone: string): string => `ebooktrivia/checkout/v1|${landingPageId}|${phone}`;
 

@@ -18,6 +18,13 @@ it is an Owner step in the vendor's account.
 3. **Google Ads**: the SDK fires a plain `begin_checkout` and never sets user data. Do not turn on enhanced conversions with automatic
    collection for the conversion action used here.
 
+## Server-side access tokens (Meta CAPI, TikTok Events API)
+
+Registering a pixel id is not enough for the server-side events (US-024, `docs/runbooks/conversions.md`): the Owner also enters the pixel's access
+token under the page's pixel ids ("Server-side conversions", write-only). Until it is set, that pixel's server events wait and an alert is raised.
+Generate the token in Meta Events Manager (Conversions API, "Generate access token") or in TikTok Events Manager (Events API access token) for
+**that pixel**. Use each vendor's test-events tool for the first order: the server event must arrive with the same `event_id` as the browser one.
+
 ## What the landing page itself must and must not do
 
 The SDK clears and controls only what it owns, so the page's author must keep two rules (also in `packages/sdk/README.md`, "What the page must not do"):

@@ -277,11 +277,18 @@ export const settingsSecrets = pgTable(
     check("settings_secrets_last4_check", sql`char_length(${t.last4}) <= 4`),
     check("settings_secrets_bound_host_check", sql`${t.boundHost} IS NULL OR ${t.boundHost} = lower(${t.boundHost})`),
     // Security review US-011 #3: only conversions secrets carry an adnet, and every conversions
-    // secret is bound to an adnet and a host. get_payment_secret() returns no scope/adnet_id, so the
-    // public app rebuilds the AAD with adnet null; this makes that assumption a DB invariant.
+    // secret is bound to a host. get_payment_secret() returns no scope/adnet_id, so the public app
+    // rebuilds the AAD with adnet null; this makes that assumption a DB invariant.
+    // US-024: the one conversions secret with NO adnet is a CAPI access token of a landing page's pixel
+    // (capi.meta.<pixel id>, capi.tiktok.<pixel code, lowercase>): bound to the vendor's fixed API host,
+    // which the adapter hard-codes, so no host column or clear-on-change trigger is needed. The adnet
+    // `{secret:name}` resolver only reads rows with ITS adnet id, so it can never resolve such a token.
     check(
       "settings_secrets_binding_check",
-      sql`(${t.scope} = 'conversions') = (${t.adnetId} IS NOT NULL) AND (${t.scope} <> 'conversions' OR ${t.boundHost} IS NOT NULL)`,
+      sql`(${t.scope} = 'conversions' AND ${t.boundHost} IS NOT NULL AND (${t.adnetId} IS NOT NULL
+            OR (${t.name} ~ '^capi\\.meta\\.[0-9]{10,20}$' AND ${t.boundHost} = 'graph.facebook.com')
+            OR (${t.name} ~ '^capi\\.tiktok\\.[a-z0-9]{16,32}$' AND ${t.boundHost} = 'business-api.tiktok.com')))
+          OR (${t.scope} <> 'conversions' AND ${t.adnetId} IS NULL)`,
     ),
     unique("settings_secrets_scope_name_adnet_key").on(t.scope, t.name, t.adnetId).nullsNotDistinct(),
   ],

@@ -39,6 +39,7 @@ describe("loadWorkerConfig", () => {
       outboxStaleMs: 120_000,
       conversionLeaseMs: 60_000,
       conversionTimeoutMs: 5000,
+      metaGraphVersion: "v24.0",
       concurrency: 4,
       lockDurationMs: 30_000,
       stalledIntervalMs: 30_000,
@@ -61,6 +62,7 @@ describe("loadWorkerConfig", () => {
       WORKER_OUTBOX_STALE_MS: "1000",
       WORKER_CONVERSION_LEASE_MS: "3000",
       WORKER_CONVERSION_TIMEOUT_MS: "1000",
+      META_GRAPH_API_VERSION: "v25.0",
       WORKER_CONCURRENCY: "8",
       WORKER_LOCK_DURATION_MS: "2000",
       WORKER_STALLED_INTERVAL_MS: "1000",
@@ -80,6 +82,7 @@ describe("loadWorkerConfig", () => {
       outboxStaleMs: 1000,
       conversionLeaseMs: 3000,
       conversionTimeoutMs: 1000,
+      metaGraphVersion: "v25.0",
       concurrency: 8,
       lockDurationMs: 2000,
       stalledIntervalMs: 1000,
@@ -108,6 +111,7 @@ describe("loadWorkerConfig", () => {
     expect(configError({ ...BASE, WORKER_CONCURRENCY: "2.5" })).toMatch(/WORKER_CONCURRENCY must be an integer/);
     expect(configError({ ...BASE, WORKER_DEV_ALLOW_HTTP: "yes" })).toMatch(/WORKER_DEV_ALLOW_HTTP must be true, false, 1 or 0/);
     expect(configError({ ...BASE, WORKER_FAILPOINT: "nope" })).toMatch(/WORKER_FAILPOINT must be one of/);
+    expect(configError({ ...BASE, META_GRAPH_API_VERSION: "24" })).toMatch(/META_GRAPH_API_VERSION must look like v24\.0/);
     expect(configError({ ...BASE, WORKER_CONVERSION_LEASE_MS: "3000", WORKER_CONVERSION_TIMEOUT_MS: "1001" })).toMatch(
       /WORKER_CONVERSION_TIMEOUT_MS must be at least 2000 ms shorter than WORKER_CONVERSION_LEASE_MS/,
     );

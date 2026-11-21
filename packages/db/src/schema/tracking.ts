@@ -62,6 +62,14 @@ export const conversionEvents = pgTable(
     lastError: text("last_error"),
     sentAt: tstz("sent_at"),
     failedAt: tstz("failed_at"),
+    /**
+     * US-024: the sink MAY have counted this conversion (a 2xx, or an uncertain send: a timeout, a refused redirect,
+     * an expired lease). Sticky: nothing clears it (not a re-fire, not payments), so a refund still reverses an MT
+     * that an Owner re-fire has put back to pending.
+     */
+    maybeCounted: boolean("maybe_counted").notNull().default(false),
+    /** US-024: the payout the S2S MT reported (set at the claim); a reversal takes the same back, whatever the adnet's setting is by then. */
+    reportedPayoutIdr: idr("reported_payout_idr"),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -71,12 +79,16 @@ export const conversionEvents = pgTable(
     inCheck("conversion_events_kind_check", t.kind, ["mo", "mt", "reversal"]),
     check("conversion_events_s2s_adnet_check", sql`${t.sink} <> 's2s' OR ${t.adnetId} IS NOT NULL`),
     check("conversion_events_value_idr_check", sql`${t.valueIdr} IS NULL OR ${t.valueIdr} >= 0`),
+    check("conversion_events_reported_payout_idr_check", sql`${t.reportedPayoutIdr} IS NULL OR ${t.reportedPayoutIdr} >= 0`),
     nonNegative("conversion_events_attempts_check", t.attempts),
     index("conversion_events_due_idx").on(t.status, t.nextAttemptAt),
   ],
 );
 
-/** Every postback / CAPI call (AC-T7): redacted URL, status, truncated response, latency. */
+/**
+ * Every postback / CAPI call (AC-T7): redacted URL, status, response truncated to 4 KB, latency. One row per
+ * (event, attempt number): a claim bumps conversion_events.attempts, so an attempt is logged at most once.
+ */
 export const conversionAttempts = pgTable(
   "conversion_attempts",
   {
@@ -96,8 +108,9 @@ export const conversionAttempts = pgTable(
     check("conversion_attempts_attempt_check", sql`${t.attempt} >= 1`),
     check(
       "conversion_attempts_response_excerpt_check",
-      sql`${t.responseExcerpt} IS NULL OR char_length(${t.responseExcerpt}) <= 2048`,
+      sql`${t.responseExcerpt} IS NULL OR char_length(${t.responseExcerpt}) <= 4096`,
     ),
-    index("conversion_attempts_event_idx").on(t.conversionEventId),
+    // The unique key's index serves every lookup by event (the former plain index on the event id was redundant).
+    unique("conversion_attempts_event_attempt_key").on(t.conversionEventId, t.attempt),
   ],
 );

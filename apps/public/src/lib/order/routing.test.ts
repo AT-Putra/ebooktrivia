@@ -87,6 +87,20 @@ describe("any other host, or none configured", () => {
     }
   });
 
+  // US-024: the SDK's config and visit routes are called from the landing pages' own origins against api.<DOMAIN>; the
+  // route itself checks the Origin against the page's registered hosts, so host gating must let them through everywhere
+  // except the order origin, which serves the order page only.
+  it("passes the SDK's config and visit routes on the api host, a landing page host, the play host and without a DOMAIN", () => {
+    for (const path of ["/api/v1/lp/lp_AbCdEfGh12345678/config", "/api/v1/visit/lp_AbCdEfGh12345678", "/api/v1/lp/lp_AbCdEfGh12345678/config/", "/API/V1/LP/lp_x/config"]) {
+      for (const host of [`api.${DOMAIN}`, `play.${DOMAIN}`, "lp.example.test", "shop.landing.test", "127.0.0.1:3100", null]) expect(route(host, path), `${String(host)} ${path}`).toEqual({ kind: "pass" });
+      expect(route(`api.${DOMAIN}`, path, null, null), path).toEqual({ kind: "pass" });
+    }
+  });
+
+  it("does not serve the SDK routes on the order origin: the same 404 as an unknown order", () => {
+    for (const path of ["/api/v1/lp/lp_AbCdEfGh12345678/config", "/api/v1/visit/lp_AbCdEfGh12345678"]) expect(route(`order.${DOMAIN}`, path), path).toEqual({ kind: "orderPage", publicId: null });
+  });
+
   it("fails closed without a DOMAIN: not even order.<anything> is the order origin", () => {
     expect(route("order.example.test", `/${ID}`, null, null)).toEqual({ kind: "pass" });
     expect(route("order.example.test", "/order/x", null, null)).toEqual({ kind: "notFound" });

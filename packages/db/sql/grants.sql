@@ -227,6 +227,30 @@ GRANT SELECT, INSERT ON public.payment_reconciliation_findings TO worker_rw;
 REVOKE INSERT, UPDATE, DELETE ON public.payment_reconciliation_runs, public.payment_reconciliation_findings FROM admin_rw;
 -- --- end US-021 -------------------------------------------------------------------------------------
 
+-- --- US-024 (tracking and conversions) --------------------------------------------------------------------
+-- The worker needs nothing new: it already writes conversion_events (claim, outcome, MO rows) and appends
+-- conversion_attempts. The admin console only READS the conversion log (reports, US-029) and re-fires through
+-- refire_conversion (sql/conversions.sql, EXECUTE admin_rw): a console that could INSERT / UPDATE / DELETE
+-- these rows could fabricate a sent conversion, hide a failure or reset a sent row, so it cannot (ET083 holds
+-- for every writer, and this keeps admin_rw from the paths around it).
+REVOKE INSERT, UPDATE, DELETE ON public.conversion_events, public.conversion_attempts FROM admin_rw;
+-- The source label of an order for the reports ('Organic' when it has no click id, else the adnet's name).
+GRANT EXECUTE ON FUNCTION public.order_source_label(uuid, text) TO admin_rw;
+-- conversion_refire: the owner of public.refire_conversion (sql/conversions.sql), which runs as it. It reads
+-- a conversion row and its order and writes only what a re-fire resets (never maybe_counted, the payout it
+-- reported, the attempt count or the log). UPDATE (updated_at) on orders is only for the FOR SHARE row lock
+-- (no refund meanwhile).
+REVOKE ALL ON ALL TABLES IN SCHEMA public, player_auth, admin_auth FROM conversion_refire;
+REVOKE ALL ON ALL SEQUENCES IN SCHEMA public, player_auth, admin_auth FROM conversion_refire;
+REVOKE ALL ON ALL FUNCTIONS IN SCHEMA public FROM conversion_refire;
+REVOKE ALL ON SCHEMA player_auth, admin_auth, drizzle FROM conversion_refire;
+GRANT SELECT ON public.conversion_events TO conversion_refire;
+GRANT SELECT (id) ON public.orders TO conversion_refire;
+GRANT UPDATE (updated_at) ON public.orders TO conversion_refire;
+GRANT UPDATE (status, next_attempt_at, lease_until, failed_at, sent_at, last_error, last_http_status, updated_at)
+  ON public.conversion_events TO conversion_refire;
+-- --- end US-024 -------------------------------------------------------------------------------------------
+
 -- ---------------------------------------------------------------------------------------------
 -- trivia_override: the owner of public.override_question_scoring (sql/override.sql), which runs as
 -- it. Reads what the override checks and scores with (program, sets, question, options, snapshot,

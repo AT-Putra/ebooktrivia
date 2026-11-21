@@ -63,6 +63,8 @@ const GUARDS: Readonly<Record<string, string>> = {
   "(console)/settings/landing-pages/actions.ts#renameLandingPageAction": "permission:landing_page.content.edit",
   "(console)/settings/landing-pages/actions.ts#updateLandingPageSettingsAction": "permission:landing_page.settings.edit",
   "(console)/settings/landing-pages/actions.ts#updatePixelsAction": "permission:pixel.edit",
+  "(console)/settings/landing-pages/actions.ts#setCapiTokenAction": "permission:pixel.edit",
+  "(console)/settings/landing-pages/actions.ts#clearCapiTokenAction": "permission:pixel.edit",
   "(console)/settings/landing-pages/actions.ts#registerDomainAction": "permission:lp_domain.register",
   "(console)/settings/landing-pages/actions.ts#removeDomainAction": "permission:lp_domain.register",
   "(console)/settings/adnets/actions.ts#createAdnetAction": "permission:adnet.edit",

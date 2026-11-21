@@ -177,6 +177,25 @@ export async function allowedAdnets(sql: Sql, landingPageId: string): Promise<Re
   return new Map(rows.map((r) => [r.slug, r.id]));
 }
 
+/**
+ * What the SDK's config adds to the checkout's own reads (US-024): the page's browser pixel ids, the program's slug
+ * and the click-id parameter names of the ACTIVE adnets allowed on the page (public_rw reads the adnets' slug and
+ * clickid_param columns only, never a postback template or secret).
+ */
+export async function sdkPageDetails(
+  sql: Sql,
+  landingPageId: string,
+  programId: string,
+): Promise<{ readonly pixels: Readonly<Record<string, unknown>>; readonly programSlug: string; readonly adnets: readonly { readonly slug: string; readonly clickid_param: string }[] }> {
+  const [page] = await sql<{ pixels: Record<string, unknown>; slug: string }[]>`
+    SELECT lp.pixels, p.slug FROM public.landing_pages lp JOIN public.programs p ON p.id = ${programId} WHERE lp.id = ${landingPageId}`;
+  if (page === undefined) throw new Error("the landing page is gone");
+  const adnets = await sql<{ slug: string; clickid_param: string }[]>`
+    SELECT a.slug, a.clickid_param FROM public.landing_page_adnets l JOIN public.adnets a ON a.id = l.adnet_id
+     WHERE l.landing_page_id = ${landingPageId} AND a.active ORDER BY a.slug`;
+  return { pixels: page.pixels, programSlug: page.slug, adnets };
+}
+
 /** True when the visit exists and belongs to this landing page. */
 export async function visitBelongs(sql: Sql, visitId: string, landingPageId: string): Promise<boolean> {
   const rows = await sql`SELECT 1 FROM public.visits WHERE id = ${visitId} AND landing_page_id = ${landingPageId}`;

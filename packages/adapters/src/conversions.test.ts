@@ -178,7 +178,8 @@ describe("TikTok Events API", () => {
     expect(body.data[0]).not.toHaveProperty("page");
     expect(build(event({ kind: "refund" }))).toBeNull();
     expect(() => buildTikTokEventRequest({ pixelCode: "lower", accessToken: "t", event: event() })).toThrow(RangeError);
-    expect(() => buildTikTokEventRequest({ pixelCode: "C4ABCDEF12345", accessToken: "t", event: event(), endpoint: "http://x.example/" })).toThrow(RangeError);
+    // There is no endpoint override: the token only ever goes to TikTok's host.
+    expect(build(event())?.url).toBe(TIKTOK_EVENTS_URL);
   });
 });
 
@@ -204,7 +205,7 @@ describe("sendConversion classifies results for the conversion machine", () => {
     expect(await sendConversion(answering(200), request, now)).toEqual({ outcome: { kind: "sent", httpStatus: 200 }, latencyMs: 25, responseSnippet: "ok" });
     expect((await sendConversion(answering(204), request)).outcome.kind).toBe("sent");
     expect((await sendConversion(answering(500, "x".repeat(5000)), request)).outcome).toEqual({ kind: "failed", httpStatus: 500, error: "HTTP 500" });
-    expect((await sendConversion(answering(500, "x".repeat(5000)), request)).responseSnippet).toHaveLength(1024);
+    expect((await sendConversion(answering(500, "x".repeat(5000)), request)).responseSnippet).toHaveLength(4096);
     expect((await sendConversion(answering(302), request)).outcome.kind).toBe("failed");
   });
 
@@ -214,7 +215,7 @@ describe("sendConversion classifies results for the conversion machine", () => {
     expect((await sendConversion(throwing(new Error("ECONNRESET")), request)).outcome.kind).toBe("maybe_sent");
   });
 
-  it("M4: reads at most 1 KiB of the body through textPrefix, never the whole body", async () => {
+  it("M4: reads at most 4 KiB of the body through textPrefix, never the whole body", async () => {
     const asked: number[] = [];
     const bounded: HttpFetch = () =>
       Promise.resolve({
@@ -227,14 +228,26 @@ describe("sendConversion classifies results for the conversion machine", () => {
         },
       });
     const result = await sendConversion(bounded, request);
-    expect(asked).toEqual([1024]);
-    expect(result.responseSnippet).toBe("y".repeat(1024));
+    expect(asked).toEqual([4096]);
+    expect(result.responseSnippet).toBe("y".repeat(4096));
     expect(result.outcome).toEqual({ kind: "sent", httpStatus: 200 });
   });
 
-  it("A4: a refused redirect is a failed HTTP attempt (retried), not maybe_sent", async () => {
+  it("A4 / security review US-024 M2: a refused redirect is NOT a retryable no: the sink got the request, so it may have counted it (maybe_sent)", async () => {
     const redirect = new SafeFetchError("redirect_refused", "redirect (302) refused", { httpStatus: 302 });
-    expect((await sendConversion(throwing(redirect), request)).outcome).toEqual({ kind: "failed", httpStatus: 302, error: "HTTP 302" });
+    expect((await sendConversion(throwing(redirect), request)).outcome).toEqual({ kind: "maybe_sent", error: "HTTP 302 (redirect not followed)" });
+  });
+
+  it("hands the caller's AbortSignal to the fetch (its time budget), and only when there is one", async () => {
+    const signals: unknown[] = [];
+    const capture: HttpFetch = (_url, init) => {
+      signals.push("signal" in init ? init.signal : "absent");
+      return Promise.resolve({ status: 204, json: () => Promise.resolve({}), text: () => Promise.resolve("") });
+    };
+    const budget = AbortSignal.timeout(1000);
+    await sendConversion(capture, request);
+    await sendConversion(capture, request, Date.now, budget);
+    expect(signals).toEqual(["absent", budget]);
   });
 
   it("passes the method, headers and body through", async () => {

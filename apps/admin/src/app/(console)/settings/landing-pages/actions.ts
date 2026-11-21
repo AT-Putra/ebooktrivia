@@ -5,6 +5,7 @@
 import type { SaveState } from "../../../../lib/form-state.ts";
 import { adminAction } from "../../../../lib/next/actions.ts";
 import { saveResult } from "../../../../lib/next/settings-result.ts";
+import { clearCapiToken, parseCapiPlatform, setCapiToken } from "../../../../lib/settings/conversions.ts";
 import { checkbox, formValue, uuid } from "../../../../lib/settings/fields.ts";
 import { createLandingPage, parseLpName, parsePixels, registerDomain, removeDomain, renameLandingPage, updateLandingPageSettings, updatePixels } from "../../../../lib/settings/landing-pages.ts";
 
@@ -44,6 +45,21 @@ export const updatePixelsAction = adminAction({ permission: "pixel.edit" }, asyn
       parsePixels({ meta: formValue(form, "meta"), tiktok: formValue(form, "tiktok"), gtag: formValue(form, "gtag"), gtag_label: formValue(form, "gtag_label") }),
     );
     return "Pixel ids saved.";
+  }),
+);
+
+/** The write-only CAPI access token of the page's Meta / TikTok pixel (pixel.edit: Owner only; a sealed secret). */
+export const setCapiTokenAction = adminAction({ permission: "pixel.edit" }, async ({ rt }, _previous: SaveState, form: FormData): Promise<SaveState> =>
+  saveResult(PATH, async () => {
+    await setCapiToken(rt.sql, rt.settings, uuid(formValue(form, "landingPageId")), parseCapiPlatform(formValue(form, "platform")), formValue(form, "value"));
+    return "Access token saved.";
+  }),
+);
+
+export const clearCapiTokenAction = adminAction({ permission: "pixel.edit" }, async ({ rt }, _previous: SaveState, form: FormData): Promise<SaveState> =>
+  saveResult(PATH, async () => {
+    await clearCapiToken(rt.sql, uuid(formValue(form, "landingPageId")), parseCapiPlatform(formValue(form, "platform")));
+    return "Access token removed.";
   }),
 );
 

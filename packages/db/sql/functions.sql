@@ -18,6 +18,7 @@
 --   ET005 enqueue_otp: isolation level is not READ COMMITTED (the cap check would race)
 --   ET009 setting missing or not a positive integer
 --   ET010 enqueue_*: source row not found       ET011 enqueue_mo: order has no Snap redirect URL
+--   ET084 refire_conversion (sql/conversions.sql): the row cannot be re-fired
 --   triggers.sql: ET020/ET021 content lock, ET030/ET031 audit_log, ET040-ET044 orders,
 --   ET045 winners, ET046 programs, ET050/ET051 play rows, ET060/ET061 settings_secrets,
 --   ET071/ET072 prize tiers, ET073/ET074 legal pages, ET080-ET082 payment effects and the fulfillment
@@ -509,6 +510,26 @@ REVOKE ALL ON FUNCTION public.get_order_status(text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.claim_browser_mt(text) FROM PUBLIC;
 -- ===== end US-022 ==================================================================================
 
+-- --- US-024 the source of an order, for the reports (US-029) ----------------------------------------------
+-- AC-T8: an organic order is one with NO CLICK ID. 'Organic' when orders.clickid is NULL (or empty) or orders.adnet_id
+-- is NULL (an adnet the page did not allow, or none), else the adnet's name. The click id decides because the
+-- checkout keeps the adnet of an order whose click id was dropped (malformed, too long, a contact detail): such an
+-- order has an adnet_id and no clickid, gets no S2S row (core mtSinks / moSinks) and reports as Organic. One label
+-- for every report, so no screen invents its own. SECURITY INVOKER: the caller needs SELECT on adnets (admin_rw
+-- has it); EXECUTE admin_rw only (grants.sql).
+CREATE OR REPLACE FUNCTION public.order_source_label(p_adnet_id uuid, p_clickid text)
+  RETURNS text
+  LANGUAGE sql
+  STABLE
+  SET search_path = pg_catalog, pg_temp
+AS $fn$
+  SELECT CASE
+           WHEN p_adnet_id IS NULL OR p_clickid IS NULL OR p_clickid = '' THEN 'Organic'
+           ELSE coalesce((SELECT a.name FROM public.adnets a WHERE a.id = p_adnet_id), 'Organic')
+         END
+$fn$;
+-- --- end US-024 ------------------------------------------------------------------------------------------
+
 REVOKE ALL ON FUNCTION public.setting_positive_int(text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.score_answer(integer, integer, uuid, uuid, timestamptz, timestamptz, timestamptz, integer) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.mask_name(text) FROM PUBLIC;
@@ -521,3 +542,4 @@ REVOKE ALL ON FUNCTION public.enqueue_notification(uuid) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.enqueue_waha_inbound(uuid) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.enqueue_mo(uuid) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.get_payment_secret() FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.order_source_label(uuid, text) FROM PUBLIC;

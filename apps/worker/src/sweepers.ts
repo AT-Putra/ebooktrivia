@@ -367,12 +367,14 @@ export async function expireLeases(sql: postgres.Sql, sinkDedupesByTxid: SinkDed
       }[]
     >`
       SELECT c.id, c.sink, c.adnet_id, c.status, c.attempts, c.lease_until, c.next_attempt_at,
-             c.kind <> 'mt' OR EXISTS (SELECT 1 FROM public.orders o WHERE o.id = c.order_id AND o.status = 'paid') AS may_retry,
+             c.kind <> 'mt' OR o.status = 'paid' AS may_retry,
              clock_timestamp() AS now
         FROM public.conversion_events c
+        JOIN public.orders o ON o.id = c.order_id
        WHERE c.status = 'sending' AND (c.lease_until IS NULL OR c.lease_until < now())
        ORDER BY c.lease_until NULLS FIRST LIMIT ${BATCH}
-         FOR UPDATE OF c SKIP LOCKED`;
+         FOR UPDATE OF c SKIP LOCKED
+         FOR SHARE OF o SKIP LOCKED`;
     let n = 0;
     for (const row of rows) {
       const decision = expireConversionLease(
@@ -384,11 +386,20 @@ export async function expireLeases(sql: postgres.Sql, sinkDedupesByTxid: SinkDed
       if (decision.set.status === "pending" && !row.may_retry) {
         // The MT of an order no longer paid never goes back to pending (the DB refuses it, ET080,
         // security review US-021 P2-A): it fails, for the Owner, like every uncertain send.
-        await tx`
+        // US-024 (the race of the US-021 follow-up, closed in two steps). The SELECT above takes the ORDER's share lock
+        // (SKIP LOCKED, so it never waits: the sweep after the one that finds it locked simply comes again): the lock
+        // order of the claim, and a review -> paid still in flight (it holds the order FOR UPDATE until it commits,
+        // its revive of cancelled rows included) is never read half-done. may_retry is what the order's status was
+        // under that lock. The UPDATE re-checks it anyway in its own fresh snapshot (defence in depth): it changes
+        // nothing when the order is paid, and the row then takes the normal retry path.
+        const cancelled = await tx`
           UPDATE public.conversion_events
-             SET status = 'failed', failed_at = ${row.now}, lease_until = NULL, last_error = ${EFFECT_CANCELLED}, updated_at = ${row.now}
-           WHERE id = ${row.id} AND status = 'sending' AND attempts = ${row.attempts}`;
-      } else await applyConversionDecision(tx, row.id, decision, row.now);
+             SET status = 'failed', failed_at = ${row.now}, lease_until = NULL, last_error = ${EFFECT_CANCELLED}, maybe_counted = true, updated_at = ${row.now}
+           WHERE id = ${row.id} AND status = 'sending' AND attempts = ${row.attempts}
+             AND NOT EXISTS (SELECT 1 FROM public.orders o WHERE o.id = conversion_events.order_id AND o.status = 'paid')`;
+        // An expired lease is an uncertain send: the sink may have counted it, for good (maybe_counted).
+        if (cancelled.count === 0) await applyConversionDecision(tx, row.id, decision, row.now, true);
+      } else await applyConversionDecision(tx, row.id, decision, row.now, true);
       n++;
     }
     return n;

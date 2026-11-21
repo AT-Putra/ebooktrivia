@@ -27,6 +27,12 @@
 -- inside them and nowhere else. The winners and program-status guards (triggers.sql) let exactly that
 -- caller confirm winners and move a program to awaiting_confirmation / finalized. NOLOGIN, no
 -- members, a member of nothing.
+--
+-- conversion_refire (US-024) is the same kind of role: it only OWNS the SECURITY DEFINER function
+-- public.refire_conversion (sql/conversions.sql), the Owner's explicit re-fire of a failed or resent
+-- conversion, so `current_user = 'conversion_refire'` holds inside it and nowhere else. The sent-final guard
+-- (triggers.sql) lets exactly that caller move a conversion the sink acknowledged out of `sent`. NOLOGIN, no
+-- members, a member of nothing.
 
 SELECT pg_catalog.set_config('search_path', 'pg_catalog, pg_temp', false);
 
@@ -36,7 +42,7 @@ DECLARE
   m record;
   p record;
 BEGIN
-  FOREACH r IN ARRAY ARRAY['migrator', 'public_rw', 'admin_rw', 'worker_rw', 'internal_rw', 'trivia_override', 'contest_results'] LOOP
+  FOREACH r IN ARRAY ARRAY['migrator', 'public_rw', 'admin_rw', 'worker_rw', 'internal_rw', 'trivia_override', 'contest_results', 'conversion_refire'] LOOP
     IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = r) THEN
       BEGIN
         EXECUTE pg_catalog.format('CREATE ROLE %I NOLOGIN', r);
@@ -66,10 +72,11 @@ BEGIN
       JOIN pg_catalog.pg_roles g ON g.oid = am.roleid
       JOIN pg_catalog.pg_roles u ON u.oid = am.member
       JOIN pg_catalog.pg_roles gr ON gr.oid = am.grantor
-     WHERE u.rolname IN ('migrator', 'public_rw', 'admin_rw', 'worker_rw', 'internal_rw', 'trivia_override', 'contest_results')
-        -- Nobody may be a member of trivia_override or contest_results: a member could SET ROLE to
-        -- it and pass the content lock's override check, or confirm winners, outside their functions.
-        OR g.rolname IN ('trivia_override', 'contest_results')
+     WHERE u.rolname IN ('migrator', 'public_rw', 'admin_rw', 'worker_rw', 'internal_rw', 'trivia_override', 'contest_results', 'conversion_refire')
+        -- Nobody may be a member of trivia_override, contest_results or conversion_refire: a member could SET ROLE
+        -- to it and pass the content lock's override check, confirm winners or resend a conversion the sink
+        -- acknowledged, outside their functions.
+        OR g.rolname IN ('trivia_override', 'contest_results', 'conversion_refire')
   LOOP
     EXECUTE pg_catalog.format('REVOKE %I FROM %I GRANTED BY %I CASCADE', m.grp, m.member, m.grantor);
   END LOOP;
@@ -78,7 +85,7 @@ BEGIN
   -- session_replication_role, which would switch off ENABLE ORIGIN triggers.
   FOR p IN SELECT parname FROM pg_catalog.pg_parameter_acl LOOP
     EXECUTE pg_catalog.format(
-      'REVOKE ALL ON PARAMETER %I FROM public_rw, admin_rw, worker_rw, internal_rw, migrator, trivia_override, contest_results CASCADE', p.parname);
+      'REVOKE ALL ON PARAMETER %I FROM public_rw, admin_rw, worker_rw, internal_rw, migrator, trivia_override, contest_results, conversion_refire CASCADE', p.parname);
   END LOOP;
 END
 $roles$;
@@ -90,7 +97,7 @@ $roles$;
 DO $db$
 BEGIN
   EXECUTE pg_catalog.format(
-    'REVOKE ALL ON DATABASE %I FROM PUBLIC, public_rw, admin_rw, worker_rw, internal_rw, migrator, trivia_override, contest_results',
+    'REVOKE ALL ON DATABASE %I FROM PUBLIC, public_rw, admin_rw, worker_rw, internal_rw, migrator, trivia_override, contest_results, conversion_refire',
     pg_catalog.current_database());
   EXECUTE pg_catalog.format('GRANT CONNECT ON DATABASE %I TO public_rw, admin_rw, worker_rw, internal_rw',
     pg_catalog.current_database());
@@ -105,7 +112,8 @@ $db$;
 -- (ET090). It is dropped here on every run and created again, with its owner and grants, by
 -- sql/override.sql at the very end (src/migrate.ts). Until then no override can run (fail closed).
 -- Every signature it ever had is dropped (it changed in the US-018 review), whoever owns it.
--- The same for the functions contest_results owns (US-028), created again by sql/contest.sql.
+-- The same for the functions contest_results owns (US-028), created again by sql/contest.sql, and the one
+-- conversion_refire owns (US-024), created again by sql/conversions.sql.
 DO $override$
 DECLARE
   f record;
@@ -114,7 +122,7 @@ BEGIN
     SELECT p.oid::pg_catalog.regprocedure AS sig FROM pg_catalog.pg_proc p
      WHERE p.pronamespace = 'public'::pg_catalog.regnamespace
        AND p.proname IN ('override_question_scoring', 'create_leaderboard_snapshot', 'confirm_program_winners',
-                         'extend_open_question_deadlines', 'program_winners_banner')
+                         'extend_open_question_deadlines', 'program_winners_banner', 'refire_conversion')
   LOOP
     EXECUTE pg_catalog.format('DROP FUNCTION %s', f.sig);
   END LOOP;
@@ -122,10 +130,10 @@ END
 $override$;
 
 -- Schema public: owned by migrator; USAGE only for the app roles (and trivia_override /
--- contest_results, whose functions name public tables), nothing for PUBLIC.
+-- contest_results / conversion_refire, whose functions name public tables), nothing for PUBLIC.
 ALTER SCHEMA public OWNER TO migrator;
-REVOKE ALL ON SCHEMA public FROM PUBLIC, public_rw, admin_rw, worker_rw, internal_rw, trivia_override, contest_results;
-GRANT USAGE ON SCHEMA public TO public_rw, admin_rw, worker_rw, internal_rw, trivia_override, contest_results;
+REVOKE ALL ON SCHEMA public FROM PUBLIC, public_rw, admin_rw, worker_rw, internal_rw, trivia_override, contest_results, conversion_refire;
+GRANT USAGE ON SCHEMA public TO public_rw, admin_rw, worker_rw, internal_rw, trivia_override, contest_results, conversion_refire;
 
 -- Objects migrator creates later get no PUBLIC privileges (functions would otherwise get
 -- EXECUTE to PUBLIC), and no app-role grants: every grant is explicit in grants.sql.

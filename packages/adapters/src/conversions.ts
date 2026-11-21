@@ -1,5 +1,10 @@
 // Conversion requests (plan M3.4 / M7; AC-T2-T8): S2S postbacks, Meta Conversions API and TikTok
-// Events API. These functions only BUILD requests and CLASSIFY results; the worker (M7) claims a
+// Events API.
+//
+// UNVERIFIED UNTIL REAL CREDENTIALS (US-005): the Meta and TikTok payload builders below follow the vendors'
+// documentation, but no real Meta / TikTok account has accepted one of these requests yet. They are the ONLY
+// place the vendor payload shapes live; confirm them in the vendors' test-event tools (Meta test_event_code,
+// TikTok test_event_code) before the first real campaign. These functions only BUILD requests and CLASSIFY results; the worker (M7) claims a
 // conversion_events row (core conversion-machine), sends with safe-fetch, and records the outcome.
 //
 //   - S2S URLs come from core renderPostbackUrl: {secret:name} resolves only for the adnet + host
@@ -16,6 +21,7 @@
 
 import { createHash } from "node:crypto";
 import {
+  CONVERSION_EXCERPT_MAX,
   type ConversionOutcome,
   conversionOutcomeFromHttp,
   type IdMobileE164,
@@ -151,7 +157,6 @@ export function buildTikTokEventRequest(input: {
   readonly accessToken: string;
   readonly event: ConversionEvent;
   readonly testEventCode?: string;
-  readonly endpoint?: string;
 }): PreparedRequest | null {
   const { event } = input;
   if (event.kind === "refund") return null;
@@ -175,8 +180,8 @@ export function buildTikTokEventRequest(input: {
     }),
   ];
   const body = defined({ event_source: "web", event_source_id: input.pixelCode, test_event_code: input.testEventCode, data });
-  const url = input.endpoint ?? TIKTOK_EVENTS_URL;
-  if (!url.startsWith("https://")) throw new RangeError("endpoint must be https");
+  // The endpoint is a constant: there is no override, so the access token can only ever go to TikTok's host.
+  const url = TIKTOK_EVENTS_URL;
   const redactedUser = redact(
     defined({ ...user, email: user.email === undefined ? undefined : "[sha256]", phone: user.phone === undefined ? undefined : "[sha256]" }),
     ["ip", "user_agent", "ttclid"],
@@ -195,33 +200,38 @@ export function buildTikTokEventRequest(input: {
 export interface ConversionAttemptResult {
   readonly outcome: ConversionOutcome;
   readonly latencyMs: number;
-  /** First 1 KiB of the response body, for the log. */
+  /** First 4 KiB of the response body, for the log (AC-T7). */
   readonly responseSnippet: string;
 }
 
 const NOT_SENT = new Set(["invalid_url", "scheme_not_allowed", "blocked_address", "dns_failed"]);
-const SNIPPET_BYTES = 1024;
+/** The first 4 KiB of the answer is logged (AC-T7): the one constant of core, also the DB check. */
+const SNIPPET_BYTES = CONVERSION_EXCERPT_MAX;
 
 /**
  * Sends a prepared request and classifies the result for core recordConversionOutcome: 2xx sent,
  * other statuses failed (retried per AC-T3), and a transport error after the request may have
- * left (timeout, reset) maybe_sent; errors before any byte left are failed.
+ * left (timeout, reset) maybe_sent; errors before any byte left are failed. A redirect is never
+ * followed and is NOT an answer to retry: the sink received the request and chose to send the sender
+ * elsewhere, so it may have counted it (security review US-024 M2): maybe_sent, whose handling is the
+ * sink's (an S2S adnet waits for the Owner's re-fire; Meta and TikTok dedupe by event_id and retry).
+ * `signal` (the fire's own time budget) is handed to the fetch.
  */
-export async function sendConversion(fetch: HttpFetch, request: PreparedRequest, now: () => number = Date.now): Promise<ConversionAttemptResult> {
+export async function sendConversion(fetch: HttpFetch, request: PreparedRequest, now: () => number = Date.now, signal?: AbortSignal): Promise<ConversionAttemptResult> {
   const started = now();
   try {
     const response = await fetch(request.url, {
       method: request.method,
       headers: { ...request.headers },
       ...(request.body === undefined ? {} : { body: request.body }),
+      ...(signal === undefined ? {} : { signal }),
     });
-    // Only the first 1 KiB is read; safe-fetch cancels the rest (stubs without textPrefix fall back).
+    // Only the first 4 KiB is read; safe-fetch cancels the rest (stubs without textPrefix fall back).
     const text = await (response.textPrefix === undefined ? response.text() : response.textPrefix(SNIPPET_BYTES)).catch(() => "");
     return { outcome: conversionOutcomeFromHttp(response.status), latencyMs: now() - started, responseSnippet: text.slice(0, SNIPPET_BYTES) };
   } catch (error) {
-    // A refused redirect is an HTTP answer: a failed attempt to retry (AC-T3), like any non-2xx.
     if (error instanceof SafeFetchError && error.code === "redirect_refused" && error.httpStatus !== undefined) {
-      return { outcome: conversionOutcomeFromHttp(error.httpStatus), latencyMs: now() - started, responseSnippet: "" };
+      return { outcome: { kind: "maybe_sent", error: `HTTP ${String(error.httpStatus)} (redirect not followed)` }, latencyMs: now() - started, responseSnippet: "" };
     }
     const message = error instanceof Error ? error.message : "request failed";
     const certain = error instanceof SafeFetchError && NOT_SENT.has(error.code);

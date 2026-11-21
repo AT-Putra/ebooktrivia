@@ -15,7 +15,8 @@
 //      function, owned by the NOLOGIN role trivia_override (roles.sql), which only a superuser can
 //      give it without making migrator a member of that role; then sql/contest.sql the same way
 //      (US-028: the results snapshot, winner confirmation, deadline extension and banner read,
-//      owned by the NOLOGIN role contest_results).
+//      owned by the NOLOGIN role contest_results), and sql/conversions.sql (US-024: the Owner's
+//      conversion re-fire, owned by the NOLOGIN role conversion_refire).
 // Every sql/ file first sets search_path = pg_catalog, pg_temp for the session. Every step is
 // re-runnable on an existing database. Each SQL file runs as one simple-protocol query, i.e. as
 // a single implicit transaction.
@@ -45,6 +46,7 @@ export async function runMigrations(databaseUrl: string): Promise<void> {
     await sql.unsafe("RESET ROLE");
     await runFile("override.sql");
     await runFile("contest.sql");
+    await runFile("conversions.sql");
   } finally {
     await sql.end();
   }

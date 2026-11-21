@@ -51,6 +51,7 @@ import {
   isChargeback,
   isUuid,
   mtSinks,
+  NO_MT_TEMPLATE,
   type OrderEvent,
   type OrderStatus,
   type PaymentAlert,
@@ -119,6 +120,8 @@ interface OrderRow {
   clickid: string | null;
   event_id: string;
   pixels: unknown;
+  /** The order's adnet has an MT postback template (false for an organic order: no S2S row anyway). */
+  adnet_has_mt_template: boolean;
   now: Date;
 }
 
@@ -188,9 +191,13 @@ async function paidEffects(tx: postgres.TransactionSql, order: OrderRow, waDelay
 
   // txid = the order id: stable per order (adnets dedupe by it), and no public capability (unlike public_id).
   for (const sink of mtSinks({ adnetId: order.adnet_id, clickid: order.clickid, pixels: order.pixels })) {
+    // An attributed order whose adnet has no MT template cannot be reported: its S2S row is created already
+    // failed, visibly (AC-T4), instead of being retried for 14 hours; the Owner fixes the adnet and re-fires it.
+    const unreportable = sink === "s2s" && !order.adnet_has_mt_template;
     await tx`
-      INSERT INTO public.conversion_events (order_id, sink, kind, adnet_id, txid, event_id, value_idr, next_attempt_at)
-      VALUES (${order.id}, ${sink}, 'mt', ${sink === "s2s" ? order.adnet_id : null}, ${order.id}, ${order.event_id}, ${order.amount_idr}::bigint, ${now})
+      INSERT INTO public.conversion_events (order_id, sink, kind, status, adnet_id, txid, event_id, value_idr, next_attempt_at, failed_at, last_error)
+      VALUES (${order.id}, ${sink}, 'mt', ${unreportable ? "failed" : "pending"}, ${sink === "s2s" ? order.adnet_id : null}, ${order.id}, ${order.event_id}, ${order.amount_idr}::bigint, ${now},
+              ${unreportable ? now : null}, ${unreportable ? NO_MT_TEMPLATE : null})
       ON CONFLICT (order_id, sink, kind) DO NOTHING`;
   }
   await tx`
@@ -205,9 +212,10 @@ async function paidEffects(tx: postgres.TransactionSql, order: OrderRow, waDelay
 /** Refund / review effects (security review P2-2, Owner decision D5): see the header. */
 async function reversalEffects(tx: postgres.TransactionSql, order: OrderRow, to: OrderStatus, event: OrderEvent, attempt: AttemptRef): Promise<void> {
   const { now } = order;
-  // The MTs that may have reached their sink (a request left: attempted, sending or sent) need a reversal.
+  // The MTs the sink may have counted (the sticky maybe_counted mark: a 2xx or an uncertain send, never cleared) or
+  // that are in flight (sending) need a reversal; one whose every attempt was answered with an error does not.
   const reached = await tx<{ sink: string }[]>`
-    SELECT sink FROM public.conversion_events WHERE order_id = ${order.id} AND kind = 'mt' AND (attempts > 0 OR status IN ('sending', 'sent'))`;
+    SELECT sink FROM public.conversion_events WHERE order_id = ${order.id} AND kind = 'mt' AND (maybe_counted OR status IN ('sending', 'sent'))`;
   await tx`
     UPDATE public.deliveries SET status = 'cancelled', last_error = ${EFFECT_CANCELLED}, updated_at = ${now}
      WHERE order_id = ${order.id} AND status = 'pending'`;
@@ -276,8 +284,10 @@ async function recordPayment(tx: postgres.TransactionSql, order: OrderRow, attem
 export async function applyRequery(tx: postgres.TransactionSql, attempt: AttemptRef, status: MidtransStatus, requeriedAt: Date, options: PaymentOptions): Promise<ApplyOutcome> {
   const [order] = await tx<OrderRow[]>`
     SELECT o.id, o.status::text AS status, o.amount_idr::text AS amount_idr, o.snap_attempt_count, o.player_id, o.program_id,
-           o.buyer_phone, o.buyer_name, o.buyer_email, o.adnet_id, o.clickid, o.event_id, lp.pixels, clock_timestamp() AS now
+           o.buyer_phone, o.buyer_name, o.buyer_email, o.adnet_id, o.clickid, o.event_id, lp.pixels,
+           coalesce(a.mt_url_template IS NOT NULL, false) AS adnet_has_mt_template, clock_timestamp() AS now
       FROM public.orders o JOIN public.landing_pages lp ON lp.id = o.landing_page_id
+      LEFT JOIN public.adnets a ON a.id = o.adnet_id
      WHERE o.id = ${attempt.orderId}
        FOR UPDATE OF o`;
   if (order === undefined) throw new Error("the attempt's order is missing");

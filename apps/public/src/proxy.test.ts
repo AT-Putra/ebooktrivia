@@ -108,8 +108,8 @@ describe("other hosts", () => {
     expect(post.status).toBe(404);
   });
 
-  it("passes the checkout, Cap and mockup routes through untouched", async () => {
-    for (const path of ["/api/v1/checkout/lp_x", "/api/v1/cap/lp_x/challenge", "/mockups/order/paid", "/"]) {
+  it("passes the checkout, Cap, SDK config / visit and mockup routes through untouched", async () => {
+    for (const path of ["/api/v1/checkout/lp_x", "/api/v1/cap/lp_x/challenge", "/api/v1/lp/lp_x/config", "/api/v1/visit/lp_x", "/mockups/order/paid", "/"]) {
       const response = await proxy(request("api.example.test", path));
       expect(response.headers.get("x-middleware-next"), path).toBe("1");
       expect(response.headers.get("content-security-policy"), path).toBeNull();

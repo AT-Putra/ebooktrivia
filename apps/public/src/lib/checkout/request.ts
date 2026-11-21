@@ -155,7 +155,11 @@ function clean(raw: unknown, max: number, shape: Shape): string | undefined {
 }
 
 export interface Attribution {
-  /** The adnet, when its slug is allowed (active) for the landing page; null = organic. */
+  /**
+   * The adnet, when its slug is allowed (active) for the landing page; null = organic. An allowed adnet whose click id was
+   * dropped stays here, and that order is organic too (AC-T8: no click id): it gets no S2S row, and the reports' source
+   * label (order_source_label) goes by the click id.
+   */
   readonly adnetId: string | null;
   readonly values: Readonly<Omit<Partial<Record<keyof SdkAttribution, string>>, "adnet">>;
 }

@@ -13,6 +13,8 @@ export interface HttpRequestInit {
   readonly method: string;
   readonly headers: Record<string, string>;
   readonly body?: string | Uint8Array;
+  /** The caller's time budget; safe-fetch combines it with its own timeout. */
+  readonly signal?: AbortSignal;
 }
 
 export type HttpFetch = (url: string, init: HttpRequestInit) => Promise<HttpResponse>;

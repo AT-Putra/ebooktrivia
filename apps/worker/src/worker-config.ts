@@ -52,6 +52,8 @@ export interface WorkerConfig {
   readonly conversionLeaseMs: number;
   /** Whole-request timeout of a conversion fire; must be shorter than the lease (core). */
   readonly conversionTimeoutMs: number;
+  /** Graph API version of the Meta Conversions API requests (US-024); verify the current one with the first real credentials. */
+  readonly metaGraphVersion: string;
   /** Jobs processed in parallel per queue. */
   readonly concurrency: number;
   /** BullMQ job lock; a job whose process died is re-queued after it lapses (stall check). */
@@ -109,6 +111,14 @@ function midtransStubUrl(env: Env): string | null {
   return url.origin;
 }
 
+export const DEFAULT_META_GRAPH_VERSION = "v24.0";
+
+function metaGraphVersion(env: Env): string {
+  const value = optional(env, "META_GRAPH_API_VERSION") ?? DEFAULT_META_GRAPH_VERSION;
+  if (!/^v\d{1,3}\.\d$/.test(value)) throw new ConfigError("META_GRAPH_API_VERSION must look like v24.0");
+  return value;
+}
+
 function uptimeKuma(env: Env, allowHttp: boolean): WorkerConfig["uptimeKuma"] {
   const raw = optional(env, "UPTIME_KUMA_PUSH_URL");
   if (raw === undefined) return undefined;
@@ -164,6 +174,7 @@ export function loadWorkerConfig(env: Env): WorkerConfig {
     outboxStaleMs: int(env, "WORKER_OUTBOX_STALE_MS", 120_000, 500, 3_600_000),
     conversionLeaseMs,
     conversionTimeoutMs,
+    metaGraphVersion: metaGraphVersion(env),
     concurrency: int(env, "WORKER_CONCURRENCY", 4, 1, 64),
     lockDurationMs: int(env, "WORKER_LOCK_DURATION_MS", 30_000, 1000, 600_000),
     stalledIntervalMs: int(env, "WORKER_STALLED_INTERVAL_MS", 30_000, 1000, 600_000),

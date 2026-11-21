@@ -25,7 +25,8 @@
 -- that is not an extension, or of an ended program, ET062 SMTP / WAHA secret bound to another host than its endpoint,
 -- ET049 a Midtrans attempt whose midtrans_order_id is not {public_id}-{n} of its order.
 -- ET080 a delivery / MT conversion row of an unpaid order, ET081 orders.paid_at / refunded_at changed
--- once set, ET082 a fulfillment change of a flagged or revoked winner (US-021).
+-- once set, ET082 a fulfillment change of a flagged or revoked winner (US-021),
+-- ET083 a conversion that the sink acknowledged (sent) moved out of sent (US-024).
 -- ET104 results snapshot changed (immutable), ET105 winner deleted, changed or inconsistent with its snapshot,
 -- ET106 deadline extension written outside the Owner's tool, ET108 play timestamp or answer changed by the
 -- caller, ET109 a pick after the deadline + 1500 ms, ET110 a start or serve at or after the grace end,
@@ -1143,6 +1144,31 @@ CREATE OR REPLACE TRIGGER deliveries_paid_status_guard
 CREATE OR REPLACE TRIGGER conversion_events_mt_paid_status_guard
   BEFORE UPDATE OF status ON public.conversion_events
   FOR EACH ROW WHEN (NEW.kind = 'mt' AND NEW.status IN ('pending', 'sending')) EXECUTE FUNCTION public.paid_effects_guard();
+
+-- --- US-024 exactly-once conversions ----------------------------------------------------------------------
+-- A conversion row the sink acknowledged (2xx, status `sent`) never leaves `sent` through any code path of
+-- the worker or the admin app: no retry, claim, sweep or direct UPDATE can send it again (ET083). The one
+-- way out is public.refire_conversion(id, true) (sql/conversions.sql), an explicit Owner action: it is
+-- SECURITY DEFINER and owned by the NOLOGIN, member-less role conversion_refire (roles.sql), so inside it
+-- current_user is conversion_refire, which no login can be and no session can SET ROLE to. SECURITY INVOKER
+-- here for that reason (like the content-lock triggers): the trigger must see the caller, not its own owner.
+CREATE OR REPLACE FUNCTION public.conversion_events_sent_final_guard()
+  RETURNS trigger
+  LANGUAGE plpgsql
+  SET search_path = pg_catalog, pg_temp
+AS $fn$
+BEGIN
+  IF current_user <> 'conversion_refire' THEN
+    RAISE EXCEPTION 'a conversion the sink acknowledged is final: only an explicit re-fire resends it' USING ERRCODE = 'ET083';
+  END IF;
+  RETURN NEW;
+END
+$fn$;
+
+CREATE OR REPLACE TRIGGER conversion_events_sent_final_guard
+  BEFORE UPDATE OF status ON public.conversion_events
+  FOR EACH ROW WHEN (OLD.status = 'sent' AND NEW.status IS DISTINCT FROM 'sent') EXECUTE FUNCTION public.conversion_events_sent_final_guard();
+-- --- end US-024 ------------------------------------------------------------------------------------------
 
 CREATE OR REPLACE FUNCTION public.orders_payment_stamps_guard()
   RETURNS trigger

@@ -2,16 +2,19 @@ import type { Metadata } from "next";
 import { Badge } from "@ebooktrivia/ui/components/badge";
 import { Card, CardDescription, CardTitle } from "@ebooktrivia/ui/components/card";
 import { ActionForm } from "../../../../components/settings/action-form.tsx";
-import { CheckboxField, PageHeading, SelectField, TextField } from "../../../../components/settings/fields.tsx";
+import { CheckboxField, PageHeading, SecretBadge, SelectField, TextField } from "../../../../components/settings/fields.tsx";
 import { requireAdmin } from "../../../../lib/next/require-admin.ts";
 import { getRuntime } from "../../../../lib/next/runtime.ts";
 import { can } from "../../../../lib/policy.ts";
+import { CAPI_LABELS, CAPI_PLATFORMS, capiTokenStatuses } from "../../../../lib/settings/conversions.ts";
 import { listLandingPages, snippet } from "../../../../lib/settings/landing-pages.ts";
 import {
+  clearCapiTokenAction,
   createLandingPageAction,
   registerDomainAction,
   removeDomainAction,
   renameLandingPageAction,
+  setCapiTokenAction,
   updateLandingPageSettingsAction,
   updatePixelsAction,
 } from "./actions.ts";
@@ -36,6 +39,9 @@ export default async function LandingPagesPage() {
   const domains = can(admin.role, "lp_domain.register");
   const programOptions = programs.map((p) => ({ value: p.id, label: p.name }));
   const domain = rt.settings.domain;
+  // Write-only CAPI access tokens: only whether each is set (and its last 4), never a sealed column (Owner only).
+  const tokens: Awaited<ReturnType<typeof capiTokenStatuses>> = pixels ? await capiTokenStatuses(rt.sql, pages) : new Map();
+  const sealing = rt.settings.sealer?.scopes.includes("conversions") === true;
   return (
     <>
       <PageHeading title="Landing pages" description="External landing pages load the SDK snippet; their domains get TLS only once registered here (Owner)." />
@@ -100,6 +106,38 @@ export default async function LandingPagesPage() {
               <TextField id={`px-gtag-${page.id}`} name="gtag" label="Google Ads id (AW-...)" defaultValue={page.pixels.gtag} required={false} maxLength={18} />
               <TextField id={`px-label-${page.id}`} name="gtag_label" label="Google Ads conversion label" defaultValue={page.pixels.gtag_label} required={false} maxLength={64} />
             </ActionForm>
+          ) : null}
+          {pixels ? (
+            <div className="flex flex-col gap-3 border-t pt-4" data-testid="lp-capi">
+              <span className="text-sm font-medium">Server-side conversions (access tokens, write-only)</span>
+              {CAPI_PLATFORMS.every((platform) => page.pixels[platform] === null) ? <CardDescription>Set a Meta pixel id or a TikTok pixel code above first: an access token belongs to its pixel.</CardDescription> : null}
+              {CAPI_PLATFORMS.filter((platform) => page.pixels[platform] !== null).map((platform) => {
+                const status = tokens.get(page.id)?.[platform] ?? { set: false, last4: "", updatedAt: null };
+                return (
+                  <div key={platform} className="flex flex-col gap-2">
+                    <div className="flex flex-wrap items-center gap-3">
+                      <span className="text-sm">{CAPI_LABELS[platform]}</span>
+                      <SecretBadge status={status} testId={`capi-${platform}-${page.lpKey}`} />
+                      {status.set ? (
+                        <ActionForm action={clearCapiTokenAction} submitLabel="Remove" variant="ghost" className="flex items-center gap-2">
+                          <input type="hidden" name="landingPageId" value={page.id} />
+                          <input type="hidden" name="platform" value={platform} />
+                        </ActionForm>
+                      ) : null}
+                    </div>
+                    {sealing ? (
+                      <ActionForm action={setCapiTokenAction} submitLabel="Save access token" variant="secondary" className="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
+                        <input type="hidden" name="landingPageId" value={page.id} />
+                        <input type="hidden" name="platform" value={platform} />
+                        <TextField id={`capi-${platform}-${page.id}`} name="value" label="Access token (write-only)" type="password" autoComplete="new-password" maxLength={4096} />
+                      </ActionForm>
+                    ) : (
+                      <CardDescription>Tokens cannot be saved: the conversions sealing key is not configured on the server.</CardDescription>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
           ) : null}
           <div className="flex flex-col gap-2 border-t pt-4" data-testid="lp-domains">
             <span className="text-sm font-medium">Domains</span>

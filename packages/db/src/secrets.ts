@@ -39,6 +39,20 @@ export function conversionSecretStore(sql: postgres.ISql) {
 }
 
 /**
+ * The sealed CAPI access token of a pixel (US-024): the conversions-scope secret with no adnet, named
+ * capi.<platform>.<pixel> (@ebooktrivia/core capiSecretName) and bound to exactly the platform's API host
+ * (settings_secrets_binding_check). A row of any other scope, adnet or host is never returned.
+ */
+export async function findCapiSecret(sql: postgres.ISql, query: { readonly name: string; readonly host: string }): Promise<SettingsSecretRow | undefined> {
+  const [row] = await sql<SettingsSecretRow[]>`
+    SELECT s.id, s.scope, s.name, s.adnet_id AS "adnetId", s.bound_host AS "boundHost", s.key_id AS "keyId",
+           s.ciphertext, s.nonce, s.sealed_dek AS "sealedDek"
+      FROM public.settings_secrets s
+     WHERE s.scope = 'conversions' AND s.adnet_id IS NULL AND s.name = ${query.name} AND s.bound_host = ${query.host}`;
+  return row;
+}
+
+/**
  * Names of the sealed secrets the admin app writes and the worker / public app read (US-017).
  * sql/triggers.sql settings_secrets_endpoint_binding refuses the SMTP and WAHA ones unless they are
  * bound to exactly their endpoint host. Payment secrets carry no bound host: the Midtrans hosts are

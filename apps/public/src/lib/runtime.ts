@@ -10,12 +10,15 @@ import { type Env, loadPublicConfig, PublicConfigError } from "./config.ts";
 import { assertPublicLogin, createPublicSql } from "./db.ts";
 import { logEvent } from "./log.ts";
 import type { OrderDeps } from "./order/handler.ts";
+import { CONFIG_BUCKET, createConfigCache, createTokenBuckets, type SdkRouteDeps } from "./sdk-routes.ts";
 import { createValkey } from "./valkey.ts";
 import type { MidtransWebhookDeps } from "./webhooks/midtrans.ts";
 
 export interface PublicRuntime {
   readonly checkout: CheckoutDeps;
   readonly cap: CapRouteDeps;
+  /** The SDK's config and visit beacon (US-024). */
+  readonly sdk: SdkRouteDeps;
   /** The Midtrans notification inbox (US-021). */
   readonly webhooks: MidtransWebhookDeps;
   /** The order status page (US-022): its routes, the proxy's lookups and the legal pages. */
@@ -62,6 +65,7 @@ export async function createRuntime(env: Env): Promise<PublicRuntime> {
   return {
     checkout: { sql, valkey, capFor, opener, midtransFetch: midtrans.fetch, domain: config.domain, log: logEvent },
     cap: { sql, valkey, capFor, log: logEvent },
+    sdk: { sql, valkey, domain: config.domain, configCache: createConfigCache(), configLimit: createTokenBuckets(CONFIG_BUCKET), log: logEvent },
     webhooks: { sql, valkey, opener, serverKey: createMidtransKeyCache(), log: logEvent },
     order: { sql, valkey, domain: config.domain, log: logEvent },
     close,

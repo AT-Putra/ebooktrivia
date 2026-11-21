@@ -99,7 +99,7 @@ export interface MtSource {
   readonly pixels: unknown;
 }
 
-const hasPixel = (pixels: unknown, key: string): boolean =>
+export const hasPixel = (pixels: unknown, key: string): boolean =>
   typeof pixels === "object" && pixels !== null && !Array.isArray(pixels) && typeof (pixels as Record<string, unknown>)[key] === "string" && (pixels as Record<string, string>)[key] !== "";
 
 /** The sinks that get exactly one MT row when the order is PAID (AC-T4). */

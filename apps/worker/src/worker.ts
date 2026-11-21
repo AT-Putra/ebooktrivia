@@ -3,11 +3,19 @@
 // behaviour lives in relay.ts, outbox-consumer.ts, conversion-fire.ts, sweepers.ts, heartbeat.ts.
 //
 // Ports are what later stories plug in (the worker registers nothing it cannot run):
-//   outboxConsumers  payment.notification (US-021), conversion attribution of conversion.mo
-//                    (US-024), otp.send / waha.inbound / deliveries (US-025). Only topics listed
-//                    here are relayed.
-//   fireConversion   the real S2S / CAPI requests (US-024). Without it no conversion.fire queue
-//                    exists and the conversions sweeper enqueues nothing.
+//   outboxConsumers  otp.send / waha.inbound / deliveries (US-025). Only topics listed here (and the ones
+//                    the ports below add: payment.notification, template.test_send, conversion.mo, order.paid)
+//                    are relayed.
+//   fireConversion   a conversion fire port (tests). Without one no conversion.fire queue exists and the
+//                    conversions sweeper enqueues nothing.
+//   conversions      the real S2S / Meta CAPI / TikTok requests (US-024, conversions.ts). runWorker wires it
+//                    when worker.env holds SECRETS_CONVERSIONS_PRIVATE_KEY (it IS the fire port, plus the sinks'
+//                    dedupe policy), and then also registers the conversion.mo consumer (the MO rows); without the
+//                    key it does not run and no conversion is sent (in production the worker raises a critical
+//                    `conversions_disabled` alert at start).
+//   orderPaidNudges  what a PAID order's effects need to be hurried along: one nudge per port that has a queue to
+//                    put them on (the conversion queue today; a later story adds its delivery nudge here). The
+//                    order.paid consumer is registered when there is at least one nudge, key or no key.
 //   deliverDelivery  the delivery consumer (US-025). Without it no delivery.send queue exists and
 //                    the deliveries sweeper does not run.
 //   testSend         the senders of admin template test-sends (US-017, template-test-send.ts).
@@ -39,10 +47,12 @@ import { relayOnce } from "./relay.ts";
 import { onShutdown } from "./shutdown.ts";
 import { createTemplateTestSendConsumer, type TestSender } from "./template-test-send.ts";
 import { testSendFromEnv } from "./test-send-senders.ts";
-import { runSweeps } from "./sweepers.ts";
+import { raiseAlert, runSweeps } from "./sweepers.ts";
 import { loadWorkerConfig, type WorkerConfig } from "./worker-config.ts";
 import { type PaymentPort, paymentsFromEnv } from "./midtrans-access.ts";
-import { createPaymentNotificationConsumer, PAYMENT_TOPIC } from "./payments.ts";
+import { createPaymentNotificationConsumer, ORDER_PAID_TOPIC, PAYMENT_TOPIC } from "./payments.ts";
+import { type ConversionPort, conversionsFromEnv } from "./conversions.ts";
+import { createMoConsumer, createOrderPaidConsumer, MO_TOPIC, nudgeConversions, type OrderPaidNudge } from "./conversion-outbox.ts";
 import { reconcileIfDue } from "./reconciliation.ts";
 
 export const RELAY_BATCH = 200;
@@ -52,6 +62,10 @@ export interface WorkerPorts {
   readonly outboxConsumers?: readonly OutboxConsumer[];
   readonly fireConversion?: FireConversion;
   readonly sinkDedupesByTxid?: SinkDedupePolicy;
+  /** US-024: the real conversion sinks (the fire port and the MO consumer). */
+  readonly conversions?: ConversionPort;
+  /** Nudges of a PAID order beyond the conversion queue's own (a later story's delivery nudge): they get the order.paid consumer. */
+  readonly orderPaidNudges?: readonly OrderPaidNudge[];
   /** US-025: processes one delivery.send job ({ id: deliveries.id }); claim and lease per core delivery-machine. */
   readonly deliverDelivery?: (data: unknown) => Promise<string>;
   /** US-017: the senders of template.test_send (given the worker's pool). */
@@ -66,17 +80,31 @@ export interface RunningWorker {
 
 export async function startWorker(config: WorkerConfig, ports: WorkerPorts, log: Logger): Promise<RunningWorker> {
   const consumers = [...(ports.outboxConsumers ?? [])];
+  // The order.paid nudges come from ONE list: its topic, its consumer and the nudges the consumer runs are all derived
+  // from it, so they cannot disagree. One source per port that has a queue to put the effects of a PAID order on, with
+  // or without the conversions key; a source makes its nudge once the queues exist.
+  type NudgeSource = (queues: { readonly sql: postgres.Sql; readonly conversionQueue: Queue | undefined }) => OrderPaidNudge;
+  const conversionNudge: NudgeSource = ({ sql: pool, conversionQueue }) => {
+    if (conversionQueue === undefined) throw new Error("a conversion nudge needs the conversion queue");
+    return nudgeConversions(pool, conversionQueue);
+  };
+  const nudgeSources: readonly NudgeSource[] = [
+    ...(ports.fireConversion === undefined && ports.conversions === undefined ? [] : [conversionNudge]),
+    ...(ports.orderPaidNudges ?? []).map((nudge): NudgeSource => () => nudge),
+  ];
   const topics = [
     ...consumers.map((c) => c.topic),
     ...(ports.testSend === undefined ? [] : ["template.test_send"]),
     ...(ports.payments === undefined ? [] : [PAYMENT_TOPIC]),
+    ...(ports.conversions === undefined ? [] : [MO_TOPIC]),
+    ...(nudgeSources.length === 0 ? [] : [ORDER_PAID_TOPIC]),
   ];
   if (new Set(topics).size !== topics.length) throw new Error("two outbox consumers registered for one topic");
 
   // One connection per job that can run at once (each BullMQ Worker runs `concurrency` jobs, and a
   // job holds at most one connection at a time), plus the relay, sweeper and heartbeat loops and
   // one spare.
-  const jobQueues = topics.length + (ports.fireConversion === undefined ? 0 : 1) + (ports.deliverDelivery === undefined ? 0 : 1);
+  const jobQueues = topics.length + (ports.fireConversion === undefined && ports.conversions === undefined ? 0 : 1) + (ports.deliverDelivery === undefined ? 0 : 1);
   const sql = postgres(config.databaseUrl, {
     ...PG_CONNECTION_OPTIONS,
     connection: { ...PG_CONNECTION_OPTIONS.connection, application_name: "ebt-worker" },
@@ -88,6 +116,19 @@ export async function startWorker(config: WorkerConfig, ports: WorkerPorts, log:
   } catch (error) {
     await sql.end({ timeout: 5 });
     throw error;
+  }
+  // Production without the conversions key sends nothing: say so where the Owner looks (a persisted alert), once per
+  // start, and keep running (payments, deliveries and the trivia do not depend on it).
+  if (config.nodeEnv === "production" && ports.conversions === undefined && ports.fireConversion === undefined) {
+    await raiseAlert(sql, {
+      kind: "conversions_disabled",
+      severity: "critical",
+      dedupeKey: "conversions_disabled",
+      message: "SECRETS_CONVERSIONS_PRIVATE_KEY is not set on the worker: no adnet postback and no Meta / TikTok conversion is sent until it is",
+      payload: {},
+    }).catch((error: unknown) => {
+      log.error({ err: error }, "the conversions_disabled alert could not be raised");
+    });
   }
   const failpoint = createFailpoint(config);
   // safeFetch: strict, for the consumers of later stories. heartbeatFetch: may reach the Kuma host.
@@ -124,29 +165,34 @@ export async function startWorker(config: WorkerConfig, ports: WorkerPorts, log:
     return queue;
   };
 
-  if (ports.testSend !== undefined) consumers.push(createTemplateTestSendConsumer({ sql, sender: ports.testSend(sql) }));
-  const { payments } = ports;
-  if (payments !== undefined) consumers.push(createPaymentNotificationConsumer({ sql, midtrans: payments.midtrans, log, waDelayMs: payments.waDelayMs }));
-  const outboxMaxAttempts = new Map(consumers.flatMap((c): [string, number][] => (c.maxAttempts === undefined ? [] : [[c.topic, c.maxAttempts]])));
-  const outboxQueues = new Map<string, Queue>();
-  for (const consumer of consumers) {
-    outboxQueues.set(consumer.topic, consume(consumer.topic, createOutboxProcessor(consumer, { sql, failpoint, log })));
-  }
+  // The conversion queue comes first: the order.paid consumer puts jobs on it.
+  const fireConversion = ports.fireConversion ?? ports.conversions?.fire(sql, log);
+  const sinkDedupesByTxid = ports.sinkDedupesByTxid ?? ports.conversions?.sinkDedupesByTxid;
   const conversionQueue =
-    ports.fireConversion === undefined
+    fireConversion === undefined
       ? undefined
       : consume(
           CONVERSION_QUEUE,
           createConversionProcessor({
             sql,
-            fire: ports.fireConversion,
+            fire: fireConversion,
             failpoint,
             log,
             leaseMs: config.conversionLeaseMs,
             requestTimeoutMs: config.conversionTimeoutMs,
-            ...(ports.sinkDedupesByTxid === undefined ? {} : { sinkDedupesByTxid: ports.sinkDedupesByTxid }),
+            ...(sinkDedupesByTxid === undefined ? {} : { sinkDedupesByTxid }),
           }),
         );
+  if (ports.testSend !== undefined) consumers.push(createTemplateTestSendConsumer({ sql, sender: ports.testSend(sql) }));
+  const { payments } = ports;
+  if (payments !== undefined) consumers.push(createPaymentNotificationConsumer({ sql, midtrans: payments.midtrans, log, waDelayMs: payments.waDelayMs }));
+  if (ports.conversions !== undefined) consumers.push(createMoConsumer());
+  if (nudgeSources.length > 0) consumers.push(createOrderPaidConsumer(nudgeSources.map((make) => make({ sql, conversionQueue }))));
+  const outboxMaxAttempts = new Map(consumers.flatMap((c): [string, number][] => (c.maxAttempts === undefined ? [] : [[c.topic, c.maxAttempts]])));
+  const outboxQueues = new Map<string, Queue>();
+  for (const consumer of consumers) {
+    outboxQueues.set(consumer.topic, consume(consumer.topic, createOutboxProcessor(consumer, { sql, failpoint, log })));
+  }
   const deliveryQueue = ports.deliverDelivery === undefined ? undefined : consume(DELIVERY_QUEUE, ports.deliverDelivery);
 
   const started = Date.now();
@@ -163,7 +209,7 @@ export async function startWorker(config: WorkerConfig, ports: WorkerPorts, log:
         outboxStaleMs: config.outboxStaleMs,
         ...(conversionQueue === undefined ? {} : { conversionQueue }),
         ...(deliveryQueue === undefined ? {} : { deliveryQueue }),
-        ...(ports.sinkDedupesByTxid === undefined ? {} : { sinkDedupesByTxid: ports.sinkDedupesByTxid }),
+        ...(sinkDedupesByTxid === undefined ? {} : { sinkDedupesByTxid }),
       });
       return false;
     }),
@@ -191,6 +237,7 @@ export async function startWorker(config: WorkerConfig, ports: WorkerPorts, log:
     {
       topics,
       conversions: conversionQueue !== undefined,
+      conversionSinks: ports.conversions !== undefined,
       deliveries: deliveryQueue !== undefined,
       payments: payments !== undefined,
       prefix: config.prefix,
@@ -212,7 +259,7 @@ export async function startWorker(config: WorkerConfig, ports: WorkerPorts, log:
       await Promise.all(queues.map((q) => q.close()));
       redis.disconnect();
       await sql.end({ timeout: 5 });
-      await Promise.all([safeFetch.close(), heartbeatFetch.close(), payments?.close?.()]);
+      await Promise.all([safeFetch.close(), heartbeatFetch.close(), payments?.close?.(), ports.conversions?.close?.()]);
     },
   };
 }
@@ -224,11 +271,14 @@ export async function runWorker(env: Env, ports: WorkerPorts = {}): Promise<void
   // Midtrans re-queries the payment private key (to open the server key).
   const testSend = ports.testSend ?? testSendFromEnv(env, config.dev);
   const payments = ports.payments ?? paymentsFromEnv(env, config);
+  // The conversions private key opens the adnet secrets and the CAPI access tokens.
+  const conversions = ports.conversions ?? conversionsFromEnv(env, config);
   // Code review m7: say it at start, not only through the hourly "no consumer" alert.
   if (payments === undefined) log.warn("SECRETS_PAYMENT_PRIVATE_KEY is not set: Midtrans notifications are not processed and no order can become PAID");
+  if (conversions === undefined && ports.fireConversion === undefined) log.warn("SECRETS_CONVERSIONS_PRIVATE_KEY is not set: no adnet postback and no CAPI event is sent");
   const running = await startWorker(
     config,
-    { ...ports, ...(testSend === undefined ? {} : { testSend }), ...(payments === undefined ? {} : { payments }) },
+    { ...ports, ...(testSend === undefined ? {} : { testSend }), ...(payments === undefined ? {} : { payments }), ...(conversions === undefined ? {} : { conversions }) },
     log,
   );
   onShutdown(() => running.stop(), log);
