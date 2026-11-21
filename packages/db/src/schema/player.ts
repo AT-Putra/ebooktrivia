@@ -15,8 +15,14 @@ export const players = pgTable(
       .references(() => playerAuthUser.id, { onDelete: "set null" }),
     /** NULL only after anonymization (deletion request). */
     phone: text("phone").unique("players_phone_key"),
+    /** '' after anonymization: the masked name is then "***" (live leaderboard, banner). */
     name: text("name").notNull(),
     email: text("email"),
+    /**
+     * Set by public.erase_data_subject (US-030, sql/privacy.sql): the row keeps only its id (the play rows, winners and
+     * orders refer to it) and never gets a phone, name, e-mail or login again (players_anonymized_check, and
+     * players_anonymized_guard: never cleared). A later purchase with the same phone creates a NEW player.
+     */
     anonymizedAt: tstz("anonymized_at"),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -24,6 +30,10 @@ export const players = pgTable(
   (t) => [
     e164Check("players_phone_check", t.phone),
     check("players_phone_present_check", sql`${t.phone} IS NOT NULL OR ${t.anonymizedAt} IS NOT NULL`),
+    check(
+      "players_anonymized_check",
+      sql`${t.anonymizedAt} IS NULL OR (${t.phone} IS NULL AND ${t.email} IS NULL AND ${t.authUserId} IS NULL AND ${t.name} = '')`,
+    ),
   ],
 );
 

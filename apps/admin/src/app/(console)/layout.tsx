@@ -16,6 +16,9 @@ const NAV: readonly (NavItem & { readonly permission: Exclude<Permission, Questi
   { href: "/reports/contest", label: "Contest report", icon: "contest", permission: "reports.view" },
   { href: "/reports/roi", label: "Profit and ROI", icon: "roi", permission: "roi.view" },
   { href: "/reports/ad-spend", label: "Ad spend", icon: "adspend", permission: "ad_spend.edit" },
+  // US-030: prize fulfilment and UU PDP deletion requests, Owner-only.
+  { href: "/fulfillment", label: "Prize fulfilment", icon: "fulfillment", permission: "prize_fulfillment.update" },
+  { href: "/privacy", label: "Data deletion", icon: "privacy", permission: "deletion_request.process" },
   { href: "/settings/programs", label: "Programs", icon: "programs", permission: "program.edit" },
   { href: "/settings/products", label: "Products", icon: "products", permission: "product.content.edit" },
   { href: "/settings/landing-pages", label: "Landing pages", icon: "landing", permission: "landing_page.content.edit" },

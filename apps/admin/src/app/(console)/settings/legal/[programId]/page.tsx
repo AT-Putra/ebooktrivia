@@ -5,7 +5,7 @@ import { isUuid } from "@ebooktrivia/core";
 import { Badge } from "@ebooktrivia/ui/components/badge";
 import { Card, CardDescription, CardTitle } from "@ebooktrivia/ui/components/card";
 import { ActionForm } from "../../../../../components/settings/action-form.tsx";
-import { PageHeading, TextArea, TextField } from "../../../../../components/settings/fields.tsx";
+import { Notice, PageHeading, TextArea, TextField } from "../../../../../components/settings/fields.tsx";
 import { LegalPreview } from "../../../../../components/settings/legal-preview.tsx";
 import { requireAdmin } from "../../../../../lib/next/require-admin.ts";
 import { getRuntime } from "../../../../../lib/next/runtime.ts";
@@ -36,6 +36,16 @@ export default async function LegalProgramPage({ params }: { params: Promise<{ p
         title={`${program.name}: legal pages`}
         description="Plain text: a blank line starts a new paragraph, a line starting with '# ' is a heading. Saving creates a new draft version; publish the latest version to make it the one buyers see and consent to."
       />
+      <Notice tone="info" testId="legal-checklist">
+        <span className="flex flex-col gap-1">
+          <span className="font-medium">Your S&amp;K must state how the contest works (full list: docs/legal/sk-required-clauses.md):</span>
+          <span>1. Ranking: score, then total time including the timers of sets not played, then the earlier finish, then the earlier first payment, then the player id.</span>
+          <span>2. A question that times out reveals no answer; answers count up to 1.5 seconds after the timer (network grace).</span>
+          <span>3. Each set is played once; the IP address and a browser fingerprint (hash) are kept per answer against cheating.</span>
+          <span>4. A disqualified or charged-back winner&apos;s prize goes to the next eligible player.</span>
+          <span>5. Deletion means anonymization (orders stay as anonymous records); backups age out within their retention window.</span>
+        </span>
+      </Notice>
       {LEGAL_KINDS.map((kind) => {
         const history = versions.filter((v) => v.kind === kind);
         const latest = history[0];

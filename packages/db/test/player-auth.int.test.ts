@@ -54,7 +54,8 @@ describe("prepare_player_login (the OTP path)", () => {
     expect(await linkedUser(notEligible.playerId)).toBeNull();
     expect(await authUsersWithPhone(notEligible.phone)).toBe(0);
     const anonymized = await createPlayer({ programId, eligible: true });
-    await sql`UPDATE players SET anonymized_at = now() WHERE id = ${anonymized.playerId}`;
+    // US-030: an anonymized player keeps only its id (players_anonymized_check).
+    await sql`UPDATE players SET anonymized_at = now(), phone = NULL, name = '', email = NULL, auth_user_id = NULL WHERE id = ${anonymized.playerId}`;
     expect(await prepare(anonymized.phone)).toBeNull();
     expect(await authUsersWithPhone(anonymized.phone)).toBe(0);
   });
@@ -83,7 +84,7 @@ describe("prepare_player_login (the OTP path)", () => {
     await sql`UPDATE player_programs SET eligible = false WHERE player_id = ${playerId}`;
     expect(await playerFor(userId)).toBeNull();
     await sql`UPDATE player_programs SET eligible = true WHERE player_id = ${playerId}`;
-    await sql`UPDATE players SET anonymized_at = now() WHERE id = ${playerId}`;
+    await sql`UPDATE players SET anonymized_at = now(), phone = NULL, name = '', email = NULL, auth_user_id = NULL WHERE id = ${playerId}`;
     expect(await playerFor(userId)).toBeNull();
     expect(await playerFor("no-such-user")).toBeNull();
   });

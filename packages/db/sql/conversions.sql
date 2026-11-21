@@ -40,6 +40,10 @@ BEGIN
     RAISE EXCEPTION 'conversion event not found' USING ERRCODE = 'ET010';
   END IF;
   PERFORM 1 FROM public.orders o WHERE o.id = v_order FOR SHARE;
+  -- US-030: nothing is re-fired for an order whose buyer asked for their data to be deleted (sql/privacy.sql).
+  IF EXISTS (SELECT 1 FROM public.orders o WHERE o.id = v_order AND o.anonymized_at IS NOT NULL) THEN
+    RAISE EXCEPTION 'the buyer of this order had their data deleted: its conversions are not re-fired' USING ERRCODE = 'ET179';
+  END IF;
   SELECT c.status INTO v_status FROM public.conversion_events c WHERE c.id = p_id FOR UPDATE;
   IF NOT (v_status = 'failed' OR (v_status = 'sent' AND coalesce(p_resend_sent, false))) THEN
     RAISE EXCEPTION 'only a failed conversion can be re-fired (a sent one only when explicitly resent)' USING ERRCODE = 'ET084';

@@ -9,7 +9,9 @@ import { type ChangeEvent, useState } from "react";
 import { Label } from "@ebooktrivia/ui/components/label";
 import { FormError } from "../auth/auth-card.tsx";
 
-const MAX_BYTES = 2 * 1024 * 1024;
+// US-030: a prize fulfilment's proof (a photo or a PDF) may be up to 4 MB.
+const MAX_BYTES: Readonly<Record<"image" | "import" | "proof", number>> = { image: 2 * 1024 * 1024, import: 2 * 1024 * 1024, proof: 4 * 1024 * 1024 };
+const DONE: Readonly<Record<"image" | "proof", string>> = { image: "Image saved.", proof: "Proof saved." };
 
 type Phase =
   | { readonly kind: "idle" }
@@ -18,7 +20,7 @@ type Phase =
   | { readonly kind: "error"; readonly message: string }
   | { readonly kind: "rows"; readonly errors: readonly { readonly row: number; readonly message: string }[] };
 
-export function UploadFile({ id, url, label, accept, mode, testId }: { id: string; url: string; label: string; accept: string; mode: "image" | "import"; testId?: string }) {
+export function UploadFile({ id, url, label, accept, mode, testId }: { id: string; url: string; label: string; accept: string; mode: "image" | "import" | "proof"; testId?: string }) {
   const router = useRouter();
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
 
@@ -41,7 +43,7 @@ export function UploadFile({ id, url, label, accept, mode, testId }: { id: strin
         setPhase({ kind: "error", message: typeof body.error === "string" ? body.error : "The upload was refused." });
         return;
       }
-      setPhase({ kind: "done", message: mode === "import" ? `${String(body.imported)} questions imported.` : "Image saved." });
+      setPhase({ kind: "done", message: mode === "import" ? `${String(body.imported)} questions imported.` : DONE[mode] });
       router.refresh();
     } catch {
       setPhase({ kind: "error", message: "The upload failed. Check the connection and try again." });
@@ -52,8 +54,8 @@ export function UploadFile({ id, url, label, accept, mode, testId }: { id: strin
     const file = event.currentTarget.files?.[0];
     event.currentTarget.value = "";
     if (file === undefined) return;
-    if (file.size > MAX_BYTES) {
-      setPhase({ kind: "error", message: "The file is larger than 2 MB." });
+    if (file.size > MAX_BYTES[mode]) {
+      setPhase({ kind: "error", message: `The file is larger than ${String(MAX_BYTES[mode] / 1024 / 1024)} MB.` });
       return;
     }
     void send(file);

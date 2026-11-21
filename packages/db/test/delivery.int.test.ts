@@ -106,6 +106,19 @@ describe("a delivery that went out, or may have, is never put back on the send p
   });
 });
 
+// US-030: both chat ids of a delivery have the WhatsApp shape, the dot of c.us escaped (0018's reply_chat_id check let any
+// character stand for it).
+describe("the chat ids of a delivery (deliveries_wa_chat_id_check, deliveries_reply_chat_id_check)", () => {
+  it("accept <digits>@c.us and <digits>@lid only: 123456@cXus is refused", async () => {
+    const { whatsapp } = await paidOrder();
+    for (const column of ["wa_chat_id", "reply_chat_id"]) {
+      expect(await sqlState(sql.unsafe(`UPDATE deliveries SET ${column} = '123456@cXus' WHERE id = $1`, [whatsapp])), column).toBe("23514");
+      await sql.unsafe(`UPDATE deliveries SET ${column} = '6281234567890@c.us' WHERE id = $1`, [whatsapp]);
+      await sql.unsafe(`UPDATE deliveries SET ${column} = '98765432101234@lid' WHERE id = $1`, [whatsapp]);
+    }
+  });
+});
+
 describe("resend_delivery (the explicit Staff / Owner resend, owned by delivery_resend)", () => {
   const resend = (id: string, confirm?: boolean) =>
     asRole("admin_rw", (tx) => (confirm === undefined ? tx`SELECT public.resend_delivery(${id}::uuid) AS was` : tx`SELECT public.resend_delivery(${id}::uuid, ${confirm}::boolean) AS was`));

@@ -34,6 +34,9 @@
 -- caller, ET109 a pick after the deadline + 1500 ms, ET110 a start or serve at or after the grace end,
 -- ET111 deadline extension ledger changed (US-028).
 -- ET160 a landing page's current version that is not one of its own versions (US-023).
+-- US-030: ET175 a fulfilment written outside the fulfilment functions, or off its machine (one step at a time, done is
+-- final, a proof upload of kind proof), ET176 a deletion request changed once decided (or completed outside the erasure),
+-- ET179 an anonymized player or order given personal data again, or anonymized outside the erasure.
 
 SELECT pg_catalog.set_config('search_path', 'pg_catalog, pg_temp', false);
 
@@ -367,8 +370,12 @@ CREATE OR REPLACE TRIGGER player_otps_stamp
 --         flagged_at, flag_reason and updated_at;
 --       awaiting_confirmation, confirmed or flagged -> revoked, and flagged -> confirmed (the
 --         Owner's revoke and reinstatement after a flag, with confirmed_at set), flag untouched:
---         inside contest_results' functions only. No function makes them yet: US-030's revoke and
---         re-award does, owned by contest_results.
+--         inside contest_results' functions only (US-030: sql/contest.sql revoke_winner and
+--         reinstate_winner).
+--   US-030 EDIT: a re-award (sql/contest.sql revoke_winner) inserts the next eligible player of the snapshot
+--     with the REVOKED winner's prize tier at that player's own snapshot rank, which lies outside the tier's
+--     ranks: allowed only inside contest_results' functions, with replaces_winner_id naming a revoked winner of
+--     the same snapshot and tier ranked above it. replaces_winner_id never changes (ET105).
 -- SECURITY INVOKER: current_user must be the caller.
 CREATE OR REPLACE FUNCTION public.winners_status_guard()
   RETURNS trigger
@@ -385,7 +392,12 @@ BEGIN
        OR NOT EXISTS (SELECT 1 FROM public.leaderboard_snapshots l WHERE l.id = NEW.snapshot_id AND l.program_id = NEW.program_id)
        OR NOT EXISTS (
          SELECT 1 FROM public.prize_tiers t
-          WHERE t.id = NEW.prize_tier_id AND t.program_id = NEW.program_id AND NEW.rank BETWEEN t.rank_from AND t.rank_to) THEN
+          WHERE t.id = NEW.prize_tier_id AND t.program_id = NEW.program_id
+            AND (CASE WHEN NEW.replaces_winner_id IS NULL THEN NEW.rank BETWEEN t.rank_from AND t.rank_to
+                      ELSE current_user = 'contest_results' AND EXISTS (
+                             SELECT 1 FROM public.winners r
+                              WHERE r.id = NEW.replaces_winner_id AND r.status = 'revoked' AND r.snapshot_id = NEW.snapshot_id
+                                AND r.prize_tier_id = NEW.prize_tier_id AND r.rank < NEW.rank) END)) THEN
       RAISE EXCEPTION 'a winner is inserted awaiting confirmation, for its snapshot''s program, inside its prize tier'
         USING ERRCODE = 'ET105';
     END IF;
@@ -394,14 +406,22 @@ BEGIN
   IF NEW.id IS DISTINCT FROM OLD.id OR NEW.program_id IS DISTINCT FROM OLD.program_id
      OR NEW.snapshot_id IS DISTINCT FROM OLD.snapshot_id OR NEW.prize_tier_id IS DISTINCT FROM OLD.prize_tier_id
      OR NEW.player_id IS DISTINCT FROM OLD.player_id OR NEW.rank IS DISTINCT FROM OLD.rank
-     OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
+     OR NEW.created_at IS DISTINCT FROM OLD.created_at OR NEW.replaces_winner_id IS DISTINCT FROM OLD.replaces_winner_id THEN
     RAISE EXCEPTION 'a winner is frozen with the results snapshot' USING ERRCODE = 'ET105';
   END IF;
-  -- The Owner's confirmation, revoke and reinstatement (contest_results' functions).
+  -- The Owner's confirmation, revoke and reinstatement (contest_results' functions). US-030 EDIT: a winner flagged before the
+  -- confirmation (never confirmed) is reinstated back to awaiting_confirmation, still unconfirmed, and the Owner's confirmation
+  -- then confirms it with the others; the revoke and the reinstatement write the Owner's reason (decision_reason).
   IF current_user = 'contest_results'
      AND ((OLD.status IN ('awaiting_confirmation', 'flagged') AND NEW.status = 'confirmed' AND NEW.confirmed_at IS NOT NULL)
+          OR (OLD.status = 'flagged' AND NEW.status = 'awaiting_confirmation' AND OLD.confirmed_at IS NULL AND NEW.confirmed_at IS NULL)
           OR (OLD.status IN ('awaiting_confirmation', 'confirmed', 'flagged') AND NEW.status = 'revoked'))
      AND NEW.flagged_at IS NOT DISTINCT FROM OLD.flagged_at AND NEW.flag_reason IS NOT DISTINCT FROM OLD.flag_reason THEN
+    RETURN NEW;
+  END IF;
+  -- US-030 EDIT: the erasure of the winner's data (sql/privacy.sql) blanks the Owner's free-text reason, and nothing else.
+  IF current_user = 'pii_eraser' AND NEW.decision_reason IS NULL
+     AND (to_jsonb(NEW) - ARRAY['decision_reason', 'updated_at']) = (to_jsonb(OLD) - ARRAY['decision_reason', 'updated_at']) THEN
     RETURN NEW;
   END IF;
   -- A chargeback flag (US-021).
@@ -556,6 +576,17 @@ BEGIN
      OR pg_has_role(current_user, 'admin_rw', 'USAGE')
      OR pg_has_role(current_user, 'migrator', 'USAGE')
      OR current_user IN ('trivia_override', 'contest_results') THEN
+    RETURN NEW;
+  END IF;
+  -- US-030 EDIT: the erasure of a data subject (sql/privacy.sql, owner pii_eraser) blanks the device of the subject's
+  -- answers (ip, ua_hash) and changes nothing else of the row, whatever the program's state; any other change by it is
+  -- checked like every untrusted writer's below.
+  IF TG_OP = 'UPDATE' AND current_user = 'pii_eraser' AND NEW.ip IS NULL AND NEW.ua_hash IS NULL
+     AND (NEW.id, NEW.attempt_id, NEW.question_id, NEW.position, NEW.permutation, NEW.served_at, NEW.deadline_at, NEW.answered_at,
+          NEW.option_id, NEW.correct, NEW.points, NEW.elapsed_ms, NEW.deadline_extension_ms)
+         IS NOT DISTINCT FROM
+         (OLD.id, OLD.attempt_id, OLD.question_id, OLD.position, OLD.permutation, OLD.served_at, OLD.deadline_at, OLD.answered_at,
+          OLD.option_id, OLD.correct, OLD.points, OLD.elapsed_ms, OLD.deadline_extension_ms) THEN
     RETURN NEW;
   END IF;
   SELECT a.player_id, a.set_id, s.program_id INTO v_player, v_set, v_program
@@ -1266,6 +1297,15 @@ BEGIN
      AND NEW.winner_id IS NOT DISTINCT FROM OLD.winner_id THEN
     RETURN NEW;
   END IF;
+  -- US-030 EDIT: clearing the personal content of a halted fulfilment (proof and notes both emptied, nothing else changed)
+  -- is not a fulfilment change: the erasure of a data subject (sql/privacy.sql) does it for a revoked or flagged winner too.
+  -- This guard is SECURITY DEFINER (current_user is its owner here); WHO may do it is fulfillments_machine_guard's check
+  -- (SECURITY INVOKER, US-030 block below): only pii_eraser.
+  IF TG_OP = 'UPDATE'
+     AND NEW.status IS NOT DISTINCT FROM OLD.status AND NEW.winner_id IS NOT DISTINCT FROM OLD.winner_id
+     AND NEW.proof_upload_id IS NULL AND NEW.notes IS NULL AND NEW.correction_reason IS NULL THEN
+    RETURN NEW;
+  END IF;
   IF EXISTS (
     SELECT 1 FROM public.winners w
      WHERE w.id IN (NEW.winner_id, CASE WHEN TG_OP = 'UPDATE' THEN OLD.winner_id END)
@@ -1313,6 +1353,215 @@ CREATE OR REPLACE TRIGGER landing_pages_hosts_notify
   AFTER UPDATE OF active, hosting, current_version_id OR DELETE ON public.landing_pages
   FOR EACH STATEMENT EXECUTE FUNCTION public.lp_domains_notify();
 -- US-023 BLOCK END.
+
+-- ---------------------------------------------------------------------------------------------
+-- US-030 BLOCK BEGIN (M10b: prize fulfilment, UU PDP deletion = anonymization). Three in-place edits sit outside this block,
+-- each marked "US-030 EDIT": winners_status_guard admits the re-award row, attempt_questions_play_guard lets pii_eraser blank
+-- the device columns, and fulfillments_halt_guard treats emptying a fulfilment's proof and notes as no fulfilment change.
+--
+-- Fulfilments (ET175), for EVERY writer but a superuser (operations): never deleted; created only inside contest_results'
+-- functions (the confirmation, a re-award, a reinstatement: sql/contest.sql), pending and empty, for a confirmed winner;
+-- moved only inside prize_fulfillment's functions (sql/fulfillment.sql): exactly one step forward or back, never out of
+-- done, a proof only of kind proof and never removed (it is replaced); emptied (proof and notes, nothing else) only inside
+-- pii_eraser's erasure (sql/privacy.sql). Its winner and id never change. fulfillments_halt_guard (ET082, named before
+-- this one, so it fires first) still halts every fulfilment change of a flagged or revoked winner. SECURITY INVOKER: the
+-- guard must see the caller.
+CREATE OR REPLACE FUNCTION public.fulfillments_machine_guard()
+  RETURNS trigger
+  LANGUAGE plpgsql
+  SET search_path = pg_catalog, pg_temp
+AS $fn$
+DECLARE
+  v_steps CONSTANT text[] := ARRAY['pending', 'contacted', 'sent', 'done'];
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_catalog.pg_roles r WHERE r.rolname = current_user AND r.rolsuper) THEN
+    RETURN CASE TG_OP WHEN 'DELETE' THEN OLD WHEN 'TRUNCATE' THEN NULL ELSE NEW END;
+  END IF;
+  IF TG_OP IN ('DELETE', 'TRUNCATE') THEN
+    RAISE EXCEPTION 'fulfilments are never deleted' USING ERRCODE = 'ET175';
+  END IF;
+  IF TG_OP = 'INSERT' THEN
+    IF current_user = 'contest_results' AND NEW.status = 'pending' AND NEW.notes IS NULL AND NEW.proof_upload_id IS NULL
+       AND EXISTS (SELECT 1 FROM public.winners w WHERE w.id = NEW.winner_id AND w.status = 'confirmed') THEN
+      RETURN NEW;
+    END IF;
+    RAISE EXCEPTION 'a fulfilment is created pending, for a confirmed winner, by the results functions only' USING ERRCODE = 'ET175';
+  END IF;
+  IF NEW.id IS DISTINCT FROM OLD.id OR NEW.winner_id IS DISTINCT FROM OLD.winner_id OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
+    RAISE EXCEPTION 'a fulfilment never changes its winner' USING ERRCODE = 'ET175';
+  END IF;
+  IF current_user = 'pii_eraser' THEN
+    IF NEW.notes IS NULL AND NEW.proof_upload_id IS NULL AND NEW.correction_reason IS NULL
+       AND (NEW.status, NEW.contacted_at, NEW.contacted_by_admin_user_id, NEW.sent_at, NEW.sent_by_admin_user_id, NEW.done_at, NEW.done_by_admin_user_id)
+           IS NOT DISTINCT FROM
+           (OLD.status, OLD.contacted_at, OLD.contacted_by_admin_user_id, OLD.sent_at, OLD.sent_by_admin_user_id, OLD.done_at, OLD.done_by_admin_user_id) THEN
+      RETURN NEW;
+    END IF;
+    RAISE EXCEPTION 'the erasure only empties a fulfilment''s proof, notes and correction reason' USING ERRCODE = 'ET175';
+  END IF;
+  IF current_user = 'prize_fulfillment' THEN
+    IF NEW.status IS DISTINCT FROM OLD.status
+       AND (OLD.status = 'done' OR abs(array_position(v_steps, NEW.status::text) - array_position(v_steps, OLD.status::text)) <> 1) THEN
+      RAISE EXCEPTION 'a fulfilment moves one step at a time and done is final: % -> % refused', OLD.status, NEW.status USING ERRCODE = 'ET175';
+    END IF;
+    IF NEW.proof_upload_id IS DISTINCT FROM OLD.proof_upload_id
+       AND (NEW.proof_upload_id IS NULL OR NOT EXISTS (SELECT 1 FROM public.uploads u WHERE u.id = NEW.proof_upload_id AND u.kind = 'proof')) THEN
+      RAISE EXCEPTION 'a fulfilment''s proof is an upload of kind proof, replaced but never removed' USING ERRCODE = 'ET175';
+    END IF;
+    RETURN NEW;
+  END IF;
+  RAISE EXCEPTION 'a fulfilment is changed only by the fulfilment functions (role %)', current_user USING ERRCODE = 'ET175';
+END
+$fn$;
+
+CREATE OR REPLACE TRIGGER fulfillments_machine_guard
+  BEFORE INSERT OR UPDATE OR DELETE ON public.fulfillments
+  FOR EACH ROW EXECUTE FUNCTION public.fulfillments_machine_guard();
+
+CREATE OR REPLACE TRIGGER fulfillments_machine_guard_truncate
+  BEFORE TRUNCATE ON public.fulfillments
+  FOR EACH STATEMENT EXECUTE FUNCTION public.fulfillments_machine_guard();
+
+-- Anonymized rows (ET179), for EVERY writer, superusers included: once players.anonymized_at / orders.anonymized_at is set it
+-- is never cleared and the row's personal columns never change again (the CHECKs players_anonymized_check /
+-- orders_anonymized_check hold them empty; this keeps the mark itself), so no code path re-links a later buyer with the same
+-- phone to the old rows. Only the erasure (pii_eraser) or a superuser (operations) sets the mark: a row anonymized by an app role
+-- would be a deletion with no request and no audit. An anonymized order's money columns (status, paid / refunded stamps)
+-- still move with payments; its player never changes (no later buyer is linked to it).
+CREATE OR REPLACE FUNCTION public.anonymized_rows_guard()
+  RETURNS trigger
+  LANGUAGE plpgsql
+  SET search_path = pg_catalog, pg_temp
+AS $fn$
+DECLARE
+  -- What still moves on an anonymized row: an order's money and status columns (never its player: a later buyer of the same
+  -- phone is never linked to it); nothing of a player but updated_at.
+  v_moving CONSTANT text[] := CASE TG_TABLE_NAME
+    WHEN 'orders' THEN ARRAY['status', 'paid_at', 'refunded_at', 'updated_at', 'snap_attempt_count', 'snap_redirect_url',
+                             'snap_expires_at', 'mo_outbox_id', 'browser_mt_fired_at']
+    ELSE ARRAY['updated_at'] END;
+BEGIN
+  IF OLD.anonymized_at IS NULL THEN
+    IF NEW.anonymized_at IS NOT NULL AND current_user <> 'pii_eraser'
+       AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles r WHERE r.rolname = current_user AND r.rolsuper) THEN
+      RAISE EXCEPTION '% rows are anonymized by the erasure of a deletion request only', TG_TABLE_NAME USING ERRCODE = 'ET179';
+    END IF;
+    RETURN NEW;
+  END IF;
+  IF (to_jsonb(NEW) - v_moving) IS DISTINCT FROM (to_jsonb(OLD) - v_moving) THEN
+    RAISE EXCEPTION 'an anonymized % row never gets personal data back', TG_TABLE_NAME USING ERRCODE = 'ET179';
+  END IF;
+  RETURN NEW;
+END
+$fn$;
+
+CREATE OR REPLACE TRIGGER players_anonymized_guard
+  BEFORE UPDATE ON public.players
+  FOR EACH ROW EXECUTE FUNCTION public.anonymized_rows_guard();
+
+CREATE OR REPLACE TRIGGER orders_anonymized_guard
+  BEFORE UPDATE ON public.orders
+  FOR EACH ROW EXECUTE FUNCTION public.anonymized_rows_guard();
+
+-- Deletion requests (ET176), for every writer but a superuser: never deleted; inserted pending; a pending request changes only
+-- by its decision: rejected (the Owner, admin_rw, with a reason) or completed (inside the erasure only, pii_eraser); what was
+-- requested (by whom, when, why, how the subject was identified, which phone) never changes, and a decided request never changes
+-- again. SECURITY INVOKER: the guard must see the caller.
+CREATE OR REPLACE FUNCTION public.deletion_requests_guard()
+  RETURNS trigger
+  LANGUAGE plpgsql
+  SET search_path = pg_catalog, pg_temp
+AS $fn$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_catalog.pg_roles r WHERE r.rolname = current_user AND r.rolsuper) THEN
+    RETURN CASE TG_OP WHEN 'DELETE' THEN OLD WHEN 'TRUNCATE' THEN NULL ELSE NEW END;
+  END IF;
+  IF TG_OP IN ('DELETE', 'TRUNCATE') THEN
+    RAISE EXCEPTION 'deletion requests are never deleted' USING ERRCODE = 'ET176';
+  END IF;
+  IF TG_OP = 'INSERT' THEN
+    IF NEW.status <> 'pending' OR NEW.summary <> '{}'::jsonb THEN
+      RAISE EXCEPTION 'a deletion request is recorded pending' USING ERRCODE = 'ET176';
+    END IF;
+    RETURN NEW;
+  END IF;
+  IF OLD.status <> 'pending'
+     OR (NEW.id, NEW.requested_at, NEW.requested_by_admin_user_id, NEW.note, NEW.lookup_kind, NEW.created_at)
+        IS DISTINCT FROM (OLD.id, OLD.requested_at, OLD.requested_by_admin_user_id, OLD.note, OLD.lookup_kind, OLD.created_at)
+     OR (NEW.status = 'pending' AND (NEW.subject_phone, NEW.player_id, NEW.summary) IS DISTINCT FROM (OLD.subject_phone, OLD.player_id, OLD.summary))
+     OR (NEW.status = 'completed' AND current_user <> 'pii_eraser')
+     OR (NEW.status = 'rejected' AND (NEW.player_id IS DISTINCT FROM OLD.player_id OR NEW.summary <> '{}'::jsonb)) THEN
+    RAISE EXCEPTION 'a deletion request changes only by its decision (rejected by the Owner, completed by the erasure), once' USING ERRCODE = 'ET176';
+  END IF;
+  RETURN NEW;
+END
+$fn$;
+
+CREATE OR REPLACE TRIGGER deletion_requests_guard
+  BEFORE INSERT OR UPDATE OR DELETE ON public.deletion_requests
+  FOR EACH ROW EXECUTE FUNCTION public.deletion_requests_guard();
+
+CREATE OR REPLACE TRIGGER deletion_requests_guard_truncate
+  BEFORE TRUNCATE ON public.deletion_requests
+  FOR EACH STATEMENT EXECUTE FUNCTION public.deletion_requests_guard();
+
+-- The webhook dedupe survives the erasure (US-025 follow-up): the erasure keeps a subject's inbound WhatsApp rows but replaces
+-- their message_id, which embeds the sender's chat id, by 'erased:' || the SHA-256 of it (sql/privacy.sql). A webhook that
+-- delivers such a message again (WAHA retries for a while) finds no row by message_id, so this skips its INSERT, the same as the
+-- route's ON CONFLICT DO NOTHING: it is never stored or processed a second time. One index lookup per webhook insert.
+CREATE OR REPLACE FUNCTION public.waha_inbound_erased_dedupe()
+  RETURNS trigger
+  LANGUAGE plpgsql
+  SET search_path = pg_catalog, pg_temp
+AS $fn$
+BEGIN
+  IF EXISTS (SELECT 1 FROM public.waha_inbound w
+              WHERE w.message_id = 'erased:' || encode(sha256(convert_to(NEW.message_id, 'UTF8')), 'hex')) THEN
+    RETURN NULL;
+  END IF;
+  RETURN NEW;
+END
+$fn$;
+
+CREATE OR REPLACE TRIGGER waha_inbound_erased_dedupe
+  BEFORE INSERT ON public.waha_inbound
+  FOR EACH ROW EXECUTE FUNCTION public.waha_inbound_erased_dedupe();
+
+-- Midtrans data that arrives AFTER an erasure (a late notification, a refund or chargeback re-query: payments.ts writes the full
+-- answer to payments.raw, the webhook route to payment_notifications.raw) is cut down for an anonymized order as the erasure cut
+-- what was there (functions.sql payment_raw_kept), for every writer, so no customer_details come back. SECURITY DEFINER: the
+-- webhook route (public_rw) cannot read orders.anonymized_at or midtrans_attempts.midtrans_order_id; it decides nothing about the
+-- caller. Until US-033 routes such a payment to the Owner's review, a late settlement on an anonymized order fails closed in
+-- payments.ts (docs/runbooks/privacy.md).
+CREATE OR REPLACE FUNCTION public.payment_raw_erased_guard()
+  RETURNS trigger
+  LANGUAGE plpgsql
+  SECURITY DEFINER
+  SET search_path = pg_catalog, pg_temp
+AS $fn$
+BEGIN
+  -- One branch per table: a record has only its own table's fields.
+  IF TG_TABLE_NAME = 'payments' THEN
+    IF EXISTS (SELECT 1 FROM public.orders o WHERE o.id = NEW.order_id AND o.anonymized_at IS NOT NULL) THEN
+      NEW.raw := public.payment_raw_kept(NEW.raw);
+    END IF;
+  ELSIF EXISTS (SELECT 1 FROM public.midtrans_attempts ma JOIN public.orders o ON o.id = ma.order_id
+                 WHERE ma.midtrans_order_id = NEW.midtrans_order_id AND o.anonymized_at IS NOT NULL) THEN
+    NEW.raw := public.payment_raw_kept(NEW.raw);
+  END IF;
+  RETURN NEW;
+END
+$fn$;
+REVOKE ALL ON FUNCTION public.payment_raw_erased_guard() FROM PUBLIC;
+
+CREATE OR REPLACE TRIGGER payments_raw_erased_guard
+  BEFORE INSERT OR UPDATE OF raw ON public.payments
+  FOR EACH ROW EXECUTE FUNCTION public.payment_raw_erased_guard();
+
+CREATE OR REPLACE TRIGGER payment_notifications_raw_erased_guard
+  BEFORE INSERT OR UPDATE OF raw ON public.payment_notifications
+  FOR EACH ROW EXECUTE FUNCTION public.payment_raw_erased_guard();
+-- US-030 BLOCK END.
 
 -- ---------------------------------------------------------------------------------------------
 -- Fire every trigger on our tables in ALL session_replication_role modes. The default (ENABLE,

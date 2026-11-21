@@ -17,6 +17,7 @@ import {
   failStaleSnapCreates,
   ORDER_EXPIRY,
   OUTBOX_UNRELAYED_ALERT_MS,
+  pruneStrangerContacts,
   runSweeps,
   sweepDueConversions,
   sweepDueDeliveries,
@@ -401,7 +402,7 @@ describe("runSweeps", () => {
     const broken = postgres(inject("workerDbUrl"), { ...PG_CONNECTION_OPTIONS, max: 1, onnotice: () => undefined });
     await broken.end();
     await runSweeps({ sql: broken, log: captured.log, outboxQueues: new Map(), outboxStaleMs: 120_000 });
-    expect(captured.lines.filter((l) => l["level"] === 50).map((l) => l["sweeper"])).toEqual(["lease_expiry", "outbox", "snap_create", "order_expiry", "grace_end", "login_throttle", "otp_expiry", "payment_methods"]);
+    expect(captured.lines.filter((l) => l["level"] === 50).map((l) => l["sweeper"])).toEqual(["lease_expiry", "outbox", "snap_create", "order_expiry", "grace_end", "login_throttle", "otp_expiry", "payment_methods", "wa_contacts_retention"]);
     await runSweeps({ sql: workerSql, log: captured.log, outboxQueues: new Map(), outboxStaleMs: 120_000 });
     expect(first(await sql<{ status: string }[]>`SELECT status::text FROM orders WHERE id = ${orderId ?? ""}`).status).toBe("expired");
   });
@@ -412,7 +413,7 @@ describe("runSweeps", () => {
     const ended = await createCatalog({ salesEndAt: new Date(Date.now() - 3 * 86_400_000), graceDays: 1 });
     const captured = captureLogger("debug");
     await runSweeps({ sql: workerSql, log: captured.log, outboxQueues: new Map(), outboxStaleMs: 120_000 });
-    expect(captured.lines.filter((l) => l["msg"] === "sweep done").map((l) => l["sweeper"])).toEqual(["lease_expiry", "outbox", "snap_create", "order_expiry", "grace_end", "login_throttle", "otp_expiry", "payment_methods"]);
+    expect(captured.lines.filter((l) => l["msg"] === "sweep done").map((l) => l["sweeper"])).toEqual(["lease_expiry", "outbox", "snap_create", "order_expiry", "grace_end", "login_throttle", "otp_expiry", "payment_methods", "wa_contacts_retention"]);
     expect(first(await sql<{ status: string }[]>`SELECT status::text FROM programs WHERE id = ${ended.programId}`).status).toBe("awaiting_confirmation");
 
     const withPorts = captureLogger("debug");
@@ -435,6 +436,7 @@ describe("runSweeps", () => {
       "login_throttle",
       "otp_expiry",
       "payment_methods",
+      "wa_contacts_retention",
     ]);
   });
 });
@@ -469,5 +471,27 @@ describe("payment_methods (Owner D11): the checkout takes no orders while no met
       await sql`UPDATE alerts SET resolved_at = now() WHERE dedupe_key = 'checkout_no_payment_methods' AND resolved_at IS NULL`;
       if (saved !== undefined) await sql`UPDATE app_settings SET value = ${sql.json(saved.value as postgres.JSONValue)} WHERE key = ${KEY}`;
     }
+  });
+});
+
+// US-030: strangers' WhatsApp contacts (no order, no player) leave the database once unconfirmed for 7 days; a buyer's or a
+// player's row stays, and so does a young stranger's.
+describe("pruneStrangerContacts", () => {
+  it("deletes stale stranger rows only, through prune_stranger_wa_contacts (worker_rw cannot delete wa_contacts itself)", async () => {
+    const [orderId] = await createOrders(catalog, 1, { status: "paid" });
+    const { buyer_phone: buyer } = first(await sql<{ buyer_phone: string }[]>`SELECT buyer_phone FROM orders WHERE id = ${orderId ?? ""}`);
+    const digits = () => String(Math.floor(10_000_000 + Math.random() * 89_999_999));
+    const stranger = `+62815${digits()}`;
+    const young = `+62815${digits()}`;
+    const player = `+62815${digits()}`;
+    await sql`INSERT INTO players (phone, name) VALUES (${player}, 'Pemain')`;
+    for (const [phone, age] of [[stranger, "8 days"], [young, "2 days"], [buyer, "30 days"], [player, "30 days"]] as const) {
+      await sql`INSERT INTO wa_contacts (phone, number_exists, chat_id, checked_at) VALUES (${phone}, true, ${`${phone.slice(1)}@c.us`}, now() - ${age}::interval)
+                ON CONFLICT (phone) DO UPDATE SET checked_at = EXCLUDED.checked_at`;
+    }
+    await expect(workerSql`DELETE FROM public.wa_contacts WHERE phone = ${stranger}`).rejects.toMatchObject({ code: "42501" });
+    expect(await pruneStrangerContacts(workerSql)).toBeGreaterThanOrEqual(1);
+    const left = (await sql<{ phone: string }[]>`SELECT phone FROM wa_contacts WHERE phone IN (${stranger}, ${young}, ${buyer}, ${player})`).map((r) => r.phone);
+    expect(left.sort()).toEqual([young, buyer, player].sort());
   });
 });

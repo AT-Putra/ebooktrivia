@@ -522,3 +522,97 @@ GRANT EXECUTE ON FUNCTION public.enqueue_magic_link_resend(text) TO public_rw;
 -- linked on disk and what gets a certificate are one set.
 GRANT EXECUTE ON FUNCTION public.lp_served_hosts() TO admin_rw;
 -- US-023 BLOCK END.
+
+-- ---------------------------------------------------------------------------------------------
+-- US-030 (M10b prize fulfilment, UU PDP deletion = anonymization) BLOCK BEGIN.
+--
+-- admin_rw: fulfilments are written ONLY through the prize_fulfillment functions (sql/fulfillment.sql) and created by the results
+-- functions (sql/contest.sql); the console reads them. Deletion requests are recorded and rejected by the console, completed only by
+-- the erasure (deletion_requests_guard), and never deleted. The console calls the US-030 functions (EXECUTE granted in their files).
+REVOKE INSERT, UPDATE, DELETE ON public.fulfillments FROM admin_rw;
+REVOKE DELETE ON public.deletion_requests FROM admin_rw;
+-- worker_rw: the stranger retention of wa_contacts (functions.sql prune_stranger_wa_contacts), from the minute sweeper.
+GRANT EXECUTE ON FUNCTION public.prune_stranger_wa_contacts() TO worker_rw;
+
+-- contest_results (sql/contest.sql, on top of the US-028 block): the revoke and re-award reads the players' erasure mark and the
+-- program's chargebacks (orders and payments of a candidate), inserts the re-award row naming the winner it replaces, and creates
+-- the pending fulfilment of a confirmed winner (the confirmation, a re-award, a reinstatement).
+-- UPDATE (updated_at) on players is only for the candidate's FOR SHARE row lock (no erasure meanwhile); the anonymized-rows
+-- guard and these functions never change a player. The revoke and the reinstatement write the Owner's reason (decision_reason).
+GRANT SELECT (anonymized_at) ON public.players TO contest_results;
+GRANT UPDATE (updated_at) ON public.players TO contest_results;
+GRANT SELECT (id, player_id, program_id) ON public.orders TO contest_results;
+GRANT SELECT (order_id, transaction_status) ON public.payments TO contest_results;
+GRANT INSERT (replaces_winner_id), UPDATE (decision_reason) ON public.winners TO contest_results;
+GRANT SELECT (winner_id, status), INSERT (winner_id) ON public.fulfillments TO contest_results;
+-- The resend of a delivery and the re-fire of a conversion refuse an anonymized order (sql/delivery-resend.sql, conversions.sql).
+GRANT SELECT (anonymized_at) ON public.orders TO delivery_resend, conversion_refire;
+
+-- prize_fulfillment: the owner of the sql/fulfillment.sql functions, which run as it. Reads the fulfilment, its winner and program,
+-- the actor's admin profile and the proof upload; writes only a fulfilment's status, step stamps, notes and proof, deletes the proof
+-- upload it replaces, and its own audit rows. UPDATE (updated_at) on winners is only for the FOR SHARE row lock (no flag or revoke
+-- meanwhile); winners_status_guard refuses any real change by it.
+REVOKE ALL ON ALL TABLES IN SCHEMA public, player_auth, admin_auth FROM prize_fulfillment;
+REVOKE ALL ON ALL SEQUENCES IN SCHEMA public, player_auth, admin_auth FROM prize_fulfillment;
+REVOKE ALL ON ALL FUNCTIONS IN SCHEMA public FROM prize_fulfillment;
+REVOKE ALL ON SCHEMA player_auth, admin_auth, drizzle FROM prize_fulfillment;
+GRANT SELECT ON public.fulfillments TO prize_fulfillment;
+GRANT UPDATE (status, notes, proof_upload_id, contacted_at, contacted_by_admin_user_id, sent_at, sent_by_admin_user_id, done_at,
+              done_by_admin_user_id, correction_reason, updated_at) ON public.fulfillments TO prize_fulfillment;
+GRANT SELECT (id, program_id, status) ON public.winners TO prize_fulfillment;
+GRANT UPDATE (updated_at) ON public.winners TO prize_fulfillment;
+GRANT SELECT (id, status) ON public.programs TO prize_fulfillment;
+GRANT SELECT (id, kind, storage_path), DELETE ON public.uploads TO prize_fulfillment;
+GRANT SELECT (auth_user_id, role, disabled_at) ON public.admin_profiles TO prize_fulfillment;
+GRANT INSERT (actor_kind, actor_admin_user_id, action, entity_type, entity_id, changes, pii_refs, request_id, ip)
+  ON public.audit_log TO prize_fulfillment;
+
+-- pii_eraser: the owner of public.erase_data_subject (sql/privacy.sql), which runs as it. SELECT only of the columns it matches the
+-- subject on (and those an UPDATE's expressions read), UPDATE only of the personal columns it blanks (plus the cancellation of an
+-- unsent send: a delivery, an opener, a CAPI event), DELETE only of rows that are personal data and nothing else (the login rows,
+-- magic links, OTP rows, wa_contacts, proof uploads). No money column, no play result, no winner, no other audit row.
+REVOKE ALL ON ALL TABLES IN SCHEMA public, player_auth, admin_auth FROM pii_eraser;
+REVOKE ALL ON ALL SEQUENCES IN SCHEMA public, player_auth, admin_auth FROM pii_eraser;
+REVOKE ALL ON ALL FUNCTIONS IN SCHEMA public FROM pii_eraser;
+REVOKE ALL ON SCHEMA player_auth, admin_auth, drizzle FROM pii_eraser;
+GRANT USAGE ON SCHEMA player_auth TO pii_eraser;
+GRANT SELECT (auth_user_id, role, disabled_at) ON public.admin_profiles TO pii_eraser;
+GRANT SELECT (id, status, subject_phone, summary, player_id),
+  UPDATE (status, completed_at, decided_by_admin_user_id, player_id, subject_phone, summary, updated_at)
+  ON public.deletion_requests TO pii_eraser;
+GRANT SELECT (id, phone, email, auth_user_id), UPDATE (name, phone, email, auth_user_id, anonymized_at, updated_at) ON public.players TO pii_eraser;
+GRANT SELECT (id, player_id, buyer_phone, buyer_email, status, visit_id, landing_page_id, ip, ua_hash),
+  UPDATE (buyer_name, buyer_phone, buyer_email, buyer_key, ip, ua_hash, fbclid, fbp, fbc, ttclid, gclid, anonymized_at, updated_at)
+  ON public.orders TO pii_eraser;
+GRANT SELECT (order_id, ip, ua_hash), UPDATE (ip, ua_hash) ON public.consents TO pii_eraser;
+GRANT SELECT (id, landing_page_id, ip, ua_hash), UPDATE (ip, ua_hash, fbclid, fbp, fbc, ttclid, gclid) ON public.visits TO pii_eraser;
+-- The contest lock of the subject's programs (a re-award serialises with the erasure), and the cut of a payment's raw JSON.
+GRANT SELECT (player_id, program_id) ON public.player_programs TO pii_eraser;
+GRANT EXECUTE ON FUNCTION public.lock_program_contest(uuid), public.payment_raw_kept(jsonb) TO pii_eraser;
+GRANT SELECT (order_id, midtrans_order_id) ON public.midtrans_attempts TO pii_eraser;
+GRANT SELECT (midtrans_order_id, raw), UPDATE (raw) ON public.payment_notifications TO pii_eraser;
+GRANT SELECT (order_id, raw), UPDATE (raw) ON public.payments TO pii_eraser;
+GRANT SELECT (id, order_id, status, wa_chat_id, reply_chat_id, wa_message_id),
+  UPDATE (wa_chat_id, reply_chat_id, wa_message_id, status, last_error, lease_until, updated_at)
+  ON public.deliveries TO pii_eraser;
+GRANT SELECT (delivery_id, status, wa_message_id), UPDATE (wa_message_id, status, lease_until, updated_at) ON public.delivery_openers TO pii_eraser;
+GRANT SELECT (order_id, sink, status), UPDATE (status, failed_at, last_error, lease_until, updated_at) ON public.conversion_events TO pii_eraser;
+GRANT SELECT (id, player_id) ON public.set_attempts TO pii_eraser;
+GRANT SELECT (attempt_id, ip, ua_hash), UPDATE (ip, ua_hash) ON public.attempt_questions TO pii_eraser;
+GRANT SELECT (id, player_id, status, decision_reason), UPDATE (decision_reason, updated_at) ON public.winners TO pii_eraser;
+GRANT SELECT (winner_id, status, notes, proof_upload_id, correction_reason), UPDATE (notes, proof_upload_id, correction_reason, updated_at)
+  ON public.fulfillments TO pii_eraser;
+GRANT SELECT (id, kind, storage_path), DELETE ON public.uploads TO pii_eraser;
+GRANT SELECT (player_id), DELETE ON public.magic_links TO pii_eraser;
+GRANT SELECT (phone), DELETE ON public.player_otps, public.otp_enqueues TO pii_eraser;
+GRANT SELECT (id, message_id, from_jid, processed_at), UPDATE (message_id, from_jid, body, raw, processed_at) ON public.waha_inbound TO pii_eraser;
+GRANT SELECT (contact_key, delivery_id), UPDATE (contact_key) ON public.waha_sends TO pii_eraser;
+GRANT SELECT (phone, chat_id, lid), DELETE ON public.wa_contacts TO pii_eraser;
+GRANT SELECT (topic, payload, processed_at, attempts, deferrals), UPDATE (payload, sealed, processed_at) ON public.outbox TO pii_eraser;
+GRANT SELECT (payload, message), UPDATE (payload, message) ON public.alerts TO pii_eraser;
+GRANT SELECT (id, "phoneNumber", email), DELETE ON player_auth."user" TO pii_eraser;
+GRANT SELECT ("userId"), DELETE ON player_auth.session, player_auth.account TO pii_eraser;
+GRANT SELECT (identifier), DELETE ON player_auth.verification TO pii_eraser;
+GRANT INSERT (actor_kind, actor_admin_user_id, action, entity_type, entity_id, changes, pii_refs, request_id, ip)
+  ON public.audit_log TO pii_eraser;
+-- US-030 BLOCK END.

@@ -161,7 +161,14 @@ export async function handleWahaWebhook(deps: WahaWebhookDeps, request: Request)
         ON CONFLICT ON CONSTRAINT waha_inbound_message_id_key DO NOTHING
         RETURNING id`;
       const id = inserted?.id ?? (await tx<{ id: string }[]>`SELECT id FROM public.waha_inbound WHERE message_id = ${event.messageId}`)[0]?.id;
-      if (id === undefined) throw new Error("the inbound row vanished");
+      if (id === undefined) {
+        // US-030: the sender's data was erased (a deletion request): the row keeps only the SHA-256 of the message id, and the
+        // database skipped this redelivery (triggers.sql waha_inbound_erased_dedupe). A duplicate, never processed again.
+        const [erased] = await tx`
+          SELECT 1 FROM public.waha_inbound WHERE message_id = 'erased:' || encode(sha256(convert_to(${event.messageId}::text, 'UTF8')), 'hex')`;
+        if (erased !== undefined) return "duplicate";
+        throw new Error("the inbound row vanished");
+      }
       await tx`SELECT public.enqueue_waha_inbound(${id}::uuid)`;
       return inserted === undefined ? "duplicate" : "new";
     });

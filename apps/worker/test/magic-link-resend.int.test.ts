@@ -139,7 +139,8 @@ describe("magic_link.resend", () => {
     const unknown = phoneFor();
     const notEligible = await player({ eligible: false });
     const gone = await player();
-    await sql`UPDATE players SET anonymized_at = now() WHERE id = ${gone.id}`;
+    // US-030: an anonymized player keeps only its id (players_anonymized_check); its old phone asks for nothing.
+    await sql`UPDATE players SET anonymized_at = now(), phone = NULL, name = '', email = NULL, auth_user_id = NULL WHERE id = ${gone.id}`;
     for (const phone of [unknown, notEligible.phone, gone.phone, "not a phone"]) expect(await enqueue(phone), phone).toBeNull();
     expect(await sql`SELECT 1 FROM outbox WHERE topic = ${MAGIC_LINK_RESEND_TOPIC} AND payload->>'player_id' IN (${notEligible.id}, ${gone.id})`).toHaveLength(0);
 

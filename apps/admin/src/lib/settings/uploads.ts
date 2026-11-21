@@ -50,6 +50,7 @@ import type { Sql } from "../db.ts";
 import { logEvent } from "../log.ts";
 import { PDF_WARN_BYTES, type SettingsConfig } from "./env.ts";
 import { InvalidInput, singleLine } from "./fields.ts";
+import { PROOF_DIR, PROOF_FILE } from "./proof-files.ts";
 
 export const CHUNK_BYTES = 1024 * 1024;
 export type UploadSessionKind = "pdf" | "lp_zip";
@@ -432,11 +433,13 @@ export interface SweepResult {
   readonly orphanStagingFiles: number;
   readonly supersededPdfs: number;
   readonly orphanPdfs: number;
+  /** US-030: fulfilment proof files without an uploads row (a replace or an erasure whose file removal did not happen). */
+  readonly orphanProofs: number;
   /** Entries left alone: not a regular file, a foreign name, or a failed removal (each logged). */
   readonly leftAlone: number;
 }
 
-const NOTHING: SweepResult = Object.freeze({ skipped: false, expiredSessions: 0, orphanStagingFiles: 0, supersededPdfs: 0, orphanPdfs: 0, leftAlone: 0 });
+const NOTHING: SweepResult = Object.freeze({ skipped: false, expiredSessions: 0, orphanStagingFiles: 0, supersededPdfs: 0, orphanPdfs: 0, orphanProofs: 0, leftAlone: 0 });
 
 const listDir = async (path: string): Promise<string[]> => {
   try {
@@ -556,5 +559,12 @@ async function sweepOnce(sql: Sql, dir: string): Promise<SweepResult> {
     if (known.has(`deliverables/${name}`)) continue;
     if (count(await removeOwnFile(join(dir, "deliverables"), name, PDF_FILE, ORPHAN_MIN_AGE_MS))) orphanPdfs++;
   }
-  return { skipped: false, expiredSessions: expired.length, orphanStagingFiles, supersededPdfs, orphanPdfs, leftAlone };
+  // US-030: the same for fulfilment proofs (lib/settings/fulfillment-proof.ts), once older than ORPHAN_MIN_AGE_MS (a proof being
+  // stored is written before its row).
+  let orphanProofs = 0;
+  for (const name of await listDir(join(dir, PROOF_DIR))) {
+    if (known.has(`${PROOF_DIR}/${name}`)) continue;
+    if (count(await removeOwnFile(join(dir, PROOF_DIR), name, PROOF_FILE, ORPHAN_MIN_AGE_MS))) orphanProofs++;
+  }
+  return { skipped: false, expiredSessions: expired.length, orphanStagingFiles, supersededPdfs, orphanPdfs, orphanProofs, leftAlone };
 }

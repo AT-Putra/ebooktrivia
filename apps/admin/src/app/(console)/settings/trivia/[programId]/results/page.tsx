@@ -12,6 +12,7 @@ import { requireAdmin } from "../../../../../../lib/next/require-admin.ts";
 import { getRuntime } from "../../../../../../lib/next/runtime.ts";
 import { can } from "../../../../../../lib/policy.ts";
 import { FLAG_LABELS, getContestResults, WINNER_BLOCKED, wibLocal } from "../../../../../../lib/settings/contest.ts";
+import { reinstateWinnerAction, revokeWinnerAction } from "../../../../fulfillment/actions.ts";
 import { confirmWinnersAction, extendDeadlinesAction } from "../../actions.ts";
 
 export const metadata: Metadata = { title: "Contest results | Admin Console" };
@@ -35,6 +36,10 @@ export default async function ContestResultsPage({ params }: { params: Promise<{
   if (results === null) notFound();
   const now = new Date();
   const canConfirm = can(admin.role, "winners.confirm") && results.snapshot !== null && results.status === "awaiting_confirmation";
+  // US-030: before the confirmation the Owner resolves a blocked winner here (revoke and re-award, or reinstate a flagged one);
+  // after it, on the prize fulfilment page.
+  const canResolve = can(admin.role, "winners.reaward") && results.status === "awaiting_confirmation";
+  const blocked = (w: (typeof results.winners)[number]): boolean => w.status !== "revoked" && (!w.eligible || w.status === "flagged" || w.erased);
   const canExtend = can(admin.role, "contest.extend_deadlines") && results.snapshot === null && results.status === "published" && now < results.graceEnd;
   return (
     <>
@@ -108,8 +113,24 @@ export default async function ContestResultsPage({ params }: { params: Promise<{
                   <TableCell>
                     <span className="flex flex-wrap gap-1">
                       <Badge variant={w.status === "confirmed" ? "success" : "secondary"}>{WINNER_LABEL[w.status] ?? w.status}</Badge>
-                      {w.eligible ? null : <Badge variant="destructive">Refunded since the snapshot</Badge>}
+                      {w.eligible || w.status === "revoked" ? null : <Badge variant="destructive">Refunded since the snapshot</Badge>}
+                      {w.erased && w.status !== "revoked" ? <Badge variant="destructive">Data deleted</Badge> : null}
                     </span>
+                    {canResolve && blocked(w) ? (
+                      <span className="mt-2 flex flex-col gap-2" data-testid={`resolve-${String(w.rank)}`}>
+                        {w.status === "flagged" ? (
+                          <ActionForm action={reinstateWinnerAction} submitLabel="Reinstate" variant="secondary">
+                            <input type="hidden" name="winnerId" value={w.winnerId} />
+                            <TextArea id={`reinstate-${w.winnerId}`} name="reason" label="Why the winner keeps the prize" rows={2} minLength={10} maxLength={500} required hint="No names, phone numbers or e-mail addresses." />
+                          </ActionForm>
+                        ) : null}
+                        <ActionForm action={revokeWinnerAction} submitLabel="Revoke and re-award" variant="destructive">
+                          <input type="hidden" name="winnerId" value={w.winnerId} />
+                          <TextArea id={`revoke-${w.winnerId}`} name="reason" label="Reason" rows={2} minLength={10} maxLength={500} required hint="No names, phone numbers or e-mail addresses." />
+                          <CheckboxField id={`revoke-confirm-${w.winnerId}`} name="confirm" label="The prize goes to the next eligible player of the snapshot." />
+                        </ActionForm>
+                      </span>
+                    ) : null}
                   </TableCell>
                   <TableCell className="text-xs">{w.flags.length === 0 ? "None" : w.flags.map((f) => FLAG_LABELS[f]).join("; ")}</TableCell>
                 </TableRow>
@@ -117,8 +138,15 @@ export default async function ContestResultsPage({ params }: { params: Promise<{
             </TableBody>
           </Table>
         )}
+        {results.status === "finalized" && can(admin.role, "prize_fulfillment.update") ? (
+          <p className="text-sm">
+            <Link href={`/fulfillment/${results.programId}`} className="underline underline-offset-4" data-testid="to-fulfillment">
+              Prize fulfilment for these winners
+            </Link>
+          </p>
+        ) : null}
         {canConfirm ? (
-          results.winners.some((w) => !w.eligible || w.status === "flagged") ? (
+          results.winners.some(blocked) ? (
             <Notice tone="warning" testId="confirm-blocked">
               {WINNER_BLOCKED}
             </Notice>

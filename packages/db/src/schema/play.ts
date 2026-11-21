@@ -11,6 +11,7 @@
 // never flip a tie on a sub-millisecond difference. Writers truncate: date_trunc('milliseconds', ...).
 import { sql } from "drizzle-orm";
 import {
+  type AnyPgColumn,
   bigint,
   boolean,
   check,
@@ -224,26 +225,71 @@ export const winners = pgTable(
     confirmedAt: tstz("confirmed_at"),
     flaggedAt: tstz("flagged_at"),
     flagReason: text("flag_reason"),
+    /**
+     * US-030: the revoked winner whose prize this row re-awards (the Owner's revoke and re-award, sql/contest.sql
+     * revoke_winner): the next eligible player of the snapshot, holding the revoked winner's prize tier at their own
+     * snapshot rank. UNIQUE: a revoked winner is re-awarded at most once. Never changes (winners_status_guard).
+     */
+    replacesWinnerId: uuid("replaces_winner_id")
+      .unique("winners_replaces_winner_id_key")
+      .references((): AnyPgColumn => winners.id, { onDelete: "restrict" }),
+    /**
+     * US-030: the Owner's written reason for the last revoke or reinstatement. Kept here, not in the append-only audit log (which only
+     * records that it was given), because free text may name the winner: the erasure of the winner's data blanks it.
+     */
+    decisionReason: text("decision_reason"),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
   (t) => [
     unique("winners_snapshot_id_player_id_key").on(t.snapshotId, t.playerId),
     check("winners_rank_check", sql`${t.rank} >= 1`),
+    check("winners_decision_reason_check", sql`${t.decisionReason} IS NULL OR char_length(${t.decisionReason}) BETWEEN 10 AND 500`),
   ],
 );
 
 export const fulfillmentStatus = pgEnum("fulfillment_status", ["pending", "contacted", "sent", "done"]);
 
-export const fulfillments = pgTable("fulfillments", {
-  id: id(),
-  winnerId: uuid("winner_id")
-    .notNull()
-    .unique("fulfillments_winner_id_key")
-    .references(() => winners.id, { onDelete: "restrict" }),
-  status: fulfillmentStatus("status").notNull().default("pending"),
-  notes: text("notes"),
-  proofUploadId: uuid("proof_upload_id").references(() => uploads.id, { onDelete: "restrict" }),
-  createdAt: createdAt(),
-  updatedAt: updatedAt(),
-});
+/**
+ * Prize fulfilment of a confirmed winner (US-030, AC-A9): pending -> contacted -> sent -> done, one step at a time,
+ * written only by the SECURITY DEFINER functions of sql/fulfillment.sql (owner prize_fulfillment; the row itself is
+ * created by sql/contest.sql at the confirmation, re-award or reinstatement). Each step stamps who and when; a
+ * correction one step back clears the stamps of the step it undoes (the audit log keeps the history); done is final.
+ * `notes` are the Owner's plain text (they may name the winner: the audit log only references them).
+ */
+export const fulfillments = pgTable(
+  "fulfillments",
+  {
+    id: id(),
+    winnerId: uuid("winner_id")
+      .notNull()
+      .unique("fulfillments_winner_id_key")
+      .references(() => winners.id, { onDelete: "restrict" }),
+    status: fulfillmentStatus("status").notNull().default("pending"),
+    notes: text("notes"),
+    proofUploadId: uuid("proof_upload_id")
+      .unique("fulfillments_proof_upload_id_key")
+      .references(() => uploads.id, { onDelete: "restrict" }),
+    contactedAt: tstz("contacted_at"),
+    contactedByAdminUserId: text("contacted_by_admin_user_id"),
+    sentAt: tstz("sent_at"),
+    sentByAdminUserId: text("sent_by_admin_user_id"),
+    doneAt: tstz("done_at"),
+    doneByAdminUserId: text("done_by_admin_user_id"),
+    /** US-030: the written reason of the last correction one step back (the audit log records only that one was given; see winners.decision_reason). */
+    correctionReason: text("correction_reason"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    check("fulfillments_notes_check", sql`${t.notes} IS NULL OR char_length(${t.notes}) BETWEEN 1 AND 2000`),
+    check("fulfillments_correction_reason_check", sql`${t.correctionReason} IS NULL OR char_length(${t.correctionReason}) BETWEEN 10 AND 500`),
+    // Each step's stamps are there exactly when the status has reached it.
+    check(
+      "fulfillments_steps_check",
+      sql`(${t.status} IN ('contacted', 'sent', 'done')) = (${t.contactedAt} IS NOT NULL) AND (${t.contactedAt} IS NULL) = (${t.contactedByAdminUserId} IS NULL)
+          AND (${t.status} IN ('sent', 'done')) = (${t.sentAt} IS NOT NULL) AND (${t.sentAt} IS NULL) = (${t.sentByAdminUserId} IS NULL)
+          AND (${t.status} = 'done') = (${t.doneAt} IS NOT NULL) AND (${t.doneAt} IS NULL) = (${t.doneByAdminUserId} IS NULL)`,
+    ),
+  ],
+);

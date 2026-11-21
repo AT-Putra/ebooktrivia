@@ -188,8 +188,10 @@ export const orders = pgTable(
       .notNull()
       .references(() => products.id, { onDelete: "restrict" }),
     playerId: uuid("player_id").references(() => players.id, { onDelete: "restrict" }),
+    /** '' after anonymization (US-030), like buyer_email. */
     buyerName: text("buyer_name").notNull(),
-    buyerPhone: text("buyer_phone").notNull(),
+    /** NULL only after anonymization (a deletion request, US-030: orders_buyer_phone_present_check). */
+    buyerPhone: text("buyer_phone"),
     buyerEmail: text("buyer_email").notNull(),
     /**
      * The checkout's "same buyer" (Owner decision D1, US-020): SHA-256 of the normalised phone, name and
@@ -216,11 +218,24 @@ export const orders = pgTable(
     browserMtFiredAt: tstz("browser_mt_fired_at"),
     paidAt: tstz("paid_at"),
     refundedAt: tstz("refunded_at"),
+    /**
+     * US-030 (UU PDP deletion = anonymization, plan §10 item 6): set by public.erase_data_subject (sql/privacy.sql),
+     * which empties the buyer's name, phone, e-mail, device and ad-platform click ids and replaces buyer_key, and
+     * keeps the pseudonymous financial row (ids, amounts, status, timestamps, product, program, attribution keys).
+     * Never cleared again (orders_anonymized_guard).
+     */
+    anonymizedAt: tstz("anonymized_at"),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
   (t) => [
     check("orders_public_id_check", sql`${t.publicId} ~ '^[0-9A-Za-z]{16,40}$'`),
+    check("orders_buyer_phone_present_check", sql`${t.buyerPhone} IS NOT NULL OR ${t.anonymizedAt} IS NOT NULL`),
+    check(
+      "orders_anonymized_check",
+      sql`${t.anonymizedAt} IS NULL OR (${t.buyerPhone} IS NULL AND ${t.buyerName} = '' AND ${t.buyerEmail} = '' AND ${t.ip} IS NULL AND ${t.uaHash} IS NULL
+          AND ${t.fbclid} IS NULL AND ${t.fbp} IS NULL AND ${t.fbc} IS NULL AND ${t.ttclid} IS NULL AND ${t.gclid} IS NULL)`,
+    ),
     // Crockford base32 alphabet (no I, L, O, U); 8 chars = 40 bits.
     check("orders_order_code_check", sql`${t.orderCode} ~ '^[0-9A-HJKMNP-TV-Z]{8,16}$'`),
     e164Check("orders_buyer_phone_check", t.buyerPhone),
@@ -237,6 +252,8 @@ export const orders = pgTable(
     index("orders_updated_at_idx").on(t.updatedAt),
     index("orders_program_status_idx").on(t.programId, t.status),
     index("orders_player_idx").on(t.playerId),
+    // US-030: a deletion request finds the data subject's orders by phone, and the stranger retention of wa_contacts asks whether a phone is a buyer's.
+    index("orders_buyer_phone_idx").on(t.buyerPhone),
   ],
 );
 

@@ -387,10 +387,10 @@ describe("refunds and chargebacks (criterion 3)", () => {
       expect.objectContaining({ kind: "payment_chargeback", severity: "critical", payload: expect.objectContaining({ event: "chargeback", to: "refunded" }) as unknown }),
       expect.objectContaining({ kind: "winner_flagged", severity: "critical", payload: expect.objectContaining({ winner_ids: [winner] }) as unknown }),
     ]);
-    // Fulfillment is halted until the Owner decides (fulfillments_halt_guard, ET082).
+    // Fulfillment is halted until the Owner decides (fulfillments_halt_guard, ET082), for the fulfilment functions' owner too (US-030).
     const halted = await sql
       .begin(async (tx) => {
-        await tx`SET LOCAL ROLE admin_rw`;
+        await tx`SET LOCAL ROLE prize_fulfillment`;
         await tx`UPDATE public.fulfillments SET status = 'sent' WHERE winner_id = ${winner}`;
       })
       .then(

@@ -149,6 +149,21 @@ const GUARDS: Readonly<Record<string, string>> = {
   "(console)/reports/ad-spend/actions.ts#createAdSpendAction": "permission:ad_spend.edit",
   "(console)/reports/ad-spend/actions.ts#updateAdSpendAction": "permission:ad_spend.edit",
   "(console)/reports/ad-spend/actions.ts#deleteAdSpendAction": "permission:ad_spend.edit",
+  // Prize fulfilment and UU PDP deletion (US-030): Owner-only; Staff are refused by every page, action and route (403).
+  "(console)/fulfillment/page.tsx": "permission:prize_fulfillment.update",
+  "(console)/fulfillment/[programId]/page.tsx": "permission:prize_fulfillment.update",
+  "(console)/fulfillment/actions.ts#advanceFulfillmentAction": "permission:prize_fulfillment.update",
+  "(console)/fulfillment/actions.ts#correctFulfillmentAction": "permission:prize_fulfillment.update",
+  "(console)/fulfillment/actions.ts#saveFulfillmentNotesAction": "permission:prize_fulfillment.update",
+  "(console)/fulfillment/actions.ts#revokeWinnerAction": "permission:winners.reaward",
+  "(console)/fulfillment/actions.ts#reinstateWinnerAction": "permission:winners.reaward",
+  "(console)/fulfillment/proof/route.ts#POST": "permission:prize_fulfillment.update",
+  "uploads/proof/route.ts#POST": "permission:prize_fulfillment.update",
+  "(console)/privacy/page.tsx": "permission:deletion_request.process",
+  "(console)/privacy/[requestId]/page.tsx": "permission:deletion_request.process",
+  "(console)/privacy/actions.ts#createDeletionRequestAction": "permission:deletion_request.process",
+  "(console)/privacy/actions.ts#executeDeletionRequestAction": "permission:deletion_request.process",
+  "(console)/privacy/actions.ts#rejectDeletionRequestAction": "permission:deletion_request.process",
 };
 
 /** Pages / layouts reachable without a console session, with the reason. */
@@ -241,6 +256,8 @@ describe("server-action directive", () => {
       "(auth)/enroll/actions.ts",
       "(auth)/login/actions.ts",
       "(console)/account/actions.ts",
+      "(console)/fulfillment/actions.ts",
+      "(console)/privacy/actions.ts",
       "(console)/reports/ad-spend/actions.ts",
       "(console)/reports/delivery/actions.ts",
       "(console)/reports/postbacks/actions.ts",
@@ -294,7 +311,8 @@ describe("sealed secrets (plan M2.3: the admin process cannot decrypt)", () => {
   it("admin sources import the sealer subpath only; the full upload policy (sharp) only where images and imports are checked", () => {
     // US-018: content images are re-encoded with sharp and imports go through inspectZip, both in
     // @ebooktrivia/uploads; every other module keeps to the PDF-only subpath. Nothing imports sharp itself.
-    const fullUploads = ["lib/settings/images.ts", "lib/settings/trivia-import.ts"];
+    // US-030: a fulfilment proof is checked (and an image re-encoded) by the same policy, in its own module.
+    const fullUploads = ["lib/settings/fulfillment-proof.ts", "lib/settings/images.ts", "lib/settings/trivia-import.ts"];
     for (const file of srcFiles) {
       expect(file.text, file.rel).not.toMatch(/from "@ebooktrivia\/crypto"|import\("@ebooktrivia\/crypto"\)/);
       expect(file.text, file.rel).not.toMatch(/from "sharp"/);

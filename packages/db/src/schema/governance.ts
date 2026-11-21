@@ -232,22 +232,52 @@ export const consents = pgTable(
   (t) => [unique("consents_order_id_legal_page_id_key").on(t.orderId, t.legalPageId)],
 );
 
+/**
+ * UU PDP deletion requests (US-030, plan §10 item 6), Owner-only. The Owner records one by phone, e-mail or order
+ * public id; the request holds the data subject's phone (the subject's key: one buyer = one phone) only while it is
+ * pending. Completed only by public.erase_data_subject (sql/privacy.sql, owner pii_eraser), which anonymizes the
+ * subject in one transaction; rejected by the Owner with a reason. Decided requests never change
+ * (deletion_requests_guard). `summary` = what the erasure changed (counts, no personal data).
+ */
 export const deletionRequests = pgTable(
   "deletion_requests",
   {
     id: id(),
-    playerId: uuid("player_id")
-      .notNull()
-      .references(() => players.id, { onDelete: "restrict" }),
+    /** The subject's player when there is one (a buyer who never paid has none); kept after completion (an anonymized id). */
+    playerId: uuid("player_id").references(() => players.id, { onDelete: "restrict" }),
     status: text("status").notNull().default("pending"),
     requestedAt: tstz("requested_at").notNull().defaultNow(),
     requestedByAdminUserId: text("requested_by_admin_user_id"),
     completedAt: tstz("completed_at"),
+    /** The request's reason as the Owner recorded it (no contact details). */
     note: text("note"),
+    /** How the requester identified themselves (the value itself is not kept). */
+    lookupKind: text("lookup_kind"),
+    /** E.164 phone of the subject while the request is pending; NULL once it is decided. */
+    subjectPhone: text("subject_phone"),
+    rejectedAt: tstz("rejected_at"),
+    decidedByAdminUserId: text("decided_by_admin_user_id"),
+    /** The rejection's reason (no contact details). */
+    decisionNote: text("decision_note"),
+    summary: jsonb("summary").notNull().default({}),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
-  (t) => [inCheck("deletion_requests_status_check", t.status, ["pending", "completed", "rejected"])],
+  (t) => [
+    inCheck("deletion_requests_status_check", t.status, ["pending", "completed", "rejected"]),
+    check("deletion_requests_lookup_kind_check", sql`${t.lookupKind} IS NULL OR ${t.lookupKind} IN ('phone', 'email', 'order')`),
+    e164Check("deletion_requests_subject_phone_check", t.subjectPhone),
+    check(
+      "deletion_requests_state_check",
+      sql`(${t.status} = 'pending') = (${t.subjectPhone} IS NOT NULL) AND (${t.status} = 'completed') = (${t.completedAt} IS NOT NULL)
+          AND (${t.status} = 'rejected') = (${t.rejectedAt} IS NOT NULL AND ${t.decisionNote} IS NOT NULL)
+          AND (${t.status} = 'pending') = (${t.decidedByAdminUserId} IS NULL)`,
+    ),
+    check("deletion_requests_note_check", sql`${t.note} IS NULL OR char_length(${t.note}) BETWEEN 1 AND 500`),
+    check("deletion_requests_decision_note_check", sql`${t.decisionNote} IS NULL OR char_length(${t.decisionNote}) BETWEEN 10 AND 500`),
+    jsonObject("deletion_requests_summary_check", t.summary),
+    index("deletion_requests_status_idx").on(t.status, t.requestedAt),
+  ],
 );
 
 /**

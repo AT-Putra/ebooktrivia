@@ -189,7 +189,10 @@ export const deliveries = pgTable(
     ),
     nonNegative("deliveries_attempts_check", t.attempts),
     check("deliveries_attempts_base_check", sql`${t.attemptsBase} >= 0 AND ${t.attemptsBase} <= ${t.attempts}`),
-    check("deliveries_reply_chat_id_check", sql`${t.replyChatId} IS NULL OR ${t.replyChatId} ~ '^[0-9]{5,20}@(c\.us|lid)$'`),
+    // US-030: the dot escaped (0018 had `c.us` match any character); the same shape for the delivery's chat (the erasure matches the
+    // subject's chat ids by it).
+    check("deliveries_reply_chat_id_check", sql`${t.replyChatId} IS NULL OR ${t.replyChatId} ~ '^[0-9]{5,20}@(c\\.us|lid)$'`),
+    check("deliveries_wa_chat_id_check", sql`${t.waChatId} IS NULL OR ${t.waChatId} ~ '^[0-9]{5,20}@(c\\.us|lid)$'`),
     index("deliveries_due_idx").on(t.status, t.notBefore),
     // US-029: the delivery report lists and counts a date range, newest first (keyset by (created_at, id)).
     index("deliveries_created_at_id_idx").on(t.createdAt, t.id),

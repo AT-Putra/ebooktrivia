@@ -265,6 +265,9 @@ $fn$;
 -- flagged (a chargeback, US-021) (ET107; resolving that, a revoke and re-award, is US-030's). The
 -- winners' player_programs rows are locked FOR SHARE first (security review P2-1), so a refund
 -- either commits before the check (and is seen) or waits for the confirmation to commit.
+-- US-030 EDIT: a revoked winner (revoke_winner below) no longer counts, an erased one (players.anonymized_at,
+-- sql/privacy.sql: a prize nobody can be reached for) blocks like a flagged one (ET107), and every confirmed
+-- winner gets its pending fulfilment row (sql/fulfillment.sql moves it).
 CREATE OR REPLACE FUNCTION public.confirm_program_winners(
   p_program_id uuid,
   p_actor_admin_user_id text,
@@ -304,16 +307,21 @@ BEGIN
    WHERE w.snapshot_id = v_snapshot ORDER BY pp.player_id FOR SHARE OF pp;
   IF EXISTS (
     SELECT 1 FROM public.winners w
+      JOIN public.players pl ON pl.id = w.player_id
       LEFT JOIN public.player_programs pp ON pp.player_id = w.player_id AND pp.program_id = w.program_id
-     WHERE w.snapshot_id = v_snapshot AND (pp.eligible IS NOT TRUE OR w.status = 'flagged')
+     WHERE w.snapshot_id = v_snapshot AND w.status <> 'revoked'
+       AND (pp.eligible IS NOT TRUE OR w.status = 'flagged' OR pl.anonymized_at IS NOT NULL)
   ) THEN
-    RAISE EXCEPTION 'a winner of program % is no longer eligible (refunded) or is flagged: resolve it before confirming', p_program_id
+    RAISE EXCEPTION 'a winner of program % is no longer eligible (refunded), is flagged or was erased: resolve it before confirming', p_program_id
       USING ERRCODE = 'ET107';
   END IF;
 
   UPDATE public.winners w SET status = 'confirmed', confirmed_at = v_now, updated_at = v_now
    WHERE w.snapshot_id = v_snapshot AND w.status = 'awaiting_confirmation';
   GET DIAGNOSTICS v_confirmed = ROW_COUNT;
+  INSERT INTO public.fulfillments (winner_id)
+  SELECT w.id FROM public.winners w WHERE w.snapshot_id = v_snapshot AND w.status = 'confirmed' ORDER BY w.rank
+  ON CONFLICT (winner_id) DO NOTHING;
   UPDATE public.programs SET status = 'finalized', winners_confirmed_at = v_now, updated_at = v_now WHERE id = p_program_id;
 
   v_summary := jsonb_build_object('program_id', p_program_id, 'snapshot_id', v_snapshot, 'winners_confirmed', v_confirmed);
@@ -466,6 +474,233 @@ AS $fn$
    WHERE p.id = p_program_id AND p.status = 'finalized' AND p.winners_confirmed_at IS NOT NULL
    ORDER BY w.rank
 $fn$;
+
+-- ---------------------------------------------------------------------------------------------
+-- US-030 BLOCK BEGIN: the Owner's revoke and re-award, and reinstatement, of a winner (plan M2: "a chargeback after a winner
+-- is confirmed flags the winner and halts fulfillment. The Owner re-awards to the next rank", §10 item 17; the US-028
+-- security follow-up: under the contest lock, with eligibility re-checked under it, audited). EXECUTE admin_rw, Owner-only in
+-- the admin app (policy winners.reaward). Both take THE contest lock first (so they serialise with each other, the
+-- confirmation and the snapshot), then the program and the winner FOR UPDATE, and are idempotent: a second call (also a
+-- concurrent one, which waits for the lock) finds the work done and changes nothing.
+--
+-- revoke_winner: a winner that is awaiting confirmation, confirmed or flagged (a chargeback; or the Owner's forfeit of a
+-- winner who cannot be reached, e.g. before an erasure) of a program awaiting confirmation or finalized, whose prize was
+-- not delivered yet (its fulfilment is not done: ET173), becomes revoked, and its prize tier is re-awarded to the NEXT
+-- ELIGIBLE player of the snapshot: the best-ranked entry below the revoked winner who holds no winner row of this snapshot
+-- (any status: a revoked player never comes back) and, re-checked after their eligibility row is locked FOR SHARE (a
+-- refund or chargeback of that player commits before the check, or waits for this one and then flags the new winner,
+-- US-021), is still paid (player_programs.eligible), not erased and has no chargeback on an order of the program. The new
+-- winner keeps their own snapshot rank (winners_status_guard admits it through replaces_winner_id) and is confirmed at once
+-- with a pending fulfilment when the program is finalized (the Owner's re-award IS the confirmation), or awaits the
+-- confirmation with the others. No eligible player left: revoked, nothing re-awarded. The other winners never move.
+-- The revoked winner's fulfilment row stays (halted, ET082) as the record of what happened.
+-- reinstate_winner: a flagged winner whose player is still paid (eligibility locked FOR SHARE, then re-checked) and not
+-- erased goes back (ET174 otherwise): to awaiting_confirmation while the program awaits the Owner's confirmation (which then
+-- confirms it with the others), to confirmed once the program is finalized, with its fulfilment row on the move.
+-- Both refuse a reason that is not 10-500 characters without contact details or an actor who is not an active Owner
+-- (ET171). The reason is kept on the winner (decision_reason, blanked by an erasure); the audit row holds winner ids, ranks,
+-- tier and a reference to the reason, never a player id, name, contact or the reason's text.
+CREATE OR REPLACE FUNCTION public.revoke_winner(
+  p_winner_id uuid,
+  p_reason text,
+  p_actor_admin_user_id text,
+  p_request_id text,
+  p_ip inet
+)
+  RETURNS jsonb
+  LANGUAGE plpgsql
+  VOLATILE
+  SECURITY DEFINER
+  SET search_path = pg_catalog, pg_temp
+AS $fn$
+DECLARE
+  v_program uuid;
+  v_program_status public.program_status;
+  v_snapshot uuid;
+  v_tier uuid;
+  v_rank integer;
+  v_status public.winner_status;
+  v_fulfillment public.fulfillment_status;
+  v_candidate uuid;
+  v_candidate_rank integer;
+  v_skipped uuid[] := '{}';
+  v_next uuid;
+  v_now timestamptz := clock_timestamp();
+  v_summary jsonb;
+BEGIN
+  IF current_setting('transaction_isolation') <> 'read committed' THEN
+    RAISE EXCEPTION 'the revoke of a winner must run under READ COMMITTED' USING ERRCODE = 'ET170';
+  END IF;
+  IF p_winner_id IS NULL OR p_reason IS NULL OR char_length(btrim(p_reason)) NOT BETWEEN 10 AND 500
+     OR p_reason ~ '[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+'
+     OR p_reason ~ '(\+?62[[:space:].-]?|\m0)8[0-9[:space:].-]{7,}|[0-9]{10,}' THEN
+    RAISE EXCEPTION 'revoke_winner: the winner and a reason of 10-500 characters without contact details are required' USING ERRCODE = 'ET171';
+  END IF;
+  IF p_actor_admin_user_id IS NULL OR NOT EXISTS (
+    SELECT 1 FROM public.admin_profiles ap
+     WHERE ap.auth_user_id = p_actor_admin_user_id AND ap.role = 'owner' AND ap.disabled_at IS NULL
+  ) THEN
+    RAISE EXCEPTION 'revoke_winner: the actor must be an active Owner' USING ERRCODE = 'ET171';
+  END IF;
+  SELECT w.program_id INTO v_program FROM public.winners w WHERE w.id = p_winner_id;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'revoke_winner: unknown winner' USING ERRCODE = 'ET171';
+  END IF;
+
+  PERFORM public.lock_program_contest(v_program);
+  SELECT p.status INTO v_program_status FROM public.programs p WHERE p.id = v_program FOR UPDATE;
+  SELECT w.snapshot_id, w.prize_tier_id, w.rank, w.status INTO v_snapshot, v_tier, v_rank, v_status
+    FROM public.winners w WHERE w.id = p_winner_id FOR UPDATE;
+  IF v_status = 'revoked' THEN
+    SELECT r.id, r.rank INTO v_next, v_candidate_rank FROM public.winners r WHERE r.replaces_winner_id = p_winner_id;
+    RETURN jsonb_build_object('program_id', v_program, 'winner_id', p_winner_id, 'revoked', false,
+                              'reawarded_winner_id', v_next, 'reawarded_rank', v_candidate_rank);
+  END IF;
+  IF v_program_status NOT IN ('awaiting_confirmation', 'finalized') THEN
+    RAISE EXCEPTION 'program % has no winners to revoke (status %)', v_program, v_program_status USING ERRCODE = 'ET173';
+  END IF;
+  -- No lock needed: a fulfilment step holds the winner FOR SHARE (sql/fulfillment.sql), so it committed before the winner
+  -- lock above was granted (and this new statement sees it) or waits for this revoke and then finds the winner revoked.
+  SELECT f.status INTO v_fulfillment FROM public.fulfillments f WHERE f.winner_id = p_winner_id;
+  IF v_fulfillment = 'done' THEN
+    RAISE EXCEPTION 'the prize of winner % was delivered (fulfilment done): it is not re-awarded', p_winner_id USING ERRCODE = 'ET173';
+  END IF;
+
+  UPDATE public.winners SET status = 'revoked', decision_reason = btrim(p_reason), updated_at = v_now WHERE id = p_winner_id;
+
+  LOOP
+    SELECT (e.value ->> 'player_id')::uuid, (e.value ->> 'rank')::int INTO v_candidate, v_candidate_rank
+      FROM public.leaderboard_snapshots l CROSS JOIN LATERAL jsonb_array_elements(l.entries) e
+     WHERE l.id = v_snapshot AND (e.value ->> 'rank')::int > v_rank
+       AND NOT ((e.value ->> 'player_id')::uuid = ANY (v_skipped))
+       AND NOT EXISTS (SELECT 1 FROM public.winners x WHERE x.snapshot_id = v_snapshot AND x.player_id = (e.value ->> 'player_id')::uuid)
+     ORDER BY (e.value ->> 'rank')::int
+     LIMIT 1;
+    EXIT WHEN v_candidate IS NULL;
+    -- The candidate's eligibility and players rows FOR SHARE: a refund, a chargeback (payments) or an erasure of this player
+    -- (sql/privacy.sql locks the player FOR UPDATE) commits before the check below, or waits for this re-award.
+    PERFORM 1 FROM public.player_programs pp WHERE pp.player_id = v_candidate AND pp.program_id = v_program FOR SHARE;
+    PERFORM 1 FROM public.players pl WHERE pl.id = v_candidate FOR SHARE;
+    EXIT WHEN EXISTS (
+      SELECT 1 FROM public.player_programs pp JOIN public.players pl ON pl.id = pp.player_id
+       WHERE pp.player_id = v_candidate AND pp.program_id = v_program AND pp.eligible AND pl.anonymized_at IS NULL
+         AND NOT EXISTS (SELECT 1 FROM public.orders o JOIN public.payments pay ON pay.order_id = o.id
+                          WHERE o.player_id = v_candidate AND o.program_id = v_program
+                            AND pay.transaction_status IN ('chargeback', 'partial_chargeback')));
+    v_skipped := v_skipped || v_candidate;
+    v_candidate := NULL;
+  END LOOP;
+
+  IF v_candidate IS NOT NULL THEN
+    INSERT INTO public.winners (program_id, snapshot_id, prize_tier_id, player_id, rank, replaces_winner_id)
+    VALUES (v_program, v_snapshot, v_tier, v_candidate, v_candidate_rank, p_winner_id)
+    RETURNING id INTO v_next;
+    IF v_program_status = 'finalized' THEN
+      UPDATE public.winners SET status = 'confirmed', confirmed_at = v_now, updated_at = v_now WHERE id = v_next;
+      INSERT INTO public.fulfillments (winner_id) VALUES (v_next);
+    END IF;
+  ELSE
+    v_candidate_rank := NULL;
+  END IF;
+
+  v_summary := jsonb_build_object(
+    'program_id', v_program, 'winner_id', p_winner_id, 'rank', v_rank, 'prize_tier_id', v_tier, 'revoked', true,
+    'reawarded_winner_id', v_next, 'reawarded_rank', v_candidate_rank, 'candidates_skipped', cardinality(v_skipped));
+  -- The reason is free text that may name the winner: it is kept on the winner row (decision_reason, which an erasure blanks),
+  -- and the append-only audit only records that it was given.
+  INSERT INTO public.audit_log (actor_kind, actor_admin_user_id, action, entity_type, entity_id, changes, pii_refs, request_id, ip)
+  VALUES ('admin', p_actor_admin_user_id, 'contest.winner_revoke', 'winner', p_winner_id::text,
+          v_summary || jsonb_build_object('status', jsonb_build_object('before', v_status, 'after', 'revoked')),
+          ARRAY['winner:' || p_winner_id::text || '.decision_reason set'], p_request_id, p_ip);
+  RETURN v_summary;
+END
+$fn$;
+
+CREATE OR REPLACE FUNCTION public.reinstate_winner(
+  p_winner_id uuid,
+  p_reason text,
+  p_actor_admin_user_id text,
+  p_request_id text,
+  p_ip inet
+)
+  RETURNS jsonb
+  LANGUAGE plpgsql
+  VOLATILE
+  SECURITY DEFINER
+  SET search_path = pg_catalog, pg_temp
+AS $fn$
+DECLARE
+  v_program uuid;
+  v_program_status public.program_status;
+  v_player uuid;
+  v_status public.winner_status;
+  v_now timestamptz := clock_timestamp();
+  v_summary jsonb;
+BEGIN
+  IF current_setting('transaction_isolation') <> 'read committed' THEN
+    RAISE EXCEPTION 'the reinstatement of a winner must run under READ COMMITTED' USING ERRCODE = 'ET170';
+  END IF;
+  IF p_winner_id IS NULL OR p_reason IS NULL OR char_length(btrim(p_reason)) NOT BETWEEN 10 AND 500
+     OR p_reason ~ '[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+'
+     OR p_reason ~ '(\+?62[[:space:].-]?|\m0)8[0-9[:space:].-]{7,}|[0-9]{10,}' THEN
+    RAISE EXCEPTION 'reinstate_winner: the winner and a reason of 10-500 characters without contact details are required' USING ERRCODE = 'ET171';
+  END IF;
+  IF p_actor_admin_user_id IS NULL OR NOT EXISTS (
+    SELECT 1 FROM public.admin_profiles ap
+     WHERE ap.auth_user_id = p_actor_admin_user_id AND ap.role = 'owner' AND ap.disabled_at IS NULL
+  ) THEN
+    RAISE EXCEPTION 'reinstate_winner: the actor must be an active Owner' USING ERRCODE = 'ET171';
+  END IF;
+  SELECT w.program_id INTO v_program FROM public.winners w WHERE w.id = p_winner_id;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'reinstate_winner: unknown winner' USING ERRCODE = 'ET171';
+  END IF;
+
+  PERFORM public.lock_program_contest(v_program);
+  SELECT p.status INTO v_program_status FROM public.programs p WHERE p.id = v_program FOR UPDATE;
+  SELECT w.player_id, w.status INTO v_player, v_status FROM public.winners w WHERE w.id = p_winner_id FOR UPDATE;
+  IF v_status = 'confirmed' OR (v_status = 'awaiting_confirmation' AND v_program_status = 'awaiting_confirmation') THEN
+    RETURN jsonb_build_object('program_id', v_program, 'winner_id', p_winner_id, 'reinstated', false);
+  END IF;
+  IF v_status <> 'flagged' OR v_program_status NOT IN ('awaiting_confirmation', 'finalized') THEN
+    RAISE EXCEPTION 'only a flagged winner of a program awaiting confirmation or finalized is reinstated (winner %, program %)', v_status, v_program_status
+      USING ERRCODE = 'ET173';
+  END IF;
+  PERFORM 1 FROM public.player_programs pp WHERE pp.player_id = v_player AND pp.program_id = v_program FOR SHARE;
+  IF NOT EXISTS (
+    SELECT 1 FROM public.player_programs pp JOIN public.players pl ON pl.id = pp.player_id
+     WHERE pp.player_id = v_player AND pp.program_id = v_program AND pp.eligible AND pl.anonymized_at IS NULL
+  ) THEN
+    RAISE EXCEPTION 'winner % is no longer eligible (no paid order of the program left) or was erased: revoke and re-award instead', p_winner_id
+      USING ERRCODE = 'ET174';
+  END IF;
+
+  -- Before the confirmation the winner goes back to awaiting it (the Owner's confirmation confirms it with the others); after
+  -- it, the winner is confirmed again and its fulfilment goes on.
+  IF v_program_status = 'finalized' THEN
+    UPDATE public.winners SET status = 'confirmed', confirmed_at = coalesce(confirmed_at, v_now), decision_reason = btrim(p_reason), updated_at = v_now
+     WHERE id = p_winner_id;
+    INSERT INTO public.fulfillments (winner_id) VALUES (p_winner_id) ON CONFLICT (winner_id) DO NOTHING;
+  ELSE
+    UPDATE public.winners SET status = 'awaiting_confirmation', decision_reason = btrim(p_reason), updated_at = v_now WHERE id = p_winner_id;
+  END IF;
+
+  v_summary := jsonb_build_object('program_id', v_program, 'winner_id', p_winner_id, 'reinstated', true);
+  INSERT INTO public.audit_log (actor_kind, actor_admin_user_id, action, entity_type, entity_id, changes, pii_refs, request_id, ip)
+  VALUES ('admin', p_actor_admin_user_id, 'contest.winner_reinstate', 'winner', p_winner_id::text,
+          v_summary || jsonb_build_object('status', jsonb_build_object('before', 'flagged',
+                                          'after', CASE WHEN v_program_status = 'finalized' THEN 'confirmed' ELSE 'awaiting_confirmation' END)),
+          ARRAY['winner:' || p_winner_id::text || '.decision_reason set'], p_request_id, p_ip);
+  RETURN v_summary;
+END
+$fn$;
+
+ALTER FUNCTION public.revoke_winner(uuid, text, text, text, inet) OWNER TO contest_results;
+ALTER FUNCTION public.reinstate_winner(uuid, text, text, text, inet) OWNER TO contest_results;
+REVOKE ALL ON FUNCTION public.revoke_winner(uuid, text, text, text, inet) FROM PUBLIC, public_rw, admin_rw, worker_rw, internal_rw, migrator;
+REVOKE ALL ON FUNCTION public.reinstate_winner(uuid, text, text, text, inet) FROM PUBLIC, public_rw, admin_rw, worker_rw, internal_rw, migrator;
+GRANT EXECUTE ON FUNCTION public.revoke_winner(uuid, text, text, text, inet), public.reinstate_winner(uuid, text, text, text, inet) TO admin_rw;
+-- US-030 BLOCK END.
 
 ALTER FUNCTION public.create_leaderboard_snapshot(uuid) OWNER TO contest_results;
 ALTER FUNCTION public.confirm_program_winners(uuid, text, text, inet) OWNER TO contest_results;

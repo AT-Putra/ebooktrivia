@@ -66,13 +66,19 @@ describe("get_order_status", () => {
     const made = [];
     for (const person of people) made.push({ ...person, order: await newOrder("paid", { buyer_name: person.name, buyer_email: person.email }) });
     const dump = await asRole("public_rw", (tx) => tx<Record<string, string | null>[]>`
-      SELECT g.* FROM public.orders o CROSS JOIN LATERAL public.get_order_status(o.public_id) g`);
+      SELECT o.public_id AS public_id_of_row, g.* FROM public.orders o CROSS JOIN LATERAL public.get_order_status(o.public_id) g`);
+    // US-030: an anonymized order has no name ("***") and no phone (NULL); only those may show no masked phone.
+    const anonymized = new Set((await sql<{ public_id: string }[]>`SELECT public_id FROM orders WHERE anonymized_at IS NOT NULL`).map((r) => r.public_id));
     expect(dump.length).toBeGreaterThanOrEqual(people.length);
     const text = JSON.stringify(dump);
     for (const { name, email, order } of made) {
       for (const secret of [name, ...name.split(" "), email, email.split("@")[0] ?? "", order.phone, order.phone.slice(3)]) expect(text, secret).not.toContain(secret);
     }
     for (const row of dump) {
+      if (anonymized.has(row["public_id_of_row"] ?? "")) {
+        expect([row["masked_name"], row["masked_phone"]]).toEqual(["***", null]);
+        continue;
+      }
       expect(row["masked_name"], String(row["masked_name"])).toMatch(/^(\S\*\*\*)( \S\*\*\*)*$/);
       expect(row["masked_phone"], String(row["masked_phone"])).toMatch(/^\*\*\*\*\d{0,3}$/);
     }

@@ -142,6 +142,30 @@ describe("a verified message is stored and queued once, without its text (criter
     expect(d.lines.join("\n")).not.toContain(CODE);
   });
 
+  // US-030: an erasure keeps the sender's inbound row with only the SHA-256 of its message id, so the webhook dedupe holds: WAHA
+  // delivering the message again gets a 200 "duplicate", nothing is stored or queued again, and nothing loops on a 500.
+  it("acknowledges a redelivered message of an erased sender as a duplicate, storing and queueing nothing", async () => {
+    const d = deps();
+    const emit = emitter(d);
+    const session = `s${suffix()}`;
+    const payload = message(chat());
+    expect((await emit("message", session, payload)).status).toBe(200);
+    const [row] = await inboundOf(payload.id);
+    // What sql/privacy.sql erase_data_subject does to the row.
+    await root`
+      UPDATE waha_inbound SET message_id = 'erased:' || encode(sha256(convert_to(message_id, 'UTF8')), 'hex'), from_jid = '', body = NULL, raw = '{}',
+             processed_at = coalesce(processed_at, now())
+       WHERE id = ${row?.id ?? ""}`;
+    const rows = await count();
+    const redelivered = await emit("message", session, payload);
+    expect(redelivered.status).toBe(200);
+    expect(await count()).toBe(rows);
+    expect(await inboundOf(payload.id)).toHaveLength(0);
+    expect(await outboxOf(row?.id ?? "")).toHaveLength(1);
+    expect(d.lines.filter((l) => l.includes('"outcome":"duplicate"'))).toHaveLength(1);
+    expect(d.lines.join("\n")).not.toContain("webhook.waha.failed");
+  });
+
   it("drops what cannot be a buyer asking: no order code, a group, a broadcast, our own message, session status, a stale or undated event", async () => {
     const d = deps();
     const emit = emitter(d);

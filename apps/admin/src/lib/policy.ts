@@ -64,6 +64,8 @@ const RULES = {
   // The deadline-extension tool for outages (US-028, plan §10 item 16): changes contest timing.
   "contest.extend_deadlines": "owner",
   "prize_fulfillment.update": "owner",
+  // US-030: revoke a winner and re-award the prize to the next eligible rank, or reinstate a flagged one (a chargeback).
+  "winners.reaward": "owner",
   "rescore.override": "owner",
   "deletion_request.process": "owner",
   "conversion.refire": "owner",

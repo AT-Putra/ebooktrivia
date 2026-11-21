@@ -36,6 +36,7 @@ const STAFF_EXPECTED: Readonly<Record<Permission, boolean | "unlocked">> = {
   "winners.confirm": false,
   "contest.extend_deadlines": false,
   "prize_fulfillment.update": false,
+  "winners.reaward": false,
   "rescore.override": false,
   "deletion_request.process": false,
   "conversion.refire": false,

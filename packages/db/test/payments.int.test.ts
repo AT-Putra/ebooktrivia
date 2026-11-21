@@ -136,18 +136,21 @@ describe("a flagged or revoked winner halts fulfillment (ET082)", () => {
     ).id;
   };
 
+  // US-030: fulfilments are created by contest_results' functions and moved by prize_fulfillment's (admin_rw holds no write on
+  // them any more, fulfillments_machine_guard ET175); the halt guard (ET082) still fires first, for every writer.
   it("no new fulfillment, no status or proof change while flagged; notes stay editable; the Owner can lift it", async () => {
     const winner = await newWinner(1);
     await asContest((tx) => tx`UPDATE public.winners SET status = 'confirmed', confirmed_at = now() WHERE id = ${winner}`);
-    const fulfillment = first(await asRole("admin_rw", (tx) => tx<Id[]>`INSERT INTO public.fulfillments (winner_id) VALUES (${winner}) RETURNING id`)).id;
+    await asRole("contest_results", (tx) => tx`INSERT INTO public.fulfillments (winner_id) VALUES (${winner})`);
+    const fulfillment = first(await sql<Id[]>`SELECT id FROM fulfillments WHERE winner_id = ${winner}`).id;
     // The chargeback path: the worker flags the confirmed winner.
     await asRole("worker_rw", (tx) => tx`UPDATE public.winners SET status = 'flagged', flagged_at = now(), flag_reason = 'chargeback' WHERE id = ${winner}`);
-    expect(await sqlState(asRole("admin_rw", (tx) => tx`UPDATE public.fulfillments SET status = 'sent' WHERE id = ${fulfillment}`))).toBe("ET082");
+    expect(await sqlState(asRole("prize_fulfillment", (tx) => tx`UPDATE public.fulfillments SET status = 'sent' WHERE id = ${fulfillment}`))).toBe("ET082");
     expect(await sqlState(sql`UPDATE fulfillments SET status = 'contacted' WHERE id = ${fulfillment}`)).toBe("ET082");
-    await asRole("admin_rw", (tx) => tx`UPDATE public.fulfillments SET notes = 'on hold: chargeback' WHERE id = ${fulfillment}`);
+    await asRole("prize_fulfillment", (tx) => tx`UPDATE public.fulfillments SET notes = 'on hold: chargeback' WHERE id = ${fulfillment}`);
     // The Owner reviews and reinstates the winner: fulfillment goes on.
     await asContest((tx) => tx`UPDATE public.winners SET status = 'confirmed' WHERE id = ${winner}`);
-    await asRole("admin_rw", (tx) => tx`UPDATE public.fulfillments SET status = 'contacted' WHERE id = ${fulfillment}`);
+    await asRole("prize_fulfillment", (tx) => tx`UPDATE public.fulfillments SET status = 'contacted', contacted_at = now(), contacted_by_admin_user_id = 'owner' WHERE id = ${fulfillment}`);
   });
 
   it("refuses a fulfillment row for a flagged or revoked winner, and moving one to or from it", async () => {
@@ -155,11 +158,15 @@ describe("a flagged or revoked winner halts fulfillment (ET082)", () => {
     await sql`UPDATE winners SET status = 'flagged', flagged_at = now(), flag_reason = 'chargeback' WHERE id = ${flagged}`;
     const revoked = await newWinner(3);
     await asContest((tx) => tx`UPDATE public.winners SET status = 'revoked' WHERE id = ${revoked}`);
-    expect(await sqlState(asRole("admin_rw", (tx) => tx`INSERT INTO public.fulfillments (winner_id) VALUES (${flagged})`))).toBe("ET082");
-    expect(await sqlState(asRole("admin_rw", (tx) => tx`INSERT INTO public.fulfillments (winner_id) VALUES (${revoked})`))).toBe("ET082");
+    expect(await sqlState(asRole("contest_results", (tx) => tx`INSERT INTO public.fulfillments (winner_id) VALUES (${flagged})`))).toBe("ET082");
+    expect(await sqlState(asRole("contest_results", (tx) => tx`INSERT INTO public.fulfillments (winner_id) VALUES (${revoked})`))).toBe("ET082");
     const healthy = await newWinner(4);
-    await rolledBack("admin_rw", async (tx) => {
-      const f = first(await tx<Id[]>`INSERT INTO public.fulfillments (winner_id) VALUES (${healthy}) RETURNING id`);
+    await rolledBack("contest_results", async (tx) => {
+      await tx`UPDATE public.winners SET status = 'confirmed', confirmed_at = now() WHERE id = ${healthy}`;
+      await tx`INSERT INTO public.fulfillments (winner_id) VALUES (${healthy})`;
+      // No role may move a fulfilment to another winner (no grant has winner_id); even a superuser is halted onto a flagged one.
+      await tx.unsafe("RESET ROLE");
+      const f = first(await tx<Id[]>`SELECT id FROM public.fulfillments WHERE winner_id = ${healthy}`);
       expect(await sqlState(tx`UPDATE public.fulfillments SET winner_id = ${flagged} WHERE id = ${f.id}`)).toBe("ET082");
     });
   });

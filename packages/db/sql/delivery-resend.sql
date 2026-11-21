@@ -44,6 +44,10 @@ BEGIN
     RAISE EXCEPTION 'delivery not found' USING ERRCODE = 'ET010';
   END IF;
   PERFORM 1 FROM public.orders o WHERE o.id = v_order FOR SHARE;
+  -- US-030: nothing is sent for an order whose buyer asked for their data to be deleted (sql/privacy.sql): it has no contact left.
+  IF EXISTS (SELECT 1 FROM public.orders o WHERE o.id = v_order AND o.anonymized_at IS NOT NULL) THEN
+    RAISE EXCEPTION 'the buyer of this order had their data deleted: nothing is sent for it' USING ERRCODE = 'ET179';
+  END IF;
   SELECT d.status, d.lease_until INTO v_status, v_lease FROM public.deliveries d WHERE d.id = p_id FOR UPDATE;
   IF v_status NOT IN ('failed', 'unknown') THEN
     RAISE EXCEPTION 'only a failed or an unknown delivery can be resent' USING ERRCODE = 'ET133';

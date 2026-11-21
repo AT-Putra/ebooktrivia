@@ -64,6 +64,10 @@ export interface FlaggedPlayer {
 }
 
 export interface ResultWinner {
+  /** US-030: the winner row (the Owner's revoke and re-award, reinstatement). */
+  readonly winnerId: string;
+  /** US-030: the player asked for their data to be deleted (the confirmation is refused until the prize is re-awarded). */
+  readonly erased: boolean;
   readonly rank: number;
   readonly prizeName: string;
   readonly ref: string;
@@ -221,8 +225,9 @@ export async function getContestResults(sql: Sql, programId: string): Promise<Co
   if (program === undefined) return null;
   const [snapshot] = await sql<{ frozen_at: Date; created_at: Date; ranked: number }[]>`
     SELECT frozen_at, created_at, jsonb_array_length(entries)::int AS ranked FROM public.leaderboard_snapshots WHERE program_id = ${programId}`;
-  const winners = await sql<{ rank: number; prize: string; id: string; name: string; phone: string | null; status: string; eligible: boolean }[]>`
-    SELECT w.rank, t.name AS prize, pl.id, pl.name, pl.phone, w.status::text AS status, coalesce(pp.eligible, false) AS eligible
+  const winners = await sql<{ winner_id: string; rank: number; prize: string; id: string; name: string; phone: string | null; status: string; eligible: boolean; erased: boolean }[]>`
+    SELECT w.id AS winner_id, w.rank, t.name AS prize, pl.id, pl.name, pl.phone, w.status::text AS status, coalesce(pp.eligible, false) AS eligible,
+           pl.anonymized_at IS NOT NULL AS erased
       FROM public.winners w
       JOIN public.prize_tiers t ON t.id = w.prize_tier_id
       JOIN public.players pl ON pl.id = w.player_id
@@ -245,6 +250,8 @@ export async function getContestResults(sql: Sql, programId: string): Promise<Co
     winnersConfirmedAt: program.winners_confirmed_at,
     snapshot: snapshot === undefined ? null : { frozenAt: snapshot.frozen_at, createdAt: snapshot.created_at, ranked: snapshot.ranked },
     winners: winners.map((w) => ({
+      winnerId: w.winner_id,
+      erased: w.erased,
       rank: w.rank,
       prizeName: w.prize,
       ref: ref(w.id),
@@ -306,7 +313,7 @@ export function parseExtension(form: FormData, maxMinutes: number, now: Date): E
   };
 }
 
-function actor(): { readonly userId: string; readonly requestId: string | null; readonly ip: string | null } {
+export function actor(): { readonly userId: string; readonly requestId: string | null; readonly ip: string | null } {
   const scope = currentMutationScope();
   if (scope === undefined) throw new NoMutationScopeError();
   if (scope.actor.kind !== "admin") throw new Error("contest results are an admin action");
@@ -314,7 +321,7 @@ function actor(): { readonly userId: string; readonly requestId: string | null; 
 }
 
 /** One bounded transaction; the database's refusals become this call's form messages. */
-async function bounded<T>(sql: Sql, messages: Readonly<Record<string, string>>, run: (tx: Tx) => Promise<T>): Promise<T> {
+export async function bounded<T>(sql: Sql, messages: Readonly<Record<string, string>>, run: (tx: Tx) => Promise<T>): Promise<T> {
   try {
     return await sql.begin(async (tx) => {
       await tx.unsafe("SET LOCAL statement_timeout = '15s'");

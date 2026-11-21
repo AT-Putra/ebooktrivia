@@ -41,6 +41,15 @@
 --   hash), ET121 the player may not log in (unknown, anonymized, eligible for no program), ET122 a
 --   player_auth user that holds the player's phone is linked to another player.
 --   play.sql (US-027, the question flow): ET140-ET148 (listed there); enqueue_magic_link_resend (below) ET146.
+--   US-030 (prize fulfilment, UU PDP deletion = anonymization): ET170 not READ COMMITTED, ET171 arguments out of scope
+--   (ids, actor not an active Owner, reason, notes, proof upload, typed confirmation), ET172 a fulfilment move that is not
+--   exactly one step, out of done, from a stale status, or for a winner that is not a confirmed winner of a finalized
+--   program (fulfillment.sql), ET173 a revoke or reinstatement the winner's or program's state does not allow, or of a
+--   delivered prize (contest.sql), ET174 a reinstated winner is no longer eligible or was erased (contest.sql),
+--   ET177 an erasure refused: the subject holds a prize not delivered yet, ET178 an erasure refused: an order of the subject
+--   is pending or in review, or a send to the subject is in flight (privacy.sql); triggers.sql ET175 a fulfilment written
+--   outside the fulfilment functions or off its machine, ET176 a deletion request changed once decided (or completed
+--   outside the erasure; also privacy.sql: a rejected request executed), ET179 an anonymized row given personal data again.
 
 SELECT pg_catalog.set_config('search_path', 'pg_catalog, pg_temp', false);
 
@@ -122,6 +131,11 @@ BEGIN
     RAISE EXCEPTION 'otp has no sealed code' USING ERRCODE = 'ET006';
   END IF;
 
+  -- US-030: the player of the phone FOR SHARE first (after the phone's advisory lock; the erasure takes no such lock, so the
+  -- order cannot cycle). An erasure of this player (sql/privacy.sql locks it FOR UPDATE) either committed before, and the phone is
+  -- gone (not eligible), or waits for this transaction and then finds its OTP job live and refuses (ET178), so no code is sent
+  -- to, and no contact key recorded for, a subject being erased.
+  PERFORM 1 FROM public.players p WHERE p.phone = v_phone FOR SHARE;
   IF NOT EXISTS (
     SELECT 1
       FROM public.players p
@@ -1072,6 +1086,53 @@ AS $fn$
 $fn$;
 REVOKE ALL ON FUNCTION public.waha_reply_expected(text, text) FROM PUBLIC;
 -- --- end US-025 ------------------------------------------------------------------------------------------
+
+-- --- US-030 BLOCK BEGIN: the retention of strangers' WhatsApp contacts (US-025 follow-up) --------------------------------------
+-- wa_contacts caches what WAHA said about a phone (check-exists, the lid -> phone link). A buyer's or a player's row lives as long
+-- as their data does (the erasure of a deletion request deletes it, sql/privacy.sql). A STRANGER's row (a phone that is no order's
+-- buyer phone and no player's phone: e.g. an @lid sender resolved while answering a message that matched nothing) is personal data
+-- with no purpose, so it is deleted once it has not been confirmed for 7 days (checked_at, lid_checked_at). EXECUTE worker_rw: the
+-- minute sweeper (apps/worker sweepers.ts sweepExpiredOtps) calls it; at most 500 rows a call. Returns how many it deleted.
+CREATE OR REPLACE FUNCTION public.prune_stranger_wa_contacts()
+  RETURNS integer
+  LANGUAGE plpgsql
+  SECURITY DEFINER
+  SET search_path = pg_catalog, pg_temp
+AS $fn$
+DECLARE
+  v_count integer;
+BEGIN
+  DELETE FROM public.wa_contacts w
+   WHERE w.phone IN (
+     SELECT c.phone FROM public.wa_contacts c
+      WHERE GREATEST(c.checked_at, coalesce(c.lid_checked_at, c.checked_at)) < clock_timestamp() - interval '7 days'
+        AND NOT EXISTS (SELECT 1 FROM public.orders o WHERE o.buyer_phone = c.phone)
+        AND NOT EXISTS (SELECT 1 FROM public.players p WHERE p.phone = c.phone)
+      ORDER BY c.checked_at
+      LIMIT 500);
+  GET DIAGNOSTICS v_count = ROW_COUNT;
+  RETURN v_count;
+END
+$fn$;
+REVOKE ALL ON FUNCTION public.prune_stranger_wa_contacts() FROM PUBLIC;
+
+-- What stays of a Midtrans payment's or notification's raw JSON once its order is anonymized (sql/privacy.sql, and the guard
+-- payment_raw_erased_guard in triggers.sql for what arrives later): the transaction's own keys (ids, statuses, amounts, payment
+-- type, times), plus "erased": true. customer_details, VA numbers, masked cards and everything else go.
+CREATE OR REPLACE FUNCTION public.payment_raw_kept(p_raw jsonb)
+  RETURNS jsonb
+  LANGUAGE sql
+  IMMUTABLE
+  PARALLEL SAFE
+  SET search_path = pg_catalog, pg_temp
+AS $fn$
+  SELECT coalesce((SELECT jsonb_object_agg(k.key, k.value) FROM jsonb_each(CASE WHEN jsonb_typeof(p_raw) = 'object' THEN p_raw ELSE '{}'::jsonb END) k
+                    WHERE k.key = ANY (ARRAY['transaction_id', 'order_id', 'transaction_status', 'fraud_status', 'status_code', 'status_message',
+                                             'gross_amount', 'currency', 'payment_type', 'transaction_time', 'settlement_time', 'expiry_time'])),
+                  '{}'::jsonb) || '{"erased": true}'::jsonb
+$fn$;
+REVOKE ALL ON FUNCTION public.payment_raw_kept(jsonb) FROM PUBLIC;
+-- --- US-030 BLOCK END ------------------------------------------------------------------------------------
 
 REVOKE ALL ON FUNCTION public.setting_positive_int(text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.score_answer(integer, integer, uuid, uuid, timestamptz, timestamptz, timestamptz, integer) FROM PUBLIC;

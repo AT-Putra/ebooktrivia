@@ -287,6 +287,16 @@ export async function sweepExpiredOtps(sql: postgres.Sql): Promise<{ readonly de
   return { deleted: deleted.count, wiped: wiped.count, pruned: prune?.ledger ?? 0, sessions: prune?.sessions ?? 0 };
 }
 
+/**
+ * US-030: the retention of strangers' WhatsApp contacts. A wa_contacts row whose phone is no order's buyer phone and no player's
+ * phone, unconfirmed for 7 days, is deleted (public.prune_stranger_wa_contacts, at most 500 a call; worker_rw cannot delete
+ * wa_contacts itself). A buyer's row lives as long as the buyer's data (the erasure of a deletion request removes it).
+ */
+export async function pruneStrangerContacts(sql: postgres.Sql): Promise<number> {
+  const [row] = await sql<{ n: number }[]>`SELECT public.prune_stranger_wa_contacts() AS n`;
+  return row?.n ?? 0;
+}
+
 /** What public.create_leaderboard_snapshot returns (counts only, no player data). */
 interface SnapshotSummary {
   readonly created: boolean;
@@ -505,6 +515,7 @@ export async function runSweeps(deps: SweepDeps): Promise<void> {
   sweepers.push(["login_throttle", () => sweepLoginThrottle(deps.sql)]);
   sweepers.push(["otp_expiry", () => sweepExpiredOtps(deps.sql)]);
   sweepers.push(["payment_methods", () => alertNoPaymentMethods(deps.sql)]);
+  sweepers.push(["wa_contacts_retention", () => pruneStrangerContacts(deps.sql)]);
   for (const [name, run] of Object.entries(deps.extraSweeps ?? {})) sweepers.push([name, run]);
   for (const [sweeper, run] of sweepers) {
     try {

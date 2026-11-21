@@ -33,8 +33,27 @@ const PLAY_FUNCTIONS = [
   "public.play_standing(p_player_id uuid, p_program_id uuid)",
   "public.play_start_set(p_player_id uuid, p_set_id uuid)",
 ];
+/** US-030: the prize fulfilment functions (sql/fulfillment.sql), owned by prize_fulfillment. */
+const FULFILLMENT_FUNCTIONS = [
+  "public.fulfillment_set_notes(p_fulfillment_id uuid, p_notes text, p_actor_admin_user_id text, p_request_id text, p_ip inet)",
+  "public.fulfillment_set_proof(p_fulfillment_id uuid, p_upload_id uuid, p_actor_admin_user_id text, p_request_id text, p_ip inet)",
+  "public.fulfillment_step(p_fulfillment_id uuid, p_from text, p_to text, p_reason text, p_actor_admin_user_id text, p_request_id text, p_ip inet)",
+];
+/** US-030: the Owner's revoke and re-award, and reinstatement (sql/contest.sql), owned by contest_results. */
+const REAWARD_FUNCTIONS = [
+  "public.reinstate_winner(p_winner_id uuid, p_reason text, p_actor_admin_user_id text, p_request_id text, p_ip inet)",
+  "public.revoke_winner(p_winner_id uuid, p_reason text, p_actor_admin_user_id text, p_request_id text, p_ip inet)",
+];
+/** US-030: the erasure of a data subject (sql/privacy.sql), owned by pii_eraser. */
+const ERASE_FUNCTION = "public.erase_data_subject(p_request_id uuid, p_confirmation text, p_actor_admin_user_id text, p_request text, p_ip inet)";
 const ownerOf = (sig: string): string =>
-  sig === OVERRIDE_FUNCTION
+  FULFILLMENT_FUNCTIONS.includes(sig)
+    ? "prize_fulfillment"
+    : REAWARD_FUNCTIONS.includes(sig)
+      ? "contest_results"
+      : sig === ERASE_FUNCTION
+        ? "pii_eraser"
+        : sig === OVERRIDE_FUNCTION
     ? "trivia_override"
     : CONTEST_FUNCTIONS.includes(sig)
       ? "contest_results"
@@ -177,7 +196,7 @@ describe("group roles (roles.sql)", () => {
     expect(await groupMemberships()).toEqual([]);
   });
 
-  it.each(["trivia_override", "contest_results", "conversion_refire", "delivery_resend", "trivia_play"])("creates %s NOLOGIN, with no members and a member of nothing (US-018, US-028, US-024, US-025, US-027)", async (name) => {
+  it.each(["trivia_override", "contest_results", "conversion_refire", "delivery_resend", "trivia_play", "prize_fulfillment", "pii_eraser"])("creates %s NOLOGIN, with no members and a member of nothing (US-018, US-028, US-024, US-025, US-027, US-030)", async (name) => {
     const [role] = await sql`
       SELECT rolcanlogin, rolsuper, rolcreatedb, rolcreaterole, rolreplication, rolbypassrls,
              (SELECT count(*)::int FROM pg_auth_members am WHERE am.roleid = r.oid OR am.member = r.oid) AS memberships
@@ -185,7 +204,7 @@ describe("group roles (roles.sql)", () => {
     expect(role).toEqual({ rolcanlogin: false, rolsuper: false, rolcreatedb: false, rolcreaterole: false, rolreplication: false, rolbypassrls: false, memberships: 0 });
   });
 
-  it.each(["trivia_override", "contest_results", "conversion_refire", "delivery_resend", "trivia_play"])("removes any membership in %s on a re-run (a member could SET ROLE to it)", async (name) => {
+  it.each(["trivia_override", "contest_results", "conversion_refire", "delivery_resend", "trivia_play", "prize_fulfillment", "pii_eraser"])("removes any membership in %s on a re-run (a member could SET ROLE to it)", async (name) => {
     await sql.unsafe(`GRANT ${name} TO admin_rw`);
     try {
       await runMigrations(inject("dbUrl"));
@@ -220,9 +239,13 @@ describe("group roles (roles.sql)", () => {
         ...["play_answer", "play_attempts", "play_current", "play_leaderboard", "play_note_unlocked", "play_program_ms", "play_ranking", "play_reveal", "play_settle", "play_settle_answer", "play_settle_pending", "play_standing", "play_start_set", "play_unlocked_count"].map(
           (relname) => ({ nspname: "public", relname, owner: "trivia_play" }),
         ),
+        ...["fulfillment_step", "fulfillment_set_notes", "fulfillment_set_proof"].map((relname) => ({ nspname: "public", relname, owner: "prize_fulfillment" })),
+        { nspname: "public", relname: "revoke_winner", owner: "contest_results" },
+        { nspname: "public", relname: "reinstate_winner", owner: "contest_results" },
+        { nspname: "public", relname: "erase_data_subject", owner: "pii_eraser" },
       ]),
     );
-    expect(rows).toHaveLength(21);
+    expect(rows).toHaveLength(27);
   });
 });
 
@@ -253,7 +276,9 @@ describe("SECURITY DEFINER functions (functions.sql, triggers.sql)", () => {
         publicExecute: false,
       });
     }
-    expect((await functions()).filter((fn) => fn.definer).map((fn) => fn.sig)).toEqual(expect.arrayContaining([OVERRIDE_FUNCTION, ...CONTEST_FUNCTIONS, REFIRE_FUNCTION, ...PLAY_FUNCTIONS]));
+    expect((await functions()).filter((fn) => fn.definer).map((fn) => fn.sig)).toEqual(
+      expect.arrayContaining([OVERRIDE_FUNCTION, ...CONTEST_FUNCTIONS, REFIRE_FUNCTION, ...PLAY_FUNCTIONS, ...FULFILLMENT_FUNCTIONS, ...REAWARD_FUNCTIONS, ERASE_FUNCTION]),
+    );
   });
 
   it("pins search_path = pg_catalog, pg_temp on every other function in public too", async () => {
@@ -304,6 +329,13 @@ describe("SECURITY DEFINER functions (functions.sql, triggers.sql)", () => {
         "public.play_answer(uuid, uuid, uuid, inet, bytea)",
         "public.play_leaderboard(uuid, integer)",
         "public.play_standing(uuid, uuid)",
+        "public.fulfillment_step(uuid, text, text, text, text, text, inet)",
+        "public.fulfillment_set_notes(uuid, text, text, text, inet)",
+        "public.fulfillment_set_proof(uuid, uuid, text, text, inet)",
+        "public.revoke_winner(uuid, text, text, text, inet)",
+        "public.reinstate_winner(uuid, text, text, text, inet)",
+        "public.erase_data_subject(uuid, text, text, text, inet)",
+        "public.prune_stranger_wa_contacts()",
       ]}::text[]) fn
       CROSS JOIN unnest(${[...APP_ROLES]}::text[]) r
       WHERE has_function_privilege(r, fn, 'EXECUTE') ORDER BY 1, 2`;
@@ -317,7 +349,11 @@ describe("SECURITY DEFINER functions (functions.sql, triggers.sql)", () => {
       "public_rw public.enqueue_notification(uuid)",
       "public_rw public.enqueue_otp(uuid)",
       "public_rw public.enqueue_waha_inbound(uuid)",
+      "admin_rw public.erase_data_subject(uuid, text, text, text, inet)",
       "admin_rw public.extend_open_question_deadlines(uuid, timestamptz, timestamptz, text, text, text, inet)",
+      "admin_rw public.fulfillment_set_notes(uuid, text, text, text, inet)",
+      "admin_rw public.fulfillment_set_proof(uuid, uuid, text, text, inet)",
+      "admin_rw public.fulfillment_step(uuid, text, text, text, text, text, inet)",
       "public_rw public.get_order_status(text)",
       "public_rw public.get_payment_secret()",
       "worker_rw public.get_payment_secret()",
@@ -339,7 +375,10 @@ describe("SECURITY DEFINER functions (functions.sql, triggers.sql)", () => {
       "public_rw public.play_start_set(uuid, uuid)",
       "admin_rw public.program_winners_banner(uuid)",
       "public_rw public.program_winners_banner(uuid)",
+      "worker_rw public.prune_stranger_wa_contacts()",
       "public_rw public.record_waha_ack(text, text)",
+      "admin_rw public.reinstate_winner(uuid, text, text, text, inet)",
+      "admin_rw public.revoke_winner(uuid, text, text, text, inet)",
       "worker_rw public.sweep_login_throttle(integer)",
     ]);
   });
