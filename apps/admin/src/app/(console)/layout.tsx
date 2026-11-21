@@ -9,6 +9,13 @@ import { can, type Permission, type QuestionPermission } from "../../lib/policy.
 
 const NAV: readonly (NavItem & { readonly permission: Exclude<Permission, QuestionPermission> })[] = [
   { href: "/", label: "Overview", icon: "overview", permission: "dashboard.view" },
+  // Reports (US-029): Staff view them (reports.view); the profit view and the ad-spend entry are Owner-only.
+  { href: "/reports/sales", label: "Sales", icon: "sales", permission: "reports.view" },
+  { href: "/reports/delivery", label: "Delivery", icon: "delivery", permission: "reports.view" },
+  { href: "/reports/postbacks", label: "Postbacks", icon: "postbacks", permission: "reports.view" },
+  { href: "/reports/contest", label: "Contest report", icon: "contest", permission: "reports.view" },
+  { href: "/reports/roi", label: "Profit and ROI", icon: "roi", permission: "roi.view" },
+  { href: "/reports/ad-spend", label: "Ad spend", icon: "adspend", permission: "ad_spend.edit" },
   { href: "/settings/programs", label: "Programs", icon: "programs", permission: "program.edit" },
   { href: "/settings/products", label: "Products", icon: "products", permission: "product.content.edit" },
   { href: "/settings/landing-pages", label: "Landing pages", icon: "landing", permission: "landing_page.content.edit" },

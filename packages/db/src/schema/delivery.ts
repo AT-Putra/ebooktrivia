@@ -148,6 +148,8 @@ export const deliveries = pgTable(
     ),
     nonNegative("deliveries_attempts_check", t.attempts),
     index("deliveries_due_idx").on(t.status, t.notBefore),
+    // US-029: the delivery report lists and counts a date range, newest first (keyset by (created_at, id)).
+    index("deliveries_created_at_id_idx").on(t.createdAt, t.id),
   ],
 );
 

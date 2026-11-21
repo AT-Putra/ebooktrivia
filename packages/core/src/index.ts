@@ -20,6 +20,7 @@ export * from "./otp.ts";
 export * from "./payment.ts";
 export * from "./phone.ts";
 export * from "./ranking.ts";
+export * from "./reports.ts";
 export * from "./rescore.ts";
 export * from "./sdk-contract.ts";
 export * from "./secret-key.ts";

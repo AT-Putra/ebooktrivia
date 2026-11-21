@@ -82,6 +82,10 @@ export const conversionEvents = pgTable(
     check("conversion_events_reported_payout_idr_check", sql`${t.reportedPayoutIdr} IS NULL OR ${t.reportedPayoutIdr} >= 0`),
     nonNegative("conversion_events_attempts_check", t.attempts),
     index("conversion_events_due_idx").on(t.status, t.nextAttemptAt),
+    // US-029: the postback report lists and counts a date range, newest first (keyset by (created_at, id)).
+    index("conversion_events_created_at_id_idx").on(t.createdAt, t.id),
+    // US-029: as orders_updated_at_idx, for the days a conversion touched.
+    index("conversion_events_updated_at_idx").on(t.updatedAt),
   ],
 );
 

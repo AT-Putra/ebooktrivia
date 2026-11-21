@@ -172,6 +172,13 @@ describe("loadWorkerConfig", () => {
       expect(configError({ ...BASE, WORKER_WA_DELAY_MS: "-1" })).toMatch(/WORKER_WA_DELAY_MS/);
     });
 
+    it("US-029: the report rollup interval (default 5 min, bounded)", () => {
+      expect(loadWorkerConfig(BASE)).toMatchObject({ rollupIntervalMs: 300_000 });
+      expect(loadWorkerConfig({ ...BASE, WORKER_ROLLUP_INTERVAL_MS: "1000" })).toMatchObject({ rollupIntervalMs: 1000 });
+      expect(configError({ ...BASE, WORKER_ROLLUP_INTERVAL_MS: "999" })).toMatch(/WORKER_ROLLUP_INTERVAL_MS/);
+      expect(configError({ ...BASE, WORKER_ROLLUP_INTERVAL_MS: "3600001" })).toMatch(/WORKER_ROLLUP_INTERVAL_MS/);
+    });
+
     it("lets an http push URL through only with the dev http flag, outside production", () => {
       const url = "http://127.0.0.1:3001/api/push/x";
       expect(configError({ ...BASE, UPTIME_KUMA_PUSH_URL: url })).toMatch(/https/);

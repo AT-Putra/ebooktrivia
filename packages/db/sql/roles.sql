@@ -104,6 +104,11 @@ BEGIN
   EXECUTE pg_catalog.format('GRANT CONNECT, CREATE, TEMPORARY ON DATABASE %I TO migrator',
     pg_catalog.current_database());
   EXECUTE pg_catalog.format('ALTER DATABASE %I SET search_path = public', pg_catalog.current_database());
+  -- US-029: a session of an app role never stays idle inside a transaction for more than 10 minutes (a row lock or the
+  -- report rollup's advisory lock held by a stuck transaction is released). A database default, because a setting on a
+  -- NOLOGIN group role is not inherited by its member logins; a login's own setting (infra db-roles.sh: ebt_admin 60 s,
+  -- the apps' connection options) overrides it. A default, not a boundary: a session may change its own setting.
+  EXECUTE pg_catalog.format('ALTER DATABASE %I SET idle_in_transaction_session_timeout = %L', pg_catalog.current_database(), '10min');
 END
 $db$;
 

@@ -8,4 +8,5 @@ export * from "./funnel.ts";
 export * from "./governance.ts";
 export * from "./play.ts";
 export * from "./player.ts";
+export * from "./reports.ts";
 export * from "./tracking.ts";

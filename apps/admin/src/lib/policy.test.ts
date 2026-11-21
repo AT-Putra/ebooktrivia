@@ -41,6 +41,7 @@ const STAFF_EXPECTED: Readonly<Record<Permission, boolean | "unlocked">> = {
   "delivery.mark_unknown_sent": false,
   "order.review.resolve": false,
   "ad_spend.edit": false,
+  "roi.view": false,
   "app_settings.edit": false,
   "admin_user.manage": false,
   "audit.view": false,
@@ -105,6 +106,13 @@ describe("plan denials for Staff (AC-A1, plan M5a.3, §10 item 18)", () => {
     expect(can("staff", "question.import", { setLocked: true })).toBe(false);
     expect(can("staff", "question.content.edit", { setLocked: false })).toBe(true);
     expect(can("staff", "question.import", { setLocked: false })).toBe(true);
+  });
+
+  it("cannot see the profit / ROI view (adnet payouts, gateway fees, ad spend), nor re-fire a conversion or edit ad spend (US-029)", () => {
+    for (const permission of ["roi.view", "conversion.refire", "ad_spend.edit", "sales.export", "winners.export"] as const) {
+      expect(can("staff", permission), permission).toBe(false);
+      expect(can("owner", permission), permission).toBe(true);
+    }
   });
 
   it("may resend deliveries and view reports (AC-A1)", () => {

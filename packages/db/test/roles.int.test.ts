@@ -277,6 +277,9 @@ describe("SECURITY DEFINER functions (functions.sql, triggers.sql)", () => {
       "worker_rw public.get_payment_secret()",
       "public_rw public.lock_program_contest_shared(uuid)",
       "admin_rw public.lock_program_contest(uuid)",
+      // US-029: the console masks buyers and winners in SQL.
+      "admin_rw public.mask_name(text)",
+      "admin_rw public.mask_phone(text)",
       "admin_rw public.override_question_scoring(uuid, uuid, uuid, integer, integer, uuid, text, text, text, inet)",
       "admin_rw public.program_winners_banner(uuid)",
       "public_rw public.program_winners_banner(uuid)",
@@ -553,7 +556,7 @@ describe("hardening", () => {
       expect(await privilegeMatrix()).toEqual(before);
       expect(await groupMemberships()).toEqual([]);
       expect(await groupParameterPrivileges()).toEqual([]);
-      expect(await roleSettings()).toEqual(["(database) search_path=public"]);
+      expect(await roleSettings()).toEqual(["(database) search_path=public;idle_in_transaction_session_timeout=10min"]);
     } finally {
       await sql`REVOKE admin_rw FROM public_rw`;
       await sql`REVOKE pg_read_all_data FROM internal_rw`;

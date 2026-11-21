@@ -393,3 +393,22 @@ GRANT EXECUTE ON FUNCTION public.prune_otp_enqueues(), public.prune_player_sessi
 REVOKE INSERT, UPDATE, DELETE ON public.magic_links FROM admin_rw;
 REVOKE INSERT, UPDATE, DELETE ON public.otp_enqueues FROM admin_rw;
 -- US-026 BLOCK END.
+
+-- ---------------------------------------------------------------------------------------------
+-- US-029 (M10a reports and ROI) BLOCK BEGIN: the report rollups and the metric functions (sql/reports.sql).
+-- The rollups are derived data: ONLY worker_rw writes them (public.refresh_report_rollups, SECURITY INVOKER, so
+-- these grants are the only reason it can), admin_rw reads them for the reports and cannot forge or change a
+-- figure, and public_rw / internal_rw reach none. The refresh reads orders, payments, conversion_events, visits and
+-- app_settings, which worker_rw already reads. The console reads ad_spend and the raw tables for the reports that
+-- are not rollups (admin_rw holds every table by design).
+-- The two daily tables are rebuilt by delete and insert of whole days, never updated in place: no UPDATE. The one-row state is upserted: no DELETE.
+GRANT SELECT, INSERT, DELETE ON public.report_orders_daily, public.report_visits_daily TO worker_rw;
+GRANT SELECT, INSERT, UPDATE ON public.report_rollup_state TO worker_rw;
+REVOKE INSERT, UPDATE, DELETE ON public.report_orders_daily, public.report_visits_daily, public.report_rollup_state FROM admin_rw;
+GRANT EXECUTE ON FUNCTION public.refresh_report_rollups(timestamptz, integer) TO worker_rw;
+GRANT EXECUTE ON FUNCTION public.wib_day(timestamptz), public.order_source_adnet(uuid, text), public.gateway_fee_idr(bigint, bigint, integer),
+  public.midtrans_method_codes(text) TO worker_rw, admin_rw;
+-- The console labels sources through order_source_label (US-024) and masks buyers and winners in SQL, with the one
+-- masking rule of the product (functions.sql), wherever Staff can see them.
+GRANT EXECUTE ON FUNCTION public.report_source_label(uuid), public.mask_name(text), public.mask_phone(text) TO admin_rw;
+-- US-029 BLOCK END.

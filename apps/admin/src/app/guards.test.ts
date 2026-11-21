@@ -127,6 +127,20 @@ const GUARDS: Readonly<Record<string, string>> = {
   "(console)/settings/legal/actions.ts#publishLegalPageAction": "permission:legal_page.edit",
   "(console)/settings/limits/page.tsx": "permission:app_settings.edit",
   "(console)/settings/limits/actions.ts#saveLimitsAction": "permission:app_settings.edit",
+  // Reports (US-029): Staff view the dashboard, sales, delivery, postback and contest reports (reports.view, no export); the profit
+  // view, ad spend, the re-fire and both CSV exports are Owner-only, so a Staff session is refused by the route itself.
+  "(console)/reports/sales/page.tsx": "permission:reports.view",
+  "(console)/reports/sales/export/route.ts#POST": "permission:sales.export",
+  "(console)/reports/delivery/page.tsx": "permission:reports.view",
+  "(console)/reports/postbacks/page.tsx": "permission:reports.view",
+  "(console)/reports/postbacks/actions.ts#refireConversionAction": "permission:conversion.refire",
+  "(console)/reports/contest/page.tsx": "permission:reports.view",
+  "(console)/reports/contest/export/route.ts#POST": "permission:winners.export",
+  "(console)/reports/roi/page.tsx": "permission:roi.view",
+  "(console)/reports/ad-spend/page.tsx": "permission:ad_spend.edit",
+  "(console)/reports/ad-spend/actions.ts#createAdSpendAction": "permission:ad_spend.edit",
+  "(console)/reports/ad-spend/actions.ts#updateAdSpendAction": "permission:ad_spend.edit",
+  "(console)/reports/ad-spend/actions.ts#deleteAdSpendAction": "permission:ad_spend.edit",
 };
 
 /** Pages / layouts reachable without a console session, with the reason. */
@@ -219,6 +233,8 @@ describe("server-action directive", () => {
       "(auth)/enroll/actions.ts",
       "(auth)/login/actions.ts",
       "(console)/account/actions.ts",
+      "(console)/reports/ad-spend/actions.ts",
+      "(console)/reports/postbacks/actions.ts",
       "(console)/settings/adnets/actions.ts",
       "(console)/settings/landing-pages/actions.ts",
       "(console)/settings/legal/actions.ts",

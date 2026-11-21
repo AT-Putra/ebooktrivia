@@ -10,7 +10,8 @@
 //   4. drizzle migrations from ./migrations (journal in drizzle.__drizzle_migrations), with
 //      search_path = public: the generated DDL names public tables unqualified, and "$user"
 //      must never be on the path;
-//   5. sql/functions.sql, sql/triggers.sql, sql/grants.sql, sql/seed.sql;
+//   5. sql/functions.sql, sql/triggers.sql, sql/reports.sql (US-029: the report metrics and the rollup), sql/grants.sql,
+//      sql/seed.sql;
 //   6. RESET ROLE, then sql/override.sql as the connecting role: the Owner's scoring override
 //      function, owned by the NOLOGIN role trivia_override (roles.sql), which only a superuser can
 //      give it without making migrator a member of that role; then sql/contest.sql the same way
@@ -31,7 +32,7 @@ import { PG_CONNECTION_OPTIONS } from "./connection.ts";
 const packageRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const migrationsFolder = join(packageRoot, "migrations");
 const sqlDir = join(packageRoot, "sql");
-const POST_MIGRATION_SQL = ["functions.sql", "triggers.sql", "grants.sql", "seed.sql"] as const;
+const POST_MIGRATION_SQL = ["functions.sql", "triggers.sql", "reports.sql", "grants.sql", "seed.sql"] as const;
 
 export async function runMigrations(databaseUrl: string): Promise<void> {
   const sql = postgres(databaseUrl, { ...PG_CONNECTION_OPTIONS, max: 1, onnotice: () => undefined });

@@ -66,6 +66,10 @@ const RULES = {
   "delivery.mark_unknown_sent": "owner",
   "order.review.resolve": "owner",
   "ad_spend.edit": "owner",
+  // The profit / ROI view (US-029, AC-A8): it shows adnet payouts (CPA), gateway fees and ad spend, which are Owner-only
+  // settings even to look at (adnet.edit, midtrans.edit, ad_spend.edit), so the view is Owner-only too. The other
+  // reports (dashboard, sales, delivery, postbacks, trivia) are `reports.view` / `dashboard.view`: Staff.
+  "roi.view": "owner",
   "app_settings.edit": "owner",
   "admin_user.manage": "owner",
   "audit.view": "owner",

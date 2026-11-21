@@ -152,7 +152,12 @@ export const visits = pgTable(
     ip: inet("ip"),
     uaHash: bytea("ua_hash"),
   },
-  (t) => [index("visits_landing_page_occurred_idx").on(t.landingPageId, t.occurredAt)],
+  (t) => [
+    index("visits_landing_page_occurred_idx").on(t.landingPageId, t.occurredAt),
+    // US-029: the report rollup reads the last two days of visits whatever the landing page; BRIN is a few KB and costs
+    // an insert almost nothing, since visits are appended in time order.
+    index("visits_occurred_at_brin_idx").using("brin", t.occurredAt),
+  ],
 );
 
 export const orderStatus = pgEnum("order_status", [
@@ -226,6 +231,10 @@ export const orders = pgTable(
     // Checkout dedupe: the open order of the same buyer (phone + buyer_key) on the LP within the window (AC-T8, D1).
     index("orders_dedupe_idx").on(t.landingPageId, t.buyerPhone, t.buyerKey, t.createdAt),
     index("orders_status_created_idx").on(t.status, t.createdAt),
+    // US-029: the sales export pages through a date range by (created_at, id) (keyset), and the postback reconciliation reads the range.
+    index("orders_created_at_id_idx").on(t.createdAt, t.id),
+    // US-029: the rollup finds the days an old order was touched on (updated_at since the last refresh).
+    index("orders_updated_at_idx").on(t.updatedAt),
     index("orders_program_status_idx").on(t.programId, t.status),
     index("orders_player_idx").on(t.playerId),
   ],
@@ -316,6 +325,8 @@ export const payments = pgTable(
     check("payments_fee_idr_check", sql`${t.feeIdr} IS NULL OR ${t.feeIdr} >= 0`),
     check("payments_currency_check", sql`${t.currency} = 'IDR'`),
     index("payments_order_idx").on(t.orderId),
+    // US-029: as orders_updated_at_idx, for the days a payment touched.
+    index("payments_updated_at_idx").on(t.updatedAt),
   ],
 );
 

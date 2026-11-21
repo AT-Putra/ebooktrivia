@@ -28,7 +28,8 @@
 //                    consumer and the nightly reconciliation loop. runWorker wires it when worker.env
 //                    holds SECRETS_PAYMENT_PRIVATE_KEY (midtrans-access.ts); without it neither runs.
 // The grace-end sweeper needs no port: its work is the SECURITY DEFINER SQL function
-// public.create_leaderboard_snapshot (US-028, sweepers.ts), so it always runs.
+// public.create_leaderboard_snapshot (US-028, sweepers.ts), so it always runs. So does the report rollup (US-029,
+// rollups.ts): every rollupIntervalMs it calls public.refresh_report_rollups, which is safe to call from every worker.
 // The production entry (main.ts) passes no ports: runWorker wires the ones worker.env enables
 // (template test-sends, OTPs, payments); test/support/worker-harness.ts runs this same composition with
 // test ports for the chaos tests.
@@ -59,6 +60,7 @@ import { createMoConsumer, createOrderPaidConsumer, MO_TOPIC, nudgeConversions, 
 import { createOtpSendConsumer, OTP_TOPIC } from "./otp-send.ts";
 import { otpFromEnv, type OtpPort } from "./otp-senders.ts";
 import { reconcileIfDue } from "./reconciliation.ts";
+import { refreshReportRollups } from "./rollups.ts";
 
 export const RELAY_BATCH = 200;
 export const DELIVERY_QUEUE = "delivery.send";
@@ -220,6 +222,10 @@ export async function startWorker(config: WorkerConfig, ports: WorkerPorts, log:
         ...(deliveryQueue === undefined ? {} : { deliveryQueue }),
         ...(sinkDedupesByTxid === undefined ? {} : { sinkDedupesByTxid }),
       });
+      return false;
+    }),
+    startLoop({ name: "report_rollups", intervalMs: config.rollupIntervalMs, log }, async () => {
+      await refreshReportRollups(sql, log);
       return false;
     }),
     startLoop({ name: "heartbeat", intervalMs: config.heartbeatIntervalMs, log }, async () => {

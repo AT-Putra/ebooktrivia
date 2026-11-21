@@ -44,6 +44,8 @@ export interface WorkerConfig {
   readonly waDelayMs: number;
   /** How often the worker checks whether the nightly payment reconciliation is due. */
   readonly reconcileIntervalMs: number;
+  /** US-029: how often the report rollups are recomputed (5 minutes). */
+  readonly rollupIntervalMs: number;
   readonly relayIntervalMs: number;
   readonly sweepIntervalMs: number;
   readonly heartbeatIntervalMs: number;
@@ -168,6 +170,7 @@ export function loadWorkerConfig(env: Env): WorkerConfig {
     midtransStubUrl: midtransStubUrl(env),
     waDelayMs: int(env, "WORKER_WA_DELAY_MS", WA_PROACTIVE_DELAY_MS, 0, 86_400_000),
     reconcileIntervalMs: int(env, "WORKER_RECONCILE_INTERVAL_MS", 300_000, 1000, 3_600_000),
+    rollupIntervalMs: int(env, "WORKER_ROLLUP_INTERVAL_MS", 300_000, 1000, 3_600_000),
     relayIntervalMs: int(env, "WORKER_RELAY_INTERVAL_MS", 500, 50, 10_000),
     sweepIntervalMs: int(env, "WORKER_SWEEP_INTERVAL_MS", 60_000, 100, 600_000),
     heartbeatIntervalMs: int(env, "WORKER_HEARTBEAT_INTERVAL_MS", 60_000, 100, 600_000),

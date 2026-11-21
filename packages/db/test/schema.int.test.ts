@@ -70,6 +70,10 @@ const PLAN_TABLES = {
     // payment reconciliation (US-021)
     "payment_reconciliation_runs",
     "payment_reconciliation_findings",
+    // report rollups (US-029)
+    "report_orders_daily",
+    "report_visits_daily",
+    "report_rollup_state",
   ],
   player_auth: ["account", "session", "session_state", "user", "verification"],
   admin_auth: ["account", "login_throttle", "recovery_code", "session", "session_state", "totp_used", "twoFactor", "user", "verification"],
