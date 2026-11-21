@@ -241,6 +241,8 @@ describe("SECURITY DEFINER functions (functions.sql, triggers.sql)", () => {
         "public.enqueue_waha_inbound(uuid)",
         "public.enqueue_mo(uuid)",
         "public.get_payment_secret()",
+        "public.get_order_status(text)",
+        "public.claim_browser_mt(text)",
         "public.sweep_login_throttle(integer)",
         "public.assert_trivia_set_unlocked(uuid)",
         "public.lock_program_contest(uuid)",
@@ -258,6 +260,7 @@ describe("SECURITY DEFINER functions (functions.sql, triggers.sql)", () => {
       WHERE has_function_privilege(r, fn, 'EXECUTE') ORDER BY 1, 2`;
     expect(rows.map((r) => `${r.role} ${r.fn}`)).toEqual([
       "admin_rw public.assert_trivia_set_unlocked(uuid)",
+      "public_rw public.claim_browser_mt(text)",
       "admin_rw public.confirm_program_winners(uuid, text, text, inet)",
       "worker_rw public.create_leaderboard_snapshot(uuid)",
       "public_rw public.enqueue_mo(uuid)",
@@ -265,6 +268,7 @@ describe("SECURITY DEFINER functions (functions.sql, triggers.sql)", () => {
       "public_rw public.enqueue_otp(uuid)",
       "public_rw public.enqueue_waha_inbound(uuid)",
       "admin_rw public.extend_open_question_deadlines(uuid, timestamptz, timestamptz, text, text, text, inet)",
+      "public_rw public.get_order_status(text)",
       "public_rw public.get_payment_secret()",
       "worker_rw public.get_payment_secret()",
       "public_rw public.lock_program_contest_shared(uuid)",

@@ -14,6 +14,13 @@ const adapted = JSON.parse(readFileSync(new URL("../../caddy/adapted.test.json",
 };
 
 type Json = Record<string, unknown>;
+/** A log field filter: one regexp, or several applied in order (multi_regexp). */
+interface LogFilter {
+  filter: string;
+  regexp?: string;
+  value?: string;
+  operations?: { regexp: string; value: string }[];
+}
 interface Route {
   match?: Json[];
   handle?: Handler[];
@@ -31,7 +38,7 @@ interface Server extends Json {
 }
 interface CaddyConfig {
   admin: { disabled?: boolean };
-  logging: { logs: Record<string, { encoder?: { format: string; fields: Record<string, { filter: string; regexp?: string; value?: string }> } }> };
+  logging: { logs: Record<string, { encoder?: { format: string; fields: Record<string, LogFilter> } }> };
   apps: {
     http: { servers: Record<string, Server> };
     tls: { automation: { policies: Json[]; on_demand: { permission: { endpoint: string; module: string } } } };
@@ -61,6 +68,13 @@ function site(host: string | null): Route {
 const reverseProxies = (route: Route) => handlers([route]).filter((h) => h.handler === "reverse_proxy");
 const dials = (h: Handler) => (h["upstreams"] as { dial: string }[]).map((u) => u.dial);
 const APP_HOSTS = ["admin.example.test", "play.example.test", "order.example.test", "api.example.test"];
+/** The name of the access logger Caddy attached to a site (the server's logs.logger_names). */
+const loggerOf = (host: string): string => {
+  const names = (https?.["logs"] as { logger_names?: Record<string, string[]> } | undefined)?.logger_names?.[host];
+  if (names?.length !== 1 || names[0] === undefined) throw new Error(`no access logger for ${host}`);
+  return names[0];
+};
+const orderLogName = (): string => loggerOf("order.example.test");
 
 describe("adapted Caddyfile", () => {
   it("is the adaptation of the current Caddyfile (run infra/verify/local/caddy-adapt.sh after editing it)", () => {
@@ -247,7 +261,25 @@ describe("adapted Caddyfile", () => {
   it("keeps cookies off order.<domain> in both directions", () => {
     const headerOps = handlers([site("order.example.test")]).filter((h) => h.handler === "headers");
     expect(headerOps).toContainEqual({ handler: "headers", request: { delete: ["Cookie"] } });
-    expect(headerOps).toContainEqual({ handler: "headers", response: { deferred: true, delete: ["Set-Cookie"] } });
+    // ... and none of the headers Next 16 reports a proxy rewrite in: x-middleware-rewrite carries /order/{publicId}.
+    expect(headerOps).toContainEqual({
+      handler: "headers",
+      response: { deferred: true, delete: ["Set-Cookie", "X-Middleware-Rewrite", "X-Nextjs-Rewritten-Path", "X-Nextjs-Rewritten-Query"] },
+    });
+  });
+
+  it("emits exactly ONE Referrer-Policy per app site: strict-origin on order.<domain> (AC-T5), strict-origin-when-cross-origin elsewhere", () => {
+    // Every header operation that sets or adds the field, in any handler of the site: a second one (a
+    // later block that was meant to override the first) did not take effect in Caddy 2.11.9.
+    const policies = (host: string) =>
+      handlers([site(host)])
+        .filter((h) => h.handler === "headers")
+        .flatMap((h) => {
+          const response = h["response"] as Json | undefined;
+          return [(response?.["set"] as Json | undefined)?.["Referrer-Policy"], (response?.["add"] as Json | undefined)?.["Referrer-Policy"]].filter((value) => value !== undefined);
+        });
+    expect(policies("order.example.test")).toEqual([["strict-origin"]]);
+    for (const host of ["admin.example.test", "play.example.test", "api.example.test"]) expect(policies(host), host).toEqual([["strict-origin-when-cross-origin"]]);
   });
 
   it("sets HSTS, nosniff and frame-ancestors 'none' on the app hosts, frame-ancestors 'self' on LP hosts", () => {
@@ -266,9 +298,14 @@ describe("adapted Caddyfile", () => {
   it("redacts the GlitchTip token and every /files URI, query included, from every log", () => {
     const logs = Object.entries(config.logging.logs);
     expect(logs.length).toBe(Object.values(servers).flatMap((s) => s.listen ?? []).length + 5);
+    const secretsOp = { regexp: "(?i)^/+(hooks/glitchtip|files)/.*$", value: "/$1/[redacted]" };
+    const orderLog = orderLogName();
     for (const [name, log] of logs) {
       expect(log.encoder?.format, name).toBe("filter");
-      expect(log.encoder?.fields["request>uri"], name).toEqual({ filter: "regexp", regexp: "(?i)^/+(hooks/glitchtip|files)/.*$", value: "/$1/[redacted]" });
+      const uri = log.encoder?.fields["request>uri"];
+      // The order origin's log applies the same operation first, then its own (next test).
+      if (name === orderLog) expect(uri?.operations?.[0], name).toEqual(secretsOp);
+      else expect(uri, name).toEqual({ filter: "regexp", ...secretsOp });
     }
     // The same pattern in JS (RE2 and JS agree on it): the token and the signed URL's query go.
     const redact = (uri: string) => uri.replace(/^\/+(hooks\/glitchtip|files)\/.*$/i, "/$1/[redacted]");
@@ -276,6 +313,46 @@ describe("adapted Caddyfile", () => {
     expect(redact("//HOOKS/glitchtip/abc?x=1")).toBe("/HOOKS/glitchtip/[redacted]");
     expect(redact("/files/d/tok3n/x.pdf?sig=s1gn4ture&exp=1")).toBe("/files/[redacted]");
     expect(redact("/checkout/lp_abc?utm=1")).toBe("/checkout/lp_abc?utm=1");
+  });
+
+  it("keeps the order's public id and the Referer out of the order origin's access log, and logs every other site with its plain log (US-022)", () => {
+    const log = config.logging.logs[orderLogName()];
+    const fields = log?.encoder?.fields ?? {};
+    expect(Object.keys(fields).sort()).toEqual([
+      "request>headers>Authorization",
+      "request>headers>Cookie",
+      "request>headers>Referer",
+      "request>uri",
+      "resp_headers>Location",
+      "resp_headers>X-Middleware-Rewrite",
+      "resp_headers>X-Nextjs-Rewritten-Path",
+      "resp_headers>X-Nextjs-Rewritten-Query",
+    ]);
+    // Location too: an RSC request Next redirects to /order/{publicId}?_rsc=... puts the id there.
+    for (const field of ["request>headers>Referer", "resp_headers>X-Middleware-Rewrite", "resp_headers>X-Nextjs-Rewritten-Path", "resp_headers>X-Nextjs-Rewritten-Query", "resp_headers>Location"]) {
+      expect(fields[field], field).toEqual({ filter: "delete" });
+    }
+    const operations = fields["request>uri"]?.operations ?? [];
+    expect(fields["request>uri"]?.filter).toBe("multi_regexp");
+    // The same operations in JS (RE2 and JS agree on these patterns), applied in order as Caddy does.
+    const redact = (uri: string) =>
+      operations.reduce((out, op) => out.replace(new RegExp(op.regexp.replace(/^\(\?i\)/, ""), op.regexp.startsWith("(?i)") ? "gi" : "g"), op.value), uri);
+    const id = "AbCdEfGhIjKlMnOpQrStUv";
+    expect(redact(`/${id}`)).toBe("/[order]");
+    // The app's own spelling of the route, as it appears in x-middleware-rewrite and in an internal request.
+    expect(redact(`/order/${id}`)).toBe("/[order]");
+    expect(redact(`/order/${id}?x=1`)).toBe("/[order]");
+    expect(redact("/order")).toBe("/order");
+    expect(redact("/order/x")).toBe("/order/x");
+    expect(redact(`/${id}?order_id=${id}-1&status_code=200&transaction_status=settlement`)).toBe("/[order]");
+    expect(redact(`/?order_id=${id}-2&status_code=407&transaction_status=expire`)).toBe("/?order_id=[redacted]&status_code=407&transaction_status=expire");
+    expect(redact(`/?order_id=${id}-2`)).toBe("/?order_id=[redacted]");
+    expect(redact("/api/v1/order/status")).toBe("/api/v1/order/status");
+    expect(redact("/_next/static/chunks/app.js")).toBe("/_next/static/chunks/app.js");
+    expect(redact("/assets/status-paid/status-paid@1x.webp")).toBe("/assets/status-paid/status-paid@1x.webp");
+    for (const host of ["admin.example.test", "play.example.test", "api.example.test"]) {
+      expect(Object.keys(config.logging.logs[loggerOf(host)]?.encoder?.fields ?? {}).sort(), host).toEqual(["request>headers>Authorization", "request>headers>Cookie", "request>uri"]);
+    }
   });
 
   it("bounds slow clients: 10 s for headers, 30 s for a body, 10 min to write a response (a 100 MB PDF on a slow link)", () => {

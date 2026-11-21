@@ -7,7 +7,8 @@
     "test:mockups": "playwright test",
     "lighthouse:mockups": "tsx lighthouse.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test:sdk": "playwright test -c playwright.sdk.config.ts"
+    "test:sdk": "playwright test -c playwright.sdk.config.ts",
+    "test:order": "playwright test -c playwright.order.config.ts"
   },
   "devDependencies": {
     "@axe-core/playwright": "4.14.0",

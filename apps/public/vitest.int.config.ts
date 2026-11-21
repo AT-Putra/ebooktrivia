@@ -5,6 +5,9 @@ import { defineConfig } from "vitest/config";
 // (TEST_VALKEY_URL, ACL user `public` of the dev stack) and infra/midtrans-stub (its Hono app,
 // in-process). Not matched by the root vitest.config.ts. Run: pnpm --filter @ebooktrivia/public test:int
 export default defineConfig({
+  // The order page's .tsx components are rendered to markup in order.int.test.ts (tsconfig keeps
+  // `jsx: preserve` for Next.js, like the root vitest.config.ts).
+  oxc: { jsx: { runtime: "automatic" } },
   test: {
     include: ["test/**/*.int.test.ts"],
     globalSetup: ["test/global-setup.ts"],

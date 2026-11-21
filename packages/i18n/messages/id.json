@@ -4,7 +4,11 @@
     "loading": "Memuat…",
     "retry": "Coba lagi",
     "skipToContent": "Lewati ke konten",
-    "mockupBadge": "Mockup, data contoh"
+    "mockupBadge": "Mockup, data contoh",
+    "notFoundTitle": "Halaman tidak ditemukan",
+    "notFoundBody": "Periksa lagi alamat yang kamu buka.",
+    "errorTitle": "Halaman tidak dapat dimuat",
+    "errorBody": "Terjadi gangguan saat memuat halaman ini. Coba lagi sebentar lagi."
   },
   "leaderboard": {
     "title": "Papan Peringkat",
@@ -145,7 +149,34 @@
       "title": "Pembayaran gagal",
       "body": "Pembayaran tidak dapat diproses. Tidak ada dana yang ditagihkan. Silakan coba lagi.",
       "announce": "Pembayaran gagal. Silakan coba bayar lagi."
-    }
+    },
+    "review": {
+      "title": "Pembayaran sedang ditinjau",
+      "body": "Kami sedang memeriksa pembayaranmu. Tim kami akan menghubungimu lewat WhatsApp atau email.",
+      "announce": "Pembayaran sedang ditinjau oleh tim kami."
+    },
+    "refunded": {
+      "title": "Pembayaran dikembalikan",
+      "body": "Dana pembayaran ini sudah dikembalikan ke kamu.",
+      "announce": "Pembayaran dikembalikan."
+    },
+    "name": "Nama",
+    "loginSent": "Tautan masuk sudah kami kirim lewat WhatsApp dan email. Kamu juga bisa masuk dengan kode OTP yang dikirim ke WhatsApp-mu.",
+    "pollStopped": "Pemeriksaan otomatis berhenti. Periksa lagi kalau kamu sudah membayar.",
+    "checkAgain": "Periksa lagi",
+    "reloadToCheck": "Muat ulang halaman untuk memeriksa status pembayaran.",
+    "unknown": {
+      "title": "Pesanan tidak ditemukan",
+      "body": "Buka halaman status dari tautan pembayaranmu atau dari pesan WhatsApp-mu."
+    },
+    "rateLimited": "Terlalu banyak permintaan. Tunggu sebentar, lalu coba lagi.",
+    "unavailable": "Layanan sedang sibuk. Coba lagi sebentar lagi."
+  },
+  "legal": {
+    "terms": "Syarat dan Ketentuan",
+    "privacy": "Kebijakan Privasi",
+    "version": "Versi {version}",
+    "published": "Diterbitkan {date}"
   },
   "sdk": {
     "submitting": "Memproses pesanan…",

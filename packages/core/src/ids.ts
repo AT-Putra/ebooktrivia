@@ -1,6 +1,7 @@
 // A lowercase UUID (as PostgreSQL prints uuid), shared by every place that takes an id from a form,
 // a job or an outbox payload (code review US-017 L5).
 import { randomInt } from "node:crypto";
+import { PUBLIC_ID_BODY, PUBLIC_ID_PATTERN } from "./public-id.ts";
 
 export const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
@@ -16,7 +17,7 @@ const BASE62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 export const PUBLIC_ID_LENGTH = 22;
 export const ORDER_CODE_LENGTH = 10;
-export const PUBLIC_ID_PATTERN = /^[0-9A-Za-z]{16,40}$/;
+export { PUBLIC_ID_BODY, PUBLIC_ID_PATTERN };
 export const ORDER_CODE_PATTERN = /^[0-9A-HJKMNP-TV-Z]{8,16}$/;
 /** midtrans_attempts_midtrans_order_id_check (and Midtrans' own limit). */
 export const MIDTRANS_ORDER_ID_MAX = 50;

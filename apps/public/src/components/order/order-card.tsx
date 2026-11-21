@@ -1,7 +1,9 @@
 import {
+  ArrowUUpLeftIcon,
   CheckCircleIcon,
   ClockCountdownIcon,
   HourglassIcon,
+  WarningCircleIcon,
   WhatsappLogoIcon,
   XCircleIcon,
 } from "@phosphor-icons/react/ssr";
@@ -10,15 +12,17 @@ import type { Icon as PhosphorIcon } from "@phosphor-icons/react";
 import { Button } from "@ebooktrivia/ui/components/button";
 import { cn } from "@ebooktrivia/ui/lib/utils";
 import { formatRupiah } from "../../lib/format.ts";
+import type { PageState } from "../../lib/order/contract.ts";
 import { t } from "../../lib/t.ts";
 import type { AssetId } from "../../lib/assets.ts";
 import { Picture } from "../picture.tsx";
-import { CopyRefButton, PollingIndicator } from "./order-client.tsx";
+import { CopyRefButton } from "./order-client.tsx";
 
+/** The four states of the design mockups (US-006/US-008); the live page also has review and refunded. */
 export const ORDER_STATES = ["pending", "paid", "expired", "failed"] as const;
-export type OrderState = (typeof ORDER_STATES)[number];
+export type OrderState = PageState;
 
-export function isOrderState(value: string): value is OrderState {
+export function isOrderState(value: string): value is (typeof ORDER_STATES)[number] {
   return (ORDER_STATES as readonly string[]).includes(value);
 }
 
@@ -33,16 +37,32 @@ const CONFIG: Record<OrderState, StateConfig> = {
   paid: { Icon: CheckCircleIcon, tint: "bg-success-soft text-success-soft-foreground", art: "status-paid" },
   expired: { Icon: ClockCountdownIcon, tint: "bg-warning-soft text-warning-soft-foreground", art: "status-expired" },
   failed: { Icon: XCircleIcon, tint: "bg-destructive-soft text-destructive-soft-foreground" },
+  review: { Icon: WarningCircleIcon, tint: "bg-warning-soft text-warning-soft-foreground" },
+  refunded: { Icon: ArrowUUpLeftIcon, tint: "bg-info-soft text-info-soft-foreground" },
 };
 
-/** Static fixture. Only masked PII ever reaches the DOM. */
-const ORDER = {
-  ref: "TA-2611-8K4Q7M",
-  product: "Ebook Trivia Nusantara Juara",
-  amount: 49_000,
-  whatsapp: "+62 812-****-3456",
-  email: "bu***@g***.com",
-};
+/** What the card shows of an order. Only masked personal data ever reaches it; the live page has no e-mail at all. */
+export interface OrderCardData {
+  readonly ref: string;
+  readonly product: string;
+  readonly amount: number;
+  readonly name?: string;
+  readonly whatsapp: string;
+  readonly email?: string;
+}
+
+/** Where the card's actions lead; a null link leaves its action out. */
+export interface OrderCardLinks {
+  /** The OTP login (paid): the page itself carries no login token. */
+  readonly trivia: string;
+  /** Back to the landing page (expired, failed). */
+  readonly again: string | null;
+  /** wa.me with the order code in its text. */
+  readonly whatsapp: string | null;
+  /** The pending-state link to the payment page (mockup only: the live page holds no Snap data). */
+  readonly payment?: string;
+  readonly help: string | null;
+}
 
 function Row({ label, children }: { label: string; children: ReactNode }) {
   return (
@@ -53,23 +73,24 @@ function Row({ label, children }: { label: string; children: ReactNode }) {
   );
 }
 
-export function OrderCard({ state }: { state: OrderState }) {
+interface OrderCardProps {
+  readonly state: OrderState;
+  readonly order: OrderCardData;
+  readonly links: OrderCardLinks;
+  /** The polling row (components/order/order-client.tsx), shown under the status text in whatever state the caller passes it for. */
+  readonly polling?: ReactNode;
+}
+
+export function OrderCard({ state, order, links, polling }: OrderCardProps) {
   const { Icon, tint, art } = CONFIG[state];
   const announce = state === "pending" ? "" : t(`order.${state}.announce`);
-  const waHref = `https://wa.me/?text=${encodeURIComponent(t("order.whatsappText", { ref: ORDER.ref, product: ORDER.product }))}`;
 
   return (
     <article className="flex w-full max-w-[480px] flex-col gap-5 rounded-2xl bg-card p-4 text-card-foreground shadow-lg md:p-8">
       <header className="flex flex-col items-center gap-3 text-center">
         {art === undefined ? null : (
           <div className="flex h-44 w-full justify-center">
-            <Picture
-              id={art}
-              alt={t(`order.${state === "failed" ? "pending" : state}.art`)}
-              priority
-              sizes="176px"
-              className="block h-full w-auto max-w-full rounded-xl object-contain"
-            />
+            <Picture id={art} alt={t(state === "paid" ? "order.paid.art" : state === "expired" ? "order.expired.art" : "order.pending.art")} priority sizes="176px" className="block h-full w-auto max-w-full rounded-xl object-contain" />
           </div>
         )}
         <span className={cn("flex size-12 items-center justify-center rounded-full", tint)}>
@@ -79,39 +100,45 @@ export function OrderCard({ state }: { state: OrderState }) {
         <p className="max-w-[40ch] text-base">{t(`order.${state}.body`)}</p>
       </header>
 
-      <p role="status" aria-live="polite" aria-atomic="true" className="sr-only">
+      <p role="status" aria-live="polite" aria-atomic="true" className="sr-only" data-testid="order-announce">
         {announce}
       </p>
 
-      {state === "pending" ? <PollingIndicator lastCheckedSeconds={10} /> : null}
+      {polling}
 
       <section aria-labelledby="order-summary">
         <h2 id="order-summary" className="mb-1 font-heading text-base">
           {t("order.orderSummary")}
         </h2>
         <dl className="rounded-xl border px-3">
-          <Row label={t("order.product")}>{ORDER.product}</Row>
+          <Row label={t("order.product")}>{order.product}</Row>
           <Row label={t("order.amount")}>
-            <span className="tabular">{formatRupiah(ORDER.amount)}</span>
+            <span className="tabular">{formatRupiah(order.amount)}</span>
           </Row>
           <Row label={t("order.orderRef")}>
             <span className="flex items-center justify-end gap-1">
-              <span className="timer-digits">{ORDER.ref}</span>
-              <CopyRefButton value={ORDER.ref} />
+              <span className="timer-digits" data-testid="order-code">
+                {order.ref}
+              </span>
+              <CopyRefButton value={order.ref} />
             </span>
           </Row>
+          {order.name === undefined ? null : <Row label={t("order.name")}>{order.name}</Row>}
           <Row label={t("order.whatsapp")}>
-            <span className="tabular">{ORDER.whatsapp}</span>
+            <span className="tabular">{order.whatsapp}</span>
           </Row>
-          <Row label={t("order.email")}>{ORDER.email}</Row>
+          {order.email === undefined ? null : <Row label={t("order.email")}>{order.email}</Row>}
         </dl>
       </section>
 
       <div className="flex flex-col gap-3">
         {state === "paid" ? (
-          <Button asChild variant="cta" size="lg" className="min-h-13 w-full text-lg">
-            <a href="/mockups/trivia">{t("order.enterTrivia")}</a>
-          </Button>
+          <>
+            <Button asChild variant="cta" size="lg" className="min-h-13 w-full text-lg">
+              <a href={links.trivia}>{t("order.enterTrivia")}</a>
+            </Button>
+            <p className="text-center text-sm text-muted-foreground">{t("order.loginSent")}</p>
+          </>
         ) : null}
         {state === "pending" ? (
           <div className="flex flex-col gap-1">
@@ -123,40 +150,42 @@ export function OrderCard({ state }: { state: OrderState }) {
             </p>
           </div>
         ) : null}
-        {state === "expired" ? (
+        {state === "expired" && links.again !== null ? (
           <Button asChild variant="cta" size="lg" className="min-h-13 w-full text-lg">
-            <a href="/">{t("order.orderAgain")}</a>
+            <a href={links.again}>{t("order.orderAgain")}</a>
           </Button>
         ) : null}
-        {state === "failed" ? (
+        {state === "failed" && links.again !== null ? (
           <Button asChild variant="cta" size="lg" className="min-h-13 w-full text-lg">
-            <a href="/">{t("order.tryPayAgain")}</a>
+            <a href={links.again}>{t("order.tryPayAgain")}</a>
           </Button>
         ) : null}
 
-        {state === "pending" || state === "paid" ? (
+        {(state === "pending" || state === "paid") && links.whatsapp !== null ? (
           <Button asChild variant="outline" size="lg" className="w-full">
-            <a href={waHref} target="_blank" rel="noopener noreferrer">
+            <a href={links.whatsapp} target="_blank" rel="noopener noreferrer" data-testid="order-whatsapp">
               <WhatsappLogoIcon aria-hidden="true" size={22} weight="fill" />
               {t("order.sendWhatsapp")}
             </a>
           </Button>
         ) : null}
-        {state === "pending" ? (
+        {state === "pending" && links.payment !== undefined ? (
           <Button asChild variant="link" className="w-full">
-            <a href="#pembayaran">{t("order.openPayment")}</a>
+            <a href={links.payment}>{t("order.openPayment")}</a>
           </Button>
         ) : null}
       </div>
 
-      <footer className="border-t pt-4 text-center text-sm">
-        <p>
-          {t("order.help")}{" "}
-          <a href="#bantuan" className="inline-flex min-h-11 items-center font-semibold text-primary underline underline-offset-4">
-            {t("order.helpLink")}
-          </a>
-        </p>
-      </footer>
+      {links.help === null ? null : (
+        <footer className="border-t pt-4 text-center text-sm">
+          <p>
+            {t("order.help")}{" "}
+            <a href={links.help} className="inline-flex min-h-11 items-center font-semibold text-primary underline underline-offset-4">
+              {t("order.helpLink")}
+            </a>
+          </p>
+        </footer>
+      )}
     </article>
   );
 }

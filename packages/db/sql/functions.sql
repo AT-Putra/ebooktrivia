@@ -431,6 +431,84 @@ AS $fn$
   SELECT CASE WHEN p_phone IS NULL THEN NULL ELSE '****' || right(regexp_replace(p_phone, '[^0-9]', '', 'g'), 3) END
 $fn$;
 
+-- ===== US-022: order status page (order.<dom>/{publicId}) ========================================
+-- public_rw has column grants on orders (never the buyer's name or e-mail, order_code or
+-- browser_mt_fired_at), so the page reads and claims through these two narrow entry points. Both
+-- take the order's public_id (the page's capability) and return only what the page needs.
+--
+-- get_order_status: one row for the order, none for an unknown id (the caller answers a malformed id
+-- the same way). The buyer's personal data never leaves the database raw: the name and phone come back
+-- ONLY as public.mask_name / public.mask_phone (the one masking rule of the product, shared with the
+-- winners banner and core contest.ts), and the e-mail is not returned at all. `order_code` is the code
+-- the page shows and puts in the WhatsApp message. `pixels` is the landing page's registered browser
+-- pixel ids (jsonb), checked by the app against the vendors' id formats; the page's CSP is built from
+-- it, and the ids themselves reach a browser only through claim_browser_mt. `lp_host` is the landing
+-- page's primary host, its first registered domain (the page's "order again" link goes back to the page
+-- the buyer came from), null when it has none.
+-- Accepted deviation (security review US-022 L1): public_rw can enumerate, through a LATERAL call over
+-- orders.public_id, which it already reads (checkout dedupe also reads buyer_phone), every order's code,
+-- masks and status. An order code alone grants nothing: the WhatsApp claim (US-025) needs the sender's
+-- phone to match the order's, and the page data is masked.
+-- The return type changed while US-022 was being built, and CREATE OR REPLACE cannot change it: the
+-- function is dropped only when its result is not the one below, so a database that applied an earlier
+-- shape re-runs, and a normal migrate never drops it (a drop would be a window in which the page 503s).
+DO $do$
+BEGIN
+  IF pg_catalog.to_regprocedure('public.get_order_status(text)') IS NOT NULL
+     AND pg_catalog.pg_get_function_result(pg_catalog.to_regprocedure('public.get_order_status(text)'))
+         <> 'TABLE(status text, order_code text, masked_name text, masked_phone text, product_title text, amount_idr bigint, pixels jsonb, lp_host text)' THEN
+    DROP FUNCTION public.get_order_status(text);
+  END IF;
+END
+$do$;
+CREATE OR REPLACE FUNCTION public.get_order_status(p_public_id text)
+  RETURNS TABLE (status text, order_code text, masked_name text, masked_phone text, product_title text, amount_idr bigint, pixels jsonb, lp_host text)
+  LANGUAGE sql
+  STABLE
+  SECURITY DEFINER
+  SET search_path = pg_catalog, pg_temp
+AS $fn$
+  SELECT o.status::text, o.order_code, public.mask_name(o.buyer_name), public.mask_phone(o.buyer_phone), pr.title, o.amount_idr, lp.pixels,
+         (SELECT d.host FROM public.lp_domains d WHERE d.landing_page_id = lp.id ORDER BY d.created_at, d.id LIMIT 1)
+    FROM public.orders o
+    JOIN public.products pr ON pr.id = o.product_id
+    JOIN public.landing_pages lp ON lp.id = o.landing_page_id
+   WHERE o.public_id = p_public_id
+$fn$;
+
+-- claim_browser_mt: the exactly-once claim of the browser MT pixel. One conditional UPDATE: the order
+-- must be PAID, paid within the last hour, and not yet claimed, and the row lock makes a second
+-- concurrent caller wait, re-check the condition on the committed row (a refund that committed meanwhile
+-- included) and get no row. It returns the one row to the winner only: the pixel contract's values
+-- (event_id = orders.event_id, transaction_id = orders.id, the amount) and the landing page's pixel ids.
+-- public_rw has no UPDATE on browser_mt_fired_at (grants.sql), so this is the only way to set it, and
+-- nothing can clear it. The claim is a bearer action (whoever holds the public id can make it), so it
+-- expires an hour after payment: a later visitor gets nothing, and the server-side conversion with the
+-- same event_id covers the order. It is at most once for the browser: a claimer that never fires (tab
+-- closed) is covered the same way. orders.updated_at is not touched: the claim is not a change of the order.
+CREATE OR REPLACE FUNCTION public.claim_browser_mt(p_public_id text)
+  RETURNS TABLE (order_id uuid, event_id uuid, amount_idr bigint, pixels jsonb)
+  LANGUAGE sql
+  VOLATILE
+  SECURITY DEFINER
+  SET search_path = pg_catalog, pg_temp
+AS $fn$
+  WITH claimed AS (
+    UPDATE public.orders o
+       SET browser_mt_fired_at = pg_catalog.clock_timestamp()
+     WHERE o.public_id = p_public_id AND o.status = 'paid' AND o.browser_mt_fired_at IS NULL
+       AND o.paid_at > pg_catalog.clock_timestamp() - interval '1 hour'
+    RETURNING o.id, o.event_id, o.amount_idr, o.landing_page_id
+  )
+  SELECT c.id, c.event_id, c.amount_idr, lp.pixels
+    FROM claimed c
+    JOIN public.landing_pages lp ON lp.id = c.landing_page_id
+$fn$;
+
+REVOKE ALL ON FUNCTION public.get_order_status(text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.claim_browser_mt(text) FROM PUBLIC;
+-- ===== end US-022 ==================================================================================
+
 REVOKE ALL ON FUNCTION public.setting_positive_int(text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.score_answer(integer, integer, uuid, uuid, timestamptz, timestamptz, timestamptz, integer) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.mask_name(text) FROM PUBLIC;

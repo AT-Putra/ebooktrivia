@@ -78,6 +78,37 @@
 	}
 }
 
+# Access log of the order origin (plan M6.6): the order's public id is a capability, so it never reaches a
+# log line. The path of a page request (/{publicId}, or /order/{publicId} as the app's own route is
+# spelled) becomes /[order], the Midtrans `order_id` query value (the dashboard's unfinish and error
+# redirects, /?order_id={publicId}-{n}) is replaced, the Referer is not written (a page on another origin can
+# link here with an id in its own URL), and neither are the response headers Next uses to report its
+# rewrite (they name /order/{publicId}; the site also strips them from the response itself) or Location (an
+# RSC request that Next redirects to /order/{publicId}?_rsc=... puts the id there). The hook and file
+# patterns of access_log stay, and Cookie and Authorization go too.
+(order_access_log) {
+	log {
+		output stdout
+		format filter {
+			wrap json
+			fields {
+				request>uri multi_regexp {
+					regexp "(?i)^/+(hooks/glitchtip|files)/.*$" "/$1/[redacted]"
+					regexp "^/(order/)?[0-9A-Za-z]{16,40}.*$" "/[order]"
+					regexp "order_id=[^&]*" "order_id=[redacted]"
+				}
+				request>headers>Cookie delete
+				request>headers>Authorization delete
+				request>headers>Referer delete
+				resp_headers>X-Middleware-Rewrite delete
+				resp_headers>X-Nextjs-Rewritten-Path delete
+				resp_headers>X-Nextjs-Rewritten-Query delete
+				resp_headers>Location delete
+			}
+		}
+	}
+}
+
 (https) {
 	bind fd/4 {
 		protocols h1 h2
@@ -85,14 +116,17 @@
 }
 
 # Headers on the app hosts. Set when the response is written (defer), so they replace the app's
-# copies; CSP is added next to the app's nonce CSP (proxy.ts), and a browser enforces both.
+# copies; CSP is added next to the app's nonce CSP (proxy.ts), and a browser enforces both. The one
+# argument is the site's Referrer-Policy: each site emits exactly ONE, strict-origin on order.<domain>
+# (AC-T5, where vendor scripts run) and strict-origin-when-cross-origin elsewhere. A second `header` block
+# for the same field after this one did not take effect (verified in Caddy 2.11.9), hence the argument.
 (app_headers) {
 	header {
 		defer
 		Strict-Transport-Security "max-age=31536000; includeSubDomains"
 		X-Content-Type-Options nosniff
 		X-Frame-Options DENY
-		Referrer-Policy strict-origin-when-cross-origin
+		Referrer-Policy {args[0]}
 		+Content-Security-Policy "frame-ancestors 'none'"
 		-Server
 		-X-Powered-By
@@ -160,7 +194,7 @@ http:// {
 admin.{$DOMAIN} {
 	import https
 	import access_log
-	import app_headers
+	import app_headers strict-origin-when-cross-origin
 	import blocked_paths
 	@outside not remote_ip {$ADMIN_ALLOWED_CIDRS}
 	handle @outside {
@@ -184,7 +218,7 @@ admin.{$DOMAIN} {
 play.{$DOMAIN} {
 	import https
 	import access_log
-	import app_headers
+	import app_headers strict-origin-when-cross-origin
 	import blocked_paths
 	handle {
 		request_body {
@@ -198,13 +232,19 @@ play.{$DOMAIN} {
 # direction (plan M4.3).
 order.{$DOMAIN} {
 	import https
-	import access_log
-	import app_headers
+	import order_access_log
+	import app_headers strict-origin
 	import blocked_paths
 	request_header -Cookie
+	# No Set-Cookie, and none of Next's rewrite headers: proxy.ts rewrites /{publicId} to /order/{publicId}
+	# and Next 16 reports that rewrite to the client in x-middleware-rewrite (and, for an RSC request, in
+	# x-nextjs-rewritten-path / -query), which would hand the public id to every log and cache on the way.
 	header {
 		defer
 		-Set-Cookie
+		-X-Middleware-Rewrite
+		-X-Nextjs-Rewritten-Path
+		-X-Nextjs-Rewritten-Query
 	}
 	handle {
 		request_body {
@@ -217,7 +257,7 @@ order.{$DOMAIN} {
 api.{$DOMAIN} {
 	import https
 	import access_log
-	import app_headers
+	import app_headers strict-origin-when-cross-origin
 	import blocked_paths
 	# The GlitchTip alert hook: only this exact path shape, only POST, only from the GlitchTip host,
 	# goes to the internal process (which checks the token by its SHA-256). Anything else under

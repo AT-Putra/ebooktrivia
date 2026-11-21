@@ -9,6 +9,7 @@ import { type CheckoutDeps, SNAP_TIMEOUT_MS } from "./checkout/handler.ts";
 import { type Env, loadPublicConfig, PublicConfigError } from "./config.ts";
 import { assertPublicLogin, createPublicSql } from "./db.ts";
 import { logEvent } from "./log.ts";
+import type { OrderDeps } from "./order/handler.ts";
 import { createValkey } from "./valkey.ts";
 import type { MidtransWebhookDeps } from "./webhooks/midtrans.ts";
 
@@ -17,6 +18,8 @@ export interface PublicRuntime {
   readonly cap: CapRouteDeps;
   /** The Midtrans notification inbox (US-021). */
   readonly webhooks: MidtransWebhookDeps;
+  /** The order status page (US-022): its routes, the proxy's lookups and the legal pages. */
+  readonly order: OrderDeps;
   readonly close: () => Promise<void>;
 }
 
@@ -60,6 +63,7 @@ export async function createRuntime(env: Env): Promise<PublicRuntime> {
     checkout: { sql, valkey, capFor, opener, midtransFetch: midtrans.fetch, domain: config.domain, log: logEvent },
     cap: { sql, valkey, capFor, log: logEvent },
     webhooks: { sql, valkey, opener, serverKey: createMidtransKeyCache(), log: logEvent },
+    order: { sql, valkey, domain: config.domain, log: logEvent },
     close,
   };
 }

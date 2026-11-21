@@ -37,6 +37,7 @@ Staging: follow [docs/runbooks/staging-provision.md](../docs/runbooks/staging-pr
 | `infra/verify/local/caddy-adapt.sh [--check]` | `caddy validate`, `caddy fmt`, and a regenerated (or up-to-date) `caddy/adapted.test.json` (CI) |
 | `infra/verify/local/quadlet-dryrun.sh` | the quadlet generator of `podman-5.8.2-12.el10_2.alma.1` accepts every unit (CI) |
 | `infra/verify/local/sdk-headers.sh` | the `/sdk/*` block of the real Caddyfile in Caddy 2.11.9: a versioned file `public, max-age=31536000, immutable`, the `v1.js` alias 5 minutes, a missing file never cached as immutable, hidden files and path tricks refused, gzip (US-019; needs Docker) |
+| `infra/verify/local/order-headers.sh` | the `order.<DOMAIN>` site of the real Caddyfile in Caddy 2.11.9: exactly one `Referrer-Policy` (strict-origin), HSTS and nosniff, no `Set-Cookie`, and an access log without the order's public id (path, Midtrans `order_id`) or a Referer (US-022; needs Docker) |
 | `infra/verify/local/edge-smoke.sh [public\|admin]` | the production server entry on a `next build`: /livez, the page, the listener address (CI job `edge-smoke`) |
 | `pnpm test` (`infra/verify/src`) | adapted Caddy JSON: strict SNI, admin off, `/internal` blocked, ask URL, log redaction, LB `/livez`, trusted proxy; quadlet budget, addresses, pg_hba, hardening |
 | `pnpm --filter @ebooktrivia/worker test:chaos` | includes the production Valkey ACL with BullMQ (Docker) |

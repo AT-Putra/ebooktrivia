@@ -82,6 +82,7 @@ GRANT SELECT (id, order_id, legal_page_id, consented_at) ON public.consents TO p
 -- orders: no paid_at/refunded_at/mo_outbox_id; status limited by the orders_status_guard trigger.
 -- SELECT (US-020, US-009 carry-over) only of what the checkout's dedupe and Snap bookkeeping read:
 -- never the buyer's name, e-mail, IP, user agent or attribution. buyer_phone is the dedupe key.
+-- browser_mt_fired_at is NOT updatable by public_rw (US-022): only claim_browser_mt() sets it.
 GRANT SELECT (
   id, public_id, landing_page_id, buyer_phone, buyer_key, amount_idr, status, snap_attempt_count, snap_redirect_url,
   snap_expires_at, expires_at, event_id, created_at
@@ -94,7 +95,7 @@ GRANT INSERT (
   ip, ua_hash
 ) ON public.orders TO public_rw;
 GRANT UPDATE (
-  status, snap_attempt_count, snap_redirect_url, snap_expires_at, browser_mt_fired_at, updated_at
+  status, snap_attempt_count, snap_redirect_url, snap_expires_at, updated_at
 ) ON public.orders TO public_rw;
 
 -- midtrans_attempts: what the checkout's dedupe and bookkeeping read (US-020 security review P2-7), never
@@ -119,6 +120,12 @@ GRANT EXECUTE ON FUNCTION
   TO public_rw;
 -- The orders checkout guard runs as the caller and reads orders.expiry_seconds through it.
 GRANT EXECUTE ON FUNCTION public.setting_positive_int(text) TO public_rw;
+
+-- ===== US-022: order status page ====================================================================
+-- The status read and the exactly-once browser MT claim (functions.sql); orders.browser_mt_fired_at has
+-- no UPDATE grant for public_rw (see the orders grants above).
+GRANT EXECUTE ON FUNCTION public.get_order_status(text), public.claim_browser_mt(text) TO public_rw;
+-- ===== end US-022 ===================================================================================
 
 -- ---------------------------------------------------------------------------------------------
 -- admin_rw (apps/admin). Writes sealed secrets but holds no private keys.

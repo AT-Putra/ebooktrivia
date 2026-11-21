@@ -7,6 +7,7 @@
     ".": "./src/index.ts",
     "./hosts": "./src/hosts.ts",
     "./phone": "./src/phone.ts",
+    "./public-id": "./src/public-id.ts",
     "./sdk-contract": "./src/sdk-contract.ts"
   },
   "scripts": {

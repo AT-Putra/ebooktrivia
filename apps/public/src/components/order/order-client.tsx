@@ -17,6 +17,22 @@ export function PollingIndicator({ lastCheckedSeconds }: { lastCheckedSeconds: n
   );
 }
 
+/** Pending only, after the automatic checks ran out (lib/order/poll.ts): a 44px button to check again by hand. */
+export function PollingStopped({ onRetry }: { onRetry: () => void }) {
+  return (
+    <div className="flex flex-col gap-2 rounded-lg bg-muted px-3 py-2 text-sm">
+      <p>{t("order.pollStopped")}</p>
+      <button
+        type="button"
+        onClick={onRetry}
+        className="inline-flex min-h-11 items-center justify-center rounded-lg border border-primary px-4 font-semibold text-primary transition-colors duration-(--duration-base) hover:bg-background"
+      >
+        {t("order.checkAgain")}
+      </button>
+    </div>
+  );
+}
+
 /** 44px copy button for the order reference; shows a 3 s "Tersalin" toast. */
 export function CopyRefButton({ value }: { value: string }) {
   const [copied, setCopied] = useState(false);
