@@ -54,6 +54,48 @@ describe("enqueue_otp", () => {
     expect(row.payload).toMatchObject({ otp_id: otp.id, phone });
     expect(row.sealed?.equals(otp.sealed)).toBe(true);
     expect(await ledgerCount(phone)).toBe(1);
+    // US-026: the sealed code was MOVED: the outbox holds its only copy (the worker wipes it after the send).
+    expect(first(await sql<{ sealed: Buffer | null; mac: Buffer }[]>`SELECT sealed_code AS sealed, mac FROM player_otps WHERE id = ${otp.id}`).sealed).toBeNull();
+  });
+
+  it("refuses an OTP row without a sealed code (ET006): nothing would be sent", async () => {
+    const { phone } = await createPlayer({ programId, eligible: true });
+    const row = await asRole("public_rw", async (tx) =>
+      first(await tx<{ id: string }[]>`
+        INSERT INTO public.player_otps (phone, mac, sealed_code, expires_at) VALUES (${phone}, ${bytes(32)}, NULL, now() + interval '5 minutes') RETURNING id`),
+    );
+    expect(await sqlState(enqueue(row.id))).toBe("ET006");
+    expect(await outboxFor(phone)).toHaveLength(0);
+  });
+
+  it("stops every send at the global ceiling (otp.global_send_cap per 10 minutes): no outbox row, NULL, one persisted critical alert", async () => {
+    // The ceiling (seeded 500, bounds 50..100000) is set just above what this shared database has sent in the
+    // last 10 minutes; the bounds are lifted for this test only and restored exactly as they were.
+    const [bounds] = await sql<{ def: string }[]>`SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint WHERE conname = 'app_settings_bounds_check'`;
+    const [cap] = await sql<{ value: unknown }[]>`SELECT value FROM app_settings WHERE key = 'otp.global_send_cap'`;
+    expect(cap?.value).toBe(500);
+    await sql`ALTER TABLE app_settings DROP CONSTRAINT app_settings_bounds_check`;
+    try {
+      const [recent] = await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM otp_enqueues WHERE enqueued_at > clock_timestamp() - interval '10 minutes'`;
+      await sql`UPDATE app_settings SET value = ${String((recent?.n ?? 0) + 1)}::text::jsonb WHERE key = 'otp.global_send_cap'`;
+      await sql`DELETE FROM alerts WHERE dedupe_key = 'otp_send_breaker'`;
+      const a = await createPlayer({ programId, eligible: true });
+      const b = await createPlayer({ programId, eligible: true });
+      const c = await createPlayer({ programId, eligible: true });
+      expect(await enqueue((await storeOtp(a.phone)).id)).toEqual(expect.any(String));
+      const blocked = await storeOtp(b.phone);
+      expect(await enqueue(blocked.id)).toBeNull();
+      expect(await enqueue((await storeOtp(c.phone)).id)).toBeNull();
+      expect(await outboxFor(b.phone)).toHaveLength(0);
+      expect(await ledgerCount(b.phone)).toBe(0);
+      // Nothing moved: the caller drops its row (apps/public issuePlayerOtp).
+      expect(first(await sql<{ sealed: Buffer | null }[]>`SELECT sealed_code AS sealed FROM player_otps WHERE id = ${blocked.id}`).sealed).not.toBeNull();
+      const alerts = await sql<{ source: string; severity: string; kind: string }[]>`SELECT source, severity, kind FROM alerts WHERE dedupe_key = 'otp_send_breaker'`;
+      expect(alerts).toEqual([{ source: "monitor", severity: "critical", kind: "otp_send_breaker" }]);
+    } finally {
+      await sql`UPDATE app_settings SET value = ${JSON.stringify(cap?.value ?? 500)}::text::jsonb WHERE key = 'otp.global_send_cap'`;
+      await sql.unsafe(`ALTER TABLE app_settings ADD CONSTRAINT app_settings_bounds_check ${bounds?.def ?? ""}`);
+    }
   });
 
   it("is idempotent per OTP: a repeat call returns the same outbox row and does not count again", async () => {
@@ -175,7 +217,7 @@ describe("enqueue_otp", () => {
     const gate = new Promise<void>((resolve) => (release = resolve));
     const held = sql.begin("isolation level serializable", async (tx) => {
       await tx.unsafe("SET LOCAL ROLE public_rw");
-      await tx`SELECT count(*) FROM public.players`; // takes the snapshot
+      await tx`SELECT count(*) FROM public.player_programs`; // takes the snapshot (public_rw reads no players column, US-026)
       snapshotTaken();
       await gate;
       await tx`SELECT enqueue_otp(${otps[3]?.id ?? ""})`;

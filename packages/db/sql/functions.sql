@@ -16,6 +16,7 @@
 --   ET001 enqueue_otp: phone not eligible       ET002 enqueue_otp: per-phone cap exceeded
 --   ET003 enqueue_otp: OTP row not found        ET004 enqueue_otp: OTP expired
 --   ET005 enqueue_otp: isolation level is not READ COMMITTED (the cap check would race)
+--   ET006 enqueue_otp: the OTP row holds no sealed code (never set, or already moved to the outbox)
 --   ET009 setting missing or not a positive integer
 --   ET010 enqueue_*: source row not found       ET011 enqueue_mo: order has no Snap redirect URL
 --   ET084 refire_conversion (sql/conversions.sql): the row cannot be re-fired
@@ -34,6 +35,9 @@
 --   ET108-ET110 play timestamps (set by the database; a pick after the deadline; play after the
 --   grace end), ET111 the deadline extension ledger is append-only;
 --   roles.sql: ET090 foreign-owned object.
+--   US-026 (player authentication, below): ET120 issue_magic_link arguments out of scope (channel, token
+--   hash), ET121 the player may not log in (unknown, anonymized, eligible for no program), ET122 a
+--   player_auth user that holds the player's phone is linked to another player.
 
 SELECT pg_catalog.set_config('search_path', 'pg_catalog, pg_temp', false);
 
@@ -62,7 +66,12 @@ $fn$;
 -- Enqueue the WhatsApp send of an OTP the app stored in player_otps (mac + sealed code).
 -- Enforces in SQL: (a) the phone belongs to a player eligible for at least one program;
 -- (b) at most `otp.phone_cap` enqueues per phone within `otp.phone_window_seconds` (sliding
--- window over otp_enqueues, a ledger no app role can write). Idempotent per otp_id.
+-- window over otp_enqueues, a ledger no app role can write); (c) US-026, the global send breaker: at
+-- most `otp.global_send_cap` enqueues over ALL phones within 10 minutes. Over (c) nothing is enqueued,
+-- a critical alert is written (once an hour while it lasts; it must commit with the caller, so (c) is
+-- NOT an error) and NULL is returned: the caller then keeps no live code. Idempotent per otp_id.
+-- The sealed code is MOVED (US-026): copied into the outbox row and set NULL in player_otps, so after
+-- the worker's wipe of the outbox copy only the HMAC is left in the database.
 CREATE OR REPLACE FUNCTION public.enqueue_otp(p_otp_id uuid)
   RETURNS uuid
   LANGUAGE plpgsql
@@ -78,6 +87,7 @@ DECLARE
   v_window integer;
   v_recent integer;
   v_outbox uuid;
+  v_global integer;
 BEGIN
   -- The cap count must see every committed enqueue. Only READ COMMITTED gives each statement a
   -- fresh snapshot after the lock below; REPEATABLE READ and SERIALIZABLE would count on an old
@@ -105,6 +115,9 @@ BEGIN
   IF v_expires <= v_now THEN
     RAISE EXCEPTION 'otp expired' USING ERRCODE = 'ET004';
   END IF;
+  IF v_sealed IS NULL THEN
+    RAISE EXCEPTION 'otp has no sealed code' USING ERRCODE = 'ET006';
+  END IF;
 
   IF NOT EXISTS (
     SELECT 1
@@ -125,6 +138,22 @@ BEGIN
     RAISE EXCEPTION 'otp cap exceeded' USING ERRCODE = 'ET002';
   END IF;
 
+  -- (c) The global breaker (US-026), counted one enqueue at a time over all phones (this lock is always
+  -- taken after the phone's). A burst far above the normal login rate is abuse or a bug, and every
+  -- message puts the WhatsApp numbers at risk: stop sending and tell the Owner.
+  PERFORM pg_advisory_xact_lock(hashtextextended('enqueue_otp:global', 0::bigint));
+  v_global := public.setting_positive_int('otp.global_send_cap');
+  IF (SELECT count(*) FROM public.otp_enqueues e WHERE e.enqueued_at > v_now - interval '10 minutes') >= v_global THEN
+    INSERT INTO public.alerts (source, kind, severity, dedupe_key, message, payload)
+    SELECT 'monitor', 'otp_send_breaker', 'critical', 'otp_send_breaker',
+           'OTP sends stopped: the global ceiling otp.global_send_cap (codes per 10 minutes) was reached',
+           jsonb_build_object('cap_per_10_minutes', v_global)
+     WHERE NOT EXISTS (
+       SELECT 1 FROM public.alerts a
+        WHERE a.dedupe_key = 'otp_send_breaker' AND a.resolved_at IS NULL AND a.created_at > v_now - interval '1 hour');
+    RETURN NULL;
+  END IF;
+
   INSERT INTO public.outbox (topic, dedupe_key, payload, sealed)
   VALUES (
     'otp.send',
@@ -133,6 +162,7 @@ BEGIN
     v_sealed
   )
   RETURNING id INTO v_outbox;
+  UPDATE public.player_otps SET sealed_code = NULL WHERE id = p_otp_id;
 
   INSERT INTO public.otp_enqueues (otp_id, phone, outbox_id, enqueued_at)
   VALUES (p_otp_id, v_phone, v_outbox, v_now);
@@ -529,6 +559,258 @@ AS $fn$
          END
 $fn$;
 -- --- end US-024 ------------------------------------------------------------------------------------------
+
+-- ---------------------------------------------------------------------------------------------
+-- US-026 (M9a player authentication) BLOCK BEGIN.
+-- Who may log in to play.<DOMAIN> (AC-Q1, plan M9.1): a player who is not anonymized and is eligible for at
+-- least one program (a paid, non-refunded order), by WhatsApp OTP or by a magic link. The login itself is
+-- Better Auth's player instance in schema player_auth (spike R13); its user row is created HERE, by the
+-- database, for an eligible player only, and before any OTP is issued (R13 finding 7), so the stock phone
+-- plugin never creates users. public_rw reads no players column (grants.sql): the public app maps a phone or
+-- a session to a player only through these functions.
+
+-- The player_auth user of a player who may log in, created on first need (internal: called by the
+-- functions below, EXECUTE granted to nobody). The row is what Better Auth's stock phone plugin finds and
+-- updates: phoneNumber = the E.164 phone, phoneNumberVerified (an unverified number would be nulled by the
+-- plugin's own user hook), the placeholder e-mail <phone>@players.invalid (user.email is NOT NULL UNIQUE) and
+-- a constant name, so no buyer name is copied into player_auth. NULL when the player may not log in.
+CREATE OR REPLACE FUNCTION public.player_auth_user_for(p_player_id uuid)
+  RETURNS text
+  LANGUAGE plpgsql
+  SECURITY DEFINER
+  SET search_path = pg_catalog, pg_temp
+AS $fn$
+DECLARE
+  v_phone text;
+  v_user text;
+  v_owner uuid;
+BEGIN
+  SELECT p.phone, p.auth_user_id INTO v_phone, v_user
+    FROM public.players p
+   WHERE p.id = p_player_id AND p.anonymized_at IS NULL AND p.phone IS NOT NULL
+     AND EXISTS (SELECT 1 FROM public.player_programs pp WHERE pp.player_id = p.id AND pp.eligible)
+     FOR UPDATE OF p;
+  IF NOT FOUND THEN
+    RETURN NULL;
+  END IF;
+  IF v_user IS NOT NULL THEN
+    RETURN v_user;
+  END IF;
+  INSERT INTO player_auth."user" (id, name, email, "emailVerified", "phoneNumber", "phoneNumberVerified", "createdAt", "updatedAt")
+  VALUES (gen_random_uuid()::text, 'pemain', v_phone || '@players.invalid', false, v_phone, true, clock_timestamp(), clock_timestamp())
+  ON CONFLICT DO NOTHING
+  RETURNING id INTO v_user;
+  IF v_user IS NULL THEN
+    -- A user with this phone (or its placeholder e-mail) already exists: it is this player's only if no
+    -- other player is linked to it (e.g. the link was cleared); never take over another player's login.
+    SELECT u.id INTO v_user FROM player_auth."user" u
+     WHERE u."phoneNumber" = v_phone OR u.email = v_phone || '@players.invalid'
+     ORDER BY (u."phoneNumber" = v_phone) IS TRUE DESC
+     LIMIT 1;
+    SELECT p.id INTO v_owner FROM public.players p WHERE p.auth_user_id = v_user;
+    IF v_user IS NULL OR v_owner IS NOT NULL THEN
+      RAISE EXCEPTION 'the player_auth user of this phone belongs to another player' USING ERRCODE = 'ET122';
+    END IF;
+    UPDATE player_auth."user" SET "phoneNumber" = v_phone, "phoneNumberVerified" = true, "updatedAt" = clock_timestamp()
+     WHERE id = v_user;
+  END IF;
+  UPDATE public.players SET auth_user_id = v_user, updated_at = clock_timestamp() WHERE id = p_player_id;
+  RETURN v_user;
+END
+$fn$;
+
+-- The OTP path (apps/public, after its uniform answer was sent): the player_auth user id to issue a code
+-- for, or NULL when the phone is not an eligible player's (then no code exists and nothing is sent).
+CREATE OR REPLACE FUNCTION public.prepare_player_login(p_phone text)
+  RETURNS text
+  LANGUAGE plpgsql
+  SECURITY DEFINER
+  SET search_path = pg_catalog, pg_temp
+AS $fn$
+DECLARE
+  v_player uuid;
+BEGIN
+  SELECT p.id INTO v_player FROM public.players p WHERE p.phone = p_phone;
+  IF NOT FOUND THEN
+    RETURN NULL;
+  END IF;
+  RETURN public.player_auth_user_for(v_player);
+END
+$fn$;
+
+-- The player behind a player_auth user, or NULL when that player may not log in (anonymized, eligible for no
+-- program, or no player at all). Gates every new session (Better Auth's session.create hook) and maps a
+-- session to the player id US-027's play calls use.
+CREATE OR REPLACE FUNCTION public.player_for_login(p_auth_user_id text)
+  RETURNS uuid
+  LANGUAGE sql
+  STABLE
+  SECURITY DEFINER
+  SET search_path = pg_catalog, pg_temp
+AS $fn$
+  SELECT p.id
+    FROM public.players p
+   WHERE p.auth_user_id = p_auth_user_id AND p.anonymized_at IS NULL AND p.phone IS NOT NULL
+     AND EXISTS (SELECT 1 FROM public.player_programs pp WHERE pp.player_id = p.id AND pp.eligible)
+$fn$;
+
+-- Issues a magic link (worker_rw; US-025 sends it, AC-D2): the caller makes the token (packages/core
+-- issueMagicLink: 32 random bytes) and passes only its SHA-256; the database sets the expiry (its clock +
+-- 72 h) and keeps ONE live link per player and channel, deleting the previous unconsumed one of that channel
+-- (a resend supersedes what was sent before). Consumed links stay (a replay is refused as used).
+CREATE OR REPLACE FUNCTION public.issue_magic_link(p_player_id uuid, p_channel text, p_token_hash bytea)
+  RETURNS uuid
+  LANGUAGE plpgsql
+  SECURITY DEFINER
+  SET search_path = pg_catalog, pg_temp
+AS $fn$
+DECLARE
+  v_id uuid;
+BEGIN
+  IF p_player_id IS NULL OR p_channel IS NULL OR p_channel NOT IN ('whatsapp', 'email')
+     OR p_token_hash IS NULL OR octet_length(p_token_hash) <> 32 THEN
+    RAISE EXCEPTION 'issue_magic_link: player, channel (whatsapp, email) and a 32-byte token hash are required' USING ERRCODE = 'ET120';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM public.players p
+     WHERE p.id = p_player_id AND p.anonymized_at IS NULL AND p.phone IS NOT NULL
+       AND EXISTS (SELECT 1 FROM public.player_programs pp WHERE pp.player_id = p.id AND pp.eligible)
+  ) THEN
+    RAISE EXCEPTION 'issue_magic_link: the player may not log in' USING ERRCODE = 'ET121';
+  END IF;
+  -- One issuer at a time per player and channel (the partial unique index is the backstop).
+  PERFORM pg_advisory_xact_lock(hashtextextended('magic_link:' || p_player_id::text || ':' || p_channel, 0::bigint));
+  DELETE FROM public.magic_links WHERE player_id = p_player_id AND channel = p_channel AND consumed_at IS NULL;
+  INSERT INTO public.magic_links (player_id, channel, token_hash, expires_at, created_at)
+  VALUES (p_player_id, p_channel, p_token_hash, clock_timestamp() + interval '72 hours', clock_timestamp())
+  RETURNING id INTO v_id;
+  RETURN v_id;
+END
+$fn$;
+
+-- The player_auth user a magic link WOULD log in, without using it up (public_rw): the login creates the
+-- session first and consumes the link last (consume_magic_link), so a failure in between leaves the link
+-- unspent. NULL exactly when consume_magic_link would refuse.
+CREATE OR REPLACE FUNCTION public.magic_link_login_user(p_token_hash bytea, p_channel text)
+  RETURNS text
+  LANGUAGE plpgsql
+  SECURITY DEFINER
+  SET search_path = pg_catalog, pg_temp
+AS $fn$
+DECLARE
+  v_player uuid;
+BEGIN
+  IF p_token_hash IS NULL OR octet_length(p_token_hash) <> 32 OR p_channel IS NULL THEN
+    RETURN NULL;
+  END IF;
+  SELECT m.player_id INTO v_player
+    FROM public.magic_links m
+   WHERE m.token_hash = p_token_hash AND m.channel = p_channel
+     AND m.consumed_at IS NULL AND m.expires_at > clock_timestamp();
+  IF NOT FOUND THEN
+    RETURN NULL;
+  END IF;
+  RETURN public.player_auth_user_for(v_player);
+END
+$fn$;
+
+-- Whose account a session is (public_rw), shown right after a login so that a player who opened someone
+-- else's forwarded link sees it is not theirs (login CSRF): the player's phone masked by mask_phone
+-- ("****" + its last 3 digits), or NULL when the player may not log in.
+CREATE OR REPLACE FUNCTION public.player_login_label(p_auth_user_id text)
+  RETURNS text
+  LANGUAGE sql
+  STABLE
+  SECURITY DEFINER
+  SET search_path = pg_catalog, pg_temp
+AS $fn$
+  SELECT public.mask_phone(p.phone) FROM public.players p WHERE p.id = public.player_for_login(p_auth_user_id)
+$fn$;
+
+-- Consumes a magic link (public_rw; the POST behind the confirm page, never a GET): single use, the first
+-- caller wins (the row lock; a concurrent caller re-reads consumed_at and finds no row). Returns the
+-- player_auth user to create the session for, or NULL for an unknown, used or expired link, a link of the
+-- OTHER channel (not consumed then), or a player who may no longer log in (the link is then left unused).
+CREATE OR REPLACE FUNCTION public.consume_magic_link(p_token_hash bytea, p_channel text)
+  RETURNS text
+  LANGUAGE plpgsql
+  SECURITY DEFINER
+  SET search_path = pg_catalog, pg_temp
+AS $fn$
+DECLARE
+  v_id uuid;
+  v_player uuid;
+  v_user text;
+BEGIN
+  IF p_token_hash IS NULL OR octet_length(p_token_hash) <> 32 OR p_channel IS NULL THEN
+    RETURN NULL;
+  END IF;
+  SELECT m.id, m.player_id INTO v_id, v_player
+    FROM public.magic_links m
+   WHERE m.token_hash = p_token_hash AND m.channel = p_channel
+     AND m.consumed_at IS NULL AND m.expires_at > clock_timestamp()
+     FOR UPDATE;
+  IF NOT FOUND THEN
+    RETURN NULL;
+  END IF;
+  v_user := public.player_auth_user_for(v_player);
+  IF v_user IS NULL THEN
+    RETURN NULL;
+  END IF;
+  UPDATE public.magic_links SET consumed_at = clock_timestamp() WHERE id = v_id;
+  RETURN v_user;
+END
+$fn$;
+
+-- Prunes the OTP send ledger (worker_rw, the minute sweeper): rows older than 24 hours count for no cap any more
+-- (otp.phone_window_seconds is at most 86400 s, the global breaker counts 10 minutes), so only those go. The
+-- worker cannot delete a newer row, which would reset a phone's cap or the breaker. Returns how many went.
+CREATE OR REPLACE FUNCTION public.prune_otp_enqueues()
+  RETURNS integer
+  LANGUAGE plpgsql
+  SECURITY DEFINER
+  SET search_path = pg_catalog, pg_temp
+AS $fn$
+DECLARE
+  v_count integer;
+BEGIN
+  DELETE FROM public.otp_enqueues e WHERE e.enqueued_at < clock_timestamp() - interval '24 hours';
+  GET DIAGNOSTICS v_count = ROW_COUNT;
+  RETURN v_count;
+END
+$fn$;
+
+-- Deletes expired player sessions (worker_rw, the minute sweeper; it has no access to player_auth otherwise), and
+-- with them their session_state rows (ON DELETE CASCADE): a rotated-out token past its grace period, a session
+-- past its 30 days or its 90-day cap. Better Auth only deletes an expired session when that very cookie comes back.
+CREATE OR REPLACE FUNCTION public.prune_player_sessions()
+  RETURNS integer
+  LANGUAGE plpgsql
+  SECURITY DEFINER
+  SET search_path = pg_catalog, pg_temp
+AS $fn$
+DECLARE
+  v_count integer;
+BEGIN
+  DELETE FROM player_auth.session s
+   WHERE s."expiresAt" < clock_timestamp()
+      OR EXISTS (SELECT 1 FROM player_auth.session_state st
+                  WHERE st.session_id = s.id AND st.login_at < clock_timestamp() - interval '90 days');
+  GET DIAGNOSTICS v_count = ROW_COUNT;
+  RETURN v_count;
+END
+$fn$;
+
+REVOKE ALL ON FUNCTION public.prune_player_sessions() FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.prune_otp_enqueues() FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.player_auth_user_for(uuid) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.prepare_player_login(text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.player_for_login(text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.issue_magic_link(uuid, text, bytea) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.consume_magic_link(bytea, text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.magic_link_login_user(bytea, text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.player_login_label(text) FROM PUBLIC;
+-- US-026 BLOCK END.
 
 REVOKE ALL ON FUNCTION public.setting_positive_int(text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.score_answer(integer, integer, uuid, uuid, timestamptz, timestamptz, timestamptz, integer) FROM PUBLIC;

@@ -239,6 +239,7 @@ describe("override reason, limits, prize tiers, legal pages", () => {
       "otp.ip_cap": [1, 100],
       "otp.ip_window_seconds": [600, 86_400],
       "otp.cooldown_seconds": [15, 600],
+      "otp.global_send_cap": [50, 100_000],
       "orders.expiry_seconds": [900, 86_400],
       "orders.sales_close_buffer_minutes": [5, 1440],
       "checkout.ip_cap": [1, 1000],

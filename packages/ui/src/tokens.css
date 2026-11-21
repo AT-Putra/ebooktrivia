@@ -33,6 +33,11 @@
   --color-input: #64748B;
   --color-destructive: #DC2626;
   --color-on-destructive: #FFFFFF;
+  /* Button hover (and pressed) shades: solid, each keeping its on-colour at 4.5:1 or more (contrast-pairs.json). */
+  --color-primary-hover: #1D4ED8;
+  --color-secondary-hover: #6D28D9;
+  --color-accent-hover: #D97706;
+  --color-destructive-hover: #B91C1C;
   --color-destructive-soft: #FEE2E2;
   --color-destructive-soft-foreground: #7F1D1D;
   --color-success: #15803D;
@@ -109,6 +114,11 @@
   --color-input: #64748B;
   --color-destructive: #DC2626;
   --color-on-destructive: #FFFFFF;
+  /* Button hover (and pressed) shades: solid, each keeping its on-colour at 4.5:1 or more (contrast-pairs.json). */
+  --color-primary-hover: #1E293B;
+  --color-secondary-hover: #CBD5E1;
+  --color-accent-hover: #166534;
+  --color-destructive-hover: #B91C1C;
   --color-destructive-soft: #FEE2E2;
   --color-destructive-soft-foreground: #7F1D1D;
   --color-success: #15803D;
@@ -150,6 +160,11 @@
   --color-input: #64748B;
   --color-destructive: #F87171;
   --color-on-destructive: #0F172A;
+  /* Button hover (and pressed) shades: solid, each keeping its on-colour at 4.5:1 or more (contrast-pairs.json). */
+  --color-primary-hover: #E2E8F0;
+  --color-secondary-hover: #1E293B;
+  --color-accent-hover: #16A34A;
+  --color-destructive-hover: #EF4444;
   --color-destructive-soft: #7F1D1D;
   --color-destructive-soft-foreground: #FECACA;
   --color-success: #4ADE80;

@@ -71,6 +71,41 @@ describe("play.<DOMAIN>", () => {
   });
 });
 
+// US-026 security review L2: the player login lives on the play origin only.
+describe("the player login (play.<DOMAIN> only)", () => {
+  const PLAY_PAGES = ["/login", "/masuk", "/login/", "/Login", "/%6Cogin", "/MASUK"];
+  const PLAY_API = ["/api/v1/play/auth/otp", "/api/v1/play/auth/otp/verify", "/api/v1/play/auth/magic-link", "/api/v1/play/auth/logout", "/api/v1/play/auth/session", "/api/v1/play/cap/challenge", "/api/v1/play/cap/redeem", "/API/V1/PLAY/auth/otp", "/api/v1/%70lay/auth/otp", "/api/v1/play"];
+
+  it("serves the login pages (with the play CSP) and every /api/v1/play route on play.<DOMAIN>", () => {
+    for (const path of PLAY_PAGES) expect(route(`play.${DOMAIN}`, path), path).toEqual({ kind: "playPage" });
+    for (const path of PLAY_API) expect(route(`play.${DOMAIN}:443`, path), path).toEqual({ kind: "playApi" });
+  });
+
+  it("answers them 404 on every other host, in every spelling, and without a DOMAIN", () => {
+    for (const host of [`api.${DOMAIN}`, `admin.${DOMAIN}`, "lp.example.test", `play.${DOMAIN}.evil.test`, `xplay.${DOMAIN}`, "127.0.0.1:3100", "", null]) {
+      for (const path of [...PLAY_PAGES, ...PLAY_API]) expect(route(host, path), `${String(host)} ${path}`).toEqual({ kind: "notFound" });
+    }
+    for (const path of [...PLAY_PAGES, ...PLAY_API]) expect(route(`play.${DOMAIN}`, path, null, null), path).toEqual({ kind: "notFound" });
+  });
+
+  it("is the order origin's one 404 there (no play route on order.<DOMAIN>)", () => {
+    for (const path of ["/login", "/masuk"]) expect(route(`order.${DOMAIN}`, path)).toEqual({ kind: "orderPage", publicId: null });
+    for (const path of ["/api/v1/play/auth/otp", "/api/v1/play/cap/challenge"]) expect(route(`order.${DOMAIN}`, path)).toEqual({ kind: "orderPage", publicId: null });
+  });
+
+  it("moves to the dev play host (PUBLIC_DEV_PLAY_ORIGIN) when one is given, and only there", () => {
+    const dev = (host: string, path: string) => routeOrder({ host, domain: DOMAIN, pathname: path, orderIdParam: null, playHost: "127.0.0.1" });
+    expect(dev("127.0.0.1:3103", "/login")).toEqual({ kind: "playPage" });
+    expect(dev("127.0.0.1:3103", "/api/v1/play/auth/otp")).toEqual({ kind: "playApi" });
+    expect(dev("localhost:3103", "/login")).toEqual({ kind: "notFound" });
+    expect(dev(`play.${DOMAIN}`, "/login")).toEqual({ kind: "notFound" });
+  });
+
+  it("does not take /loginx, /masukan or /api/v1/players for a play route", () => {
+    for (const path of ["/loginx", "/masukan", "/api/v1/players", "/api/v1/playx/a"]) expect(route(`api.${DOMAIN}`, path), path).toEqual({ kind: "pass" });
+  });
+});
+
 describe("any other host, or none configured", () => {
   it("serves neither the order nor the legal routes on api.<DOMAIN>, an LP host or an unknown host", () => {
     for (const host of [`api.${DOMAIN}`, `admin.${DOMAIN}`, "lp.example.test", "127.0.0.1:3100", `order.${DOMAIN}.evil.test`, `xorder.${DOMAIN}`, null]) {
@@ -119,6 +154,9 @@ describe("Next's data route", () => {
     `/_next/data/${BUILD}/api/v1/order/status.json`,
     `/_next/data/${BUILD}/api/v1/order/claim.json`,
     `/_next/data/${BUILD}/legal/juni-2026/terms/3.json`,
+    `/_next/data/${BUILD}/login.json`,
+    `/_next/data/${BUILD}/masuk.json`,
+    `/_next/data/${BUILD}/api/v1/play/auth/otp.json`,
     `/_next/data/${BUILD}/index.json`,
     "/_next/data",
     "/_next/data/",

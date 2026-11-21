@@ -6,6 +6,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./hosts": "./src/hosts.ts",
+    "./magic-link-url": "./src/magic-link-url.ts",
     "./phone": "./src/phone.ts",
     "./public-id": "./src/public-id.ts",
     "./sdk-contract": "./src/sdk-contract.ts"

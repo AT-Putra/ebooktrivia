@@ -9,6 +9,8 @@ const base = {
   VALKEY_USERNAME: "public",
   VALKEY_PASSWORD: "pw",
   CAPTCHA_HMAC_KEY: "a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2",
+  PLAYER_AUTH_SECRETS: `2:${"c3d4".repeat(16)}, 1:${"E5F6".repeat(16)}`,
+  PLAYER_OTP_PEPPER: "0f1e".repeat(16),
 };
 
 describe("public config", () => {
@@ -20,7 +22,37 @@ describe("public config", () => {
       valkey: { host: "10.89.1.5", port: 6379, db: 0, username: "public", password: "pw", tls: false },
       captchaKey: Buffer.from(base.CAPTCHA_HMAC_KEY, "hex"),
       midtransStubUrl: null,
+      play: {
+        playOrigin: "https://play.ebooktrivia.example.id",
+        playerAuthSecrets: [
+          { version: 2, value: "c3d4".repeat(16) },
+          { version: 1, value: "e5f6".repeat(16) },
+        ],
+        otpPepper: Buffer.from(base.PLAYER_OTP_PEPPER, "hex"),
+      },
+      playUnavailable: null,
     });
+  });
+
+  it("parses the player login secrets (US-026); a missing or malformed one disables the login only, naming the variable", () => {
+    for (const secrets of [undefined, "", "1:abc", `1:${"ab".repeat(32)},1:${"cd".repeat(32)}`, `1:${"ab".repeat(32)},2:${"AB".repeat(32)}`, `1:${"0".repeat(64)}`, `1:${"ab".repeat(32)}`, `x:${"ab".repeat(32)}`]) {
+      const config = loadPublicConfig({ ...base, PLAYER_AUTH_SECRETS: secrets });
+      expect(config.play, String(secrets)).toBeNull();
+      expect(config.playUnavailable, String(secrets)).toMatch(/PLAYER_AUTH_SECRETS/);
+      expect(config.captchaKey).toHaveLength(32);
+    }
+    for (const pepper of [undefined, "ab".repeat(31), "zz".repeat(32)]) {
+      expect(loadPublicConfig({ ...base, PLAYER_OTP_PEPPER: pepper }).playUnavailable, String(pepper)).toMatch(/PLAYER_OTP_PEPPER/);
+    }
+    expect(loadPublicConfig({ ...base, PLAYER_OTP_PEPPER: "77".repeat(32) }).playUnavailable).toMatch(/one byte repeated/);
+  });
+
+  it("allows a loopback play origin outside production only (the e2e server)", () => {
+    expect(loadPublicConfig({ ...base, NODE_ENV: "test", PUBLIC_DEV_PLAY_ORIGIN: "http://127.0.0.1:3103" }).play?.playOrigin).toBe("http://127.0.0.1:3103");
+    expect(() => loadPublicConfig({ ...base, PUBLIC_DEV_PLAY_ORIGIN: "http://127.0.0.1:3103" })).toThrow(/dev-only/);
+    for (const url of ["http://10.0.0.1:3103", "http://127.0.0.1:3103/", "ftp://127.0.0.1", "nope"]) {
+      expect(() => loadPublicConfig({ ...base, NODE_ENV: "development", PUBLIC_DEV_PLAY_ORIGIN: url }), url).toThrow(/loopback/);
+    }
   });
 
   it("requires NODE_ENV, a lowercase DOMAIN and a postgres URL", () => {

@@ -402,7 +402,8 @@ describe("internal_rw", () => {
 
 describe("worker_rw denials", () => {
   it.each([
-    ["read player OTP rows", "SELECT id FROM public.player_otps"],
+    // US-026: the OTP expiry sweeper finds rows by id and expires_at only; never the HMAC or a sealed code.
+    ["read player OTP codes or their HMAC", "SELECT mac, sealed_code FROM public.player_otps"],
     ["read the OTP cap ledger", "SELECT otp_id FROM public.otp_enqueues"],
     ["read admin_auth", 'SELECT id FROM admin_auth."user"'],
     ["read player_auth", 'SELECT id FROM player_auth."user"'],

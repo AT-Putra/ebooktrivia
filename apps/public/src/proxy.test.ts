@@ -77,6 +77,76 @@ describe("play.<DOMAIN>/legal", () => {
   });
 });
 
+describe("play.<DOMAIN>: the player login (US-026, security review L2)", () => {
+  it("serves /login and /masuk with the play nonce CSP: strict-dynamic, wasm, blob workers; never unsafe-eval or blob scripts", async () => {
+    for (const path of ["/login", "/masuk"]) {
+      const response = await proxy(request("play.example.test", path, { "x-forwarded-proto": "https" }));
+      expect(response.headers.get("x-middleware-next"), path).toBe("1");
+      const policy = csp(response);
+      const script = /script-src ([^;]+)/.exec(policy)?.[1] ?? "";
+      expect(script).toBe(`'nonce-${nonceOf(response)}' 'strict-dynamic' 'wasm-unsafe-eval'`);
+      expect(policy).toContain("worker-src blob:");
+      expect(policy).toContain("connect-src 'self'");
+      expect(policy).toContain("frame-ancestors 'none'");
+      expect(policy).toContain("base-uri 'none'");
+      expect(policy).toContain("object-src 'none'");
+      expect(policy).toContain("upgrade-insecure-requests");
+      expect(policy).not.toContain("'unsafe-eval'");
+      expect(script).not.toContain("blob:");
+      expect(policy).not.toMatch(/facebook|tiktok|google/);
+      // The nonce also reaches the page render (Next puts it on its scripts).
+      expect(response.headers.get("x-middleware-request-x-nonce")).toBe(nonceOf(response));
+      expect(response.headers.get("referrer-policy")).toBe("no-referrer");
+      expect(response.headers.get("x-frame-options")).toBe("DENY");
+      expect(response.headers.get("cache-control")).toContain("no-store");
+    }
+  });
+
+  it("never adds 'unsafe-eval', not even in development", async () => {
+    vi.stubEnv("NODE_ENV", "development");
+    expect(csp(await proxy(request("play.example.test", "/login")))).not.toContain("'unsafe-eval'");
+  });
+
+  it("hands the play API through untouched on the play origin (the routes check the Origin themselves)", async () => {
+    const response = await proxy(request("play.example.test", "/api/v1/play/auth/otp", { cookie: "__Host-play_session=s" }));
+    expect(response.headers.get("x-middleware-next")).toBe("1");
+    expect(response.headers.get("content-security-policy")).toBeNull();
+  });
+
+  it("answers every play route with a bare 404 on any other host", async () => {
+    for (const host of ["api.example.test", "lp.example.test", "admin.example.test", "play.example.test.evil.test"]) {
+      for (const path of ["/login", "/masuk", "/api/v1/play/auth/otp", "/api/v1/play/auth/session", "/api/v1/play/cap/challenge"]) {
+        const response = await proxy(request(host, path));
+        expect(response.status, `${host}${path}`).toBe(404);
+        expect(await response.text()).toBe("");
+      }
+    }
+    // On the order origin: the order page's own 404.
+    expect(rewriteTarget(await proxy(request("order.example.test", "/login")))).toBe("/order/x");
+  });
+
+  it("refuses the play pages through Next's data route on every host", async () => {
+    vi.stubEnv("__NEXT_NO_MIDDLEWARE_URL_NORMALIZE", "1");
+    for (const host of ["play.example.test", "api.example.test"]) {
+      for (const path of ["/_next/data/BUILD/login.json", "/_next/data/BUILD/masuk.json", "/_next/data/BUILD/api/v1/play/auth/otp.json"]) {
+        expect((await proxy(request(host, path))).status, `${host}${path}`).toBe(404);
+      }
+    }
+  });
+
+  it("serves the play routes on the dev play host (PUBLIC_DEV_PLAY_ORIGIN) only when it is a loopback host", async () => {
+    vi.stubEnv("PUBLIC_DEV_PLAY_ORIGIN", "http://127.0.0.1:3103");
+    expect((await proxy(request("127.0.0.1:3103", "/login"))).headers.get("x-middleware-next")).toBe("1");
+    expect((await proxy(request("localhost:3103", "/login"))).status).toBe(404);
+    expect((await proxy(request("play.example.test", "/login"))).status).toBe(404);
+    for (const ignored of ["http://play.evil.test:3103", "not a url"]) {
+      vi.stubEnv("PUBLIC_DEV_PLAY_ORIGIN", ignored);
+      expect((await proxy(request("play.example.test", "/login"))).headers.get("x-middleware-next"), ignored).toBe("1");
+      expect((await proxy(request("play.evil.test:3103", "/login"))).status, ignored).toBe(404);
+    }
+  });
+});
+
 describe("other hosts", () => {
   it("answers the legal and order routes with a bare 404", async () => {
     for (const [host, path] of [

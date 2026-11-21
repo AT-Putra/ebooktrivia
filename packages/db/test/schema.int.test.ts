@@ -71,7 +71,7 @@ const PLAN_TABLES = {
     "payment_reconciliation_runs",
     "payment_reconciliation_findings",
   ],
-  player_auth: ["account", "session", "user", "verification"],
+  player_auth: ["account", "session", "session_state", "user", "verification"],
   admin_auth: ["account", "login_throttle", "recovery_code", "session", "session_state", "totp_used", "twoFactor", "user", "verification"],
 } as const;
 

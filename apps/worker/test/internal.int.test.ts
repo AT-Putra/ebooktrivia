@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, inject, it } from "vitest";
 import { INTERNAL_ENV } from "../src/internal-config.ts";
-import { createCatalog, sleep, sql, suffix, waitFor } from "./support/db.ts";
+import { createCatalog, letters, sleep, sql, suffix, waitFor } from "./support/db.ts";
 import { type Child, kill, MAIN, RECORD_GRAPH, spawnNode, waitForLine } from "./support/processes.ts";
 
 const TOKEN = `gt-${randomBytes(16).toString("hex")}`;
@@ -137,7 +137,8 @@ describe("POST /hooks/glitchtip/{token}", () => {
       SELECT source, kind, severity, message, dedupe_key FROM alerts WHERE message = ${title}`;
 
   it("inserts exactly one alerts row as internal_rw for the right token, and 404s a wrong one", async () => {
-    const title = `Boom-${suffix()}`;
+    // Letters only: a hex suffix of 8 digits would be masked as a phone number (src/pii.ts) and never match.
+    const title = `Boom-${letters()}`;
     expect((await post(issue(title), "wrong-token-of-some-length")).status).toBe(404);
     expect(await alertsWith(title)).toEqual([]);
     expect((await post(issue(title))).status).toBe(204);
@@ -147,7 +148,8 @@ describe("POST /hooks/glitchtip/{token}", () => {
   });
 
   it("refuses bodies over 64 KB with 413 (declared or streamed) and non-JSON with 400, storing nothing", async () => {
-    const title = `Big-${suffix()}`;
+    // Letters only, as above: a masked title would make "nothing stored" pass for the wrong reason.
+    const title = `Big-${letters()}`;
     const big = JSON.stringify({ text: title, pad: "x".repeat(64 * 1024) });
     expect((await post(big)).status).toBe(413);
     const chunks = new ReadableStream<Uint8Array>({

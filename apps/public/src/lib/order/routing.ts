@@ -9,8 +9,10 @@
 //                                                       id from the URL, a reload finds it in sessionStorage
 //                      /api/v1/order/{status,claim}     the page's own polling and pixel claim
 //                    anything else, malformed ids included, is the same 404 as an unknown order.
-//   play.<DOMAIN>    /legal/{program}/{kind}/{version}, and whatever else the play app serves.
-//   other hosts      neither the order nor the legal routes (404): they exist on their own host only.
+//   play.<DOMAIN>    /legal/{program}/{kind}/{version}; the player login (US-026, security review L2): the
+//                    pages /login and /masuk (the magic link's confirm page), with their own nonce CSP, and
+//                    every /api/v1/play/* route; and whatever else the play app serves.
+//   other hosts      neither the order, the legal nor the play routes (404): they exist on their own host only.
 // Without a configured DOMAIN no host is known, so the order and legal routes answer 404 (fail closed);
 // every other path passes through untouched (the checkout and Cap routes, the mockups).
 import { PUBLIC_ID_BODY, PUBLIC_ID_PATTERN } from "@ebooktrivia/core/public-id";
@@ -25,7 +27,15 @@ export type OrderRoute =
   /** The shell of the order origin's root, which sends a tab that has an order in sessionStorage back to its page. */
   | { readonly kind: "orderShell" }
   | { readonly kind: "orderApi" }
-  | { readonly kind: "legal" };
+  | { readonly kind: "legal" }
+  /** A player login page on the play origin (/login, /masuk): the play CSP. */
+  | { readonly kind: "playPage" }
+  /** A play API route on the play origin (/api/v1/play/*): JSON, no CSP. */
+  | { readonly kind: "playApi" };
+
+/** The player login's pages (US-026). Every play route lives on play.<DOMAIN> only. */
+export const PLAY_PAGE_PATHS: readonly string[] = ["/login", "/masuk"];
+export const PLAY_API_PREFIX = "/api/v1/play";
 
 export const ORDER_API_PATHS: readonly string[] = ["/api/v1/order/status", "/api/v1/order/claim"];
 
@@ -89,6 +99,11 @@ export interface RouteInput {
   readonly pathname: string;
   /** The `order_id` query parameter, if any. */
   readonly orderIdParam: string | null;
+  /**
+   * The play origin's host when it is not play.<DOMAIN>: the dev / test override PUBLIC_DEV_PLAY_ORIGIN (a
+   * loopback address, refused in production by lib/config.ts and ignored there by the proxy).
+   */
+  readonly playHost?: string | null;
 }
 
 export function routeOrder(input: RouteInput): OrderRoute {
@@ -114,8 +129,16 @@ export function routeOrder(input: RouteInput): OrderRoute {
   const lower = path.toLowerCase();
   const internalOrder = lower === "/order" || lower.startsWith("/order/") || lower.startsWith("/api/v1/order/") || lower === "/api/v1/order";
   if (internalOrder) return { kind: "notFound" };
+  const playHost = input.playHost ?? (input.domain === null ? null : `play.${input.domain}`);
+  const onPlay = playHost !== null && host === playHost;
   if (lower === "/legal" || lower.startsWith("/legal/")) {
-    return input.domain !== null && host === `play.${input.domain}` ? { kind: "legal" } : { kind: "notFound" };
+    return onPlay ? { kind: "legal" } : { kind: "notFound" };
+  }
+  if (PLAY_PAGE_PATHS.some((page) => lower === page || lower.startsWith(`${page}/`))) {
+    return onPlay ? { kind: "playPage" } : { kind: "notFound" };
+  }
+  if (lower === PLAY_API_PREFIX || lower.startsWith(`${PLAY_API_PREFIX}/`)) {
+    return onPlay ? { kind: "playApi" } : { kind: "notFound" };
   }
   return { kind: "pass" };
 }

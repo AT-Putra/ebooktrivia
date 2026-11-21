@@ -114,3 +114,42 @@ export const LEGAL_HEADERS: Readonly<Record<string, string>> = {
   "Cross-Origin-Opener-Policy": "same-origin",
   "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
 };
+
+/**
+ * The player login pages, /login and /masuk (US-026, security review L2), on the play origin. No vendor at all.
+ * Scripts: the request's nonce and 'strict-dynamic' (the self-hosted Cap widget is loaded by our own nonced
+ * script, apps/public/public/cap), 'wasm-unsafe-eval' for its WebAssembly solver; its proof of work runs in
+ * workers made from blob: URLs, so worker-src blob: (and blob: never in script-src). Never 'unsafe-eval', not
+ * even in development. Requests go to the page's own origin only (the login API, the Cap routes, the wasm).
+ */
+export function playContentSecurityPolicy(options: { readonly nonce: string; readonly https: boolean }): string {
+  return [
+    "default-src 'self'",
+    `script-src 'nonce-${options.nonce}' 'strict-dynamic' 'wasm-unsafe-eval'`,
+    "worker-src blob:",
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data:",
+    "font-src 'self'",
+    "connect-src 'self'",
+    "frame-src 'none'",
+    "frame-ancestors 'none'",
+    "base-uri 'none'",
+    "object-src 'none'",
+    "form-action 'self'",
+    ...(options.https ? ["upgrade-insecure-requests"] : []),
+  ].join("; ");
+}
+
+/**
+ * The player login pages: never framed, never cached, no Referer leaves them (the magic link's confirm page has
+ * just read its token from the URL fragment; a fragment is never in a Referer, and no other URL part is either).
+ */
+export const PLAY_HEADERS: Readonly<Record<string, string>> = {
+  "Referrer-Policy": "no-referrer",
+  "Cache-Control": "no-store, max-age=0",
+  "X-Content-Type-Options": "nosniff",
+  "X-Frame-Options": "DENY",
+  "X-Robots-Tag": "noindex, nofollow",
+  "Cross-Origin-Opener-Policy": "same-origin",
+  "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+};

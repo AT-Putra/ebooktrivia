@@ -15,6 +15,7 @@
     "esbuild": "0.28.2"
   },
   "exports": {
-    "./build": "./scripts/build.ts"
+    "./build": "./scripts/build.ts",
+    "./cap": "./src/cap.ts"
   }
 }

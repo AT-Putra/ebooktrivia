@@ -47,6 +47,42 @@ describe("startNextBehindEdge", () => {
     expect(await (await fetch(`${base}/`, { headers: { "x-forwarded-for": "198.51.100.7" } })).text()).toBe("198.51.100.7");
   });
 
+  it("on SIGTERM drains, then closes Next (which waits for after() work) before exiting 0", async () => {
+    const dir = standaloneDir({ version: 1, config: {} });
+    const events: string[] = [];
+    let finishPending: () => void = () => undefined;
+    const pending = new Promise<void>((resolve) => (finishPending = resolve));
+    const next: NextFactory = () => ({
+      prepare: () => Promise.resolve(),
+      getRequestHandler: () => (_req, res) => {
+        res.end("ok");
+      },
+      close: async () => {
+        events.push("close started");
+        await pending; // an after() task still running
+        events.push("close done");
+      },
+    });
+    const listeners = new Map<string, () => void>();
+    let exited: (code: number) => void = () => undefined;
+    const exit = new Promise<number>((resolve) => (exited = resolve));
+    const proc: SignalProcess = {
+      on: (event, listener) => listeners.set(event, listener),
+      exit: (code) => {
+        events.push(`exit ${String(code)}`);
+        exited(code);
+      },
+    };
+    const edge = await startNextBehindEdge(dir, { ...PROD, EDGE_DRAIN_MS: "0" }, next, () => undefined, proc);
+    edges.push(edge);
+    listeners.get("SIGTERM")?.();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(events).toEqual(["close started"]);
+    finishPending();
+    expect(await exit).toBe(0);
+    expect(events).toEqual(["close started", "close done", "exit 0"]);
+  });
+
   it("refuses to run outside production or without a build config", async () => {
     const next: NextFactory = () => {
       throw new Error("not reached");

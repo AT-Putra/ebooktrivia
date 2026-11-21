@@ -12,6 +12,7 @@ export * from "./ids.ts";
 export * from "./legal.ts";
 export * from "./mail.ts";
 export * from "./magic-link.ts";
+export * from "./magic-link-url.ts";
 export * from "./midtrans-methods.ts";
 export * from "./money.ts";
 export * from "./order-machine.ts";

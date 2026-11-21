@@ -54,14 +54,11 @@ GRANT SELECT ON
 GRANT SELECT (id, slug, name, clickid_param, active) ON public.adnets TO public_rw;
 GRANT SELECT (id, phone, status, active) ON public.waha_sessions TO public_rw;
 
-GRANT SELECT ON public.players TO public_rw;
-GRANT UPDATE (auth_user_id, name, email, updated_at) ON public.players TO public_rw;
-
-GRANT SELECT, INSERT, DELETE ON public.player_otps TO public_rw;
+-- players and magic_links: NO privilege at all (US-026, the US-009 carry-over); the login reaches them
+-- only through the US-026 functions (block at the end). player_otps: what the OTP issue (insert,
+-- supersede = delete) and the verify (attempts + 1 RETURNING mac) need, never the sealed code.
+GRANT SELECT (id, phone, mac, expires_at, attempts, created_at), INSERT, DELETE ON public.player_otps TO public_rw;
 GRANT UPDATE (attempts) ON public.player_otps TO public_rw;
-
-GRANT SELECT ON public.magic_links TO public_rw;
-GRANT UPDATE (consumed_at) ON public.magic_links TO public_rw;
 
 -- Play rows: INSERT gated by the *_play_guard triggers (eligible player, published program);
 -- UPDATE only of the progress columns, so a row cannot be moved to another player/set/question.
@@ -182,7 +179,9 @@ GRANT SELECT, INSERT, UPDATE ON
 GRANT SELECT ON public.winners TO worker_rw;
 GRANT INSERT (program_id, snapshot_id, prize_tier_id, player_id, rank) ON public.winners TO worker_rw;
 GRANT UPDATE (status, flagged_at, flag_reason, updated_at) ON public.winners TO worker_rw;
-GRANT SELECT, INSERT ON public.conversion_attempts, public.leaderboard_snapshots, public.magic_links TO worker_rw;
+GRANT SELECT, INSERT ON public.conversion_attempts, public.leaderboard_snapshots TO worker_rw;
+-- Magic links are issued only through issue_magic_link (US-026 block); the worker still reads them.
+GRANT SELECT ON public.magic_links TO worker_rw;
 GRANT SELECT, UPDATE ON public.set_attempts TO worker_rw;
 
 GRANT SELECT ON public.orders TO worker_rw;
@@ -366,3 +365,31 @@ GRANT EXECUTE ON FUNCTION public.lock_program_contest(uuid), public.setting_posi
   public.mask_name(text), public.mask_phone(text)
   TO contest_results;
 -- US-028 BLOCK END.
+
+-- ---------------------------------------------------------------------------------------------
+-- US-026 (M9a player authentication) BLOCK BEGIN. The table privileges of players, magic_links and
+-- player_otps are final in the role sections above (folded, no REVOKE needed here); this block adds the
+-- function grants and the few new privileges.
+--
+-- public_rw (US-009 carry-over: no table-level read of players): it reads no column of players at all. A
+-- phone becomes a login only through prepare_player_login (the OTP path), a magic link only through
+-- magic_link_login_user + consume_magic_link, a session a player id only through player_for_login, and the
+-- signed-in label only through player_login_label (masked; sql/functions.sql), so a compromised public app
+-- cannot list buyers' phones, names or e-mail addresses from players. (Better Auth needs player_auth: its
+-- user rows hold the phone of each player who has logged in, see functions.sql.)
+GRANT EXECUTE ON FUNCTION public.prepare_player_login(text), public.player_for_login(text), public.player_login_label(text),
+  public.magic_link_login_user(bytea, text), public.consume_magic_link(bytea, text)
+  TO public_rw;
+-- worker_rw: issues magic links only through issue_magic_link (US-025; it derives the expiry and keeps one
+-- live link per player and channel), and the minute sweeper deletes expired OTP rows (their HMAC and any
+-- sealed code not moved yet): the expiry to find them, never the code or its HMAC.
+GRANT EXECUTE ON FUNCTION public.issue_magic_link(uuid, text, bytea) TO worker_rw;
+GRANT SELECT (id, expires_at), DELETE ON public.player_otps TO worker_rw;
+-- The same sweeper prunes the OTP send ledger, older than 24 hours only (prune_otp_enqueues), and expired player
+-- sessions with their state (prune_player_sessions); it has no other access to player_auth.
+GRANT EXECUTE ON FUNCTION public.prune_otp_enqueues(), public.prune_player_sessions() TO worker_rw;
+-- admin_rw (security review L4): reads magic links (support), never issues, consumes or deletes one; reads the
+-- OTP send ledger, never writes it (deleting or backdating its rows would reset a phone's cap and the breaker).
+REVOKE INSERT, UPDATE, DELETE ON public.magic_links FROM admin_rw;
+REVOKE INSERT, UPDATE, DELETE ON public.otp_enqueues FROM admin_rw;
+-- US-026 BLOCK END.

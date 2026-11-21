@@ -109,10 +109,10 @@ const CHECKOUT_KEYS = [
 ] as const;
 const CAPTCHA_KEYS = ["captcha.ip_cap", "captcha.ip_window_seconds", "captcha.ip48_cap"] as const;
 
-type IntSettings<K extends string> = Readonly<Record<K, number>>;
+export type IntSettings<K extends string> = Readonly<Record<K, number>>;
 
 /** Positive whole numbers (the DB CHECKs guarantee it; a missing one fails closed, like setting_positive_int). */
-async function intSettings<K extends string>(sql: Sql, keys: readonly K[]): Promise<IntSettings<K>> {
+export async function intSettings<K extends string>(sql: Sql, keys: readonly K[]): Promise<IntSettings<K>> {
   const rows = await sql<{ key: string; value: unknown }[]>`SELECT key, value FROM public.app_settings WHERE key = ANY (${keys as readonly string[] as string[]})`;
   const byKey = new Map(rows.map((r) => [r.key, r.value]));
   const out: Partial<Record<K, number>> = {};

@@ -91,6 +91,23 @@ export const playerAuthVerification = playerAuth.table("verification", verificat
   index("verification_identifier_idx").on(t.identifier),
 ]);
 
+/**
+ * The player app's own session state (US-026; not a Better Auth table, its planner ignores it): when the
+ * LOGIN that started a session's rotation chain happened. A login (OTP or magic link) writes it, a rotation
+ * copies it to the new session, and no session is used past login_at + 90 days (the absolute cap) or
+ * without this row (fail closed). Deleted with its session.
+ */
+export const playerAuthSessionState = playerAuth.table(
+  "session_state",
+  {
+    sessionId: text("session_id").primaryKey(),
+    loginAt: ts("login_at").notNull(),
+  },
+  (t) => [
+    foreignKey({ name: "session_state_session_id_fkey", columns: [t.sessionId], foreignColumns: [playerAuthSession.id] }).onDelete("cascade"),
+  ],
+);
+
 // ---- admin_auth (emailAndPassword + twoFactor plugin) ----
 export const adminAuth = pgSchema("admin_auth");
 

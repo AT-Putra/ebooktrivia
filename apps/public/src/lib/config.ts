@@ -20,6 +20,19 @@
 //                         dev / test only: http(s)://<loopback>:<port> of infra/midtrans-stub. The
 //                         sandbox hosts are rewritten to it (the environment stays sandbox, so the
 //                         redirect host check is unchanged). Refused with NODE_ENV=production.
+// Player login (US-026, lib/play/*):
+//   PLAYER_AUTH_SECRETS   Better Auth's versioned secrets of the player instance, newest first:
+//                         "<version>:<64 hex>,..."; the first signs the __Host-play_session cookie,
+//                         older ones still verify it (rotation without logging everyone out).
+//   PLAYER_OTP_PEPPER     the OTP HMAC key (player_otps.mac = HMAC-SHA256(pepper, phone:code)): at least
+//                         32 bytes as canonical hex, never in the database. Changing it voids the codes in
+//                         flight (players ask for a new one).
+//   SECRETS_MESSAGING_PUBLIC_KEY
+//                         the messaging PUBLIC key (base64url X25519): every OTP is sealed to it for the
+//                         worker, which alone holds the private key (lib/runtime.ts).
+//   PUBLIC_DEV_PLAY_ORIGIN
+//                         dev / test only: the play origin when it is not https://play.<DOMAIN> (the e2e
+//                         server on http://127.0.0.1:<port>). Refused with NODE_ENV=production.
 import { decodeSecretKey, normalizeHost } from "@ebooktrivia/core";
 
 export type Env = Readonly<Record<string, string | undefined>>;
@@ -50,9 +63,24 @@ export interface PublicConfig {
   readonly captchaKey: Buffer;
   /** Dev / test only (refused in production). */
   readonly midtransStubUrl: string | null;
+  /**
+   * The player login, or null with `playUnavailable` saying which variable is missing or malformed: the
+   * login is optional for the rest of the app (checkout and the Midtrans webhook keep working; only the play
+   * routes answer 503, lib/runtime.ts).
+   */
+  readonly play: PlayConfig | null;
+  readonly playUnavailable: string | null;
 }
 
-export const DEV_FLAG_ENV = ["PUBLIC_DEV_MIDTRANS_STUB_URL"] as const;
+export interface PlayConfig {
+  /** https://play.<DOMAIN> (or the dev override): Better Auth's baseURL and the one Origin play mutations accept. */
+  readonly playOrigin: string;
+  /** Newest first. */
+  readonly playerAuthSecrets: readonly { readonly version: number; readonly value: string }[];
+  readonly otpPepper: Buffer;
+}
+
+export const DEV_FLAG_ENV = ["PUBLIC_DEV_MIDTRANS_STUB_URL", "PUBLIC_DEV_PLAY_ORIGIN"] as const;
 const FOREIGN_PRIVATE_KEYS = ["SECRETS_MESSAGING_PRIVATE_KEY", "SECRETS_CONVERSIONS_PRIVATE_KEY"] as const;
 const LOOPBACK = new Set(["127.0.0.1", "[::1]", "localhost"]);
 
@@ -135,6 +163,55 @@ function captchaKey(env: Env): Buffer {
   return key;
 }
 
+function hexKey(env: Env, name: string): Buffer {
+  let key: Buffer;
+  try {
+    key = decodeSecretKey(value(env, name) ?? "", "hex");
+  } catch {
+    throw new PublicConfigError(`${name} must be at least 32 bytes of canonical hex (64 hex characters)`);
+  }
+  if (key.every((byte) => byte === key[0])) throw new PublicConfigError(`${name} must be random bytes, not one byte repeated`);
+  return key;
+}
+
+/** PLAYER_AUTH_SECRETS ("<version>:<64 hex>,...", newest first; versions and secrets distinct). */
+export function parsePlayerAuthSecrets(raw: string | undefined): { version: number; value: string }[] {
+  const fail = (): never => {
+    throw new PublicConfigError('PLAYER_AUTH_SECRETS must be "<version>:<64 hex characters>,..." with distinct versions and distinct secrets');
+  };
+  if (raw === undefined) return fail();
+  const versions = new Set<number>();
+  const values = new Set<string>();
+  return raw.split(",").map((entry) => {
+    const match = /^\s*(\d{1,6}):([0-9a-fA-F]{64})\s*$/.exec(entry);
+    if (match === null) return fail();
+    const version = Number(match[1]);
+    const secret = (match[2] ?? "").toLowerCase();
+    const bytes = Buffer.from(secret, "hex");
+    // One byte repeated (such as 64 zeros) is a placeholder, not a secret.
+    if (versions.has(version) || values.has(secret) || bytes.every((byte) => byte === bytes[0])) return fail();
+    versions.add(version);
+    values.add(secret);
+    return { version, value: secret };
+  });
+}
+
+function playOrigin(env: Env, production: boolean, domain: string): string {
+  const raw = value(env, "PUBLIC_DEV_PLAY_ORIGIN");
+  if (raw === undefined) return `https://play.${domain}`;
+  if (production) throw new PublicConfigError("PUBLIC_DEV_PLAY_ORIGIN is a dev-only flag and is refused with NODE_ENV=production");
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new PublicConfigError("PUBLIC_DEV_PLAY_ORIGIN must be http(s)://<loopback>:<port>");
+  }
+  if ((url.protocol !== "http:" && url.protocol !== "https:") || !LOOPBACK.has(url.hostname) || url.origin !== raw) {
+    throw new PublicConfigError("PUBLIC_DEV_PLAY_ORIGIN must be http(s)://<loopback>:<port>");
+  }
+  return url.origin;
+}
+
 export function loadPublicConfig(env: Env): PublicConfig {
   const production = nodeEnv(env);
   const leaked = FOREIGN_PRIVATE_KEYS.filter((name) => env[name] !== undefined);
@@ -142,6 +219,16 @@ export function loadPublicConfig(env: Env): PublicConfig {
   const rawDomain = value(env, "DOMAIN");
   const domain = rawDomain === undefined ? null : normalizeHost(rawDomain);
   if (domain === null || domain !== rawDomain || !domain.includes(".")) throw new PublicConfigError("DOMAIN must be a lowercase host name such as example.id (punycode for IDN, no trailing dot)");
+  // A dev-only flag in production is refused for the whole app, as PUBLIC_DEV_MIDTRANS_STUB_URL is.
+  const origin = playOrigin(env, production, domain);
+  let play: PlayConfig | null = null;
+  let playUnavailable: string | null = null;
+  try {
+    play = { playOrigin: origin, playerAuthSecrets: parsePlayerAuthSecrets(value(env, "PLAYER_AUTH_SECRETS")), otpPepper: hexKey(env, "PLAYER_OTP_PEPPER") };
+  } catch (error) {
+    if (!(error instanceof PublicConfigError)) throw error;
+    playUnavailable = error.message;
+  }
   return {
     production,
     domain,
@@ -149,5 +236,7 @@ export function loadPublicConfig(env: Env): PublicConfig {
     valkey: parseValkey(env, production),
     captchaKey: captchaKey(env),
     midtransStubUrl: stubUrl(env, production),
+    play,
+    playUnavailable,
   };
 }

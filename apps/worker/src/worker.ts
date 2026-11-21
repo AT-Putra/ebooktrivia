@@ -3,7 +3,7 @@
 // behaviour lives in relay.ts, outbox-consumer.ts, conversion-fire.ts, sweepers.ts, heartbeat.ts.
 //
 // Ports are what later stories plug in (the worker registers nothing it cannot run):
-//   outboxConsumers  otp.send / waha.inbound / deliveries (US-025). Only topics listed here (and the ones
+//   outboxConsumers  waha.inbound / deliveries (US-025). Only topics listed here (and the ones
 //                    the ports below add: payment.notification, template.test_send, conversion.mo, order.paid)
 //                    are relayed.
 //   fireConversion   a conversion fire port (tests). Without one no conversion.fire queue exists and the
@@ -16,6 +16,9 @@
 //   orderPaidNudges  what a PAID order's effects need to be hurried along: one nudge per port that has a queue to
 //                    put them on (the conversion queue today; a later story adds its delivery nudge here). The
 //                    order.paid consumer is registered when there is at least one nudge, key or no key.
+//   otp              the otp.send consumer (US-026, otp-send.ts): the messaging private key opens the
+//                    sealed codes, the OtpSender sends them (US-025 swaps in its pool). runWorker wires it
+//                    when worker.env holds SECRETS_MESSAGING_PRIVATE_KEY; without it otp.send is not relayed.
 //   deliverDelivery  the delivery consumer (US-025). Without it no delivery.send queue exists and
 //                    the deliveries sweeper does not run.
 //   testSend         the senders of admin template test-sends (US-017, template-test-send.ts).
@@ -27,7 +30,7 @@
 // The grace-end sweeper needs no port: its work is the SECURITY DEFINER SQL function
 // public.create_leaderboard_snapshot (US-028, sweepers.ts), so it always runs.
 // The production entry (main.ts) passes no ports: runWorker wires the ones worker.env enables
-// (template test-sends, payments); test/support/worker-harness.ts runs this same composition with
+// (template test-sends, OTPs, payments); test/support/worker-harness.ts runs this same composition with
 // test ports for the chaos tests.
 import { PG_CONNECTION_OPTIONS } from "@ebooktrivia/db/connection";
 import { type Queue, Worker } from "bullmq";
@@ -53,6 +56,8 @@ import { type PaymentPort, paymentsFromEnv } from "./midtrans-access.ts";
 import { createPaymentNotificationConsumer, ORDER_PAID_TOPIC, PAYMENT_TOPIC } from "./payments.ts";
 import { type ConversionPort, conversionsFromEnv } from "./conversions.ts";
 import { createMoConsumer, createOrderPaidConsumer, MO_TOPIC, nudgeConversions, type OrderPaidNudge } from "./conversion-outbox.ts";
+import { createOtpSendConsumer, OTP_TOPIC } from "./otp-send.ts";
+import { otpFromEnv, type OtpPort } from "./otp-senders.ts";
 import { reconcileIfDue } from "./reconciliation.ts";
 
 export const RELAY_BATCH = 200;
@@ -72,6 +77,8 @@ export interface WorkerPorts {
   readonly testSend?: (sql: postgres.Sql) => TestSender;
   /** US-021: Midtrans re-queries (payment.notification consumer, nightly reconciliation). */
   readonly payments?: PaymentPort;
+  /** US-026: the otp.send consumer's key and sender. */
+  readonly otp?: OtpPort;
 }
 
 export interface RunningWorker {
@@ -98,6 +105,7 @@ export async function startWorker(config: WorkerConfig, ports: WorkerPorts, log:
     ...(ports.payments === undefined ? [] : [PAYMENT_TOPIC]),
     ...(ports.conversions === undefined ? [] : [MO_TOPIC]),
     ...(nudgeSources.length === 0 ? [] : [ORDER_PAID_TOPIC]),
+    ...(ports.otp === undefined ? [] : [OTP_TOPIC]),
   ];
   if (new Set(topics).size !== topics.length) throw new Error("two outbox consumers registered for one topic");
 
@@ -186,6 +194,7 @@ export async function startWorker(config: WorkerConfig, ports: WorkerPorts, log:
   if (ports.testSend !== undefined) consumers.push(createTemplateTestSendConsumer({ sql, sender: ports.testSend(sql) }));
   const { payments } = ports;
   if (payments !== undefined) consumers.push(createPaymentNotificationConsumer({ sql, midtrans: payments.midtrans, log, waDelayMs: payments.waDelayMs }));
+  if (ports.otp !== undefined) consumers.push(createOtpSendConsumer({ sql, opener: ports.otp.opener, sender: ports.otp.sender(sql), log }));
   if (ports.conversions !== undefined) consumers.push(createMoConsumer());
   if (nudgeSources.length > 0) consumers.push(createOrderPaidConsumer(nudgeSources.map((make) => make({ sql, conversionQueue }))));
   const outboxMaxAttempts = new Map(consumers.flatMap((c): [string, number][] => (c.maxAttempts === undefined ? [] : [[c.topic, c.maxAttempts]])));
@@ -273,12 +282,14 @@ export async function runWorker(env: Env, ports: WorkerPorts = {}): Promise<void
   const payments = ports.payments ?? paymentsFromEnv(env, config);
   // The conversions private key opens the adnet secrets and the CAPI access tokens.
   const conversions = ports.conversions ?? conversionsFromEnv(env, config);
+  const otp = ports.otp ?? otpFromEnv(env, config.dev);
+  if (otp === undefined) log.warn("SECRETS_MESSAGING_PRIVATE_KEY is not set: OTP login codes are not sent");
   // Code review m7: say it at start, not only through the hourly "no consumer" alert.
   if (payments === undefined) log.warn("SECRETS_PAYMENT_PRIVATE_KEY is not set: Midtrans notifications are not processed and no order can become PAID");
   if (conversions === undefined && ports.fireConversion === undefined) log.warn("SECRETS_CONVERSIONS_PRIVATE_KEY is not set: no adnet postback and no CAPI event is sent");
   const running = await startWorker(
     config,
-    { ...ports, ...(testSend === undefined ? {} : { testSend }), ...(payments === undefined ? {} : { payments }), ...(conversions === undefined ? {} : { conversions }) },
+    { ...ports, ...(testSend === undefined ? {} : { testSend }), ...(payments === undefined ? {} : { payments }), ...(conversions === undefined ? {} : { conversions }), ...(otp === undefined ? {} : { otp }) },
     log,
   );
   onShutdown(() => running.stop(), log);

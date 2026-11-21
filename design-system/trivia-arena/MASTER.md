@@ -92,7 +92,8 @@
 }
 
 .btn-primary:hover {
-  opacity: 0.9;
+  /* A solid, darker shade (packages/ui --color-*-hover), never opacity: the text keeps 4.5:1 or more. */
+  background: var(--color-primary-hover);
   transform: translateY(-1px);
 }
 

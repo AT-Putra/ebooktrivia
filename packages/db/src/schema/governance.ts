@@ -313,6 +313,8 @@ export const APP_SETTING_BOUNDS = {
   "otp.ip_cap": [1, 100],
   "otp.ip_window_seconds": [600, 86_400],
   "otp.cooldown_seconds": [15, 600],
+  // US-026: the global OTP send breaker, codes sent per 10 minutes over ALL phones (enqueue_otp).
+  "otp.global_send_cap": [50, 100_000],
   "orders.expiry_seconds": [900, 86_400],
   // US-020 checkout (AC-S4, AC-S8): checkout closes this long before sales_end_at, and the Valkey
   // rate limits of the public API (N requests per window, per client IP / phone / landing page;

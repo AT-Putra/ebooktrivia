@@ -355,6 +355,7 @@ describe("bounds and precision as CHECKs (every writer)", () => {
       "otp.ip_cap",
       "otp.ip_window_seconds",
       "otp.cooldown_seconds",
+      "otp.global_send_cap",
       "orders.expiry_seconds",
       "orders.sales_close_buffer_minutes",
       "checkout.ip_cap",

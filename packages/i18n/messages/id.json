@@ -219,5 +219,49 @@
       "notReady": "Halaman ini belum bisa menerima pesanan.",
       "generic": "Terjadi kesalahan. Coba lagi."
     }
+  },
+  "login": {
+    "pageTitle": "Masuk",
+    "title": "Masuk ke Trivia",
+    "intro": "Masukkan nomor WhatsApp yang kamu pakai saat membeli ebook. Kami kirim kode 6 digit lewat WhatsApp.",
+    "phoneLabel": "Nomor WhatsApp",
+    "phoneHint": "Contoh: 0812 3456 7890",
+    "sendCode": "Kirim kode",
+    "sending": "Mengirim…",
+    "codeTitle": "Masukkan kode",
+    "codeSent": "Jika {phone} terdaftar sebagai nomor pembeli, kode 6 digit sudah kami kirim lewat WhatsApp. Kode berlaku 5 menit.",
+    "codeLabel": "Kode OTP",
+    "codeHint": "6 digit angka dari pesan WhatsApp",
+    "verify": "Masuk",
+    "verifying": "Memeriksa…",
+    "resend": "Kirim ulang kode",
+    "resendIn": "Kirim ulang dalam {seconds} detik",
+    "changeNumber": "Ganti nomor",
+    "magicLinkHint": "Punya tautan masuk dari WhatsApp atau email? Buka tautan itu untuk masuk tanpa kode.",
+    "signedInTitle": "Berhasil masuk",
+    "signedInAs": "Masuk sebagai {phone}",
+    "signedInHint": "Pastikan ini nomor WhatsApp-mu. Kalau bukan, keluar lalu masuk dengan nomormu sendiri.",
+    "openTrivia": "Buka trivia",
+    "notYou": "Bukan kamu? Keluar",
+    "errors": {
+      "phoneInvalid": "Nomor WhatsApp tidak valid. Pakai nomor Indonesia, contoh 0812 3456 7890.",
+      "codeInvalid": "Kode harus 6 digit angka.",
+      "codeWrong": "Kode salah atau sudah tidak berlaku. Coba lagi atau kirim ulang kode.",
+      "rateLimited": "Terlalu banyak percobaan. Coba lagi dalam {seconds} detik.",
+      "captcha": "Pemeriksaan keamanan gagal. Silakan coba lagi.",
+      "unavailable": "Layanan sedang sibuk. Coba lagi sebentar lagi.",
+      "network": "Koneksi terputus. Periksa internetmu lalu coba lagi."
+    }
+  },
+  "magicLink": {
+    "pageTitle": "Masuk dengan tautan",
+    "title": "Masuk dengan tautan",
+    "body": "Tekan tombol di bawah untuk masuk ke Trivia Arena. Tautan ini hanya bisa dipakai sekali.",
+    "confirm": "Masuk sekarang",
+    "confirming": "Memproses…",
+    "invalidTitle": "Tautan tidak berlaku",
+    "invalidBody": "Tautan ini sudah dipakai, kedaluwarsa, atau tidak lengkap. Masuk dengan kode WhatsApp saja.",
+    "toLogin": "Masuk dengan kode WhatsApp",
+    "noScript": "Aktifkan JavaScript untuk masuk dengan tautan ini."
   }
 }

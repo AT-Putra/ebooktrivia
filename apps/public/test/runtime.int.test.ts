@@ -4,7 +4,7 @@ import { randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { generateScopeKeyPair } from "@ebooktrivia/crypto";
-import { describe, expect, inject, it } from "vitest";
+import { describe, expect, inject, it, vi } from "vitest";
 import { LoginRoleError } from "../src/lib/db.ts";
 import { createRuntime } from "../src/lib/runtime.ts";
 import { DOMAIN } from "./support.ts";
@@ -18,6 +18,9 @@ const env = (overrides: Record<string, string | undefined> = {}): Record<string,
   VALKEY_PASSWORD: inject("valkeyPassword"),
   SECRETS_PAYMENT_PRIVATE_KEY: inject("paymentPrivateKey"),
   CAPTCHA_HMAC_KEY: randomBytes(32).toString("hex"),
+  PLAYER_AUTH_SECRETS: `1:${randomBytes(32).toString("hex")}`,
+  PLAYER_OTP_PEPPER: randomBytes(32).toString("hex"),
+  SECRETS_MESSAGING_PUBLIC_KEY: generateScopeKeyPair().publicKey.toString("base64url"),
   ...overrides,
 });
 
@@ -42,6 +45,44 @@ describe("public runtime", () => {
 
   it("refuses to start without its Cap signing key", async () => {
     await expect(createRuntime(env({ CAPTCHA_HMAC_KEY: undefined }))).rejects.toThrow(/CAPTCHA_HMAC_KEY/);
+  });
+
+  it("starts the player login with the messaging PUBLIC key only (US-026)", async () => {
+    const rt = await createRuntime(env());
+    try {
+      expect(rt.play?.playOrigin).toBe(`https://play.${DOMAIN}`);
+      expect(rt.play?.sql).toBe(rt.checkout.sql);
+      expect(rt.play?.sealer.sealOtp({ otpId: "00000000-0000-4000-8000-000000000001", phone: "+6281234567890", code: "123456" })).toHaveLength(54);
+    } finally {
+      await rt.close();
+    }
+  });
+
+  it.each([
+    ["SECRETS_MESSAGING_PUBLIC_KEY missing", { SECRETS_MESSAGING_PUBLIC_KEY: undefined }],
+    ["SECRETS_MESSAGING_PUBLIC_KEY malformed", { SECRETS_MESSAGING_PUBLIC_KEY: "not-a-key" }],
+    ["PLAYER_OTP_PEPPER missing", { PLAYER_OTP_PEPPER: undefined }],
+    ["PLAYER_AUTH_SECRETS missing", { PLAYER_AUTH_SECRETS: undefined }],
+  ])("without the player login (%s) checkout and the webhook still start; only play is off, with a warning", async (_name, overrides) => {
+    const lines: string[] = [];
+    const spy = vi.spyOn(process.stderr, "write").mockImplementation((chunk) => {
+      lines.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"));
+      return true;
+    });
+    let rt: Awaited<ReturnType<typeof createRuntime>>;
+    try {
+      rt = await createRuntime(env(overrides));
+    } finally {
+      spy.mockRestore();
+    }
+    try {
+      expect(rt.play).toBeNull();
+      expect(rt.checkout.opener.scopes).toEqual(["payment"]);
+      expect(await rt.checkout.valkey.ping()).toBe("PONG");
+      expect(lines.join("")).toContain('"event":"play.disabled"');
+    } finally {
+      await rt.close();
+    }
   });
 
   it("refuses another scope's private key", async () => {

@@ -117,8 +117,11 @@ export async function hitRateLimits(valkey: Valkey, limits: readonly RateLimit[]
   return { allowed: false, index: index - 1, retryAfterSeconds: Math.max(1, Math.ceil((ttl > 0 ? ttl : refused.windowMs) / 1000)) };
 }
 
-/** The rate-limit key part for a phone: never the number itself (PII in Valkey). */
-export const phoneKey = (e164: string): string => sha256Hex(`ebooktrivia/checkout-phone/v1|${e164}`).slice(0, 32);
+/**
+ * The rate-limit key part for a phone: never the number itself (PII in Valkey). `label` keeps each use's hashes
+ * apart (the checkout's, the player login's "otp-phone/v1"), so one key part never names a phone in two places.
+ */
+export const phoneKey = (e164: string, label = "checkout-phone/v1"): string => sha256Hex(`ebooktrivia/${label}|${e164}`).slice(0, 32);
 
 // ---------------------------------------------------------------------------------------------
 // The single-use marks of redeemed Cap tokens (captcha.ts ReplayStore)

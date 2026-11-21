@@ -8,12 +8,12 @@ export const buttonVariants = cva(
   {
     variants: {
       variant: {
-        default: "bg-primary text-on-primary hover:bg-primary/90",
-        cta: "bg-accent text-on-accent hover:bg-accent/90",
-        secondary: "bg-secondary text-on-secondary hover:bg-secondary/90",
+        default: "bg-primary text-on-primary hover:bg-primary-hover active:bg-primary-hover",
+        cta: "bg-accent text-on-accent hover:bg-accent-hover active:bg-accent-hover",
+        secondary: "bg-secondary text-on-secondary hover:bg-secondary-hover active:bg-secondary-hover",
         outline: "border-2 border-input bg-card text-card-foreground hover:bg-muted",
         ghost: "text-foreground hover:bg-muted",
-        destructive: "bg-destructive text-on-destructive hover:bg-destructive/90",
+        destructive: "bg-destructive text-on-destructive hover:bg-destructive-hover active:bg-destructive-hover",
         link: "text-primary underline-offset-4 hover:underline",
       },
       size: {

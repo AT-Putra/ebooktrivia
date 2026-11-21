@@ -16,11 +16,15 @@
 //   - drops the Cookie request header on the order origin (Caddy already removes it in both directions; the
 //     page never reads one);
 //   - rate-limits the order page's lookups per client IP before touching the database (fail closed).
+// The player login (US-026, security review L2) lives on play.<DOMAIN> only: /login, /masuk and /api/v1/play/*
+// answer 404 on every other host; the two pages get the play nonce CSP (lib/order/csp.ts
+// playContentSecurityPolicy) and PLAY_HEADERS, the API routes pass through (they answer JSON with their own
+// headers and check the Origin themselves).
 // Everything else passes through untouched (the checkout and Cap routes, the mockups).
 // The vendor lookup runs the same SECURITY DEFINER read as the page (get_order_status), once per page load.
 import { randomBytes } from "node:crypto";
 import { type NextRequest, NextResponse } from "next/server";
-import { contentSecurityPolicy, LEGAL_HEADERS, ORDER_HEADERS } from "./lib/order/csp.ts";
+import { contentSecurityPolicy, LEGAL_HEADERS, ORDER_HEADERS, PLAY_HEADERS, playContentSecurityPolicy } from "./lib/order/csp.ts";
 import { getOrderStatus } from "./lib/order/data.ts";
 import { orderRateLimit } from "./lib/order/handler.ts";
 import { routeOrder } from "./lib/order/routing.ts";
@@ -34,19 +38,50 @@ function configuredDomain(): string | null {
   return domain === undefined || domain === "" ? null : domain;
 }
 
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]"]);
+
+/**
+ * The dev / test play origin's host (PUBLIC_DEV_PLAY_ORIGIN: the e2e server on 127.0.0.1), a loopback host only.
+ * NODE_ENV cannot gate it here: Next inlines it in the proxy bundle as "production" at build time, and the e2e
+ * runs that production build. In production lib/config.ts refuses the variable (the app's API does not start),
+ * and Caddy never forwards a loopback Host, so it can only take the login off the real play host, never expose it.
+ */
+function devPlayHost(): string | null {
+  const raw = process.env["PUBLIC_DEV_PLAY_ORIGIN"];
+  if (raw === undefined || raw === "") return null;
+  try {
+    const host = new URL(raw).hostname.toLowerCase();
+    return LOOPBACK_HOSTS.has(host) ? host : null;
+  } catch {
+    return null;
+  }
+}
+
 const text = (status: number, body: string, headers: Record<string, string> = {}): NextResponse =>
   new NextResponse(body, { status, headers: { "content-type": "text/plain; charset=utf-8", ...ORDER_HEADERS, ...headers } });
 
 /** Continues to `target` (a rewrite) or to the request's own route, with a fresh nonce CSP for `vendors`. */
 function secured(request: NextRequest, target: string | null, vendors: readonly Vendor[], headers: Readonly<Record<string, string>>, dropCookie: boolean): NextResponse {
+  return withNonceCsp(
+    request,
+    target,
+    (nonce, https) => contentSecurityPolicy({ nonce, vendors, dev: process.env["NODE_ENV"] === "development", https }),
+    headers,
+    dropCookie,
+  );
+}
+
+/** A fresh nonce, the CSP `policy` builds with it, on the request (Next puts the nonce on its scripts) and the answer. */
+function withNonceCsp(
+  request: NextRequest,
+  target: string | null,
+  policy: (nonce: string, https: boolean) => string,
+  headers: Readonly<Record<string, string>>,
+  dropCookie: boolean,
+): NextResponse {
   const nonce = randomBytes(16).toString("base64");
-  const csp = contentSecurityPolicy({
-    nonce,
-    vendors,
-    dev: process.env["NODE_ENV"] === "development",
-    // Caddy terminates TLS and tells the app which scheme the browser used.
-    https: request.headers.get("x-forwarded-proto") === "https",
-  });
+  // Caddy terminates TLS and tells the app which scheme the browser used.
+  const csp = policy(nonce, request.headers.get("x-forwarded-proto") === "https");
   const requestHeaders = new Headers(request.headers);
   requestHeaders.set("content-security-policy", csp);
   requestHeaders.set("x-nonce", nonce);
@@ -76,6 +111,7 @@ export async function proxy(request: NextRequest): Promise<NextResponse> {
     domain: configuredDomain(),
     pathname: request.nextUrl.pathname,
     orderIdParam: request.nextUrl.searchParams.get("order_id"),
+    playHost: devPlayHost(),
   });
   switch (route.kind) {
     case "pass":
@@ -91,6 +127,10 @@ export async function proxy(request: NextRequest): Promise<NextResponse> {
     }
     case "legal":
       return secured(request, null, [], LEGAL_HEADERS, false);
+    case "playPage":
+      return withNonceCsp(request, null, (nonce, https) => playContentSecurityPolicy({ nonce, https }), PLAY_HEADERS, false);
+    case "playApi":
+      return NextResponse.next();
     case "orderShell":
       return secured(request, "/order", [], ORDER_HEADERS, true);
     case "orderPage": {

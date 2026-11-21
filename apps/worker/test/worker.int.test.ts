@@ -90,7 +90,7 @@ describe("startWorker", () => {
     await running.stop();
     expect(first(await sql<{ status: string }[]>`SELECT status::text FROM programs WHERE id = ${ended.programId}`).status).toBe("awaiting_confirmation");
     const swept = new Set(captured.lines.filter((l) => l["msg"] === "sweep done").map((l) => l["sweeper"]));
-    expect([...swept].sort()).toEqual(["grace_end", "lease_expiry", "login_throttle", "order_expiry", "outbox", "snap_create"]);
+    expect([...swept].sort()).toEqual(["grace_end", "lease_expiry", "login_throttle", "order_expiry", "otp_expiry", "outbox", "snap_create"]);
     expect(first(await sql<{ relayed: boolean }[]>`SELECT relayed_at IS NOT NULL AS relayed FROM outbox WHERE id = ${rowId ?? ""}`).relayed).toBe(false);
     expect(first(await sql<{ status: string }[]>`SELECT status::text FROM conversion_events WHERE id = ${eventId ?? ""}`).status).toBe("pending");
     await sql`UPDATE outbox SET processed_at = now() WHERE id = ${rowId ?? ""}`;

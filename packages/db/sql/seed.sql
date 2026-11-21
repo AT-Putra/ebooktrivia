@@ -15,6 +15,10 @@ INSERT INTO public.app_settings (key, value) VALUES
   ('otp.ip_cap', '10'),
   ('otp.ip_window_seconds', '3600'),
   ('otp.cooldown_seconds', '60'),
+  -- US-026: the global OTP send breaker (enqueue_otp), codes per 10 minutes over all phones. 500 is about
+  -- 3000 logins an hour, several times a launch wave of buyers (3 codes per phone per hour at most), and
+  -- far below what a WhatsApp number may send before a ban (docs/runbooks/staging-provision.md).
+  ('otp.global_send_cap', '500'),
   ('orders.expiry_seconds', '86400')
 ON CONFLICT (key) DO NOTHING;
 

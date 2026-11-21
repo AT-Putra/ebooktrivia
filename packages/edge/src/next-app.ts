@@ -13,6 +13,11 @@ import { drainOnSignals, type SignalProcess } from "./signals.ts";
 export interface NextLike {
   prepare(): Promise<void>;
   getRequestHandler(): AppHandler;
+  /**
+   * Next's shutdown: it waits for the work handed to after() (US-026: an OTP is issued after the answer
+   * was sent), so the drain calls it once the listener has closed.
+   */
+  close?(): Promise<void>;
 }
 
 export type NextFactory = (options: { dev: false; dir: string; hostname: string; port: number; conf: Record<string, unknown> }) => NextLike;
@@ -38,7 +43,16 @@ export async function startNextBehindEdge(
   await app.prepare();
   const handle = app.getRequestHandler();
   const edge = await startEdgeServer({ ...config, handle, log });
-  drainOnSignals(() => edge.drain(), log, proc);
+  drainOnSignals(
+    async () => {
+      await edge.drain();
+      // No request is in flight any more; what they deferred (after()) finishes before the process exits.
+      await app.close?.();
+      log("next closed");
+    },
+    log,
+    proc,
+  );
   log(`listening on ${config.host}:${String(edge.port)} (trusted proxy ${config.trustedProxy ?? "none"})`);
   return edge;
 }

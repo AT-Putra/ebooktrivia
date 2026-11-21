@@ -271,9 +271,13 @@ describe("Cap routes", () => {
       }
       expect(ok).toBe(5000);
       const added = [...(await keys(inspector))].filter((key) => !before.has(key));
-      expect(added.filter((key) => !key.startsWith("rl:"))).toEqual([]);
-      // One /64 and one /48 counter per client, nothing else.
-      expect(added.sort()).toEqual(clients.flatMap((ip) => [`rl:captcha:ip:${ip.split(":").slice(0, 4).join(":")}::/64`, `rl:captcha:ip48:${ip.split(":").slice(0, 3).join(":")}::/48`]).sort());
+      // The Valkey is shared (other suites, other worktrees' BullMQ queues), so only these clients' keys are judged:
+      // Cap itself stored nothing at all, and the requests left one /64 and one /48 counter per client.
+      expect(added.filter((key) => key.startsWith("cache:public:cap:"))).toEqual([]);
+      const sites = clients.map((ip) => ip.split(":").slice(0, 3).join(":"));
+      expect(added.filter((key) => key.startsWith("rl:captcha:") && sites.some((site) => key.includes(`:${site}:`))).sort()).toEqual(
+        clients.flatMap((ip) => [`rl:captcha:ip:${ip.split(":").slice(0, 4).join(":")}::/64`, `rl:captcha:ip48:${ip.split(":").slice(0, 3).join(":")}::/48`]).sort(),
+      );
     });
   }, 300_000);
 });

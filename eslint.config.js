@@ -15,6 +15,8 @@ export default defineConfig(
       // Agent git worktrees (.git/info/exclude hides them from git) hold a second copy of the repo.
       ".claude/**",
       "**/*.d.ts",
+      // The Cap widget, copied unmodified from @cap.js/widget for the play login page (apps/public scripts/sync-cap-assets.mjs).
+      "apps/public/public/cap/**",
     ],
   },
   js.configs.recommended,

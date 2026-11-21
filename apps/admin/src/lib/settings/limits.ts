@@ -19,6 +19,8 @@
 //   otp.cooldown_seconds      15..600      wait before asking for another code (60); must be
 //                                          shorter than the code validity (checked here only:
 //                                          it spans two rows)
+//   otp.global_send_cap       50..100000   the global OTP send breaker: codes per 10 minutes over all
+//                                          phones (500; US-026, enforced by enqueue_otp)
 //   orders.expiry_seconds     900..86400   unpaid order / Snap page expiry (86400 = 24 h, AC-S8)
 //   orders.sales_close_buffer_minutes 5..1440 checkout refused when now > sales_end - this (30, AC-S8)
 //   checkout.{ip,phone,lp}_cap / _window_seconds  the public API's checkout rate limits per client IP
@@ -66,6 +68,8 @@ export const LIMITS: readonly LimitSpec[] = [
   limit("otp.ip_cap", "ipCap", "Code requests per IP address per window", "requests", 10),
   limit("otp.ip_window_seconds", "ipWindowSeconds", "IP window", "seconds", 3600),
   limit("otp.cooldown_seconds", "cooldownSeconds", "Wait before another code", "seconds", 60),
+  // US-026: the global OTP send breaker (enqueue_otp stops sending and raises a critical alert).
+  limit("otp.global_send_cap", "otpGlobalSendCap", "OTP codes sent per 10 minutes, all phones together", "codes", 500),
   limit("orders.expiry_seconds", "orderExpirySeconds", "Unpaid order and payment page expiry", "seconds", 86_400),
   // US-020 checkout: read by the public app (closing buffer, Valkey rate limits).
   limit("orders.sales_close_buffer_minutes", "salesCloseBufferMinutes", "Checkout closes this long before sales end", "minutes", 30),

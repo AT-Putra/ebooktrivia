@@ -80,6 +80,22 @@ sudo infra/provision/build-images.sh              # 2. postgres-walg, public, ad
   keys would refuse each other's challenges and tokens). Every challenge and token in flight is void from that
   moment, for up to 20 minutes of their lifetimes: each affected buyer sees one captcha retry (the SDK solves a
   new token). The app refuses a key that is one byte repeated (a placeholder such as 64 zeros).
+- **Player login (US-026).** `public.env` needs `PLAYER_AUTH_SECRETS` and `PLAYER_OTP_PEPPER` (generated) and
+  `SECRETS_MESSAGING_PUBLIC_KEY` (added by the Owner with the payment key); the worker needs the messaging private
+  key to send the codes. Without them only the play routes answer 503 (`play.disabled` is logged at start);
+  checkout and the Midtrans webhook keep working. **Player login limits** (the admin-editable `otp.*` settings,
+  plus fixed numbers in `apps/public/src/lib/play/limits.ts`):
+  - code requests: `otp.ip_cap` per client IP (an IPv6 /64) per `otp.ip_window_seconds` (10 / 1 h), 10 times that per
+    IPv6 /48; per phone (counted for every phone, known or not) a `otp.cooldown_seconds` cooldown (60 s) and
+    `otp.phone_cap` per `otp.phone_window_seconds` (3 / 1 h, enforced again in SQL by `enqueue_otp`);
+  - code checks: `otp.ip_cap` x `otp.max_attempts` per IP (50 / 1 h), 10 times that per /48, 10 per phone per 24 h over
+    all its codes, 5 per code; every wrong-code answer is sent 250 ms after the request arrived (timing);
+  - magic-link logins: the same per-IP and /48 budget as code checks;
+  - **the global OTP send breaker**: at most `otp.global_send_cap` codes per 10 minutes over all phones (default 500,
+    about 3000 logins an hour; editable on the admin limits page, 50..100000). When it trips, no code is sent, the
+    API answer stays the same, and a critical alert `otp_send_breaker` is written (once an hour while it lasts).
+    Look for abuse first (the `play.refused` log lines, Valkey `rl:otp:*` counts); raise the cap only for a genuine
+    login wave, and resolve the alert when sending is back to normal.
 
 ### Start the stack
 

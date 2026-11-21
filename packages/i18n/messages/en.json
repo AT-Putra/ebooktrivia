@@ -219,5 +219,49 @@
       "notReady": "This page cannot take orders yet.",
       "generic": "Something went wrong. Try again."
     }
+  },
+  "login": {
+    "pageTitle": "Sign in",
+    "title": "Sign in to Trivia",
+    "intro": "Enter the WhatsApp number you used to buy the ebook. We send a 6-digit code by WhatsApp.",
+    "phoneLabel": "WhatsApp number",
+    "phoneHint": "Example: 0812 3456 7890",
+    "sendCode": "Send code",
+    "sending": "Sending…",
+    "codeTitle": "Enter the code",
+    "codeSent": "If {phone} is a buyer's number, we have sent a 6-digit code by WhatsApp. The code is valid for 5 minutes.",
+    "codeLabel": "OTP code",
+    "codeHint": "6 digits from the WhatsApp message",
+    "verify": "Sign in",
+    "verifying": "Checking…",
+    "resend": "Resend code",
+    "resendIn": "Resend in {seconds} seconds",
+    "changeNumber": "Change number",
+    "magicLinkHint": "Have a sign-in link from WhatsApp or e-mail? Open it to sign in without a code.",
+    "signedInTitle": "Signed in",
+    "signedInAs": "Signed in as {phone}",
+    "signedInHint": "Make sure this is your WhatsApp number. If it is not, sign out and sign in with your own number.",
+    "openTrivia": "Open the trivia",
+    "notYou": "Not you? Sign out",
+    "errors": {
+      "phoneInvalid": "Invalid WhatsApp number. Use an Indonesian number, e.g. 0812 3456 7890.",
+      "codeInvalid": "The code must be 6 digits.",
+      "codeWrong": "Wrong or expired code. Try again or resend the code.",
+      "rateLimited": "Too many attempts. Try again in {seconds} seconds.",
+      "captcha": "The security check failed. Please try again.",
+      "unavailable": "The service is busy. Please try again shortly.",
+      "network": "Connection lost. Check your internet and try again."
+    }
+  },
+  "magicLink": {
+    "pageTitle": "Sign in with a link",
+    "title": "Sign in with a link",
+    "body": "Press the button below to sign in to Trivia Arena. This link works once.",
+    "confirm": "Sign in now",
+    "confirming": "Working…",
+    "invalidTitle": "This link does not work",
+    "invalidBody": "This link was already used, has expired or is incomplete. Sign in with a WhatsApp code instead.",
+    "toLogin": "Sign in with a WhatsApp code",
+    "noScript": "Turn on JavaScript to sign in with this link."
   }
 }

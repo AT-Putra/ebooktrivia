@@ -1,6 +1,6 @@
 // Player profile (E.164 phone identity), per-program eligibility, OTP store, magic links.
 import { sql } from "drizzle-orm";
-import { boolean, check, index, integer, pgTable, primaryKey, text, uuid } from "drizzle-orm/pg-core";
+import { boolean, check, index, integer, pgTable, primaryKey, text, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import { playerAuthUser } from "./auth.ts";
 import { programs } from "./catalog.ts";
 import { bytea, createdAt, e164Check, id, inCheck, nonNegative, tstz, updatedAt } from "./columns.ts";
@@ -55,7 +55,9 @@ export const playerPrograms = pgTable(
 /**
  * Our OTP store (R13: Better Auth's own verification row would hold the plaintext code).
  * `mac` = HMAC-SHA256(pepper, phone:code); the pepper is never in the DB. `sealed_code` is the
- * code sealed by the app to the messaging public key; enqueue_otp copies it into the outbox.
+ * code sealed by the app to the messaging public key; enqueue_otp MOVES it into the outbox (it sets
+ * the column NULL in the same statement sequence, US-026), and the worker wipes the outbox copy
+ * after the send, so after the send only the HMAC is left. The worker deletes expired rows.
  * Single use: verification deletes the row (DELETE ... RETURNING). A trigger (sql/triggers.sql)
  * stamps created_at from the clock and clamps expires_at to `otp.code_ttl_seconds`.
  */
@@ -65,7 +67,7 @@ export const playerOtps = pgTable(
     id: id(),
     phone: text("phone").notNull(),
     mac: bytea("mac").notNull(),
-    sealedCode: bytea("sealed_code").notNull(),
+    sealedCode: bytea("sealed_code"),
     expiresAt: tstz("expires_at").notNull(),
     attempts: integer("attempts").notNull().default(0),
     createdAt: createdAt(),
@@ -94,10 +96,21 @@ export const otpEnqueues = pgTable(
     outboxId: uuid("outbox_id").notNull(),
     enqueuedAt: tstz("enqueued_at").notNull().defaultNow(),
   },
-  (t) => [e164Check("otp_enqueues_phone_check", t.phone), index("otp_enqueues_phone_idx").on(t.phone, t.enqueuedAt)],
+  (t) => [
+    e164Check("otp_enqueues_phone_check", t.phone),
+    index("otp_enqueues_phone_idx").on(t.phone, t.enqueuedAt),
+    // US-026: the global send breaker's 10-minute count, and the daily prune (public.prune_otp_enqueues).
+    index("otp_enqueues_enqueued_at_idx").on(t.enqueuedAt),
+  ],
 );
 
-/** One token per delivery channel, 72 h, single use; only the SHA-256 of the token is stored. */
+/**
+ * One token per delivery channel, 72 h, single use; only the SHA-256 of the token is stored.
+ * Written only by public.issue_magic_link (worker, US-025) and consumed only by
+ * public.consume_magic_link (apps/public, US-026), both SECURITY DEFINER (sql/functions.sql): the
+ * expiry is the database's clock + 72 h, and a player has at most ONE live (unconsumed) link per
+ * channel, a new one replacing the previous (magic_links_player_channel_live_key).
+ */
 export const magicLinks = pgTable(
   "magic_links",
   {
@@ -114,5 +127,6 @@ export const magicLinks = pgTable(
   (t) => [
     inCheck("magic_links_channel_check", t.channel, ["whatsapp", "email"]),
     check("magic_links_token_hash_check", sql`octet_length(${t.tokenHash}) = 32`),
+    uniqueIndex("magic_links_player_channel_live_key").on(t.playerId, t.channel).where(sql`${t.consumedAt} IS NULL`),
   ],
 );

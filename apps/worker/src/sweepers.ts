@@ -254,6 +254,26 @@ export async function sweepLoginThrottle(sql: postgres.Sql, windowSeconds = LOGI
   return row?.n ?? 0;
 }
 
+/**
+ * US-026: dead OTP material leaves the database. Expired player_otps rows (their HMAC) are deleted, and an
+ * otp.send job that expired unsent (still queued, or past its attempt cap) loses its sealed code: past its
+ * expires_at the code can neither be sent (the consumer drops it) nor used (the verify refuses it). The send
+ * ledger (otp_enqueues) is pruned of rows older than 24 hours, which no cap counts any more, and expired player
+ * sessions go with their session_state rows.
+ */
+export async function sweepExpiredOtps(sql: postgres.Sql): Promise<{ readonly deleted: number; readonly wiped: number; readonly pruned: number; readonly sessions: number }> {
+  const deleted = await sql`DELETE FROM public.player_otps WHERE expires_at < clock_timestamp()`;
+  const wiped = await sql`
+    UPDATE public.outbox SET sealed = NULL
+     WHERE topic = 'otp.send' AND sealed IS NOT NULL AND processed_at IS NULL
+       AND payload->>'expires_at' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T'
+       AND (payload->>'expires_at')::timestamptz < clock_timestamp()`;
+  // The send ledger past every cap's window (24 h), and expired player sessions with their state, through SQL
+  // functions: the worker cannot touch a newer ledger row, and has no other access to player_auth.
+  const [prune] = await sql<{ ledger: number; sessions: number }[]>`SELECT public.prune_otp_enqueues() AS ledger, public.prune_player_sessions() AS sessions`;
+  return { deleted: deleted.count, wiped: wiped.count, pruned: prune?.ledger ?? 0, sessions: prune?.sessions ?? 0 };
+}
+
 /** What public.create_leaderboard_snapshot returns (counts only, no player data). */
 interface SnapshotSummary {
   readonly created: boolean;
@@ -452,6 +472,7 @@ export async function runSweeps(deps: SweepDeps): Promise<void> {
   sweepers.push(["order_expiry", () => expireOrders(deps.sql)]);
   sweepers.push(["grace_end", () => endGracePeriods(deps.sql, deps.log)]);
   sweepers.push(["login_throttle", () => sweepLoginThrottle(deps.sql)]);
+  sweepers.push(["otp_expiry", () => sweepExpiredOtps(deps.sql)]);
   for (const [sweeper, run] of sweepers) {
     try {
       const result = await run();
