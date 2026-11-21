@@ -19,12 +19,14 @@
 // The player login (US-026, security review L2) lives on play.<DOMAIN> only: /login, /masuk and /api/v1/play/*
 // answer 404 on every other host; the two pages get the play nonce CSP (lib/order/csp.ts
 // playContentSecurityPolicy) and PLAY_HEADERS, the API routes pass through (they answer JSON with their own
-// headers and check the Origin themselves).
+// headers and check the Origin themselves). The trivia pages (US-027): play.<DOMAIN>/, /{programSlug} and
+// /{programSlug}/set/{n} are rewritten to their internal /trivia/... routes (a 404 on every host when asked for
+// directly) with the trivia nonce CSP (lib/order/csp.ts triviaContentSecurityPolicy) and PLAY_HEADERS.
 // Everything else passes through untouched (the checkout and Cap routes, the mockups).
 // The vendor lookup runs the same SECURITY DEFINER read as the page (get_order_status), once per page load.
 import { randomBytes } from "node:crypto";
 import { type NextRequest, NextResponse } from "next/server";
-import { contentSecurityPolicy, LEGAL_HEADERS, ORDER_HEADERS, PLAY_HEADERS, playContentSecurityPolicy } from "./lib/order/csp.ts";
+import { contentSecurityPolicy, LEGAL_HEADERS, ORDER_HEADERS, PLAY_HEADERS, playContentSecurityPolicy, triviaContentSecurityPolicy } from "./lib/order/csp.ts";
 import { getOrderStatus } from "./lib/order/data.ts";
 import { orderRateLimit } from "./lib/order/handler.ts";
 import { routeOrder } from "./lib/order/routing.ts";
@@ -131,6 +133,8 @@ export async function proxy(request: NextRequest): Promise<NextResponse> {
       return withNonceCsp(request, null, (nonce, https) => playContentSecurityPolicy({ nonce, https }), PLAY_HEADERS, false);
     case "playApi":
       return NextResponse.next();
+    case "trivia":
+      return withNonceCsp(request, route.target, (nonce, https) => triviaContentSecurityPolicy({ nonce, https }), PLAY_HEADERS, false);
     case "orderShell":
       return secured(request, "/order", [], ORDER_HEADERS, true);
     case "orderPage": {

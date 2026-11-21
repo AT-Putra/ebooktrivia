@@ -29,7 +29,10 @@ import {
   unpaidOrder,
 } from "./support/delivery.ts";
 import { first, sql } from "./support/db.ts";
-import { silentLog, workerPool } from "./support/midtrans.ts";
+import { silentLog, uniquePhone, workerPool } from "./support/midtrans.ts";
+
+/** A chat of its own per use: a reply to the same chat within the hour is skipped, whichever file sent it. */
+const strangerChat = (): string => `${uniquePhone().slice(1)}@c.us`;
 
 const workerSql = workerPool(8);
 let shop: DeliveryShop;
@@ -475,14 +478,14 @@ describe("buyer-first races and failures (criterion 5)", () => {
     // 10 a day, 8 used: 80 % of it is reached. A stranger's text is not sent, and the right to reply is not spent.
     const busy = await createSession({ dailyCap: 10, sentToday: 8 });
     const order = await paidOrder(shop, { waNotBefore: proactiveLater() });
-    const stranger = await r.hear({ session: busy.name, chatId: "6281999900501@c.us", body: askingFor(order) });
+    const stranger = await r.hear({ session: busy.name, chatId: strangerChat(), body: askingFor(order) });
     await stranger.run();
     expect(await inboundOf(stranger.inboundId)).toMatchObject({ outcome: "text_no_number", replied: false });
     expect(r.texts()).toEqual([]);
     // One below the line it is sent.
     await retireSessions();
     const calmer = await createSession({ dailyCap: 10, sentToday: 7 });
-    const again = await r.hear({ session: calmer.name, chatId: "6281999900502@c.us", body: askingFor(order) });
+    const again = await r.hear({ session: calmer.name, chatId: strangerChat(), body: askingFor(order) });
     await again.run();
     expect(await inboundOf(again.inboundId)).toMatchObject({ outcome: "text_mismatch", replied: true });
     // The verified buyer's PDF is the delivery itself, not an extra: it is held to the full cap (7 of 10 used), not to the share.

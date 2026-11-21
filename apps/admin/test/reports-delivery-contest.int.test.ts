@@ -245,9 +245,9 @@ describe("the contest report (AC-A9)", () => {
     expect((await programChoices(rt.sql)).some((p) => p.id === programId && p.status === "published")).toBe(true);
   });
 
-  it("counts players and completion per set: 4 eligible players, 5 started, 2 finished every set; set 1 4 of 5 = 80 %, set 2 2 of 2 = 100 %", async () => {
+  it("counts players and completion per set: 4 eligible players, 4 of them started, 1 finished every set (the refunded d counts in neither); set 1 4 of 5 = 80 %, set 2 2 of 2 = 100 %", async () => {
     const p = await participation(rt.sql, programId);
-    expect(p).toMatchObject({ eligiblePlayers: 4, playersStarted: 5, playersCompletedAll: 2 });
+    expect(p).toMatchObject({ eligiblePlayers: 4, playersStarted: 4, playersCompletedAll: 1 });
     expect(p.sets.map((s) => [s.position, s.title, s.started, s.completed, s.completionBps])).toEqual([
       [1, "Sejarah", 5, 4, 8000],
       [2, "Sains", 2, 2, 10_000],
@@ -370,5 +370,78 @@ describe("the live leaderboard ranks exactly like the frozen one (sql/contest.sq
     const ref = (i: number) => (players[i] ?? "").slice(0, 8);
     const tied = [0, 2].sort((x, y) => ((players[x] ?? "") < (players[y] ?? "") ? -1 : 1));
     expect(live.rows.map((r) => r.ref)).toEqual([ref(1), ref(tied[0] ?? 0), ref(tied[1] ?? 0), ref(3)]);
+  });
+});
+
+// US-027 catch-up: the report on rows the real play flow wrote (sql/play.sql), not on hand-made stats.
+describe("the contest report on real play rows (US-027)", () => {
+  it("counts completion and ranks the live board with play_ranking: a player who never played is on it, charged every timer (D8)", async () => {
+    const DEVICE = Buffer.alloc(32, 1);
+    const product = await one(root<Id[]>`INSERT INTO products (title, price_idr) VALUES (${`Ebook ${suffix()}`}, 49000) RETURNING id`);
+    const program = await one(root<Id[]>`
+      INSERT INTO programs (product_id, slug, name, status, sales_start_at, sales_end_at, grace_days)
+      VALUES (${product.id}, ${`real-${suffix()}`}, 'Main', 'published', now() - interval '10 days', now() + interval '10 days', 5) RETURNING id`);
+    const set = await one(root<Id[]>`INSERT INTO trivia_sets (program_id, position, title) VALUES (${program.id}, 1, 'Set') RETURNING id`);
+    const right = new Map<string, string>();
+    const wrong = new Map<string, string>();
+    for (const position of [1, 2]) {
+      const q = await one(root<Id[]>`INSERT INTO questions (set_id, position, prompt, points, timer_seconds) VALUES (${set.id}, ${position}, 'Q', 10, 20) RETURNING id`);
+      const [r, w] = await root<Id[]>`INSERT INTO question_options (question_id, position, label, is_correct) VALUES (${q.id}, 1, 'A', true), (${q.id}, 2, 'B', false) RETURNING id`;
+      right.set(q.id, r?.id ?? "");
+      wrong.set(q.id, w?.id ?? "");
+    }
+    const player = async (name: string, phone: string, eligible: boolean): Promise<string> => {
+      const id = (await one(root<Id[]>`INSERT INTO players (phone, name) VALUES (${phone}, ${name}) RETURNING id`)).id;
+      await root`INSERT INTO player_programs (player_id, program_id, first_paid_at, eligible) VALUES (${id}, ${program.id}, ${eligible ? new Date(Date.now() - 86_400_000) : null}, ${eligible})`;
+      return id;
+    };
+    // Each play call in a transaction of its own, as public_rw (what the public app does).
+    const asPlayer = async <T>(statement: (tx: typeof root) => Promise<T>): Promise<T> =>
+      root.begin(async (tx) => {
+        await tx.unsafe("SET LOCAL ROLE public_rw");
+        return statement(tx as unknown as typeof root);
+      });
+    const shown = async (playerId: string, attemptId: string): Promise<string> => {
+      for (let call = 0; call < 3; call++) {
+        const [row] = await asPlayer((tx) => tx<{ r: { state: string; answer_id: string } }[]>`SELECT public.play_current(${playerId}, ${attemptId}, '203.0.113.9', ${DEVICE}) AS r`);
+        if (row !== undefined && row.r.state !== "served") return row.r.answer_id;
+      }
+      throw new Error("served three times");
+    };
+    const pick = async (playerId: string, answerId: string, correct: boolean): Promise<void> => {
+      const q = (await one(root<{ question_id: string }[]>`SELECT question_id FROM attempt_questions WHERE id = ${answerId}`)).question_id;
+      await asPlayer((tx) => tx`SELECT public.play_answer(${playerId}, ${answerId}, ${(correct ? right : wrong).get(q) ?? ""}, '203.0.113.9', ${DEVICE})`);
+      await asPlayer((tx) => tx`SELECT public.play_settle(${playerId}, ${answerId})`);
+    };
+    const start = async (playerId: string): Promise<string> => (await one(asPlayer((tx) => tx<Id[]>`SELECT public.play_start_set(${playerId}, ${set.id}) AS id`))).id;
+
+    // a answers both (right, wrong) and finishes; c answers the first right and stops; b never plays; r is refunded.
+    const a = await player("Ayu Main", "+6281300007001", true);
+    const c = await player("Cahya Main", "+6281300007003", true);
+    await player("Bayu Main", "+6281300007002", true);
+    await player("Rudi Refund", "+6281300007004", false);
+    const attemptA = await start(a);
+    await pick(a, await shown(a, attemptA), true);
+    await pick(a, await shown(a, attemptA), false);
+    const attemptC = await start(c);
+    await pick(c, await shown(c, attemptC), true);
+
+    const p = await participation(rt.sql, program.id);
+    expect(p).toMatchObject({ eligiblePlayers: 3, playersStarted: 2, playersCompletedAll: 1 });
+    expect(p.sets.map((s) => [s.started, s.completed])).toEqual([[2, 1]]);
+    const board = await leaderboard(rt.sql, program.id);
+    expect(board).toMatchObject({ frozen: false, total: 3 });
+    // a and c tie on 10 points; c's unanswered second question costs its full 20 s, so a is first. b: 0 points, both timers (40 s).
+    expect(board.rows.map((r) => [r.rank, r.name, r.score])).toEqual([
+      [1, "A*** M***", 10],
+      [2, "C*** M***", 10],
+      [3, "B*** M***", 0],
+    ]);
+    expect(board.rows[1]?.totalMs).toBeGreaterThanOrEqual(20_000);
+    expect(board.rows[2]?.totalMs).toBe(40_000);
+    expect(board.rows[0]?.finishedAt).not.toBeNull();
+    // THE ranking the players see (play_ranking), row for row.
+    const ranking = await root<{ player_id: string; rank: number; score: number; total_ms: string }[]>`SELECT player_id, rank, score, total_ms FROM public.play_ranking(${program.id}) ORDER BY rank`;
+    expect(board.rows.map((r) => [r.ref, r.rank, r.score, r.totalMs])).toEqual(ranking.map((r) => [r.player_id.slice(0, 8), r.rank, r.score, Number(r.total_ms)]));
   });
 });

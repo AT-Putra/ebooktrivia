@@ -28,7 +28,14 @@
     "you": "You",
     "gap": "Ranks between the top 10 and you are not shown",
     "captionTop": "Top 10 players and your rank",
-    "rankMedal": "Place {n}"
+    "rankMedal": "Place {n}",
+    "captionTopN": "The top {n} players and your rank",
+    "empty": "No player on the leaderboard yet.",
+    "notPlayed": "Not played yet",
+    "ofPlayers": "of {n} players",
+    "rateLimited": "Refreshed too often. Try again in {seconds} seconds.",
+    "failed": "The leaderboard did not load. Try again.",
+    "penaltyNote": "The time includes the penalty of the sets not played yet."
   },
   "trivia": {
     "pageTitle": "Trivia",
@@ -54,7 +61,7 @@
       "totalTime": "Total time",
       "setsCompleted": "Sets completed",
       "rank": "Rank",
-      "nextUnlock": "Next set opens in {countdown} WIB",
+      "nextUnlock": "Next set opens in {countdown}",
       "unlockSchedule": "New sets open every day at 00:00 WIB"
     },
     "grid": {
@@ -80,6 +87,33 @@
       "nature": "Nature",
       "science": "Science",
       "sports": "Sports"
+    },
+    "live": {
+      "pageTitle": "{program} | Trivia",
+      "noProgramTitle": "No program for you yet",
+      "noProgramBody": "Your trivia programs appear here once your ebook payment succeeds.",
+      "closedNotice": "The play period of this program has ended. Sets can no longer be played.",
+      "questions": "{n} questions",
+      "allUnlocked": "Every set is open.",
+      "nextUnlockOn": "Exactly {date}, at 00:00 WIB.",
+      "noRank": "None yet",
+      "prizeRanks": "Ranks {from}-{to}",
+      "prizeRank": "Rank {n}",
+      "noPrizes": "Prizes are announced by the organiser.",
+      "ended": "The play period has ended",
+      "winners": "Winners",
+      "winnersPending": "Winners are announced once the organiser confirms the results.",
+      "winnerRow": "Rank {rank}: {name}",
+      "slowDownTitle": "This page was loaded too often",
+      "slowDownBody": "Wait {seconds} seconds, then reload this page."
+    },
+    "accountMenu": {
+      "title": "Account",
+      "description": "Sign out on this device, or on every device still signed in with your number.",
+      "logout": "Sign out",
+      "logoutAll": "Sign out on every device",
+      "busy": "Working…",
+      "failed": "Could not sign out. Try again."
     }
   },
   "play": {
@@ -104,7 +138,29 @@
     "resultTime": "Total time",
     "resultRank": "Rank",
     "backToSets": "Back to sets",
-    "demoNote": "Mockup demo: sample questions, nothing is submitted."
+    "demoNote": "Mockup demo: sample questions, nothing is submitted.",
+    "live": {
+      "pageTitle": "Set {n} | Trivia",
+      "introTitle": "Set {n}: {title}",
+      "introBody": "{count} questions. Each question has its own time limit.",
+      "introWarning": "Once you start, the time keeps running even if you close the page. Each set can be played only once.",
+      "start": "Start",
+      "starting": "Starting…",
+      "loading": "Loading the question…",
+      "answering": "Sending your answer…",
+      "correctPoints": "Correct! +{points} points",
+      "previousTimedOut": "The previous question timed out. 0 points.",
+      "timeUp": "Time is up",
+      "tooLate": "Time is up, your answer was not recorded.",
+      "closedTitle": "The play period has ended",
+      "closedBody": "Questions can no longer be played.",
+      "lockedTitle": "This set is not open yet",
+      "lockedBody": "Go back to the set list to see when it opens.",
+      "errorTitle": "Something went wrong",
+      "errorBody": "The connection or the service has a problem. Try again.",
+      "retry": "Try again",
+      "noRank": "-"
+    }
   },
   "order": {
     "pageTitle": "Order status",
@@ -262,7 +318,10 @@
       "captcha": "The security check failed. Please try again.",
       "unavailable": "The service is busy. Please try again shortly.",
       "network": "Connection lost. Check your internet and try again."
-    }
+    },
+    "linkHint": "Cannot sign in with a code? Ask for a new sign-in link by WhatsApp and e-mail.",
+    "sendLink": "Send a sign-in link",
+    "linkSent": "If {phone} is a buyer's number, a new sign-in link has been sent by WhatsApp and e-mail. The link sent before no longer works."
   },
   "magicLink": {
     "pageTitle": "Sign in with a link",
@@ -274,5 +333,12 @@
     "invalidBody": "This link was already used, has expired or is incomplete. Sign in with a WhatsApp code instead.",
     "toLogin": "Sign in with a WhatsApp code",
     "noScript": "Turn on JavaScript to sign in with this link."
+  },
+  "magicLinkMessage": {
+    "subject": "Your {appName} sign-in link",
+    "text": "Your {appName} sign-in link: {url}\n\nThis link works for 72 hours and only once. The link sent before no longer works. If you did not ask for it, ignore this message.",
+    "htmlIntro": "Your {appName} sign-in link:",
+    "htmlLink": "Sign in to {appName}",
+    "htmlNote": "This link works for 72 hours and only once. The link sent before no longer works. If you did not ask for it, ignore this e-mail."
   }
 }

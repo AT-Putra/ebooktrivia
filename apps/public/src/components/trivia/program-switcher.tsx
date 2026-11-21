@@ -9,17 +9,19 @@ import type { Program } from "../../lib/trivia-fixtures.ts";
 import { t } from "../../lib/t.ts";
 
 interface ProgramSwitcherProps {
-  programs: Program[];
+  programs: readonly Pick<Program, "slug" | "name" | "done" | "total">[];
   currentSlug: string;
   basePath: string;
+  /** "query" (the mockup): {basePath}?program={slug}; "path" (the live page, US-027): {basePath}/{slug}. */
+  linkStyle?: "query" | "path";
 }
 
-/** Mobile: bottom-sheet dialog. >= 768: segmented nav. Selected program lives in ?program=slug. */
-export function ProgramSwitcher({ programs, currentSlug, basePath }: ProgramSwitcherProps) {
+/** Mobile: bottom-sheet dialog. >= 768: segmented nav. Selected program lives in ?program=slug (or the path). */
+export function ProgramSwitcher({ programs, currentSlug, basePath, linkStyle = "query" }: ProgramSwitcherProps) {
   const [open, setOpen] = useState(false);
   const current = programs.find((p) => p.slug === currentSlug) ?? programs[0];
   if (current === undefined) return null;
-  const href = (slug: string) => `${basePath}?program=${slug}`;
+  const href = (slug: string) => (linkStyle === "path" ? `${basePath}/${slug}` : `${basePath}?program=${slug}`);
 
   return (
     <>

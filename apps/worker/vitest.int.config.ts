@@ -8,6 +8,8 @@ export default defineConfig({
   test: {
     include: ["test/**/*.int.test.ts"],
     globalSetup: ["test/global-setup.ts"],
+    // Removes the Valkey keys of every test prefix after each file (test/support/cleanup.ts).
+    setupFiles: ["test/support/cleanup.ts"],
     fileParallelism: false,
     testTimeout: 60_000,
     hookTimeout: 120_000,

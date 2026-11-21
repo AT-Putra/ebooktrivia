@@ -11,8 +11,12 @@
 //                    anything else, malformed ids included, is the same 404 as an unknown order.
 //   play.<DOMAIN>    /legal/{program}/{kind}/{version}; the player login (US-026, security review L2): the
 //                    pages /login and /masuk (the magic link's confirm page), with their own nonce CSP, and
-//                    every /api/v1/play/* route; and whatever else the play app serves.
+//                    every /api/v1/play/* route; the trivia pages (US-027): / (the player's first program),
+//                    /{programSlug} (the four cards) and /{programSlug}/set/{n} (the question screen), rewritten
+//                    to the internal /trivia/... routes, with the play nonce CSP; and whatever else the play app
+//                    serves.
 //   other hosts      neither the order, the legal nor the play routes (404): they exist on their own host only.
+//                    The internal /trivia/... routes are a 404 everywhere.
 // Without a configured DOMAIN no host is known, so the order and legal routes answer 404 (fail closed);
 // every other path passes through untouched (the checkout and Cap routes, the mockups).
 import { PUBLIC_ID_BODY, PUBLIC_ID_PATTERN } from "@ebooktrivia/core/public-id";
@@ -31,11 +35,26 @@ export type OrderRoute =
   /** A player login page on the play origin (/login, /masuk): the play CSP. */
   | { readonly kind: "playPage" }
   /** A play API route on the play origin (/api/v1/play/*): JSON, no CSP. */
-  | { readonly kind: "playApi" };
+  | { readonly kind: "playApi" }
+  /** A trivia page on the play origin (US-027), served by the internal route `target`: the play CSP. */
+  | { readonly kind: "trivia"; readonly target: string };
 
 /** The player login's pages (US-026). Every play route lives on play.<DOMAIN> only. */
 export const PLAY_PAGE_PATHS: readonly string[] = ["/login", "/masuk"];
 export const PLAY_API_PREFIX = "/api/v1/play";
+
+/**
+ * The trivia pages' internal routes (US-027, app/(play)/trivia): play.<DOMAIN>/ is /trivia, /{programSlug} is
+ * /trivia/{programSlug} and /{programSlug}/set/{n} is /trivia/{programSlug}/set/{n}. Never reachable directly:
+ * every path under /trivia/ is a 404 on every host (a program may itself be called "trivia": on the play origin
+ * /trivia is that program's page).
+ */
+export const TRIVIA_INTERNAL_PREFIX = "/trivia";
+/** A program slug (programs_slug_check). */
+const PROGRAM_PATH = /^\/([a-z0-9]+(?:-[a-z0-9]+)*)$/;
+const SET_PATH = /^\/([a-z0-9]+(?:-[a-z0-9]+)*)\/set\/([1-9][0-9]{0,3})$/;
+/** Single-segment paths of the app that are not programs (they keep their own route on the play origin). */
+const NOT_PROGRAMS: ReadonlySet<string> = new Set(["mockups"]);
 
 export const ORDER_API_PATHS: readonly string[] = ["/api/v1/order/status", "/api/v1/order/claim"];
 
@@ -131,6 +150,7 @@ export function routeOrder(input: RouteInput): OrderRoute {
   if (internalOrder) return { kind: "notFound" };
   const playHost = input.playHost ?? (input.domain === null ? null : `play.${input.domain}`);
   const onPlay = playHost !== null && host === playHost;
+  if (lower.startsWith(`${TRIVIA_INTERNAL_PREFIX}/`) || (!onPlay && lower === TRIVIA_INTERNAL_PREFIX)) return { kind: "notFound" };
   if (lower === "/legal" || lower.startsWith("/legal/")) {
     return onPlay ? { kind: "legal" } : { kind: "notFound" };
   }
@@ -139,6 +159,14 @@ export function routeOrder(input: RouteInput): OrderRoute {
   }
   if (lower === PLAY_API_PREFIX || lower.startsWith(`${PLAY_API_PREFIX}/`)) {
     return onPlay ? { kind: "playApi" } : { kind: "notFound" };
+  }
+  // The trivia pages (US-027) match the path AS SENT (slugs are lowercase): another spelling is no program page.
+  if (onPlay) {
+    if (input.pathname === "/") return { kind: "trivia", target: TRIVIA_INTERNAL_PREFIX };
+    const program = PROGRAM_PATH.exec(input.pathname)?.[1];
+    if (program !== undefined && !NOT_PROGRAMS.has(program)) return { kind: "trivia", target: `${TRIVIA_INTERNAL_PREFIX}/${program}` };
+    const set = SET_PATH.exec(input.pathname);
+    if (set !== null) return { kind: "trivia", target: `${TRIVIA_INTERNAL_PREFIX}/${set[1] ?? ""}/set/${set[2] ?? ""}` };
   }
   return { kind: "pass" };
 }

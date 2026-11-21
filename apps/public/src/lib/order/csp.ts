@@ -141,7 +141,30 @@ export function playContentSecurityPolicy(options: { readonly nonce: string; rea
 }
 
 /**
- * The player login pages: never framed, never cached, no Referer leaves them (the magic link's confirm page has
+ * The trivia pages (US-027: /, /{programSlug}, /{programSlug}/set/{n}) on the play origin. No vendor and no Cap
+ * widget: the request's nonce and 'strict-dynamic' for Next's own scripts, nothing else (no 'wasm-unsafe-eval', no
+ * workers); requests go to the page's own origin only (the play API). No form posts anywhere.
+ */
+export function triviaContentSecurityPolicy(options: { readonly nonce: string; readonly https: boolean }): string {
+  return [
+    "default-src 'self'",
+    `script-src 'nonce-${options.nonce}' 'strict-dynamic'`,
+    "worker-src 'none'",
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data:",
+    "font-src 'self'",
+    "connect-src 'self'",
+    "frame-src 'none'",
+    "frame-ancestors 'none'",
+    "base-uri 'none'",
+    "object-src 'none'",
+    "form-action 'none'",
+    ...(options.https ? ["upgrade-insecure-requests"] : []),
+  ].join("; ");
+}
+
+/**
+ * The player login pages (and the trivia pages, US-027): never framed, never cached, no Referer leaves them (the magic link's confirm page has
  * just read its token from the URL fragment; a fragment is never in a Referer, and no other URL part is either).
  */
 export const PLAY_HEADERS: Readonly<Record<string, string>> = {

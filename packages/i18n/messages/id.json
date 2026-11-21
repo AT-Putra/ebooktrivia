@@ -28,7 +28,14 @@
     "you": "Kamu",
     "gap": "Peringkat di antara 10 besar dan kamu tidak ditampilkan",
     "captionTop": "10 pemain teratas dan peringkatmu",
-    "rankMedal": "Juara {n}"
+    "rankMedal": "Juara {n}",
+    "captionTopN": "{n} pemain teratas dan peringkatmu",
+    "empty": "Belum ada pemain di papan peringkat.",
+    "notPlayed": "Belum bermain",
+    "ofPlayers": "dari {n} pemain",
+    "rateLimited": "Terlalu sering diperbarui. Coba lagi dalam {seconds} detik.",
+    "failed": "Papan peringkat gagal dimuat. Coba lagi.",
+    "penaltyNote": "Waktu termasuk penalti set yang belum dimainkan."
   },
   "trivia": {
     "pageTitle": "Trivia",
@@ -54,7 +61,7 @@
       "totalTime": "Total waktu",
       "setsCompleted": "Set selesai",
       "rank": "Peringkat",
-      "nextUnlock": "Set berikutnya terbuka dalam {countdown} WIB",
+      "nextUnlock": "Set berikutnya terbuka dalam {countdown}",
       "unlockSchedule": "Set baru terbuka setiap pukul 00.00 WIB"
     },
     "grid": {
@@ -80,6 +87,33 @@
       "nature": "Alam",
       "science": "Sains",
       "sports": "Olahraga"
+    },
+    "live": {
+      "pageTitle": "{program} | Trivia",
+      "noProgramTitle": "Belum ada program untukmu",
+      "noProgramBody": "Program trivia muncul di sini setelah pembayaran ebook-mu berhasil.",
+      "closedNotice": "Masa bermain program ini sudah berakhir. Set tidak bisa dimainkan lagi.",
+      "questions": "{n} soal",
+      "allUnlocked": "Semua set sudah terbuka.",
+      "nextUnlockOn": "Tepatnya {date}, pukul 00.00 WIB.",
+      "noRank": "Belum ada",
+      "prizeRanks": "Peringkat {from}-{to}",
+      "prizeRank": "Peringkat {n}",
+      "noPrizes": "Hadiah diumumkan oleh penyelenggara.",
+      "ended": "Masa bermain telah berakhir",
+      "winners": "Pemenang",
+      "winnersPending": "Pemenang diumumkan setelah hasil dikonfirmasi penyelenggara.",
+      "winnerRow": "Peringkat {rank}: {name}",
+      "slowDownTitle": "Halaman terlalu sering dimuat",
+      "slowDownBody": "Tunggu {seconds} detik, lalu muat ulang halaman ini."
+    },
+    "accountMenu": {
+      "title": "Akun",
+      "description": "Keluar dari perangkat ini, atau dari semua perangkat yang masih masuk dengan nomormu.",
+      "logout": "Keluar",
+      "logoutAll": "Keluar dari semua perangkat",
+      "busy": "Memproses…",
+      "failed": "Gagal keluar. Coba lagi."
     }
   },
   "play": {
@@ -104,7 +138,29 @@
     "resultTime": "Total waktu",
     "resultRank": "Peringkat",
     "backToSets": "Kembali ke daftar set",
-    "demoNote": "Demo mockup: soal contoh, tidak ada data yang dikirim."
+    "demoNote": "Demo mockup: soal contoh, tidak ada data yang dikirim.",
+    "live": {
+      "pageTitle": "Set {n} | Trivia",
+      "introTitle": "Set {n}: {title}",
+      "introBody": "{count} soal. Setiap soal punya batas waktunya sendiri.",
+      "introWarning": "Setelah kamu mulai, waktu tetap berjalan walau halaman ditutup. Setiap set hanya bisa dimainkan sekali.",
+      "start": "Mulai",
+      "starting": "Memulai…",
+      "loading": "Memuat soal…",
+      "answering": "Mengirim jawaban…",
+      "correctPoints": "Benar! +{points} poin",
+      "previousTimedOut": "Waktu soal sebelumnya habis. 0 poin.",
+      "timeUp": "Waktu habis",
+      "tooLate": "Waktu habis, jawabanmu tidak tercatat.",
+      "closedTitle": "Masa bermain sudah berakhir",
+      "closedBody": "Soal tidak bisa dimainkan lagi.",
+      "lockedTitle": "Set ini belum terbuka",
+      "lockedBody": "Kembali ke daftar set untuk melihat jadwal buka.",
+      "errorTitle": "Terjadi gangguan",
+      "errorBody": "Koneksi atau layanan sedang bermasalah. Coba lagi.",
+      "retry": "Coba lagi",
+      "noRank": "-"
+    }
   },
   "order": {
     "pageTitle": "Status pesanan",
@@ -262,7 +318,10 @@
       "captcha": "Pemeriksaan keamanan gagal. Silakan coba lagi.",
       "unavailable": "Layanan sedang sibuk. Coba lagi sebentar lagi.",
       "network": "Koneksi terputus. Periksa internetmu lalu coba lagi."
-    }
+    },
+    "linkHint": "Tidak bisa masuk dengan kode? Minta tautan masuk baru lewat WhatsApp dan email.",
+    "sendLink": "Kirim tautan masuk",
+    "linkSent": "Jika {phone} terdaftar sebagai nomor pembeli, tautan masuk baru sudah kami kirim lewat WhatsApp dan email. Tautan yang dikirim sebelumnya tidak berlaku lagi."
   },
   "magicLink": {
     "pageTitle": "Masuk dengan tautan",
@@ -274,5 +333,12 @@
     "invalidBody": "Tautan ini sudah dipakai, kedaluwarsa, atau tidak lengkap. Masuk dengan kode WhatsApp saja.",
     "toLogin": "Masuk dengan kode WhatsApp",
     "noScript": "Aktifkan JavaScript untuk masuk dengan tautan ini."
+  },
+  "magicLinkMessage": {
+    "subject": "Tautan masuk {appName}",
+    "text": "Tautan masuk {appName} kamu: {url}\n\nTautan ini berlaku 72 jam dan hanya bisa dipakai sekali. Tautan yang dikirim sebelumnya tidak berlaku lagi. Kalau kamu tidak memintanya, abaikan pesan ini.",
+    "htmlIntro": "Tautan masuk {appName} kamu:",
+    "htmlLink": "Masuk ke {appName}",
+    "htmlNote": "Tautan ini berlaku 72 jam dan hanya bisa dipakai sekali. Tautan yang dikirim sebelumnya tidak berlaku lagi. Kalau kamu tidak memintanya, abaikan email ini."
   }
 }

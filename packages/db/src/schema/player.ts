@@ -42,6 +42,12 @@ export const playerPrograms = pgTable(
       .references(() => programs.id, { onDelete: "restrict" }),
     firstPaidAt: tstz("first_paid_at"),
     eligible: boolean("eligible").notNull().default(false),
+    /**
+     * US-027, the unlock floor of core unlock.ts: the highest number of sets the schedule formula has unlocked for
+     * this player so far, so an extend-only reschedule (more grace days) never locks again a set the player was
+     * shown as open. Raised (never lowered) only by public.play_note_unlocked (sql/play.sql).
+     */
+    unlockFloor: integer("unlock_floor").notNull().default(0),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -49,6 +55,7 @@ export const playerPrograms = pgTable(
     primaryKey({ name: "player_programs_pkey", columns: [t.playerId, t.programId] }),
     index("player_programs_program_eligible_idx").on(t.programId, t.eligible),
     check("player_programs_eligible_paid_check", sql`NOT ${t.eligible} OR ${t.firstPaidAt} IS NOT NULL`),
+    nonNegative("player_programs_unlock_floor_check", t.unlockFloor),
   ],
 );
 

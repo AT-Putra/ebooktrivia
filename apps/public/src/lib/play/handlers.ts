@@ -4,13 +4,16 @@
 //   POST /api/v1/play/auth/otp               request a code        200 {v:1,status:"sent",resend_after_seconds}
 //   POST /api/v1/play/auth/otp/verify        log in with the code  200 {v:1,ok:true,phone_masked} + __Host-play_session
 //   POST /api/v1/play/auth/magic-link        log in with a link    200 {v:1,ok:true,phone_masked} + __Host-play_session
+//   POST /api/v1/play/auth/magic-link/resend send a new link (US-027) 200 {v:1,status:"sent"} (every phone alike)
 //   POST /api/v1/play/auth/logout            end the session       200 {v:1,ok:true}, cookie expired
+//   POST /api/v1/play/auth/logout-all        end EVERY session of the player (US-027) 200 {v:1,ok:true}, cookie expired
 //   GET  /api/v1/play/auth/session           {v:1,authenticated[,phone_masked]} (rotates a due session)
 //
 // Every POST first requires Origin == the play origin EXACTLY (403 `origin`, before anything else is read).
 // Errors: 400 validation (+fields) | 400 invalid_code | 400 invalid_link | 401 unauthenticated | 403 origin |
 // 403 captcha | 429 rate_limited (Retry-After) | 503 unavailable (PostgreSQL, Valkey or a setting missing:
-// fail closed). A login answers with the signed-in player's phone MASKED (player_login_label, "****890"),
+// fail closed). The question flow (lib/play/trivia.ts, US-027) adds 403 forbidden and 409 locked | closed |
+// already_answered | not_served | too_late | empty_set. A login answers with the signed-in player's phone MASKED (player_login_label, "****890"),
 // which the page shows, so that someone who opened another person's forwarded link sees whose account it is
 // (login CSRF, security review L5).
 //
@@ -102,7 +105,22 @@ const HEADERS: Readonly<Record<string, string>> = {
   "content-type": "application/json; charset=utf-8",
 };
 
-export type PlayErrorCode = "validation" | "invalid_code" | "invalid_link" | "unauthenticated" | "origin" | "captcha" | "rate_limited" | "unavailable";
+export type PlayErrorCode =
+  | "validation"
+  | "invalid_code"
+  | "invalid_link"
+  | "unauthenticated"
+  | "origin"
+  | "captcha"
+  | "forbidden"
+  | "locked"
+  | "closed"
+  | "already_answered"
+  | "not_served"
+  | "too_late"
+  | "empty_set"
+  | "rate_limited"
+  | "unavailable";
 const STATUS: Readonly<Record<PlayErrorCode, number>> = {
   validation: 400,
   invalid_code: 400,
@@ -110,6 +128,13 @@ const STATUS: Readonly<Record<PlayErrorCode, number>> = {
   unauthenticated: 401,
   origin: 403,
   captcha: 403,
+  forbidden: 403,
+  locked: 409,
+  closed: 409,
+  already_answered: 409,
+  not_served: 409,
+  too_late: 409,
+  empty_set: 409,
   rate_limited: 429,
   unavailable: 503,
 };
@@ -348,6 +373,61 @@ export async function handleMagicLink(deps: PlayDeps, request: Request): Promise
   }
 }
 
+/**
+ * "Kirim ulang tautan masuk" (US-027, Owner decision; the recovery path for a player whose code checks an attacker
+ * used up): POST {phone, cap_token} -> 200 {v:1,status:"sent"} for EVERY well-formed phone, eligible, not eligible
+ * or unknown alike, from what the client sent alone (the same rule as the OTP request): the Origin, the per-client
+ * limits, the phone's format, the play-scope Cap token, then the per-phone limit counted for every phone. Only after
+ * the answer has been sent (`defer`) does enqueue_magic_link_resend look the phone up, and the worker then issues a
+ * fresh link per channel (the previous one stops working) and sends it by WhatsApp and e-mail. The outcome is never
+ * logged. Valkey or PostgreSQL down before the answer: 503 (fail closed).
+ */
+export async function handleMagicLinkResend(deps: PlayDeps, request: Request): Promise<Response> {
+  const route = "play.magic_link_resend";
+  if (!sameOrigin(deps, request)) return playError("origin");
+  const requestId = randomUUID();
+  try {
+    const settings = await loadOtpSettings(deps.sql);
+    const ipLimits = clientLimits("ml-resend", request.headers, settings["otp.ip_cap"], settings["otp.ip_window_seconds"] * 1000);
+    const perIp = await hitRateLimits(deps.valkey, ipLimits);
+    if (!perIp.allowed) {
+      deps.log("warn", "play.refused", { requestId, route, reason: limitReason(ipLimits, perIp) });
+      return rateLimited(perIp);
+    }
+    const body = await readJsonBody(request, MAX_BODY_BYTES);
+    const rawPhone = body.ok ? stringField(body.value, "phone", MAX_PHONE_INPUT) : null;
+    const capToken = body.ok ? stringField(body.value, "cap_token", SDK_LIMITS.capToken) : null;
+    const phone = rawPhone === null ? null : normalizeIdMobile(rawPhone);
+    if (phone === null || !phone.ok) {
+      deps.log("info", "play.refused", { requestId, route, reason: "validation" });
+      return playError("validation", { fields: { phone: phone === null ? "invalid" : phone.error } });
+    }
+    if (capToken === null || capToken === "" || !(await deps.capFor(PLAY_CAP_SCOPE).verify(capToken))) {
+      deps.log("info", "play.refused", { requestId, route, reason: "captcha" });
+      return playError("captcha");
+    }
+    const perPhone = await hitRateLimits(deps.valkey, [
+      { key: `ml-resend:phone:${otpPhoneKey(phone.e164)}`, limit: PLAY_LIMITS.resendPhoneCap, windowMs: PLAY_LIMITS.resendPhoneWindowMs },
+    ]);
+    if (!perPhone.allowed) {
+      deps.log("info", "play.refused", { requestId, route, reason: "rate_limited_phone" });
+      return rateLimited(perPhone);
+    }
+    deps.defer(async () => {
+      try {
+        // Whether a job was made (an eligible player) is deliberately neither returned nor logged.
+        await deps.sql`SELECT public.enqueue_magic_link_resend(${phone.e164})`;
+      } catch (error) {
+        deps.log("error", "play.magic_link_resend_failed", { requestId, route, reason: "internal" }, error);
+      }
+    });
+    deps.log("info", "play.magic_link_resend_requested", { requestId, route });
+    return playJson(200, { v: 1, status: "sent" });
+  } catch (error) {
+    return failure(deps.log, route, error);
+  }
+}
+
 // ---------------------------------------------------------------------------------------------
 // Session
 
@@ -356,6 +436,19 @@ export async function handleLogout(deps: PlayDeps, request: Request): Promise<Re
   if (!sameOrigin(deps, request)) return playError("origin");
   try {
     await revokeIncoming(deps, request);
+    return playJson(200, { v: 1, ok: true }, { setCookies: [EXPIRED_SESSION_COOKIE] });
+  } catch (error) {
+    return failure(deps.log, route, error);
+  }
+}
+
+/** Ends every session of the request's player (logout everywhere); this browser's cookie expires too. */
+export async function handleLogoutAll(deps: PlayDeps, request: Request): Promise<Response> {
+  const route = "play.logout_all";
+  if (!sameOrigin(deps, request)) return playError("origin");
+  try {
+    await deps.auth.api.playerRevokeAllSessions({ headers: authHeaders(request.headers, true) });
+    deps.log("info", "play.logout_all", { route });
     return playJson(200, { v: 1, ok: true }, { setCookies: [EXPIRED_SESSION_COOKIE] });
   } catch (error) {
     return failure(deps.log, route, error);

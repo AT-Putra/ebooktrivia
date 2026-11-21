@@ -1,6 +1,6 @@
 // Outbox consumer framework (plan M3.5). A job carries only the outbox id. Per job:
 //   1. claim   UPDATE outbox SET attempts = attempts + 1, available_at = now() + lease
-//              WHERE id AND topic AND processed_at IS NULL AND available_at <= now() AND attempts < cap.
+//              WHERE id AND topic AND processed_at IS NULL AND available_at <= now() AND attempts < cap + deferrals.
 //              available_at doubles as the lease (no relay or claim takes the row before it passes);
 //              the new attempts value is the claim's fencing token. No row = processed, leased by
 //              another worker, backing off or capped: the job is a no-op.
@@ -10,7 +10,10 @@
 //              apply the consumer's DB writes, set processed_at and wipe `sealed`. A finisher whose
 //              lease was lost (someone re-claimed: attempts moved on) commits nothing.
 //   On an error the row is released with backoff (available_at) and last_error, conditioned on
-//   the claim, and the job fails; the outbox sweeper re-relays it once available again.
+//   the claim, and the job fails; the outbox sweeper re-relays it once available again. A job
+//   that is not due yet (OutboxDefer) is released until then and goes straight back to the relay;
+//   its claim is counted in `deferrals`, which raises the cap, so it does not use up an attempt.
+//   `attempts` never goes down: every claim keeps a BullMQ job id (outboxJobId) and a token of its own.
 // Exactly-once holds for what finalize commits. An effect OUTSIDE the database may run again if
 // the process dies between perform and finalize (the lease expires, the row is re-claimed), so
 // a consumer with an external side effect must route it through an effect row with its own
@@ -38,6 +41,8 @@ export interface ClaimedOutboxRow {
   readonly sealed: Uint8Array | null;
   /** This claim's fencing token. */
   readonly attempts: number;
+  /** How many earlier claims were deferred (OutboxDefer): they raise the cap and are no failures. */
+  readonly deferrals: number;
 }
 
 /** DB writes committed atomically with processed_at, only while the claim is current. */
@@ -56,7 +61,27 @@ export interface OutboxConsumer {
   perform(row: ClaimedOutboxRow, signal: AbortSignal): Promise<FinalizeWrites | undefined>;
 }
 
-export type OutboxResult = "processed" | "skipped" | "lease_lost";
+export type OutboxResult = "processed" | "skipped" | "lease_lost" | "deferred";
+
+/**
+ * Thrown by perform when nothing failed but the job is not due yet (US-027: the contact may not be written to until `at`). The row is
+ * released until `at` (between 1 s and 24 h from now) and goes straight back to the relay (relayed_at NULL), the claim is counted in
+ * `deferrals`, which raises the claim cap by one (waiting never uses up the job's attempts), and `patch` is merged into the payload for
+ * what the next claim must know. `attempts` is never lowered, so the next claim has a job id and a fencing token of its own. The message
+ * is a reason code, never a payload value.
+ */
+export class OutboxDefer extends Error {
+  readonly at: Date;
+  readonly patch: Readonly<Record<string, unknown>>;
+  constructor(reason: string, at: Date, patch: Readonly<Record<string, unknown>> = {}) {
+    super(`deferred: ${reason}`);
+    this.name = "OutboxDefer";
+    this.at = at;
+    this.patch = patch;
+  }
+}
+const DEFER_MIN_MS = 1000;
+const DEFER_MAX_MS = 24 * 60 * 60_000;
 
 class LeaseLost extends Error {}
 
@@ -69,12 +94,12 @@ export function createOutboxProcessor(
   const { sql } = deps;
   return async (data) => {
     const id = jobRowId(data);
-    const [row] = await sql<{ id: string; topic: string; payload: unknown; sealed: Uint8Array | null; attempts: number }[]>`
+    const [row] = await sql<{ id: string; topic: string; payload: unknown; sealed: Uint8Array | null; attempts: number; deferrals: number }[]>`
       UPDATE public.outbox
          SET attempts = attempts + 1, available_at = now() + ${consumer.leaseMs} * interval '1 millisecond'
        WHERE id = ${id} AND topic = ${consumer.topic} AND processed_at IS NULL AND available_at <= now()
-         AND attempts < ${consumer.maxAttempts ?? OUTBOX_MAX_ATTEMPTS}
-      RETURNING id, topic, payload, sealed, attempts`;
+         AND attempts < ${consumer.maxAttempts ?? OUTBOX_MAX_ATTEMPTS} + deferrals
+      RETURNING id, topic, payload, sealed, attempts, deferrals`;
     if (row === undefined) return "skipped";
     deps.failpoint("after_claim_before_effect");
     try {
@@ -91,6 +116,18 @@ export function createOutboxProcessor(
       if (error instanceof LeaseLost) {
         deps.log.warn({ outboxId: id, topic: consumer.topic, attempts: row.attempts }, "outbox claim lost before finalize; nothing committed");
         return "lease_lost";
+      }
+      if (error instanceof OutboxDefer) {
+        const now = Date.now();
+        const at = new Date(Math.min(Math.max(error.at.getTime(), now + DEFER_MIN_MS), now + DEFER_MAX_MS));
+        const released = await sql`
+          UPDATE public.outbox
+             SET available_at = ${at}, deferrals = deferrals + 1, relayed_at = NULL, last_error = ${maskPii(error.message).slice(0, 500)},
+                 payload = payload || ${sql.json(error.patch)}::jsonb
+           WHERE id = ${id} AND attempts = ${row.attempts} AND processed_at IS NULL`;
+        if (released.count === 0) return "lease_lost";
+        deps.log.info({ outboxId: id, topic: consumer.topic, availableAt: at.toISOString() }, "outbox job deferred");
+        return "deferred";
       }
       const message = maskPii(error instanceof Error ? error.message : "consumer failed").slice(0, 500);
       try {

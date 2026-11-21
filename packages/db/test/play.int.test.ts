@@ -2,14 +2,16 @@
 // and the contest's program statuses are written only by contest_results' functions (US-028,
 // contest.int.test.ts covers those functions). US-028 security review P1-2: the database sets every
 // play timestamp, a pick counts only until its deadline + 1500 ms, nothing starts or is served
-// after the grace end, and public_rw writes no score.
+// after the grace end, and public_rw writes no score. US-027: the public app writes play rows only through the
+// play functions (sql/play.sql), which run as their owner trivia_play: the guards are exercised as trivia_play,
+// the one untrusted writer left, and public_rw writes no play row at all and reads no question or answer.
 import { beforeAll, describe, expect, it } from "vitest";
 import { asRole, first, sql, sqlState } from "./db.ts";
 import { createAttempt, createPlayer, createProgram, createTriviaSet, type Question } from "./fixtures.ts";
 
 type Id = { id: string };
 
-describe("play rows (public_rw)", () => {
+describe("play rows (trivia_play, the play functions' owner; public_rw writes none)", () => {
   let programId: string;
   let setId: string;
   let q1: Question;
@@ -22,19 +24,24 @@ describe("play rows (public_rw)", () => {
   });
 
   const startAttempt = (playerId: string, set: string) =>
-    asRole("public_rw", async (tx) =>
+    asRole("trivia_play", async (tx) =>
       first(await tx<Id[]>`INSERT INTO public.set_attempts (player_id, set_id) VALUES (${playerId}, ${set}) RETURNING id`)
         .id,
     );
-  /** A question row, served at once (the caller's served_at is replaced by the clock). */
+  /**
+   * A question row, served at once: inserted unserved (as play_start_set does), then served by a second statement
+   * (as play_current does; the caller's served_at is replaced by the clock).
+   */
   const serve = (attemptId: string, question: Question, position = 1) =>
-    asRole("public_rw", async (tx) =>
-      first(
+    asRole("trivia_play", async (tx) => {
+      const id = first(
         await tx<Id[]>`
-          INSERT INTO public.attempt_questions (attempt_id, question_id, position, permutation, served_at)
-          VALUES (${attemptId}, ${question.id}, ${position}, ${question.options}::uuid[], '2000-01-01') RETURNING id`,
-      ).id,
-    );
+          INSERT INTO public.attempt_questions (attempt_id, question_id, position, permutation)
+          VALUES (${attemptId}, ${question.id}, ${position}, ${question.options}::uuid[]) RETURNING id`,
+      ).id;
+      await tx`UPDATE public.attempt_questions SET served_at = '2000-01-01' WHERE id = ${id}`;
+      return id;
+    });
   const row = async (id: string) =>
     first(
       await sql<{ served: Date | null; deadline: Date | null; answered: Date | null; option: string | null; points: number; correct: boolean | null }[]>`
@@ -49,17 +56,17 @@ describe("play rows (public_rw)", () => {
     const served = await row(id);
     expect(near(served.served)).toBe(true);
     expect((served.deadline?.getTime() ?? 0) - (served.served?.getTime() ?? 0)).toBe(20_000);
-    await asRole("public_rw", (tx) => tx`UPDATE public.attempt_questions SET answered_at = '2000-01-01', option_id = ${q1.options[0]} WHERE id = ${id}`);
+    await asRole("trivia_play", (tx) => tx`UPDATE public.attempt_questions SET answered_at = '2000-01-01', option_id = ${q1.options[0]} WHERE id = ${id}`);
     const answered = await row(id);
     expect(near(answered.answered)).toBe(true);
     expect(answered).toMatchObject({ option: q1.options[0], points: 0, correct: null });
     // An unserved row, served later by an UPDATE: the clock again, whatever the caller sends.
     const later = first(
-      await asRole("public_rw", (tx) => tx<Id[]>`
+      await asRole("trivia_play", (tx) => tx<Id[]>`
         INSERT INTO public.attempt_questions (attempt_id, question_id, position, permutation) VALUES (${attemptId}, ${q2.id}, 2, ${q2.options}::uuid[]) RETURNING id`),
     ).id;
     expect((await row(later)).served).toBeNull();
-    await asRole("public_rw", (tx) => tx`UPDATE public.attempt_questions SET served_at = '2999-01-01' WHERE id = ${later}`);
+    await asRole("trivia_play", (tx) => tx`UPDATE public.attempt_questions SET served_at = '2999-01-01' WHERE id = ${later}`);
     expect(near((await row(later)).served)).toBe(true);
   });
 
@@ -68,19 +75,19 @@ describe("play rows (public_rw)", () => {
     const attemptId = await startAttempt(playerId, setId);
     const id = await serve(attemptId, q1);
     const unserved = first(
-      await asRole("public_rw", (tx) => tx<Id[]>`
+      await asRole("trivia_play", (tx) => tx<Id[]>`
         INSERT INTO public.attempt_questions (attempt_id, question_id, position, permutation) VALUES (${attemptId}, ${q2.id}, 2, ${q2.options}::uuid[]) RETURNING id`),
     ).id;
-    expect(await sqlState(asRole("public_rw", (tx) => tx`UPDATE public.attempt_questions SET served_at = served_at - interval '10 seconds' WHERE id = ${id}`))).toBe("ET108");
-    expect(await sqlState(asRole("public_rw", (tx) => tx`UPDATE public.attempt_questions SET option_id = ${q1.options[0]} WHERE id = ${id}`))).toBe("ET108");
-    expect(await sqlState(asRole("public_rw", (tx) => tx`UPDATE public.attempt_questions SET answered_at = now(), option_id = ${q2.options[0]} WHERE id = ${unserved}`))).toBe("ET108");
-    await asRole("public_rw", (tx) => tx`UPDATE public.attempt_questions SET answered_at = now(), option_id = ${q1.options[1]} WHERE id = ${id}`);
+    expect(await sqlState(asRole("trivia_play", (tx) => tx`UPDATE public.attempt_questions SET served_at = served_at - interval '10 seconds' WHERE id = ${id}`))).toBe("ET108");
+    expect(await sqlState(asRole("trivia_play", (tx) => tx`UPDATE public.attempt_questions SET option_id = ${q1.options[0]} WHERE id = ${id}`))).toBe("ET108");
+    expect(await sqlState(asRole("trivia_play", (tx) => tx`UPDATE public.attempt_questions SET answered_at = now(), option_id = ${q2.options[0]} WHERE id = ${unserved}`))).toBe("ET108");
+    await asRole("trivia_play", (tx) => tx`UPDATE public.attempt_questions SET answered_at = now(), option_id = ${q1.options[1]} WHERE id = ${id}`);
     for (const statement of [
       `UPDATE public.attempt_questions SET option_id = '${q1.options[0]}' WHERE id = '${id}'`,
       `UPDATE public.attempt_questions SET answered_at = answered_at + interval '1 second' WHERE id = '${id}'`,
       `UPDATE public.attempt_questions SET answered_at = NULL, option_id = NULL WHERE id = '${id}'`,
     ]) {
-      expect(await sqlState(asRole("public_rw", (tx) => tx.unsafe(statement))), statement).toBe("ET108");
+      expect(await sqlState(asRole("trivia_play", (tx) => tx.unsafe(statement))), statement).toBe("ET108");
     }
   });
 
@@ -90,8 +97,8 @@ describe("play rows (public_rw)", () => {
     const id = await serve(attemptId, q1);
     // 21.6 s ago, as if the player came back after the timer and the latency grace.
     await sql`UPDATE attempt_questions SET served_at = served_at - interval '21600 milliseconds', deadline_at = deadline_at - interval '21600 milliseconds' WHERE id = ${id}`;
-    expect(await sqlState(asRole("public_rw", (tx) => tx`UPDATE public.attempt_questions SET answered_at = now(), option_id = ${q1.options[0]} WHERE id = ${id}`))).toBe("ET109");
-    await asRole("public_rw", (tx) => tx`UPDATE public.attempt_questions SET answered_at = now() WHERE id = ${id}`);
+    expect(await sqlState(asRole("trivia_play", (tx) => tx`UPDATE public.attempt_questions SET answered_at = now(), option_id = ${q1.options[0]} WHERE id = ${id}`))).toBe("ET109");
+    await asRole("trivia_play", (tx) => tx`UPDATE public.attempt_questions SET answered_at = now() WHERE id = ${id}`);
     const closed = await row(id);
     expect(closed.answered).toEqual(closed.deadline);
     expect(closed.option).toBeNull();
@@ -108,11 +115,11 @@ describe("play rows (public_rw)", () => {
     const { setId: otherSet } = await createTriviaSet(ended.programId, 2);
     await sql`UPDATE programs SET sales_end_at = now() - interval '3 days', grace_days = 2, sales_start_at = now() - interval '40 days' WHERE id = ${ended.programId}`;
     expect(await sqlState(startAttempt(playerId, otherSet))).toBe("ET110");
-    expect(await sqlState(asRole("public_rw", (tx) => tx`UPDATE public.attempt_questions SET served_at = now() WHERE id = ${unserved}`))).toBe("ET110");
+    expect(await sqlState(asRole("trivia_play", (tx) => tx`UPDATE public.attempt_questions SET served_at = now() WHERE id = ${unserved}`))).toBe("ET110");
     expect(await sqlState(serve(attemptId, endedQ2, 2))).toBe("ET110");
   });
 
-  it("writes no score: correct, points, elapsed, attempt totals and stats are not public_rw's (42501)", async () => {
+  it("public_rw writes no play row at all, and no score (42501, US-027)", async () => {
     const { playerId } = await createPlayer({ programId, eligible: true });
     const attemptId = await startAttempt(playerId, setId);
     const id = await serve(attemptId, q1);
@@ -127,6 +134,11 @@ describe("play rows (public_rw)", () => {
       `UPDATE public.player_program_stats SET score = 10 WHERE player_id = '${playerId}'`,
       `INSERT INTO public.attempt_questions (attempt_id, question_id, position, permutation, answered_at, option_id, points) VALUES ('${attemptId}', '${q2.id}', 2, '{}', now(), '${q2.options[0]}', 10)`,
       `INSERT INTO public.set_attempts (player_id, set_id, score) VALUES ('${playerId}', '${setId}', 10)`,
+      `INSERT INTO public.set_attempts (player_id, set_id) VALUES ('${playerId}', '${setId}')`,
+      `INSERT INTO public.attempt_questions (attempt_id, question_id, position, permutation) VALUES ('${attemptId}', '${q2.id}', 2, '{}')`,
+      `UPDATE public.attempt_questions SET served_at = now() WHERE attempt_id = '${attemptId}'`,
+      `UPDATE public.attempt_questions SET answered_at = now(), option_id = '${q1.options[0]}' WHERE id = '${id}'`,
+      `SELECT public.lock_program_contest_shared('${programId}')`,
     ]) {
       expect(await sqlState(asRole("public_rw", (tx) => tx.unsafe(statement))), statement).toBe("42501");
     }
@@ -146,9 +158,9 @@ describe("play rows (public_rw)", () => {
     });
     await holding;
     const blocked = await sqlState(
-      asRole("public_rw", async (tx) => {
+      asRole("trivia_play", async (tx) => {
         await tx.unsafe("SET LOCAL lock_timeout = '300ms'");
-        await tx`INSERT INTO public.attempt_questions (attempt_id, question_id, position, permutation, served_at) VALUES (${attemptId}, ${q1.id}, 1, ${q1.options}::uuid[], now())`;
+        await tx`INSERT INTO public.attempt_questions (attempt_id, question_id, position, permutation) VALUES (${attemptId}, ${q1.id}, 1, ${q1.options}::uuid[])`;
       }),
     );
     release();
@@ -196,7 +208,7 @@ describe("play rows (public_rw)", () => {
       `UPDATE public.attempt_questions SET question_id = '${q1.id}' WHERE attempt_id = '${attemptId}'`,
       `UPDATE public.player_program_stats SET player_id = '${playerId}' WHERE player_id = '${playerId}'`,
     ]) {
-      expect(await sqlState(asRole("public_rw", (tx) => tx.unsafe(statement)))).toBe("42501");
+      expect(await sqlState(asRole("trivia_play", (tx) => tx.unsafe(statement)))).toBe("42501");
     }
   });
 
@@ -218,7 +230,7 @@ describe("play rows (public_rw)", () => {
     });
     await holding;
     const sent = Date.now();
-    const pick = asRole("public_rw", (tx) => tx`UPDATE public.attempt_questions SET answered_at = now(), option_id = ${q1.options[0]} WHERE id = ${id}`);
+    const pick = asRole("trivia_play", (tx) => tx`UPDATE public.attempt_questions SET answered_at = now(), option_id = ${q1.options[0]} WHERE id = ${id}`);
     await new Promise((resolve) => setTimeout(resolve, 3_000));
     const released = Date.now();
     release();
@@ -242,9 +254,9 @@ describe("play rows (public_rw)", () => {
     const hedger = await sql.reserve();
     try {
       await hedger.unsafe("BEGIN");
-      await hedger.unsafe("SET LOCAL ROLE public_rw");
+      await hedger.unsafe("SET LOCAL ROLE trivia_play");
       await hedger`UPDATE public.attempt_questions SET answered_at = now(), option_id = ${q1.options[1]} WHERE id = ${id}`;
-      const queued = sqlState(asRole("public_rw", (tx) => tx`UPDATE public.attempt_questions SET answered_at = now(), option_id = ${q1.options[0]} WHERE id = ${id}`));
+      const queued = sqlState(asRole("trivia_play", (tx) => tx`UPDATE public.attempt_questions SET answered_at = now(), option_id = ${q1.options[0]} WHERE id = ${id}`));
       await new Promise((resolve) => setTimeout(resolve, 2_500));
       await hedger.unsafe("ROLLBACK");
       expect(await queued).toBe("ET109");
@@ -255,18 +267,27 @@ describe("play rows (public_rw)", () => {
   });
 
   // Security review N3: no serve and pick in one statement, and correctness is never readable.
-  it("refuses a serve and a pick in one statement (ET108), and lets public_rw read options but never which is correct (42501)", async () => {
+  it("refuses a serve and a pick in one statement (ET108); public_rw reads no question text, option, explanation or answer row (42501)", async () => {
     const { playerId } = await createPlayer({ programId, eligible: true });
     const attemptId = await startAttempt(playerId, setId);
     const id = first(
-      await asRole("public_rw", (tx) => tx<Id[]>`
+      await asRole("trivia_play", (tx) => tx<Id[]>`
         INSERT INTO public.attempt_questions (attempt_id, question_id, position, permutation) VALUES (${attemptId}, ${q1.id}, 1, ${q1.options}::uuid[]) RETURNING id`),
     ).id;
-    expect(await sqlState(asRole("public_rw", (tx) => tx`UPDATE public.attempt_questions SET served_at = now(), answered_at = now(), option_id = ${q1.options[0]} WHERE id = ${id}`))).toBe("ET108");
+    expect(await sqlState(asRole("trivia_play", (tx) => tx`UPDATE public.attempt_questions SET served_at = now(), answered_at = now(), option_id = ${q1.options[0]} WHERE id = ${id}`))).toBe("ET108");
     expect(await sqlState(asRole("public_rw", (tx) => tx`SELECT is_correct FROM public.question_options WHERE question_id = ${q1.id}`))).toBe("42501");
     expect(await sqlState(asRole("public_rw", (tx) => tx`SELECT * FROM public.question_options WHERE question_id = ${q1.id}`))).toBe("42501");
-    const options = await asRole("public_rw", (tx) => tx<{ id: string }[]>`SELECT id, position, label FROM public.question_options WHERE question_id = ${q1.id} ORDER BY position`);
-    expect(options.map((o) => o.id)).toEqual([...q1.options]);
+    for (const statement of [
+      `SELECT id, position, label FROM public.question_options WHERE question_id = '${q1.id}'`,
+      `SELECT prompt FROM public.questions WHERE id = '${q1.id}'`,
+      `SELECT explanation FROM public.questions WHERE id = '${q1.id}'`,
+      `SELECT option_id, correct FROM public.attempt_questions WHERE id = '${id}'`,
+    ]) {
+      expect(await sqlState(asRole("public_rw", (tx) => tx.unsafe(statement))), statement).toBe("42501");
+    }
+    // What the trivia page counts stays readable.
+    const counted = await asRole("public_rw", (tx) => tx<{ n: number }[]>`SELECT count(*)::int AS n FROM public.questions WHERE set_id = ${setId}`);
+    expect(counted[0]?.n).toBe(2);
   });
 
   it("reads no results table: the banner function is the only public read path (42501, security review P1-5)", async () => {

@@ -47,6 +47,7 @@ export function LoginForm() {
   const [busy, setBusy] = useState(false);
   const [signedIn, setSignedIn] = useState<{ readonly phoneMasked: string | null } | null>(null);
   const [resendAt, setResendAt] = useState(0);
+  const [linkNotice, setLinkNotice] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const cap = useRef<CapSolver | null>(null);
   const phoneInput = useRef<HTMLInputElement>(null);
@@ -146,6 +147,49 @@ export function LoginForm() {
     codeInput.current?.focus();
   }
 
+  /**
+   * "Kirim tautan masuk" (US-027, Owner decision): a new login link by WhatsApp and e-mail, the way in when the
+   * code checks are used up. The answer, and so this copy, is the same for every number.
+   */
+  async function requestLink(target: string, onError: (message: string) => void): Promise<void> {
+    setLinkNotice(null);
+    const token = await solver().token();
+    if (token === null) {
+      onError(t("login.errors.captcha"));
+      return;
+    }
+    const answer = await postJson("/api/v1/play/auth/magic-link/resend", { phone: target, cap_token: token });
+    solver().spent();
+    solver().warm();
+    if (answer.status === 200) {
+      setLinkNotice(t("login.linkSent", { phone: target }));
+      return;
+    }
+    onError(errorText(answer, false));
+  }
+
+  async function sendLink(): Promise<void> {
+    if (busy) return;
+    const target = step === "code" ? { ok: true as const, e164 } : normalizeIdMobile(phone);
+    if (!target.ok) {
+      setPhoneError(t("login.errors.phoneInvalid"));
+      phoneInput.current?.focus();
+      return;
+    }
+    setBusy(true);
+    if (step === "code") setCodeError(null);
+    else setPhoneError(null);
+    await requestLink(target.e164, (message) => {
+      if (step === "code") {
+        setCodeError(message);
+      } else {
+        setPhoneError(message);
+        phoneInput.current?.focus();
+      }
+    });
+    setBusy(false);
+  }
+
   async function resend(): Promise<void> {
     if (busy || resendAt > Date.now()) return;
     setBusy(true);
@@ -210,7 +254,8 @@ export function LoginForm() {
           </Button>
           <p className="text-sm text-muted-foreground">{t("login.magicLinkHint")}</p>
         </form>
-      ) : (
+      ) : null}
+      {step === "code" ? (
         <form noValidate onSubmit={(event) => void submitCode(event)} className="flex flex-col gap-4">
           <div className="flex flex-col gap-2">
             <Label htmlFor="login-code">{t("login.codeLabel")}</Label>
@@ -264,7 +309,18 @@ export function LoginForm() {
             </Button>
           </div>
         </form>
-      )}
+      ) : null}
+      <div className="flex flex-col gap-2 border-t pt-4">
+        <p className="text-sm text-muted-foreground">{t("login.linkHint")}</p>
+        <Button type="button" variant="outline" disabled={busy} aria-disabled={busy} onClick={() => void sendLink()}>
+          {t("login.sendLink")}
+        </Button>
+        {linkNotice === null ? null : (
+          <p role="status" className="rounded-lg bg-info-soft px-3 py-2 text-base text-info-soft-foreground">
+            {linkNotice}
+          </p>
+        )}
+      </div>
     </section>
   );
 }

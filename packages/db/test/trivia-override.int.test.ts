@@ -425,10 +425,10 @@ describe("the contest lock (exclusive / shared)", () => {
     expect(inserted).toBe(true);
   });
 
-  it("only public_rw (play, US-028) may take the shared lock (42501 for the others)", async () => {
+  it("only trivia_play (the play guards inside the US-027 play functions) may take the shared lock (42501 for the others)", async () => {
     const { programId } = await createProgram();
-    await asRole("public_rw", (tx) => tx`SELECT public.lock_program_contest_shared(${programId})`);
-    for (const role of ["worker_rw", "admin_rw", "internal_rw"] as const) {
+    await asRole("trivia_play", (tx) => tx`SELECT public.lock_program_contest_shared(${programId})`);
+    for (const role of ["public_rw", "worker_rw", "admin_rw", "internal_rw"] as const) {
       expect(await sqlState(asRole(role, (tx) => tx`SELECT public.lock_program_contest_shared(${programId})`)), role).toBe("42501");
     }
   });

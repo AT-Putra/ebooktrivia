@@ -136,6 +136,23 @@ export function unlockedCount(input: UnlockInput): number {
 }
 
 /**
+ * When the formula first unlocks set number `rank` (1..S, by position): the payment instant for
+ * the sets of day 0, else 00:00 WIB of the first day whose cumulative count reaches `rank`. The
+ * trivia grid shows it on a locked tile (US-027). attempted and the floor can only unlock a set
+ * earlier, so for a set still locked today this is exactly when it opens.
+ */
+export function setUnlocksAt(schedule: UnlockSchedule, rank: number): Date {
+  assertDate(schedule.firstPaidAt, "firstPaidAt");
+  assertCount(schedule.setCount, "setCount");
+  if (!Number.isSafeInteger(rank) || rank < 1 || rank > schedule.setCount) throw new RangeError("rank must be 1..setCount");
+  const days = scheduleDays(schedule);
+  let dayIndex = 0;
+  // Terminates: the formula is S from day index A - 1 on, and rank <= S.
+  while (cumulativeUnlocked(dayIndex, days, schedule.setCount) < rank) dayIndex++;
+  return dayIndex === 0 ? schedule.firstPaidAt : wibDayStart(wibDay(schedule.firstPaidAt) + dayIndex);
+}
+
+/**
  * The next instant the displayed count max(formula, attempted, floor) grows (for the
  * countdown), or null when all sets are unlocked.
  */

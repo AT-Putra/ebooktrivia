@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { createOrderPaidConsumer, type OrderPaidNudge } from "./conversion-outbox.ts";
 
-const row = (payload: unknown) => ({ id: randomUUID(), topic: "order.paid", payload, sealed: null, attempts: 1 });
+const row = (payload: unknown) => ({ id: randomUUID(), topic: "order.paid", payload, sealed: null, attempts: 1, deferrals: 0 });
 const run = (nudges: readonly OrderPaidNudge[], payload: unknown) => createOrderPaidConsumer(nudges).perform(row(payload), new AbortController().signal);
 
 describe("createOrderPaidConsumer", () => {

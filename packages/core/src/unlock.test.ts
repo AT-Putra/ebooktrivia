@@ -5,6 +5,7 @@ import {
   lastPlayDay,
   nextUnlockAt,
   scheduleDays,
+  setUnlocksAt,
   unlockedCount,
   wibDay,
   wibDayStart,
@@ -235,6 +236,17 @@ describe("edge cases", () => {
     expect(() => wibDayStart(1.5)).toThrow(RangeError);
     expect(() => cumulativeUnlocked(0.5, 2, 2)).toThrow(RangeError);
     expect(() => cumulativeUnlocked(0, 0, 2)).toThrow(RangeError);
+    for (const rank of [0, 11, 1.5]) expect(() => setUnlocksAt(s, rank), String(rank)).toThrow(RangeError);
+  });
+
+  it("setUnlocksAt: day 0's sets at the payment instant, later ones at 00:00 WIB of their day", () => {
+    const s = withDays(4, 10); // cumulative 1, 4, 7, 10
+    expect(setUnlocksAt(s, 1)).toEqual(s.firstPaidAt);
+    expect(setUnlocksAt(s, 2)).toEqual(new Date(startOfDay(dEnd - 2)));
+    expect(setUnlocksAt(s, 4)).toEqual(new Date(startOfDay(dEnd - 2)));
+    expect(setUnlocksAt(s, 10)).toEqual(new Date(startOfDay(dEnd)));
+    const all = withDays(1, 5);
+    expect(setUnlocksAt(all, 5)).toEqual(all.firstPaidAt);
   });
 
   it("nextUnlockAt gives the next 00:00 WIB that adds a set", () => {
@@ -354,6 +366,18 @@ describe("properties over random programs and purchase dates", () => {
           if (lastDay > p) expect(at(startOfDay(lastDay) - 1)).toBeLessThan(s);
         }
         expect(ends.at(-1)).toBe(s);
+      }),
+    );
+  });
+
+  it("setUnlocksAt(rank) is the first instant the formula reaches rank (US-027's locked tiles)", () => {
+    fc.assert(
+      fc.property(scenario, fc.nat(), ({ schedule }, seed) => {
+        const rank = 1 + (seed % schedule.setCount);
+        const at = setUnlocksAt(schedule, rank).getTime();
+        expect(count(schedule, at)).toBeGreaterThanOrEqual(rank);
+        expect(count(schedule, at - 1)).toBeLessThan(rank);
+        expect(at === schedule.firstPaidAt.getTime() || at === startOfDay(dayOf(at))).toBe(true);
       }),
     );
   });

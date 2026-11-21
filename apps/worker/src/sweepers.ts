@@ -135,7 +135,7 @@ export async function sweepOutbox(
             SELECT o.id, o.topic, o.attempts FROM public.outbox o
               JOIN unnest(${topics}::text[], ${topics.map(capOf)}::int[]) AS t(topic, cap) ON t.topic = o.topic
              WHERE o.processed_at IS NULL AND o.relayed_at < now() - ${deps.outboxStaleMs} * interval '1 millisecond'
-               AND o.available_at <= now() AND o.attempts < t.cap
+               AND o.available_at <= now() AND o.attempts < t.cap + o.deferrals
              ORDER BY o.relayed_at
              LIMIT ${BATCH}
                FOR UPDATE OF o SKIP LOCKED`;
@@ -171,7 +171,7 @@ export async function sweepOutbox(
   const stuck = await sql<{ topic: string; count: number; cap: number }[]>`
     SELECT o.topic, count(*)::int AS count, coalesce(t.cap, ${OUTBOX_MAX_ATTEMPTS}) AS cap FROM public.outbox o
       LEFT JOIN unnest(${capped.map(([topic]) => topic)}::text[], ${capped.map(([, cap]) => cap)}::int[]) AS t(topic, cap) ON t.topic = o.topic
-     WHERE o.processed_at IS NULL AND o.attempts >= coalesce(t.cap, ${OUTBOX_MAX_ATTEMPTS})
+     WHERE o.processed_at IS NULL AND o.attempts >= coalesce(t.cap, ${OUTBOX_MAX_ATTEMPTS}) + o.deferrals
      GROUP BY o.topic, t.cap ORDER BY o.topic`;
   for (const { topic, count, cap } of stuck) {
     const raised = await raiseAlert(sql, {

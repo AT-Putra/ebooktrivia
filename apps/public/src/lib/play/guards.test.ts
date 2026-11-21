@@ -23,7 +23,9 @@ const playRoutes = files.filter((f) => f.startsWith("app/api/v1/play/") && f.end
 /** The login's own routes (lib/play/handlers.ts manages their cookies itself). Every other play route is a player route. */
 const LOGIN_ROUTES = [
   "app/api/v1/play/auth/logout/route.ts",
+  "app/api/v1/play/auth/logout-all/route.ts",
   "app/api/v1/play/auth/magic-link/route.ts",
+  "app/api/v1/play/auth/magic-link/resend/route.ts",
   "app/api/v1/play/auth/otp/route.ts",
   "app/api/v1/play/auth/otp/verify/route.ts",
   "app/api/v1/play/auth/session/route.ts",
@@ -74,9 +76,38 @@ describe("player login guards", () => {
     expect(handlers).toContain('const SAFE_METHODS = new Set(["GET", "HEAD"]);');
   });
 
+  // US-027: the question flow and the leaderboard. Each route hands withPlayer's player id to its handler; the
+  // handlers take only opaque ids from the client (never a player id or a time) and pass them to ONE play function.
+  it("US-027's routes exist with their method, wrap their handler in withPlayer, and take no player id or time from the client", () => {
+    const PLAYER_ROUTES: Record<string, { readonly method: string; readonly handler: string }> = {
+      "app/api/v1/play/sets/start/route.ts": { method: "POST", handler: "handleStartSet" },
+      "app/api/v1/play/attempts/current/route.ts": { method: "POST", handler: "handleCurrent" },
+      "app/api/v1/play/attempts/answer/route.ts": { method: "POST", handler: "handleAnswer" },
+      "app/api/v1/play/leaderboard/route.ts": { method: "GET", handler: "handleLeaderboard" },
+    };
+    for (const [route, { method, handler }] of Object.entries(PLAYER_ROUTES)) {
+      expect(playRoutes, route).toContain(route);
+      expect(read(route), route).toContain(`export const ${method} = playRoute(`);
+      expect(read(route), route).toContain(`withPlayer(deps, request, (playerId) => ${handler}(deps, request, playerId))`);
+    }
+    const trivia = read("lib/play/trivia.ts");
+    expect(trivia).not.toMatch(SESSION_READER);
+    const bodyKeys = [...trivia.matchAll(/playAction\("[^"]+", \[([^\]]*)\]/g)].map((m) => m[1]);
+    expect(bodyKeys).toEqual(['"set_id"', '"attempt_id"', '"answer_id", "option_id"']);
+    // Every call passes the session's player id first, and no time at all: the writes, the settle and the reveal.
+    expect(trivia.match(/public\.play_\w+\(\$\{playerId\}/g)).toEqual([
+      "public.play_start_set(${playerId}",
+      "public.play_current(${playerId}",
+      "public.play_settle(${playerId}",
+      "public.play_reveal(${playerId}",
+      "public.play_answer(${playerId}",
+    ]);
+    expect(trivia).not.toMatch(/Date\.parse|new Date\(|timestamptz/);
+  });
+
   it("every state-changing play handler checks the exact Origin before anything else", () => {
     const handlers = read("lib/play/handlers.ts");
-    for (const name of ["handleOtpRequest", "handleOtpVerify", "handleMagicLink", "handleLogout", "handlePlayCap"]) {
+    for (const name of ["handleOtpRequest", "handleOtpVerify", "handleMagicLink", "handleMagicLinkResend", "handleLogout", "handleLogoutAll", "handlePlayCap"]) {
       const body = handlers.slice(handlers.indexOf(`export async function ${name}(`));
       const firstStatements = body.slice(0, body.indexOf("try {"));
       expect(firstStatements, name).toContain('if (!sameOrigin(deps, request)) return playError("origin");');

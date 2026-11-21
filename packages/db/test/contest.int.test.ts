@@ -319,7 +319,7 @@ describe("after the snapshot", () => {
     }
   });
 
-  it("refuses prize tier edits (ET072), the extension tool (ET102) and play for public_rw (ET050; no score write at all, 42501)", async () => {
+  it("refuses prize tier edits (ET072), the extension tool (ET102) and play (ET050, as the play functions' owner trivia_play; public_rw writes no score at all, 42501)", async () => {
     await admins();
     const p = await program([[20, 20]]);
     const t = await tier(p.programId, 1, 1);
@@ -328,7 +328,7 @@ describe("after the snapshot", () => {
     await snapshot(p.programId);
     expect(await sqlState(asRole("admin_rw", (tx) => tx`UPDATE public.prize_tiers SET value_idr = 1 WHERE id = ${t}`))).toBe("ET072");
     expect(await sqlState(extend(p.programId))).toBe("ET102");
-    expect(await sqlState(asRole("public_rw", (tx) => tx`UPDATE public.attempt_questions SET option_id = NULL WHERE id = ${rowIds[0] ?? ""}`))).toBe("ET050");
+    expect(await sqlState(asRole("trivia_play", (tx) => tx`UPDATE public.attempt_questions SET option_id = NULL WHERE id = ${rowIds[0] ?? ""}`))).toBe("ET050");
     expect(await sqlState(asRole("public_rw", (tx) => tx`UPDATE public.set_attempts SET score = 99 WHERE id = ${attemptId}`))).toBe("42501");
   });
 });
@@ -640,7 +640,7 @@ describe("the finalize against concurrent play (security review P1-1)", () => {
   it("a play write that holds the shared lock first is fully reflected: the snapshot waits for it", async () => {
     const r = await endedWithOpenQuestion();
     const g = gated();
-    const play = asRole("public_rw", async (tx) => {
+    const play = asRole("trivia_play", async (tx) => {
       await tx`UPDATE public.attempt_questions SET answered_at = now() WHERE id = ${r.open}`; // closes the timeout
       g.held();
       await g.gate;
@@ -669,7 +669,7 @@ describe("the finalize against concurrent play (security review P1-1)", () => {
     });
     await g.holding;
     let settled = false;
-    const play = sqlState(asRole("public_rw", (tx) => tx`UPDATE public.attempt_questions SET ip = '203.0.113.9' WHERE id = ${r.open}`)).finally(() => (settled = true));
+    const play = sqlState(asRole("trivia_play", (tx) => tx`UPDATE public.attempt_questions SET ip = '203.0.113.9' WHERE id = ${r.open}`)).finally(() => (settled = true));
     await new Promise((resolve) => setTimeout(resolve, 400));
     expect(settled).toBe(false);
     g.release();
@@ -677,7 +677,7 @@ describe("the finalize against concurrent play (security review P1-1)", () => {
     expect(await play).toBe("ET050");
     await frozenMatchesDerived(r.p.programId, r.pl);
     // Nothing starts or is added after G either.
-    expect(await sqlState(asRole("public_rw", (tx) => tx`INSERT INTO public.set_attempts (player_id, set_id) VALUES (${r.pl}, ${r.p.sets[0]?.id ?? ""})`))).toBe("ET050");
+    expect(await sqlState(asRole("trivia_play", (tx) => tx`INSERT INTO public.set_attempts (player_id, set_id) VALUES (${r.pl}, ${r.p.sets[0]?.id ?? ""})`))).toBe("ET050");
   });
 
   it("refuses a new question row of an existing attempt at or after G (ET110)", async () => {
@@ -688,7 +688,7 @@ describe("the finalize against concurrent play (security review P1-1)", () => {
     if (s === undefined || q === undefined) throw new Error("no question");
     const { id: attemptId } = first(await sql<Id[]>`INSERT INTO set_attempts (player_id, set_id) VALUES (${pl}, ${s.id}) RETURNING id`);
     expect(
-      await sqlState(asRole("public_rw", (tx) => tx`
+      await sqlState(asRole("trivia_play", (tx) => tx`
         INSERT INTO public.attempt_questions (attempt_id, question_id, position, permutation) VALUES (${attemptId}, ${q.id}, 2, ${[q.right, q.wrong]}::uuid[])`)),
     ).toBe("ET110");
   });

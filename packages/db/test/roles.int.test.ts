@@ -21,6 +21,18 @@ const CONTEST_FUNCTIONS = [
 const REFIRE_FUNCTION = "public.refire_conversion(p_id uuid, p_resend_sent boolean DEFAULT false)";
 /** US-025 / US-029: the explicit resend of a delivery (sql/delivery-resend.sql), owned by delivery_resend. */
 const RESEND_FUNCTION = "public.resend_delivery(p_id uuid, p_confirm_unknown boolean DEFAULT false)";
+/** US-027: the play entry points of the public app (sql/play.sql), owned by trivia_play. */
+const PLAY_FUNCTIONS = [
+  "public.play_answer(p_player_id uuid, p_answer_id uuid, p_option_id uuid, p_ip inet, p_ua_hash bytea)",
+  "public.play_attempts(p_player_id uuid, p_program_id uuid)",
+  "public.play_current(p_player_id uuid, p_attempt_id uuid, p_ip inet, p_ua_hash bytea)",
+  "public.play_leaderboard(p_program_id uuid, p_limit integer)",
+  "public.play_note_unlocked(p_player_id uuid, p_program_id uuid)",
+  "public.play_reveal(p_player_id uuid, p_answer_id uuid)",
+  "public.play_settle(p_player_id uuid, p_answer_id uuid)",
+  "public.play_standing(p_player_id uuid, p_program_id uuid)",
+  "public.play_start_set(p_player_id uuid, p_set_id uuid)",
+];
 const ownerOf = (sig: string): string =>
   sig === OVERRIDE_FUNCTION
     ? "trivia_override"
@@ -30,7 +42,9 @@ const ownerOf = (sig: string): string =>
         ? "conversion_refire"
         : sig === RESEND_FUNCTION
           ? "delivery_resend"
-          : "migrator";
+          : PLAY_FUNCTIONS.includes(sig)
+            ? "trivia_play"
+            : "migrator";
 const DEFINER_FUNCTIONS = [
   "public.enqueue_mo(p_order_id uuid)",
   "public.enqueue_notification(p_inbox_id uuid)",
@@ -163,7 +177,7 @@ describe("group roles (roles.sql)", () => {
     expect(await groupMemberships()).toEqual([]);
   });
 
-  it.each(["trivia_override", "contest_results", "conversion_refire", "delivery_resend"])("creates %s NOLOGIN, with no members and a member of nothing (US-018, US-028, US-024, US-025)", async (name) => {
+  it.each(["trivia_override", "contest_results", "conversion_refire", "delivery_resend", "trivia_play"])("creates %s NOLOGIN, with no members and a member of nothing (US-018, US-028, US-024, US-025, US-027)", async (name) => {
     const [role] = await sql`
       SELECT rolcanlogin, rolsuper, rolcreatedb, rolcreaterole, rolreplication, rolbypassrls,
              (SELECT count(*)::int FROM pg_auth_members am WHERE am.roleid = r.oid OR am.member = r.oid) AS memberships
@@ -171,7 +185,7 @@ describe("group roles (roles.sql)", () => {
     expect(role).toEqual({ rolcanlogin: false, rolsuper: false, rolcreatedb: false, rolcreaterole: false, rolreplication: false, rolbypassrls: false, memberships: 0 });
   });
 
-  it.each(["trivia_override", "contest_results", "conversion_refire", "delivery_resend"])("removes any membership in %s on a re-run (a member could SET ROLE to it)", async (name) => {
+  it.each(["trivia_override", "contest_results", "conversion_refire", "delivery_resend", "trivia_play"])("removes any membership in %s on a re-run (a member could SET ROLE to it)", async (name) => {
     await sql.unsafe(`GRANT ${name} TO admin_rw`);
     try {
       await runMigrations(inject("dbUrl"));
@@ -182,7 +196,7 @@ describe("group roles (roles.sql)", () => {
     }
   });
 
-  it("makes migrator the owner of every object but the override function (trivia_override), the contest functions (contest_results) and the conversion re-fire (conversion_refire)", async () => {
+  it("makes migrator the owner of every object but the override function (trivia_override), the contest functions (contest_results), the conversion re-fire (conversion_refire) and the play functions (trivia_play)", async () => {
     const rows = await sql`
       SELECT n.nspname, c.relname, pg_get_userbyid(c.relowner) AS owner
       FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -203,9 +217,12 @@ describe("group roles (roles.sql)", () => {
         { nspname: "public", relname: "program_winners_banner", owner: "contest_results" },
         { nspname: "public", relname: "refire_conversion", owner: "conversion_refire" },
         { nspname: "public", relname: "resend_delivery", owner: "delivery_resend" },
+        ...["play_answer", "play_attempts", "play_current", "play_leaderboard", "play_note_unlocked", "play_program_ms", "play_ranking", "play_reveal", "play_settle", "play_settle_answer", "play_settle_pending", "play_standing", "play_start_set", "play_unlocked_count"].map(
+          (relname) => ({ nspname: "public", relname, owner: "trivia_play" }),
+        ),
       ]),
     );
-    expect(rows).toHaveLength(7);
+    expect(rows).toHaveLength(21);
   });
 });
 
@@ -236,7 +253,7 @@ describe("SECURITY DEFINER functions (functions.sql, triggers.sql)", () => {
         publicExecute: false,
       });
     }
-    expect((await functions()).filter((fn) => fn.definer).map((fn) => fn.sig)).toEqual(expect.arrayContaining([OVERRIDE_FUNCTION, ...CONTEST_FUNCTIONS, REFIRE_FUNCTION]));
+    expect((await functions()).filter((fn) => fn.definer).map((fn) => fn.sig)).toEqual(expect.arrayContaining([OVERRIDE_FUNCTION, ...CONTEST_FUNCTIONS, REFIRE_FUNCTION, ...PLAY_FUNCTIONS]));
   });
 
   it("pins search_path = pg_catalog, pg_temp on every other function in public too", async () => {
@@ -256,6 +273,7 @@ describe("SECURITY DEFINER functions (functions.sql, triggers.sql)", () => {
         "public.enqueue_notification(uuid)",
         "public.enqueue_waha_inbound(uuid)",
         "public.enqueue_mo(uuid)",
+        "public.enqueue_magic_link_resend(text)",
         "public.get_payment_secret()",
         "public.get_order_status(text)",
         "public.claim_browser_mt(text)",
@@ -272,6 +290,20 @@ describe("SECURITY DEFINER functions (functions.sql, triggers.sql)", () => {
         "public.extend_open_question_deadlines(uuid, timestamptz, timestamptz, text, text, text, inet)",
         "public.program_winners_banner(uuid)",
         "public.record_waha_ack(text, text)",
+        "public.play_unlocked_count(timestamptz, integer, integer, timestamptz, timestamptz, integer, integer)",
+        "public.play_ranking(uuid)",
+        "public.play_settle_answer(uuid)",
+        "public.play_settle_pending(uuid)",
+        "public.play_settle(uuid, uuid)",
+        "public.play_program_ms(uuid)",
+        "public.play_reveal(uuid, uuid)",
+        "public.play_attempts(uuid, uuid)",
+        "public.play_note_unlocked(uuid, uuid)",
+        "public.play_start_set(uuid, uuid)",
+        "public.play_current(uuid, uuid, inet, bytea)",
+        "public.play_answer(uuid, uuid, uuid, inet, bytea)",
+        "public.play_leaderboard(uuid, integer)",
+        "public.play_standing(uuid, uuid)",
       ]}::text[]) fn
       CROSS JOIN unnest(${[...APP_ROLES]}::text[]) r
       WHERE has_function_privilege(r, fn, 'EXECUTE') ORDER BY 1, 2`;
@@ -280,6 +312,7 @@ describe("SECURITY DEFINER functions (functions.sql, triggers.sql)", () => {
       "public_rw public.claim_browser_mt(text)",
       "admin_rw public.confirm_program_winners(uuid, text, text, inet)",
       "worker_rw public.create_leaderboard_snapshot(uuid)",
+      "public_rw public.enqueue_magic_link_resend(text)",
       "public_rw public.enqueue_mo(uuid)",
       "public_rw public.enqueue_notification(uuid)",
       "public_rw public.enqueue_otp(uuid)",
@@ -288,12 +321,22 @@ describe("SECURITY DEFINER functions (functions.sql, triggers.sql)", () => {
       "public_rw public.get_order_status(text)",
       "public_rw public.get_payment_secret()",
       "worker_rw public.get_payment_secret()",
-      "public_rw public.lock_program_contest_shared(uuid)",
       "admin_rw public.lock_program_contest(uuid)",
       // US-029: the console masks buyers and winners in SQL.
       "admin_rw public.mask_name(text)",
       "admin_rw public.mask_phone(text)",
       "admin_rw public.override_question_scoring(uuid, uuid, uuid, integer, integer, uuid, text, text, text, inet)",
+      "public_rw public.play_answer(uuid, uuid, uuid, inet, bytea)",
+      "public_rw public.play_attempts(uuid, uuid)",
+      "public_rw public.play_current(uuid, uuid, inet, bytea)",
+      "public_rw public.play_leaderboard(uuid, integer)",
+      "public_rw public.play_note_unlocked(uuid, uuid)",
+      "admin_rw public.play_program_ms(uuid)",
+      "admin_rw public.play_ranking(uuid)",
+      "public_rw public.play_reveal(uuid, uuid)",
+      "public_rw public.play_settle(uuid, uuid)",
+      "public_rw public.play_standing(uuid, uuid)",
+      "public_rw public.play_start_set(uuid, uuid)",
       "admin_rw public.program_winners_banner(uuid)",
       "public_rw public.program_winners_banner(uuid)",
       "public_rw public.record_waha_ack(text, text)",

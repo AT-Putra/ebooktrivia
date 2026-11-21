@@ -182,6 +182,17 @@ function playerSessions(deps: PlayAuthDeps) {
         return ctx.json({ revoked: true });
       }),
       /**
+       * "Keluar dari semua perangkat" (US-026 follow-up, US-027): deletes EVERY session of the request's player
+       * (their session_state rows go with them, ON DELETE CASCADE), so a phone left signed in elsewhere is signed
+       * out too. Only a valid session can ask, and only for its own player. Cookies are the caller's.
+       */
+      playerRevokeAllSessions: createAuthEndpoint.serverOnly({ method: "POST" }, async (ctx) => {
+        const found = await getSessionFromCtx(ctx, { disableRefresh: true, disableCookieCache: true });
+        if (found === null) return ctx.json({ revoked: false });
+        await ctx.context.internalAdapter.deleteUserSessions(found.user.id);
+        return ctx.json({ revoked: true });
+      }),
+      /**
        * Logs in with a magic link (single use, channel-bound, 72 h). The link is used up LAST: its login is
        * looked up (magic_link_login_user), the session and its state are created, and only then does
        * consume_magic_link spend the link, so a failure before that leaves the link valid; a consume that

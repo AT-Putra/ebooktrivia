@@ -47,7 +47,7 @@ DECLARE
   m record;
   p record;
 BEGIN
-  FOREACH r IN ARRAY ARRAY['migrator', 'public_rw', 'admin_rw', 'worker_rw', 'internal_rw', 'trivia_override', 'contest_results', 'conversion_refire', 'delivery_resend'] LOOP
+  FOREACH r IN ARRAY ARRAY['migrator', 'public_rw', 'admin_rw', 'worker_rw', 'internal_rw', 'trivia_override', 'contest_results', 'conversion_refire', 'delivery_resend', 'trivia_play'] LOOP
     IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = r) THEN
       BEGIN
         EXECUTE pg_catalog.format('CREATE ROLE %I NOLOGIN', r);
@@ -77,11 +77,11 @@ BEGIN
       JOIN pg_catalog.pg_roles g ON g.oid = am.roleid
       JOIN pg_catalog.pg_roles u ON u.oid = am.member
       JOIN pg_catalog.pg_roles gr ON gr.oid = am.grantor
-     WHERE u.rolname IN ('migrator', 'public_rw', 'admin_rw', 'worker_rw', 'internal_rw', 'trivia_override', 'contest_results', 'conversion_refire', 'delivery_resend')
-        -- Nobody may be a member of trivia_override, contest_results or conversion_refire: a member could SET ROLE
-        -- to it and pass the content lock's override check, confirm winners or resend a conversion the sink
-        -- acknowledged, outside their functions.
-        OR g.rolname IN ('trivia_override', 'contest_results', 'conversion_refire', 'delivery_resend')
+     WHERE u.rolname IN ('migrator', 'public_rw', 'admin_rw', 'worker_rw', 'internal_rw', 'trivia_override', 'contest_results', 'conversion_refire', 'delivery_resend', 'trivia_play')
+        -- Nobody may be a member of trivia_override, contest_results, conversion_refire, delivery_resend or trivia_play:
+        -- a member could SET ROLE to it and pass the content lock's override check, confirm winners, resend a
+        -- conversion the sink acknowledged, resend a delivery or write the play rows and scores, outside their functions.
+        OR g.rolname IN ('trivia_override', 'contest_results', 'conversion_refire', 'delivery_resend', 'trivia_play')
   LOOP
     EXECUTE pg_catalog.format('REVOKE %I FROM %I GRANTED BY %I CASCADE', m.grp, m.member, m.grantor);
   END LOOP;
@@ -90,7 +90,7 @@ BEGIN
   -- session_replication_role, which would switch off ENABLE ORIGIN triggers.
   FOR p IN SELECT parname FROM pg_catalog.pg_parameter_acl LOOP
     EXECUTE pg_catalog.format(
-      'REVOKE ALL ON PARAMETER %I FROM public_rw, admin_rw, worker_rw, internal_rw, migrator, trivia_override, contest_results, conversion_refire, delivery_resend CASCADE', p.parname);
+      'REVOKE ALL ON PARAMETER %I FROM public_rw, admin_rw, worker_rw, internal_rw, migrator, trivia_override, contest_results, conversion_refire, delivery_resend, trivia_play CASCADE', p.parname);
   END LOOP;
 END
 $roles$;
@@ -102,7 +102,7 @@ $roles$;
 DO $db$
 BEGIN
   EXECUTE pg_catalog.format(
-    'REVOKE ALL ON DATABASE %I FROM PUBLIC, public_rw, admin_rw, worker_rw, internal_rw, migrator, trivia_override, contest_results, conversion_refire, delivery_resend',
+    'REVOKE ALL ON DATABASE %I FROM PUBLIC, public_rw, admin_rw, worker_rw, internal_rw, migrator, trivia_override, contest_results, conversion_refire, delivery_resend, trivia_play',
     pg_catalog.current_database());
   EXECUTE pg_catalog.format('GRANT CONNECT ON DATABASE %I TO public_rw, admin_rw, worker_rw, internal_rw',
     pg_catalog.current_database());
@@ -123,7 +123,8 @@ $db$;
 -- sql/override.sql at the very end (src/migrate.ts). Until then no override can run (fail closed).
 -- Every signature it ever had is dropped (it changed in the US-018 review), whoever owns it.
 -- The same for the functions contest_results owns (US-028), created again by sql/contest.sql, and the one
--- conversion_refire owns (US-024), created again by sql/conversions.sql, and the one delivery_resend owns (US-025), created again by sql/delivery-resend.sql.
+-- conversion_refire owns (US-024), created again by sql/conversions.sql, the one delivery_resend owns (US-025), created again by sql/delivery-resend.sql,
+-- and those trivia_play owns (US-027), created again by sql/play.sql.
 DO $override$
 DECLARE
   f record;
@@ -132,7 +133,11 @@ BEGIN
     SELECT p.oid::pg_catalog.regprocedure AS sig FROM pg_catalog.pg_proc p
      WHERE p.pronamespace = 'public'::pg_catalog.regnamespace
        AND p.proname IN ('override_question_scoring', 'create_leaderboard_snapshot', 'confirm_program_winners',
-                         'extend_open_question_deadlines', 'program_winners_banner', 'refire_conversion', 'resend_delivery')
+                         'extend_open_question_deadlines', 'program_winners_banner', 'refire_conversion', 'resend_delivery',
+                         'play_unlocked_count', 'play_program_ms', 'play_ranking', 'play_settle_answer', 'play_settle_pending',
+                         'play_settle', 'play_note_unlocked',
+                         'play_start_set', 'play_current', 'play_answer', 'play_reveal', 'play_attempts', 'play_leaderboard',
+                         'play_standing')
   LOOP
     EXECUTE pg_catalog.format('DROP FUNCTION %s', f.sig);
   END LOOP;
@@ -140,13 +145,55 @@ END
 $override$;
 
 -- Schema public: owned by migrator; USAGE only for the app roles (and trivia_override /
--- contest_results / conversion_refire, whose functions name public tables), nothing for PUBLIC.
+-- contest_results / conversion_refire / delivery_resend / trivia_play, whose functions name public tables), nothing for PUBLIC.
 ALTER SCHEMA public OWNER TO migrator;
-REVOKE ALL ON SCHEMA public FROM PUBLIC, public_rw, admin_rw, worker_rw, internal_rw, trivia_override, contest_results, conversion_refire, delivery_resend;
-GRANT USAGE ON SCHEMA public TO public_rw, admin_rw, worker_rw, internal_rw, trivia_override, contest_results, conversion_refire, delivery_resend;
+REVOKE ALL ON SCHEMA public FROM PUBLIC, public_rw, admin_rw, worker_rw, internal_rw, trivia_override, contest_results, conversion_refire, delivery_resend, trivia_play;
+GRANT USAGE ON SCHEMA public TO public_rw, admin_rw, worker_rw, internal_rw, trivia_override, contest_results, conversion_refire, delivery_resend, trivia_play;
 
 -- Objects migrator creates later get no PUBLIC privileges (functions would otherwise get
 -- EXECUTE to PUBLIC), and no app-role grants: every grant is explicit in grants.sql.
 ALTER DEFAULT PRIVILEGES FOR ROLE migrator REVOKE ALL ON TABLES FROM PUBLIC;
 ALTER DEFAULT PRIVILEGES FOR ROLE migrator REVOKE ALL ON SEQUENCES FROM PUBLIC;
 ALTER DEFAULT PRIVILEGES FOR ROLE migrator REVOKE ALL ON FUNCTIONS FROM PUBLIC;
+
+-- ---------------------------------------------------------------------------------------------
+-- US-027 BLOCK BEGIN (security review HIGH-1 residual, defence in depth). What a transaction WROTE must not be
+-- measurable by an app login: the WAL position (pg_wal_lsn_diff of two readings gives the bytes a statement wrote)
+-- and the statistics counters of the session's transaction (pg_stat_get_xact_*, HOT updates and the like) or of the
+-- tables over all sessions (pg_stat_get_tuples_*, the pg_stat_*_tables views, which count rolled-back writes too)
+-- would let a session play a pick, measure it and roll it back (sql/play.sql: the pick itself no longer writes
+-- anything that depends on correctness; this takes the instruments away as well). EXECUTE / SELECT is revoked from
+-- PUBLIC on these pg_catalog objects in this database and granted to pg_monitor only (monitoring logins). Here, in
+-- roles.sql, because only the connecting role (the migrate job's superuser login in every environment: production
+-- ebt_migrate, SUPERUSER per infra/provision/db-roles.sh, via infra/quadlet/migrate.container; the dev stack and the
+-- tests; all through src/migrate.ts) may change pg_catalog's privileges; migrator could not. Re-runnable: a function or view a PostgreSQL version lacks is simply not listed.
+DO $instruments$
+DECLARE
+  f record;
+  v record;
+BEGIN
+  FOR f IN
+    SELECT p.oid::pg_catalog.regprocedure AS sig FROM pg_catalog.pg_proc p
+     WHERE p.pronamespace = 'pg_catalog'::pg_catalog.regnamespace
+       AND (p.proname IN ('pg_current_wal_lsn', 'pg_current_wal_insert_lsn', 'pg_current_wal_flush_lsn',
+                          'pg_stat_get_wal', 'pg_stat_get_backend_wal', 'pg_stat_get_io', 'pg_stat_get_backend_io',
+                          'pg_stat_get_tuples_inserted', 'pg_stat_get_tuples_updated', 'pg_stat_get_tuples_deleted',
+                          'pg_stat_get_tuples_hot_updated', 'pg_stat_get_tuples_newpage_updated', 'pg_stat_get_live_tuples',
+                          'pg_stat_get_dead_tuples', 'pg_stat_get_mod_since_analyze', 'pg_stat_get_ins_since_vacuum')
+            OR p.proname LIKE 'pg\_stat\_get\_xact\_%')
+  LOOP
+    EXECUTE pg_catalog.format('REVOKE EXECUTE ON FUNCTION %s FROM PUBLIC', f.sig);
+    EXECUTE pg_catalog.format('GRANT EXECUTE ON FUNCTION %s TO pg_monitor', f.sig);
+  END LOOP;
+  FOR v IN
+    SELECT c.oid::pg_catalog.regclass AS rel FROM pg_catalog.pg_class c
+     WHERE c.relnamespace = 'pg_catalog'::pg_catalog.regnamespace AND c.relkind = 'v'
+       AND (c.relname IN ('pg_stat_wal', 'pg_stat_io', 'pg_stat_all_tables', 'pg_stat_sys_tables', 'pg_stat_user_tables')
+            OR c.relname LIKE 'pg\_stat\_xact\_%')
+  LOOP
+    EXECUTE pg_catalog.format('REVOKE SELECT ON %s FROM PUBLIC', v.rel);
+    EXECUTE pg_catalog.format('GRANT SELECT ON %s TO pg_monitor', v.rel);
+  END LOOP;
+END
+$instruments$;
+-- US-027 BLOCK END.

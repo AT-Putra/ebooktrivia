@@ -20,6 +20,11 @@ const publicDir = fileURLToPath(new URL("../../apps/public/", import.meta.url));
 
 export interface PlayEnv {
   readonly sql: postgres.Sql;
+  /** The app's origin (http://127.0.0.1:{port}). */
+  readonly url: string;
+  /** The published program the eligible players have paid for (US-027: the trivia page /{programSlug}). */
+  readonly programId: string;
+  readonly programSlug: string;
   /** An eligible player's phone (E.164) and id. */
   eligiblePlayer(): Promise<{ readonly id: string; readonly phone: string }>;
   /** The newest OTP code sent to `phone`, opened from the outbox with the messaging private key. */
@@ -27,7 +32,9 @@ export interface PlayEnv {
   stop(): Promise<void>;
 }
 
-export async function startPlayEnv(): Promise<PlayEnv> {
+/** `port`: each spec that starts its own server takes its own (the specs run in parallel workers). */
+export async function startPlayEnv(port = PLAY_PORT): Promise<PlayEnv> {
+  const url = `http://127.0.0.1:${String(port)}`;
   const db = await createTestDatabase("ebt_e2e_play", ["public_rw"]);
   const sql = postgres(db.url, { max: 2, onnotice: () => undefined });
   const messaging = generateScopeKeyPair();
@@ -45,10 +52,11 @@ export async function startPlayEnv(): Promise<PlayEnv> {
     INSERT INTO settings_secrets (id, scope, name, adnet_id, bound_host, ciphertext, nonce, sealed_dek, key_id, last4)
     VALUES (${sealed.id}, ${sealed.scope}, ${sealed.name}, ${sealed.adnetId}, ${sealed.boundHost}, ${sealed.ciphertext}, ${sealed.nonce}, ${sealed.sealedDek}, ${sealed.keyId}, ${sealed.last4})`;
   const product = (await sql<{ id: string }[]>`INSERT INTO products (title, price_idr) VALUES ('Ebook E2E', 49000) RETURNING id`)[0];
+  const programSlug = `e2e-${randomBytes(4).toString("hex")}`;
   const program = (
     await sql<{ id: string }[]>`
       INSERT INTO programs (product_id, slug, name, status, sales_start_at, sales_end_at, grace_days)
-      VALUES (${product?.id ?? ""}, ${`e2e-${randomBytes(4).toString("hex")}`}, 'Program', 'published', now() - interval '1 day', now() + interval '30 days', 30) RETURNING id`
+      VALUES (${product?.id ?? ""}, ${programSlug}, 'Program', 'published', now() - interval '1 day', now() + interval '30 days', 30) RETURNING id`
   )[0];
 
   const env = {
@@ -63,10 +71,10 @@ export async function startPlayEnv(): Promise<PlayEnv> {
     SECRETS_MESSAGING_PUBLIC_KEY: messaging.publicKey.toString("base64url"),
     PLAYER_AUTH_SECRETS: `1:${randomBytes(32).toString("hex")}`,
     PLAYER_OTP_PEPPER: randomBytes(32).toString("hex"),
-    PUBLIC_DEV_PLAY_ORIGIN: PLAY_URL,
+    PUBLIC_DEV_PLAY_ORIGIN: url,
   };
   const nextBin = createRequire(`${publicDir}package.json`).resolve("next/dist/bin/next");
-  const child: ChildProcess = spawn(process.execPath, [nextBin, "start", "-p", String(PLAY_PORT)], {
+  const child: ChildProcess = spawn(process.execPath, [nextBin, "start", "-p", String(port)], {
     cwd: publicDir,
     env: { PATH: process.env["PATH"] ?? "", SYSTEMROOT: process.env["SYSTEMROOT"] ?? "", ...env },
     stdio: "ignore",
@@ -74,7 +82,7 @@ export async function startPlayEnv(): Promise<PlayEnv> {
   const deadline = Date.now() + 60_000;
   for (;;) {
     try {
-      await fetch(`${PLAY_URL}/login`);
+      await fetch(`${url}/login`);
       break;
     } catch {
       if (Date.now() > deadline) throw new Error("public did not start");
@@ -83,6 +91,9 @@ export async function startPlayEnv(): Promise<PlayEnv> {
   }
   return {
     sql,
+    url,
+    programId: program?.id ?? "",
+    programSlug,
     async eligiblePlayer() {
       const phone = `+62812${String(10_000_000 + Math.floor(Math.random() * 89_999_999))}`;
       const row = (await sql<{ id: string }[]>`INSERT INTO players (phone, name) VALUES (${phone}, 'Budi Santoso') RETURNING id`)[0];

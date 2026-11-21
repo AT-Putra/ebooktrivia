@@ -25,6 +25,7 @@ import { createPlayDb } from "../src/lib/play/db.ts";
 import {
   handleLogout,
   handleMagicLink,
+  handleMagicLinkResend,
   handleOtpRequest,
   handleOtpVerify,
   handlePlayCap,
@@ -759,6 +760,90 @@ describe("magic links (confirm by POST; US-025 issues them)", () => {
       expect((await consume(deps, "email", "x".repeat(43), { ip })).status).toBe(400);
       expect((await consume(deps, "email", "x".repeat(43), { ip })).status).toBe(429);
     });
+  });
+});
+
+// US-027 (Owner decision): "send my login link again", the way in when an attacker used up a phone's code checks.
+describe("magic link resend: no enumeration, limits", () => {
+  const resendRequest = async (phone: string, options: Req = {}) => playRequest("/api/v1/play/auth/magic-link/resend", { phone, cap_token: await playCapToken() }, options);
+  const resendJobs = (playerId: string) => root`SELECT 1 FROM outbox WHERE topic = 'magic_link.resend' AND payload->>'player_id' = ${playerId}`;
+
+  it("answers an eligible, a non-eligible and an unknown phone identically; only the eligible one gets a job, after the answer", async () => {
+    const startedAt = (await one(root<{ now: Date }[]>`SELECT clock_timestamp() AS now`)).now;
+    const eligible = await player(true);
+    const notEligible = await player(false);
+    const unknown = uniquePhone();
+    const answers: { status: number; body: string; headers: [string, string][]; log: string[] }[] = [];
+    for (const phone of [eligible.phone, notEligible.phone, unknown]) {
+      const deps = playDeps();
+      const response = await handleMagicLinkResend(deps, await resendRequest(phone));
+      answers.push({ status: response.status, body: await response.text(), headers: headerList(response), log: deps.logs.lines.map(withoutRequestId) });
+      // Answered before the phone was looked up: no job yet (the eligible phone's comes with the drain of its own
+      // request), the lookup is deferred, and it logs nothing.
+      if (phone === eligible.phone) expect(await resendJobs(eligible.id)).toHaveLength(0);
+      expect(deps.deferred).toHaveLength(1);
+      await deps.drain();
+      expect(deps.logs.lines.map(withoutRequestId)).toEqual(answers.at(-1)?.log);
+    }
+    expect(answers[0]).toMatchObject({ status: 200, body: JSON.stringify({ v: 1, status: "sent" }) });
+    expect(answers[1]).toEqual(answers[0]);
+    expect(answers[2]).toEqual(answers[0]);
+    // Of the three requests exactly one job exists, and it is the eligible player's (a job names a player id, never a
+    // phone, so the other two can only be absent).
+    const jobs = await root<{ player_id: string }[]>`
+      SELECT payload->>'player_id' AS player_id FROM outbox WHERE topic = 'magic_link.resend' AND created_at >= ${startedAt}`;
+    expect(jobs).toEqual([{ player_id: eligible.id }]);
+    expect(await resendJobs(notEligible.id)).toHaveLength(0);
+  });
+
+  it("takes the same time for an eligible and an unknown phone (timing class, with tolerance)", async () => {
+    const times = { eligible: [] as number[], unknown: [] as number[] };
+    const deps = playDeps();
+    for (let round = 0; round < 10; round++) {
+      for (const kind of ["eligible", "unknown"] as const) {
+        const phone = kind === "eligible" ? (await player(true)).phone : uniquePhone();
+        const request = await resendRequest(phone);
+        const started = performance.now();
+        expect((await handleMagicLinkResend(deps, request)).status).toBe(200);
+        times[kind].push(performance.now() - started);
+        await deps.drain();
+      }
+    }
+    const [e, u] = [median(times.eligible), median(times.unknown)];
+    expect(Math.abs(e - u)).toBeLessThanOrEqual(Math.max(15, 0.5 * Math.max(e, u)));
+  });
+
+  it("per phone: 3 a day for every phone alike (counted only with a valid Cap token); per client IP otp.ip_cap; Valkey down: 503", async () => {
+    for (const phone of [(await player(true)).phone, uniquePhone()]) {
+      const deps = playDeps();
+      // A junk token spends nothing of the phone's budget.
+      expect((await handleMagicLinkResend(deps, playRequest("/api/v1/play/auth/magic-link/resend", { phone, cap_token: "junk" }))).status).toBe(403);
+      for (let i = 0; i < PLAY_LIMITS.resendPhoneCap; i++) expect((await handleMagicLinkResend(deps, await resendRequest(phone))).status).toBe(200);
+      const capped = await handleMagicLinkResend(deps, await resendRequest(phone));
+      expect(capped.status).toBe(429);
+      expect(Number(capped.headers.get("retry-after"))).toBeGreaterThan(80_000);
+      await deps.drain();
+    }
+    const deps = playDeps();
+    const ip = freshIp();
+    const cap = (await loadOtpSettings(publicSql))["otp.ip_cap"];
+    for (let i = 0; i < cap; i++) expect((await handleMagicLinkResend(deps, await resendRequest(uniquePhone(), { ip }))).status).toBe(200);
+    expect((await handleMagicLinkResend(deps, playRequest("/api/v1/play/auth/magic-link/resend", { phone: uniquePhone(), cap_token: "junk" }, { ip }))).status).toBe(429);
+    const down = playDeps({ valkey: await newValkey(1) });
+    const response = await handleMagicLinkResend(down, await resendRequest(uniquePhone()));
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ v: 1, error: "unavailable" });
+    expect(down.deferred).toHaveLength(0);
+  });
+
+  it("needs the exact Origin, a valid phone and a play-scope Cap token", async () => {
+    const deps = playDeps();
+    const { phone } = await player(true);
+    expect((await handleMagicLinkResend(deps, await resendRequest(phone, { origin: null }))).status).toBe(403);
+    expect((await handleMagicLinkResend(deps, await resendRequest(phone, { origin: "https://order.ebooktrivia.example.test" }))).status).toBe(403);
+    expect(await (await handleMagicLinkResend(deps, await resendRequest("12"))).json()).toMatchObject({ v: 1, error: "validation" });
+    expect((await handleMagicLinkResend(deps, playRequest("/api/v1/play/auth/magic-link/resend", { phone, cap_token: await capToken(shop) }))).status).toBe(403);
+    expect(deps.deferred).toHaveLength(0);
   });
 });
 

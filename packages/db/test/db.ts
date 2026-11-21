@@ -11,7 +11,11 @@ afterAll(async () => {
 });
 
 export type Tx = postgres.TransactionSql;
-export type AppRole = "public_rw" | "admin_rw" | "worker_rw" | "internal_rw" | "migrator" | "delivery_resend";
+/**
+ * The login groups, plus trivia_play (US-027): the NOLOGIN owner of the play functions (sql/play.sql), the only
+ * writer of play rows the play guards check, which a superuser test session may SET ROLE to.
+ */
+export type AppRole = "public_rw" | "admin_rw" | "worker_rw" | "internal_rw" | "migrator" | "delivery_resend" | "trivia_play";
 export const APP_ROLES = ["public_rw", "admin_rw", "worker_rw", "internal_rw"] as const;
 
 /** Runs `fn` in a transaction as `role` (SET LOCAL ROLE) and commits. */

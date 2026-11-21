@@ -40,6 +40,7 @@
 --   US-026 (player authentication, below): ET120 issue_magic_link arguments out of scope (channel, token
 --   hash), ET121 the player may not log in (unknown, anonymized, eligible for no program), ET122 a
 --   player_auth user that holds the player's phone is linked to another player.
+--   play.sql (US-027, the question flow): ET140-ET148 (listed there); enqueue_magic_link_resend (below) ET146.
 
 SELECT pg_catalog.set_config('search_path', 'pg_catalog, pg_temp', false);
 
@@ -345,12 +346,13 @@ $fn$;
 --   SHARED (lock_program_contest_shared): play, which only applies the current rules. Players do not
 --   block each other, and all of them wait for (and are waited for by) an exclusive holder:
 --     - attempt start, serve and the answer path: the play guards (triggers.sql) take it for every
---       public_rw write of a play row (US-028), BEFORE they read anything they decide on. US-027's
---       paths must ALSO call it FIRST in their transaction, before any row lock (else a play row
---       locked first and the snapshot's row locks can deadlock; PostgreSQL then aborts one). The
---       answer path records answered_at (clock_timestamp(), truncated to milliseconds) BEFORE it
---       waits for the lock, so a re-score running meanwhile never costs the player time; it then
---       scores with the rules as they are after that re-score.
+--       write of a play row by the US-027 play functions (sql/play.sql, owned by trivia_play), BEFORE
+--       they read anything they decide on; the play functions never take it themselves (US-027 contract,
+--       revised). The guard records the arrival (clock_timestamp(), truncated to milliseconds) BEFORE it
+--       waits for the lock, so a re-score running meanwhile never costs the player time; the pick is
+--       then scored with the rules as they are after that re-score. A play row locked first and an
+--       exclusive holder's row locks can deadlock; PostgreSQL then aborts one (40P01) and the public
+--       app retries the play call once.
 -- A hash collision between two programs only serialises them. SECURITY INVOKER (pg_catalog's
 -- advisory lock functions are executable by everyone); EXECUTE per role in grants.sql.
 CREATE OR REPLACE FUNCTION public.lock_program_contest(p_program_id uuid)
@@ -813,6 +815,74 @@ REVOKE ALL ON FUNCTION public.consume_magic_link(bytea, text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.magic_link_login_user(bytea, text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.player_login_label(text) FROM PUBLIC;
 -- US-026 BLOCK END.
+
+-- ---------------------------------------------------------------------------------------------
+-- US-027 BLOCK BEGIN (Owner decision: "send my login link again", the recovery path for a player whose OTP verify
+-- budget an attacker spent; the play functions themselves are in sql/play.sql).
+-- The play login page's resend (apps/public lib/play/handlers.ts handleMagicLinkResend, after its uniform answer was
+-- sent): for the phone of a player who may log in (not anonymized, eligible for a program; the rule of
+-- issue_magic_link and player_for_login), one magic_link.resend job for the worker, payload {player_id}; for any
+-- other phone nothing at all (NULL, no row). The worker issues a fresh link per channel through issue_magic_link,
+-- which replaces the live one of that channel (the link sent before stops working), and sends it by WhatsApp and
+-- e-mail (apps/worker magic-link-resend.ts). At most 3 jobs per player and WIB day, whatever the app's own limits
+-- say (the app counts 3 per 24 h per phone in Valkey first, apps/public lib/play/limits.ts): the job's dedupe key
+-- takes one of three slots of the day, so a fourth finds them all taken and enqueues nothing (the outbox's unique
+-- key, no count query). The caller learns only whether a job was made, and the app neither returns nor logs it.
+-- THE GLOBAL BREAKER (security review LOW-1), the resend's twin of enqueue_otp's: at most otp.global_send_cap
+-- resend jobs over all players in any 10 minutes (counted one enqueue at a time, on the partial index
+-- outbox_magic_link_resend_created_at_idx). A burst beyond it is abuse or a bug and every message puts the WhatsApp numbers at
+-- risk: nothing is enqueued (NULL, the app's answer does not change) and one critical alert tells the Owner.
+CREATE OR REPLACE FUNCTION public.enqueue_magic_link_resend(p_phone text)
+  RETURNS uuid
+  LANGUAGE plpgsql
+  VOLATILE
+  SECURITY DEFINER
+  SET search_path = pg_catalog, pg_temp
+AS $fn$
+DECLARE
+  v_player uuid;
+  v_now timestamptz := clock_timestamp();
+  v_day text := to_char(clock_timestamp() AT TIME ZONE 'Asia/Jakarta', 'YYYY-MM-DD');
+  v_cap integer;
+  v_outbox uuid;
+BEGIN
+  IF current_setting('transaction_isolation') <> 'read committed' THEN
+    RAISE EXCEPTION 'enqueue_magic_link_resend must run under READ COMMITTED' USING ERRCODE = 'ET146';
+  END IF;
+  SELECT p.id INTO v_player
+    FROM public.players p
+   WHERE p.phone = p_phone AND p.anonymized_at IS NULL
+     AND EXISTS (SELECT 1 FROM public.player_programs pp WHERE pp.player_id = p.id AND pp.eligible);
+  IF NOT FOUND THEN
+    RETURN NULL;
+  END IF;
+  PERFORM pg_advisory_xact_lock(hashtextextended('enqueue_magic_link_resend:global', 0::bigint));
+  v_cap := public.setting_positive_int('otp.global_send_cap');
+  IF (SELECT count(*) FROM public.outbox o WHERE o.topic = 'magic_link.resend' AND o.created_at > v_now - interval '10 minutes') >= v_cap THEN
+    INSERT INTO public.alerts (source, kind, severity, dedupe_key, message, payload)
+    SELECT 'monitor', 'magic_link_resend_breaker', 'critical', 'magic_link_resend_breaker',
+           'Login link resends stopped: the global ceiling otp.global_send_cap (per 10 minutes) was reached',
+           jsonb_build_object('cap_per_10_minutes', v_cap)
+     WHERE NOT EXISTS (
+       SELECT 1 FROM public.alerts a
+        WHERE a.dedupe_key = 'magic_link_resend_breaker' AND a.resolved_at IS NULL AND a.created_at > v_now - interval '1 hour');
+    RETURN NULL;
+  END IF;
+  FOR v_slot IN 1..3 LOOP
+    INSERT INTO public.outbox (topic, dedupe_key, payload)
+    VALUES ('magic_link.resend', pg_catalog.format('magic_link.resend:%s:%s:%s', v_player, v_day, v_slot), jsonb_build_object('player_id', v_player))
+    ON CONFLICT (dedupe_key) DO NOTHING
+    RETURNING id INTO v_outbox;
+    IF v_outbox IS NOT NULL THEN
+      RETURN v_outbox;
+    END IF;
+  END LOOP;
+  RETURN NULL;
+END
+$fn$;
+
+REVOKE ALL ON FUNCTION public.enqueue_magic_link_resend(text) FROM PUBLIC;
+-- US-027 BLOCK END.
 
 -- --- US-025 the WAHA ack webhook (AC-D6) ----------------------------------------------------------------------
 -- record_waha_ack: moves a WhatsApp delivery's ack forward (queued -> sent -> delivered -> read) from the message id

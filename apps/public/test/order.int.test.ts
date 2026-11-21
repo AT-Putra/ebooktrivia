@@ -1,7 +1,7 @@
 // US-022 acceptance criteria 1-3 against PostgreSQL (as the public_rw login) and Valkey (ACL user `public`):
 // the order status and claim routes, the exactly-once browser MT claim (two tabs at once give one fire),
 // the masked page data, the pool number and the published-only legal pages.
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { newOrderCode, newPublicId } from "@ebooktrivia/core";
 import { clientIp, throttleBucket } from "@ebooktrivia/edge";
 import { createElement } from "react";
@@ -280,18 +280,31 @@ describe("criterion 1: what the page can show (data, masking, the WhatsApp butto
   });
 
   it("picks the WhatsApp number from the paired, active, WORKING sessions only", async () => {
-    await root`DELETE FROM waha_sessions`;
-    expect(await poolNumber(publicSql)).toBeUndefined();
-    const server = await one(root<{ id: string }[]>`INSERT INTO waha_servers (name, base_url, base_url_host) VALUES ('W', 'https://waha-us022.invalid/', 'waha-us022.invalid') RETURNING id`);
-    const add = (name: string, phone: string | null, status: string, active: boolean) =>
-      root`INSERT INTO waha_sessions (server_id, session_name, phone, status, active) VALUES (${server.id}, ${name}, ${phone}, ${status}, ${active})`;
-    await add("stopped", "+6281100000001", "STOPPED", true);
-    await add("inactive", "+6281100000002", "WORKING", false);
-    await add("unpaired", null, "WORKING", true);
-    expect(await poolNumber(publicSql)).toBeUndefined();
-    await add("good", "+6281199900011", "WORKING", true);
-    expect(await poolNumber(publicSql)).toBe("6281199900011");
-    await root`DELETE FROM waha_sessions`;
+    // The pool is global to the test database and other files' sessions may be referenced (delivery_openers): they are taken out of
+    // the pool for this test and put back after it, never deleted; only this test's own server and sessions are removed.
+    const others = await root<{ id: string }[]>`UPDATE waha_sessions SET active = false WHERE active RETURNING id`;
+    const tag = randomUUID().slice(0, 8);
+    let serverId: string | undefined;
+    try {
+      const server = await one(root<{ id: string }[]>`INSERT INTO waha_servers (name, base_url, base_url_host) VALUES (${`W ${tag}`}, ${`https://waha-${tag}.invalid/`}, ${`waha-${tag}.invalid`}) RETURNING id`);
+      serverId = server.id;
+      expect(await poolNumber(publicSql)).toBeUndefined();
+      const add = (name: string, phone: string | null, status: string, active: boolean) =>
+        root`INSERT INTO waha_sessions (server_id, session_name, phone, status, active) VALUES (${server.id}, ${`${name}-${tag}`}, ${phone}, ${status}, ${active})`;
+      await add("stopped", "+6281100000001", "STOPPED", true);
+      await add("inactive", "+6281100000002", "WORKING", false);
+      await add("unpaired", null, "WORKING", true);
+      expect(await poolNumber(publicSql)).toBeUndefined();
+      await add("good", "+6281199900011", "WORKING", true);
+      expect(await poolNumber(publicSql)).toBe("6281199900011");
+    } finally {
+      if (serverId !== undefined) {
+        await root`DELETE FROM delivery_openers WHERE session_id IN (SELECT id FROM waha_sessions WHERE server_id = ${serverId})`;
+        await root`DELETE FROM waha_sessions WHERE server_id = ${serverId}`;
+        await root`DELETE FROM waha_servers WHERE id = ${serverId}`;
+      }
+      await root`UPDATE waha_sessions SET active = true WHERE id = ANY(${others.map((s) => s.id)}::uuid[])`;
+    }
   });
 });
 

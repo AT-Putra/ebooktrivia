@@ -147,6 +147,36 @@ describe("play.<DOMAIN>: the player login (US-026, security review L2)", () => {
   });
 });
 
+describe("play.<DOMAIN>: the trivia pages (US-027)", () => {
+  it("rewrites /, /{programSlug} and /{programSlug}/set/{n} to the internal routes with the trivia nonce CSP and the play headers", async () => {
+    for (const [path, target] of [
+      ["/", "/trivia"],
+      ["/juni-2026", "/trivia/juni-2026"],
+      ["/juni-2026/set/3", "/trivia/juni-2026/set/3"],
+    ] as const) {
+      const response = await proxy(request("play.example.test", path, { "x-forwarded-proto": "https" }));
+      expect(rewriteTarget(response), path).toBe(target);
+      const policy = csp(response);
+      expect(policy).toContain(`script-src 'nonce-${nonceOf(response)}' 'strict-dynamic'`);
+      for (const directive of ["worker-src 'none'", "connect-src 'self'", "frame-ancestors 'none'", "form-action 'none'", "upgrade-insecure-requests"]) expect(policy, directive).toContain(directive);
+      expect(policy).not.toMatch(/unsafe-eval|wasm-unsafe-eval|blob:/);
+      expect(response.headers.get("referrer-policy")).toBe("no-referrer");
+      expect(response.headers.get("cache-control")).toBe("no-store, max-age=0");
+      expect(response.headers.get("x-frame-options")).toBe("DENY");
+    }
+  });
+
+  it("answers the internal routes with a bare 404 on every host, and serves no trivia page elsewhere", async () => {
+    for (const host of ["play.example.test", "api.example.test", "lp.example.test"]) {
+      expect((await proxy(request(host, "/trivia/juni-2026"))).status, host).toBe(404);
+      expect((await proxy(request(host, "/trivia/juni-2026/set/1"))).status, host).toBe(404);
+    }
+    const elsewhere = await proxy(request("api.example.test", "/juni-2026"));
+    expect(elsewhere.headers.get("x-middleware-next")).toBe("1");
+    expect(rewriteTarget(elsewhere)).toBeNull();
+  });
+});
+
 describe("other hosts", () => {
   it("answers the legal and order routes with a bare 404", async () => {
     for (const [host, path] of [

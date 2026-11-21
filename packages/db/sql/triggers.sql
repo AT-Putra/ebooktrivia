@@ -460,7 +460,8 @@ CREATE OR REPLACE TRIGGER programs_status_guard
 
 -- ---------------------------------------------------------------------------------------------
 -- Play rows written by the public app (US-028 hardening, security review P1-1 / P1-2). For a writer
--- that is not trusted (public_rw; worker_rw, admin_rw, migrator and the trivia_override /
+-- that is not trusted (trivia_play, the owner of the US-027 play functions in sql/play.sql, through which
+-- alone the public app writes play rows; worker_rw, admin_rw, migrator and the trivia_override /
 -- contest_results function owners are trusted):
 --   - the write's ARRIVAL time (clock_timestamp() when the guard starts, whole ms) is taken first;
 --     then the program's SHARED contest lock (functions.sql lock_program_contest_shared), so play
@@ -517,7 +518,10 @@ BEGIN
   ) THEN
     RAISE EXCEPTION 'player is not eligible to play this set' USING ERRCODE = 'ET050';
   END IF;
-  IF v_arrived >= v_grace_end THEN
+  -- US-027 EDIT inside US-028's guard (kept here at the merge): only a START is refused after G; an UPDATE is the
+  -- answer path's derived totals (sql/play.sql play_settle_answer), which a pick on a question served before G
+  -- still writes until its deadline + 1500 ms.
+  IF TG_OP = 'INSERT' AND v_arrived >= v_grace_end THEN
     RAISE EXCEPTION 'the grace period of this program has ended: no set starts' USING ERRCODE = 'ET110';
   END IF;
   RETURN NEW;

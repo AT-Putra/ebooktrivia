@@ -211,3 +211,41 @@ describe("Next's data route", () => {
     expect(route(`play.${DOMAIN}`, "/_next/static/chunks/app.js")).toEqual({ kind: "pass" });
   });
 });
+
+describe("the trivia pages (US-027: play.<DOMAIN> only, internal /trivia routes)", () => {
+  const PLAY = `play.${DOMAIN}`;
+
+  it("rewrites /, /{programSlug} and /{programSlug}/set/{n} on the play origin to the internal routes", () => {
+    expect(route(PLAY, "/")).toEqual({ kind: "trivia", target: "/trivia" });
+    expect(route(PLAY, "/juni-2026")).toEqual({ kind: "trivia", target: "/trivia/juni-2026" });
+    expect(route(`${PLAY}:443`, "/ebook7")).toEqual({ kind: "trivia", target: "/trivia/ebook7" });
+    expect(route(PLAY, "/juni-2026/set/12")).toEqual({ kind: "trivia", target: "/trivia/juni-2026/set/12" });
+    // A program may be called "trivia": on the play origin that is its page.
+    expect(route(PLAY, "/trivia")).toEqual({ kind: "trivia", target: "/trivia/trivia" });
+    const dev = routeOrder({ host: "127.0.0.1:3104", domain: DOMAIN, pathname: "/juni-2026", orderIdParam: null, playHost: "127.0.0.1" });
+    expect(dev).toEqual({ kind: "trivia", target: "/trivia/juni-2026" });
+  });
+
+  it("answers the internal routes 404 on every host, in every spelling", () => {
+    for (const host of [PLAY, `api.${DOMAIN}`, `order.${DOMAIN}`, "lp.example.test", null]) {
+      for (const path of ["/trivia/juni-2026", "/trivia/juni-2026/set/1", "/TRIVIA/x", "/%74rivia/x", "/trivia/"]) {
+        const answer = route(host, path);
+        expect(answer.kind === "notFound" || (answer.kind === "orderPage" && answer.publicId === null), `${String(host)} ${path}`).toBe(true);
+      }
+    }
+    for (const host of [`api.${DOMAIN}`, "lp.example.test", null]) expect(route(host, "/trivia"), String(host)).toEqual({ kind: "notFound" });
+  });
+
+  it("serves no trivia page on any other host, and takes no other spelling or path for one", () => {
+    for (const host of [`api.${DOMAIN}`, "lp.example.test", `play.${DOMAIN}.evil.test`, null]) {
+      for (const path of ["/", "/juni-2026", "/juni-2026/set/1"]) expect(route(host, path).kind, `${String(host)} ${path}`).toBe("pass");
+    }
+    for (const path of ["/Juni-2026", "/juni_2026", "/juni-2026/", "/juni-2026/set/0", "/juni-2026/set/01", "/juni-2026/set/x", "/juni-2026/sets/1", "/a/b", "/-x", "/x-", "/mockups", "/icon.svg"]) {
+      expect(route(PLAY, path), path).toEqual({ kind: "pass" });
+    }
+    // The login, legal and API routes keep their own answers.
+    expect(route(PLAY, "/login")).toEqual({ kind: "playPage" });
+    expect(route(PLAY, "/legal/p/terms/1")).toEqual({ kind: "legal" });
+    expect(route(PLAY, "/api/v1/play/attempts/current")).toEqual({ kind: "playApi" });
+  });
+});

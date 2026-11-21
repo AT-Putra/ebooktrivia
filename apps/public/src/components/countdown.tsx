@@ -26,7 +26,7 @@ export function Countdown({ initialSeconds, className }: { initialSeconds: numbe
   );
 }
 
-/** Sentence with a live countdown, e.g. "Set berikutnya terbuka dalam {countdown} WIB". */
+/** Sentence with a live countdown, e.g. "Set berikutnya terbuka dalam {countdown}". */
 export function CountdownText({ initialSeconds, template }: { initialSeconds: number; template: string }) {
   const seconds = useRemaining(initialSeconds);
   const [before = "", after = ""] = template.split("{countdown}");

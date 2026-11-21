@@ -81,7 +81,8 @@ test("an eligible player logs in with the WhatsApp code at 375 px; the session c
   expect(days).toBeLessThanOrEqual(30);
   expect(await (await page.request.get("/api/v1/play/auth/session")).json()).toEqual({ v: 1, authenticated: true, phone_masked: `****${phone.slice(-3)}` });
   await page.getByRole("link", { name: "Buka trivia" }).click();
-  await page.waitForURL(`${PLAY_URL}/`);
+  // US-027: play.<DOMAIN>/ is the trivia home, which opens the player's (first) program.
+  await page.waitForURL(`${PLAY_URL}/${play.programSlug}`);
   await context.close();
 });
 

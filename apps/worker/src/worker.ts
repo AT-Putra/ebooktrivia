@@ -24,6 +24,10 @@
 //                    unknown-send lookup. runWorker builds it from SECRETS_MESSAGING_PRIVATE_KEY and `magicLinks`.
 //   deliverDelivery  a bare delivery.send processor (tests). Without `deliveries` or it no delivery.send queue exists
 //                    and the deliveries sweeper does not run.
+//   magicLinkResend  the magic_link.resend consumer (US-027, magic-link-resend.ts): a fresh login link per channel
+//                    for a player who asked for one again on the play login page, out of the WhatsApp pool and US-025's
+//                    SMTP path. runWorker wires it when worker.env holds SECRETS_MESSAGING_PRIVATE_KEY and DOMAIN;
+//                    without them magic_link.resend is not relayed.
 //   testSend         the senders of admin template test-sends (US-017, template-test-send.ts).
 //                    runWorker wires the real SMTP / WAHA senders when worker.env holds
 //                    SECRETS_MESSAGING_PRIVATE_KEY; without it template.test_send is not relayed.
@@ -62,6 +66,7 @@ import { type ConversionPort, conversionsFromEnv } from "./conversions.ts";
 import { createMoConsumer, createOrderPaidConsumer, MO_TOPIC, nudgeConversions, type OrderPaidNudge } from "./conversion-outbox.ts";
 import { createOtpSendConsumer, OTP_TOPIC } from "./otp-send.ts";
 import { otpFromEnv, type OtpPort } from "./otp-senders.ts";
+import { createMagicLinkResendConsumer, MAGIC_LINK_RESEND_TOPIC, magicLinkResendFromEnv, type MagicLinkResendPort } from "./magic-link-resend.ts";
 import { reconcileIfDue } from "./reconciliation.ts";
 import { refreshReportRollups } from "./rollups.ts";
 import { DELIVERY_QUEUE, DELIVERY_WA_QUEUE, type DeliveryPort, deliveriesFromEnv } from "./delivery/index.ts";
@@ -98,6 +103,8 @@ export interface WorkerPorts {
   readonly payments?: PaymentPort;
   /** US-026: the otp.send consumer's key and sender. */
   readonly otp?: OtpPort;
+  /** US-027: the magic_link.resend consumer's link origin and sender. */
+  readonly magicLinkResend?: MagicLinkResendPort;
 }
 
 export interface RunningWorker {
@@ -132,6 +139,7 @@ export async function startWorker(config: WorkerConfig, ports: WorkerPorts, log:
     ...(ports.conversions === undefined ? [] : [MO_TOPIC]),
     ...(nudgeSources.length === 0 ? [] : [ORDER_PAID_TOPIC]),
     ...(ports.otp === undefined ? [] : [OTP_TOPIC]),
+    ...(ports.magicLinkResend === undefined ? [] : [MAGIC_LINK_RESEND_TOPIC]),
   ];
   if (new Set(topics).size !== topics.length) throw new Error("two outbox consumers registered for one topic");
 
@@ -238,6 +246,10 @@ export async function startWorker(config: WorkerConfig, ports: WorkerPorts, log:
   const { payments } = ports;
   if (payments !== undefined) consumers.push(createPaymentNotificationConsumer({ sql, midtrans: payments.midtrans, log, waDelayMs: payments.waDelayMs }));
   if (ports.otp !== undefined) consumers.push(createOtpSendConsumer({ sql, opener: ports.otp.opener, sender: ports.otp.sender(sql, log), log }));
+  const { magicLinkResend } = ports;
+  if (magicLinkResend !== undefined) {
+    consumers.push(createMagicLinkResendConsumer({ sql, playOrigin: magicLinkResend.playOrigin, sender: magicLinkResend.sender(sql, log), log }));
+  }
   if (ports.conversions !== undefined) consumers.push(createMoConsumer());
   if (nudgeSources.length > 0) consumers.push(createOrderPaidConsumer(nudgeSources.map((make) => make({ sql, conversionQueue, deliveryNudge: delivery?.nudge }))));
   const outboxMaxAttempts = new Map(consumers.flatMap((c): [string, number][] => (c.maxAttempts === undefined ? [] : [[c.topic, c.maxAttempts]])));
@@ -338,6 +350,8 @@ export async function runWorker(env: Env, ports: WorkerPorts = {}): Promise<void
   const conversions = ports.conversions ?? conversionsFromEnv(env, config);
   const otp = ports.otp ?? otpFromEnv(env, config.dev);
   if (otp === undefined) log.warn("SECRETS_MESSAGING_PRIVATE_KEY is not set: OTP login codes are not sent");
+  const magicLinkResend = ports.magicLinkResend ?? magicLinkResendFromEnv(env, config.dev);
+  if (magicLinkResend === undefined) log.warn("SECRETS_MESSAGING_PRIVATE_KEY or DOMAIN is not set: login links asked for again are not sent");
   // Code review m7: say it at start, not only through the hourly "no consumer" alert.
   if (payments === undefined) log.warn("SECRETS_PAYMENT_PRIVATE_KEY is not set: Midtrans notifications are not processed and no order can become PAID");
   if (conversions === undefined && ports.fireConversion === undefined) log.warn("SECRETS_CONVERSIONS_PRIVATE_KEY is not set: no adnet postback and no CAPI event is sent");
@@ -355,6 +369,7 @@ export async function runWorker(env: Env, ports: WorkerPorts = {}): Promise<void
       ...(conversions === undefined ? {} : { conversions }),
       ...(otp === undefined ? {} : { otp }),
       ...(deliveries === undefined ? {} : { deliveries }),
+      ...(magicLinkResend === undefined ? {} : { magicLinkResend }),
     },
     log,
   );

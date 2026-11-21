@@ -28,6 +28,11 @@ export const outbox = pgTable(
     relayedAt: tstz("relayed_at"),
     processedAt: tstz("processed_at"),
     attempts: integer("attempts").notNull().default(0),
+    /**
+     * US-027: how many claims were deferred (the job was not due yet, worker OutboxDefer): they count in `attempts` like every
+     * claim, so every claim keeps a job id and a fencing token of its own, and the claim cap is raised by them instead.
+     */
+    deferrals: integer("deferrals").notNull().default(0),
     lastError: text("last_error"),
     createdAt: createdAt(),
   },
@@ -35,8 +40,11 @@ export const outbox = pgTable(
     check("outbox_topic_check", sql`${t.topic} ~ '^[a-z_]+(\\.[a-z_]+)+$'`),
     jsonObject("outbox_payload_check", t.payload),
     nonNegative("outbox_attempts_check", t.attempts),
+    nonNegative("outbox_deferrals_check", t.deferrals),
     index("outbox_unrelayed_idx").on(t.availableAt).where(sql`${t.relayedAt} IS NULL`),
     index("outbox_unprocessed_idx").on(t.createdAt).where(sql`${t.processedAt} IS NULL`),
+    // US-027: the login-link resend's global breaker counts its rows of the last 10 minutes.
+    index("outbox_magic_link_resend_created_at_idx").on(t.createdAt).where(sql`${t.topic} = 'magic_link.resend'`),
   ],
 );
 

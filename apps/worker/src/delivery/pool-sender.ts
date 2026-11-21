@@ -50,11 +50,14 @@ export class PoolSendError extends Error {
   readonly code: PoolSendErrorCode;
   /** The last refusal, when a number was asked at all. */
   readonly refusal: PoolRefusal | undefined;
-  constructor(code: PoolSendErrorCode, refusal?: PoolRefusal) {
+  /** contact_limit: when the contact may be written to again (its gap or its hour), when the pool knows it. */
+  readonly retryAt: Date | undefined;
+  constructor(code: PoolSendErrorCode, refusal?: PoolRefusal, retryAt?: Date) {
     super(`pool send: ${code}`);
     this.name = "PoolSendError";
     this.code = code;
     this.refusal = refusal;
+    this.retryAt = retryAt;
   }
 }
 
@@ -102,7 +105,7 @@ export function createPoolSender(deps: {
           }),
         );
         if (picked.kind === "none") {
-          if (picked.reason === "contact_capped" || picked.reason === "contact_wait") throw new PoolSendError("contact_limit", refusal);
+          if (picked.reason === "contact_capped" || picked.reason === "contact_wait") throw new PoolSendError("contact_limit", refusal, picked.retryAt);
           if (tried.length === 0) await raisePoolAlert(sql, picked.known === 0 ? "no_session_configured" : picked.reason, log);
           // Numbers tried and refused: that is a failure of the send, not a lack of numbers.
           throw new PoolSendError(tried.length > 0 ? "failed" : "no_number", refusal);

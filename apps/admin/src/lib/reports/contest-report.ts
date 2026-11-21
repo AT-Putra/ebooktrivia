@@ -2,7 +2,8 @@
 // before), and the anti-cheat flags and winners (lib/settings/contest.ts, US-028: listFlaggedPlayers, getContestResults). Players are
 // shown MASKED: the leaderboard masks in SQL (public.mask_name / mask_phone, the one masking rule of the product), and the flag and
 // winner lists come from US-028's code, which masks with the same rule. The winners export (contact details) is Owner-only
-// (lib/reports/exports.ts). Everything here reads the play tables as they are; US-027's play flow adds rows to them, not columns.
+// (lib/reports/exports.ts). The live board and the count of players who finished everything come from public.play_ranking
+// (packages/db sql/play.sql, US-027): THE ranking the players see and the snapshot freezes (D4, D8), never a copy of it.
 import { rateBps } from "@ebooktrivia/core";
 import type { Sql } from "../db.ts";
 
@@ -29,9 +30,9 @@ export interface SetCompletion {
 export interface Participation {
   /** Players with a paid, non-refunded order of the program (eligible to play). */
   readonly eligiblePlayers: number;
-  /** Eligible or not, players with at least one attempt. */
+  /** Eligible players with at least one attempt (the same players as playersCompletedAll: a refunded player is off the board). */
   readonly playersStarted: number;
-  /** Players who finished every set of the program. */
+  /** Eligible players (the board's, play_ranking) who finished every set of the program. */
   readonly playersCompletedAll: number;
   readonly sets: readonly SetCompletion[];
 }
@@ -39,9 +40,11 @@ export interface Participation {
 export async function participation(sql: Sql, programId: string): Promise<Participation> {
   const [people] = await sql<{ eligible: number; started: number; completed_all: number }[]>`
     SELECT (SELECT count(*) FROM public.player_programs pp WHERE pp.program_id = ${programId} AND pp.eligible)::int AS eligible,
-           (SELECT count(DISTINCT a.player_id) FROM public.set_attempts a JOIN public.trivia_sets s ON s.id = a.set_id WHERE s.program_id = ${programId})::int AS started,
-           (SELECT count(*) FROM public.player_program_stats st
-             WHERE st.program_id = ${programId} AND st.sets_completed >= (SELECT count(*) FROM public.trivia_sets s WHERE s.program_id = ${programId})
+           (SELECT count(DISTINCT a.player_id) FROM public.set_attempts a JOIN public.trivia_sets s ON s.id = a.set_id
+              JOIN public.player_programs pp ON pp.player_id = a.player_id AND pp.program_id = s.program_id AND pp.eligible
+             WHERE s.program_id = ${programId})::int AS started,
+           (SELECT count(*) FROM public.play_ranking(${programId}) r
+             WHERE r.sets_completed >= (SELECT count(*) FROM public.trivia_sets s WHERE s.program_id = ${programId})
                AND (SELECT count(*) FROM public.trivia_sets s WHERE s.program_id = ${programId}) > 0)::int AS completed_all`;
   const sets = await sql<{ id: string; position: number; title: string; started: number; completed: number }[]>`
     SELECT s.id, s.position, s.title, (count(a.id))::int AS started, (count(a.id) FILTER (WHERE a.finished_at IS NOT NULL))::int AS completed
@@ -79,9 +82,10 @@ export interface Leaderboard {
 export const LEADERBOARD_LIMIT = 50;
 
 /**
- * Eligible players only (a refunded player is out: AC-Q11). The live standings rank EXACTLY like the frozen snapshot (packages/db sql/contest.sql,
- * create_leaderboard_snapshot step 4; Owner decision D4): score desc, total answer time asc, earliest finish asc (unfinished last), the
- * earlier first payment, then the player id; a unique rank per player, so what the Owner sees live is what freezes.
+ * Eligible players only (a refunded player is out: AC-Q11). The live standings are public.play_ranking, which ranks EXACTLY like the frozen
+ * snapshot (packages/db sql/contest.sql, create_leaderboard_snapshot step 4; Owner decisions D4 and D8): every eligible player, one who has
+ * not played a set charged its timers (D8), by score desc, total time asc, earliest finish asc (unfinished last), the earlier first payment,
+ * then the player id; a unique rank per player, so what the Owner sees live is what freezes.
  */
 export async function leaderboard(sql: Sql, programId: string, limit = LEADERBOARD_LIMIT): Promise<Leaderboard> {
   const [snapshot] = await sql<{ frozen_at: Date; total: number }[]>`
@@ -101,13 +105,11 @@ export async function leaderboard(sql: Sql, programId: string, limit = LEADERBOA
     return { frozen: true, frozenAt: snapshot.frozen_at, rows: rows.map(toRow), total: snapshot.total };
   }
   const rows = await sql<(Row & { total: number })[]>`
-    SELECT (row_number() OVER (ORDER BY st.score DESC, st.total_ms ASC, st.finished_at ASC NULLS LAST, pp.first_paid_at ASC NULLS LAST, st.player_id ASC))::int AS rank, st.player_id, public.mask_name(pl.name) AS name,
-           public.mask_phone(pl.phone) AS phone, st.score, st.total_ms::text AS total_ms, st.finished_at, (count(*) OVER ())::int AS total
-      FROM public.player_program_stats st
-      JOIN public.player_programs pp ON pp.player_id = st.player_id AND pp.program_id = st.program_id AND pp.eligible
-      JOIN public.players pl ON pl.id = st.player_id
-     WHERE st.program_id = ${programId}
-     ORDER BY rank, st.player_id
+    SELECT r.rank, r.player_id, public.mask_name(pl.name) AS name, public.mask_phone(pl.phone) AS phone, r.score, r.total_ms::text AS total_ms,
+           r.finished_at, (count(*) OVER ())::int AS total
+      FROM public.play_ranking(${programId}) r
+      JOIN public.players pl ON pl.id = r.player_id
+     ORDER BY r.rank
      LIMIT ${limit}`;
   return { frozen: false, frozenAt: null, rows: rows.map(toRow), total: rows[0]?.total ?? 0 };
 }

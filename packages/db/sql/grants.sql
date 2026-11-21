@@ -456,3 +456,56 @@ GRANT EXECUTE ON FUNCTION public.wib_day(timestamptz), public.order_source_adnet
 -- masking rule of the product (functions.sql), wherever Staff can see them.
 GRANT EXECUTE ON FUNCTION public.report_source_label(uuid), public.mask_name(text), public.mask_phone(text) TO admin_rw;
 -- US-029 BLOCK END.
+-- US-027 (M9b trivia page, question flow, leaderboard) BLOCK BEGIN.
+--
+-- public_rw plays ONLY through the SECURITY DEFINER functions of sql/play.sql (EXECUTE granted there), owned by
+-- trivia_play. It loses every write on play rows (this supersedes the US-028 block's public_rw INSERT / UPDATE
+-- grants) and the shared contest lock (only the play guards take it, running as trivia_play: a public_rw session
+-- holding it in an open transaction would stall the results snapshot). It reads no question text, option text,
+-- explanation, correctness or answer row (AC-Q9; US-027 contract: a compromised public app must neither read a
+-- question before it is served nor read another player's pick, which names the correct option id everyone gets):
+-- of questions only what the trivia page counts (id, set, position, points, timer), nothing of question_options
+-- or attempt_questions. No score either (security review HIGH-1, the rollback probe: a score read in the
+-- transaction of a pick tells whether the pick was right before it is committed): of set_attempts only which sets
+-- the player started and finished, nothing of player_program_stats. Scores and ranks are read only through the
+-- play functions that refuse a transaction that has written (sql/play.sql play_attempts, play_standing,
+-- play_leaderboard, play_reveal).
+REVOKE INSERT, UPDATE ON public.set_attempts, public.attempt_questions, public.player_program_stats FROM public_rw;
+REVOKE SELECT ON public.attempt_questions, public.questions, public.question_options, public.set_attempts,
+  public.player_program_stats FROM public_rw;
+GRANT SELECT (id, set_id, position, points, timer_seconds, created_at, updated_at) ON public.questions TO public_rw;
+GRANT SELECT (id, player_id, set_id, started_at, finished_at, created_at) ON public.set_attempts TO public_rw;
+REVOKE EXECUTE ON FUNCTION public.lock_program_contest_shared(uuid) FROM public_rw;
+
+-- trivia_play: the owner of the sql/play.sql functions, which run as it. It is checked by the play guards like
+-- any untrusted writer (triggers.sql), which run as it too: they read programs, sets, questions, options,
+-- attempts and eligibility and take the shared contest lock. It reads the players' names only to mask them
+-- (public.mask_name); it writes only: an attempt (player, set) and its derived totals; the answer rows (place,
+-- order; the serve, the pick and the device, which the guards stamp; the score columns, which it derives with
+-- public.score_answer); the stats' derived columns (a missing stats row is inserted); and the unlock floor.
+-- UPDATE (score) on set_attempts / player_program_stats also covers their FOR UPDATE row locks (play_settle_answer).
+REVOKE ALL ON ALL TABLES IN SCHEMA public, player_auth, admin_auth FROM trivia_play;
+REVOKE ALL ON ALL SEQUENCES IN SCHEMA public, player_auth, admin_auth FROM trivia_play;
+REVOKE ALL ON ALL FUNCTIONS IN SCHEMA public FROM trivia_play;
+REVOKE ALL ON SCHEMA player_auth, admin_auth, drizzle FROM trivia_play;
+GRANT SELECT ON
+  public.programs, public.trivia_sets, public.questions, public.question_options, public.set_attempts,
+  public.attempt_questions, public.player_program_stats, public.player_programs
+  TO trivia_play;
+GRANT SELECT (id, name) ON public.players TO trivia_play;
+GRANT INSERT (player_id, set_id), UPDATE (score, total_ms, finished_at) ON public.set_attempts TO trivia_play;
+GRANT INSERT (attempt_id, question_id, position, permutation),
+  UPDATE (served_at, answered_at, option_id, ip, ua_hash, correct, points, elapsed_ms)
+  ON public.attempt_questions TO trivia_play;
+GRANT INSERT (player_id, program_id), UPDATE (score, total_ms, sets_completed, finished_at, updated_at)
+  ON public.player_program_stats TO trivia_play;
+GRANT UPDATE (unlock_floor) ON public.player_programs TO trivia_play;
+GRANT EXECUTE ON FUNCTION public.lock_program_contest_shared(uuid),
+  public.score_answer(integer, integer, uuid, uuid, timestamptz, timestamptz, timestamptz, integer),
+  public.mask_name(text)
+  TO trivia_play;
+
+-- The login page's "send my login link again" (Owner decision; functions.sql US-027 block): public_rw only asks for
+-- the job; the worker issues the links (issue_magic_link, already worker_rw's) and sends them.
+GRANT EXECUTE ON FUNCTION public.enqueue_magic_link_resend(text) TO public_rw;
+-- US-027 BLOCK END.

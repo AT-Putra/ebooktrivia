@@ -17,10 +17,19 @@
 //                          without); far above both.
 // The global OTP send breaker is the database's (app_settings otp.global_send_cap per 10 minutes, enforced by
 // enqueue_otp): it cannot be bypassed by the app, and its default (500) is documented in sql/seed.sql.
+//   RESEND_PHONE_CAP / RESEND_PHONE_WINDOW_MS
+//                          "send my login link again" (US-027, Owner decision: the recovery path when an attacker
+//                          spent a phone's verify budget): requests per phone, counted in Valkey for EVERY phone and
+//                          only for a request whose play-scope Cap token verified, like the OTP request's per-phone
+//                          limits; enqueue_magic_link_resend holds the same 3 a day in SQL. Per client the resend
+//                          has counters of its own (ml-resend:*), with the OTP request's numbers: otp.ip_cap per
+//                          otp.ip_window_seconds per IP (an IPv6 /64) and that x ip48Factor per IPv6 /48.
 export const PLAY_LIMITS = {
   ip48Factor: 10,
   verifyPhoneNetworkCap: 10,
   verifyPhoneCap: 30,
   verifyPhoneWindowMs: 24 * 60 * 60 * 1000,
   verifyFloorMs: 250,
+  resendPhoneCap: 3,
+  resendPhoneWindowMs: 24 * 60 * 60 * 1000,
 } as const;
