@@ -25,8 +25,12 @@ infra/monitoring/glitchtip-db-password.txt
 secrets/
 infra/**/escrow/
 
-# OMC transient state (plans/specs are kept). `**/` because hooks also create .omc/ in
+# OMC transient state. `**/` because hooks also create .omc/ in
 # sub-package dirs when a command runs from there.
+# The project plan and the requirements spec are the Owner's private business documents:
+# kept on the Owner's machine only, never published.
+.omc/plans/
+.omc/specs/
 **/.omc/state/
 **/.omc/drafts/
 **/.omc/logs/
