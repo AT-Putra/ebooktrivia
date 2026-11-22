@@ -164,6 +164,11 @@ const GUARDS: Readonly<Record<string, string>> = {
   "(console)/privacy/actions.ts#createDeletionRequestAction": "permission:deletion_request.process",
   "(console)/privacy/actions.ts#executeDeletionRequestAction": "permission:deletion_request.process",
   "(console)/privacy/actions.ts#rejectDeletionRequestAction": "permission:deletion_request.process",
+  // The Owner's review queue for orders (US-033): the page, the decisions, the re-query and the buyer's details are Owner-only.
+  "(console)/orders/review/page.tsx": "permission:order.review.resolve",
+  "(console)/orders/review/actions.ts#decideReviewAction": "permission:order.review.resolve",
+  "(console)/orders/review/actions.ts#requeryReviewAction": "permission:order.review.resolve",
+  "(console)/orders/review/actions.ts#revealBuyerAction": "permission:order.review.resolve",
 };
 
 /** Pages / layouts reachable without a console session, with the reason. */
@@ -257,6 +262,7 @@ describe("server-action directive", () => {
       "(auth)/login/actions.ts",
       "(console)/account/actions.ts",
       "(console)/fulfillment/actions.ts",
+      "(console)/orders/review/actions.ts",
       "(console)/privacy/actions.ts",
       "(console)/reports/ad-spend/actions.ts",
       "(console)/reports/delivery/actions.ts",

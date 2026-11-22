@@ -50,6 +50,11 @@
 --   is pending or in review, or a send to the subject is in flight (privacy.sql); triggers.sql ET175 a fulfilment written
 --   outside the fulfilment functions or off its machine, ET176 a deletion request changed once decided (or completed
 --   outside the erasure; also privacy.sql: a rejected request executed), ET179 an anonymized row given personal data again.
+--   US-033 (the Owner's review queue for orders): sql/order-review.sql ET180 not READ COMMITTED or the decision / ids out of
+--   scope, ET181 a reason that is not 10-500 characters or holds contact details, ET182 the actor is not an active Owner,
+--   ET183 unknown order, ET184 a request key already used for another decision, ET185 the typed confirmation does not match,
+--   ET186 the order is no longer in review; triggers.sql ET187 the decision ledger is append-only (written by order_review
+--   only); the shared effects below ET188 arguments out of scope; triggers.sql ET189 an outbox topic the console does not enqueue.
 
 SELECT pg_catalog.set_config('search_path', 'pg_catalog, pg_temp', false);
 
@@ -1173,3 +1178,187 @@ AS $fn$
 $fn$;
 REVOKE ALL ON FUNCTION public.lp_served_hosts() FROM PUBLIC;
 -- US-023 BLOCK END.
+
+-- ---------------------------------------------------------------------------------------------
+-- US-033 (M10c Owner review queue for orders) BLOCK BEGIN. The effects of an order becoming PAID, and the reversal rows of
+-- an order that is no longer paid, in ONE implementation for both paths that move an order: the payment code (apps/worker
+-- src/payments.ts applyRequery, as worker_rw, for a notification, the nightly reconciliation or the Owner's re-query) and
+-- the Owner's decision on an order in review (sql/order-review.sql order_review_decide, as order_review). SECURITY INVOKER:
+-- each runs with its caller's own privileges (grants.sql), so neither caller gains anything through them. Every effect is
+-- an INSERT ... ON CONFLICT DO NOTHING on its unique key (deliveries order+channel, conversion_events order+sink+kind,
+-- outbox dedupe_key, player_programs pkey) and the triggers (paid_effects_guard ET080 and the final guards) hold for every
+-- writer, so a replay or a race never doubles anything. The caller holds the order's row lock and passes the instant it
+-- read under it (p_now), which every row written here carries. The rules are @ebooktrivia/core's (mtSinks, reversalSinks,
+-- deliverySchedule, EFFECT_CANCELLED, NO_MT_TEMPLATE); apps/worker test/order-review.int.test.ts holds this SQL to them.
+
+-- The proactive WhatsApp delay in ms (AC-D8): the admin setting delivery.wa_delay_seconds (0..86400, a whole number of
+-- seconds), read when the order is paid; p_fallback_ms (the worker's WORKER_WA_DELAY_MS, default 3 minutes) only while the
+-- setting is missing or malformed. ET188 for a fallback that is not a non-negative number.
+CREATE OR REPLACE FUNCTION public.proactive_delay_ms(p_fallback_ms bigint)
+  RETURNS bigint
+  LANGUAGE plpgsql
+  STABLE
+  SET search_path = pg_catalog, pg_temp
+AS $fn$
+DECLARE
+  v jsonb;
+BEGIN
+  IF p_fallback_ms IS NULL OR p_fallback_ms < 0 OR p_fallback_ms > 9007199254740991 THEN
+    RAISE EXCEPTION 'the WhatsApp delay fallback must be a non-negative number of ms' USING ERRCODE = 'ET188';
+  END IF;
+  SELECT s.value INTO v FROM public.app_settings s WHERE s.key = 'delivery.wa_delay_seconds';
+  IF jsonb_typeof(v) = 'number' AND v::text::numeric = trunc(v::text::numeric) AND v::text::numeric BETWEEN 0 AND 86400 THEN
+    RETURN (v::text::numeric * 1000)::bigint;
+  END IF;
+  RETURN p_fallback_ms;
+END
+$fn$;
+
+-- Eligibility of one player for one program (plan M6.4; Owner D4 / D5): eligible = the player has a PAID order of the
+-- program (an EXISTS over orders, no view), first_paid_at = the earliest paid_at among the orders STILL paid (NULL when
+-- none is left). The player_programs row is locked first and both are computed in a later statement (READ COMMITTED: a
+-- fresh snapshot after the lock), so two orders of one player that leave PAID at once cannot both see the other one still
+-- paid. p_create inserts the row first (a PAID order); without it a missing row stays missing and false is returned.
+CREATE OR REPLACE FUNCTION public.refresh_player_eligibility(p_player_id uuid, p_program_id uuid, p_now timestamptz, p_create boolean)
+  RETURNS boolean
+  LANGUAGE plpgsql
+  SET search_path = pg_catalog, pg_temp
+AS $fn$
+DECLARE
+  v_eligible boolean;
+BEGIN
+  IF p_create THEN
+    INSERT INTO public.player_programs (player_id, program_id) VALUES (p_player_id, p_program_id) ON CONFLICT (player_id, program_id) DO NOTHING;
+  END IF;
+  PERFORM 1 FROM public.player_programs pp WHERE pp.player_id = p_player_id AND pp.program_id = p_program_id FOR UPDATE;
+  IF NOT FOUND THEN
+    RETURN false;
+  END IF;
+  UPDATE public.player_programs pp
+     SET eligible = EXISTS (SELECT 1 FROM public.orders o WHERE o.player_id = pp.player_id AND o.program_id = pp.program_id AND o.status = 'paid'),
+         first_paid_at = (SELECT min(o.paid_at) FROM public.orders o WHERE o.player_id = pp.player_id AND o.program_id = pp.program_id AND o.status = 'paid'),
+         updated_at = p_now
+   WHERE pp.player_id = p_player_id AND pp.program_id = p_program_id
+  RETURNING pp.eligible INTO v_eligible;
+  RETURN coalesce(v_eligible, false);
+END
+$fn$;
+
+-- The PAID effects of an order (AC-S7, AC-T4, AC-D1, AC-D8), for an order the caller has just made paid under its row lock:
+--   the buyer's player (one WhatsApp phone = one player; an existing player keeps its profile), linked to the order once;
+--   eligibility and first_paid_at (refresh_player_eligibility);
+--   the deliveries (e-mail at p_now, WhatsApp after proactive_delay_ms), and the rows payments cancelled when the order left
+--   PAID (cancelled + 'order_not_paid', core EFFECT_CANCELLED) back to pending, never a row cancelled for another reason;
+--   one MT conversion row per sink (core mtSinks: S2S for an attributed click, Meta / TikTok for a pixel of the landing page;
+--   txid = the order id), an S2S row of an adnet without an MT template created failed at once (core NO_MT_TEMPLATE), and the
+--   MTs payments failed with 'order_not_paid' back to pending (an MT already attempted is retried too: sinks dedupe by txid);
+--   the outbox row `order.paid` (once per order).
+-- Returns what it did: {player_id, eligible, deliveries_created, deliveries_revived, mt_created, mt_revived, order_paid_outbox}.
+CREATE OR REPLACE FUNCTION public.order_paid_effects(p_order_id uuid, p_now timestamptz, p_wa_delay_fallback_ms bigint)
+  RETURNS jsonb
+  LANGUAGE plpgsql
+  SET search_path = pg_catalog, pg_temp
+AS $fn$
+DECLARE
+  o record;
+  v_player uuid;
+  v_eligible boolean;
+  v_wa_at timestamptz;
+  v_sink text;
+  v_unreportable boolean;
+  v_n integer;
+  v_deliveries_created integer;
+  v_deliveries_revived integer;
+  v_mt_created integer := 0;
+  v_mt_revived integer;
+  v_outbox integer;
+BEGIN
+  IF p_order_id IS NULL OR p_now IS NULL THEN
+    RAISE EXCEPTION 'order_paid_effects: the order and the instant are required' USING ERRCODE = 'ET188';
+  END IF;
+  SELECT x.id, x.program_id, x.buyer_phone, x.buyer_name, x.buyer_email, x.adnet_id, x.clickid, x.event_id, x.amount_idr, lp.pixels,
+         coalesce(a.mt_url_template IS NOT NULL, false) AS adnet_has_mt_template
+    INTO o
+    FROM public.orders x JOIN public.landing_pages lp ON lp.id = x.landing_page_id
+    LEFT JOIN public.adnets a ON a.id = x.adnet_id
+   WHERE x.id = p_order_id;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'order_paid_effects: unknown order' USING ERRCODE = 'ET188';
+  END IF;
+  v_wa_at := p_now + make_interval(secs => public.proactive_delay_ms(p_wa_delay_fallback_ms) / 1000.0);
+
+  INSERT INTO public.players (phone, name, email) VALUES (o.buyer_phone, o.buyer_name, o.buyer_email) ON CONFLICT (phone) DO NOTHING;
+  SELECT p.id INTO v_player FROM public.players p WHERE p.phone = o.buyer_phone;
+  IF v_player IS NULL THEN
+    RAISE EXCEPTION 'the buyer''s player row is missing' USING ERRCODE = 'ET188';
+  END IF;
+  UPDATE public.orders x SET player_id = coalesce(x.player_id, v_player) WHERE x.id = o.id RETURNING x.player_id INTO v_player;
+  v_eligible := public.refresh_player_eligibility(v_player, o.program_id, p_now, true);
+
+  INSERT INTO public.deliveries (order_id, channel, not_before)
+  VALUES (o.id, 'email', p_now), (o.id, 'whatsapp', v_wa_at)
+  ON CONFLICT (order_id, channel) DO NOTHING;
+  GET DIAGNOSTICS v_deliveries_created = ROW_COUNT;
+  UPDATE public.deliveries d
+     SET status = 'pending', last_error = NULL, not_before = CASE d.channel WHEN 'email' THEN p_now ELSE v_wa_at END, updated_at = p_now
+   WHERE d.order_id = o.id AND d.status = 'cancelled' AND d.last_error = 'order_not_paid';
+  GET DIAGNOSTICS v_deliveries_revived = ROW_COUNT;
+
+  FOREACH v_sink IN ARRAY ARRAY['s2s', 'meta', 'tiktok'] LOOP
+    IF (v_sink = 's2s' AND o.adnet_id IS NOT NULL AND o.clickid IS NOT NULL AND o.clickid <> '')
+       OR (v_sink <> 's2s' AND jsonb_typeof(o.pixels) = 'object' AND jsonb_typeof(o.pixels -> v_sink) = 'string' AND o.pixels ->> v_sink <> '') THEN
+      v_unreportable := v_sink = 's2s' AND NOT o.adnet_has_mt_template;
+      INSERT INTO public.conversion_events (order_id, sink, kind, status, adnet_id, txid, event_id, value_idr, next_attempt_at, failed_at, last_error)
+      VALUES (o.id, v_sink, 'mt', CASE WHEN v_unreportable THEN 'failed' ELSE 'pending' END::public.conversion_status,
+              CASE WHEN v_sink = 's2s' THEN o.adnet_id END, o.id::text, o.event_id, o.amount_idr, p_now,
+              CASE WHEN v_unreportable THEN p_now END, CASE WHEN v_unreportable THEN 'the adnet has no mt postback template' END)
+      ON CONFLICT (order_id, sink, kind) DO NOTHING;
+      GET DIAGNOSTICS v_n = ROW_COUNT;
+      v_mt_created := v_mt_created + v_n;
+    END IF;
+  END LOOP;
+  UPDATE public.conversion_events c
+     SET status = 'pending', failed_at = NULL, last_error = NULL, next_attempt_at = p_now, updated_at = p_now
+   WHERE c.order_id = o.id AND c.kind = 'mt' AND c.status = 'failed' AND c.last_error = 'order_not_paid';
+  GET DIAGNOSTICS v_mt_revived = ROW_COUNT;
+
+  INSERT INTO public.outbox (topic, dedupe_key, payload)
+  VALUES ('order.paid', 'order.paid:' || o.id::text, jsonb_build_object('order_id', o.id))
+  ON CONFLICT (dedupe_key) DO NOTHING;
+  GET DIAGNOSTICS v_outbox = ROW_COUNT;
+
+  RETURN jsonb_build_object('player_id', v_player, 'eligible', v_eligible, 'deliveries_created', v_deliveries_created,
+                            'deliveries_revived', v_deliveries_revived, 'mt_created', v_mt_created, 'mt_revived', v_mt_revived,
+                            'order_paid_outbox', v_outbox);
+END
+$fn$;
+
+-- The reversal rows of an order that is no longer paid (AC-T8, plan §10 item 17): the MTs the sink may have counted (the
+-- sticky maybe_counted mark: a 2xx or an uncertain send, never cleared) or that are in flight (sending / sent) get their
+-- reversal, which is the adnet's optional reversal postback only: an S2S MT row of an adnet with a reversal template (core
+-- reversalSinks; Meta and TikTok have no standard refund event). Returns how many reversal rows it created.
+CREATE OR REPLACE FUNCTION public.order_reversal_rows(p_order_id uuid, p_now timestamptz)
+  RETURNS integer
+  LANGUAGE plpgsql
+  SET search_path = pg_catalog, pg_temp
+AS $fn$
+DECLARE
+  v_n integer;
+BEGIN
+  INSERT INTO public.conversion_events (order_id, sink, kind, adnet_id, txid, event_id, value_idr, next_attempt_at)
+  SELECT o.id, 's2s', 'reversal', o.adnet_id, o.id::text, o.event_id, o.amount_idr, p_now
+    FROM public.orders o JOIN public.adnets a ON a.id = o.adnet_id
+   WHERE o.id = p_order_id AND a.reversal_url_template IS NOT NULL
+     AND EXISTS (SELECT 1 FROM public.conversion_events c
+                  WHERE c.order_id = o.id AND c.kind = 'mt' AND c.sink = 's2s' AND (c.maybe_counted OR c.status IN ('sending', 'sent')))
+  ON CONFLICT (order_id, sink, kind) DO NOTHING;
+  GET DIAGNOSTICS v_n = ROW_COUNT;
+  RETURN v_n;
+END
+$fn$;
+
+REVOKE ALL ON FUNCTION public.proactive_delay_ms(bigint) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.refresh_player_eligibility(uuid, uuid, timestamptz, boolean) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.order_paid_effects(uuid, timestamptz, bigint) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.order_reversal_rows(uuid, timestamptz) FROM PUBLIC;
+-- US-033 BLOCK END.

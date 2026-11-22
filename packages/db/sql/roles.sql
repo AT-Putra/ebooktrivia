@@ -44,6 +44,11 @@
 -- fulfilment guard (triggers.sql, ET175) lets exactly that caller move a fulfilment. pii_eraser only OWNS public.erase_data_subject
 -- (sql/privacy.sql), the Owner's UU PDP deletion = anonymization of one data subject in one transaction; the play, fulfilment and
 -- anonymized-row guards let exactly that caller blank the personal columns. NOLOGIN, no members, a member of nothing.
+--
+-- order_review (US-033) is the same kind of role, for the Owner's decision on an order in review ("mark paid" / "not paid"): it only
+-- OWNS the SECURITY DEFINER function public.order_review_decide (sql/order-review.sql), so `current_user = 'order_review'` holds inside
+-- it and nowhere else. The order status guard (triggers.sql) lets exactly that caller move an order out of `review`, and the decision
+-- ledger is written by nobody else. NOLOGIN, no members, a member of nothing.
 
 SELECT pg_catalog.set_config('search_path', 'pg_catalog, pg_temp', false);
 
@@ -53,7 +58,7 @@ DECLARE
   m record;
   p record;
 BEGIN
-  FOREACH r IN ARRAY ARRAY['migrator', 'public_rw', 'admin_rw', 'worker_rw', 'internal_rw', 'trivia_override', 'contest_results', 'conversion_refire', 'delivery_resend', 'trivia_play', 'prize_fulfillment', 'pii_eraser'] LOOP
+  FOREACH r IN ARRAY ARRAY['migrator', 'public_rw', 'admin_rw', 'worker_rw', 'internal_rw', 'trivia_override', 'contest_results', 'conversion_refire', 'delivery_resend', 'trivia_play', 'prize_fulfillment', 'pii_eraser', 'order_review'] LOOP
     IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = r) THEN
       BEGIN
         EXECUTE pg_catalog.format('CREATE ROLE %I NOLOGIN', r);
@@ -83,12 +88,12 @@ BEGIN
       JOIN pg_catalog.pg_roles g ON g.oid = am.roleid
       JOIN pg_catalog.pg_roles u ON u.oid = am.member
       JOIN pg_catalog.pg_roles gr ON gr.oid = am.grantor
-     WHERE u.rolname IN ('migrator', 'public_rw', 'admin_rw', 'worker_rw', 'internal_rw', 'trivia_override', 'contest_results', 'conversion_refire', 'delivery_resend', 'trivia_play', 'prize_fulfillment', 'pii_eraser')
+     WHERE u.rolname IN ('migrator', 'public_rw', 'admin_rw', 'worker_rw', 'internal_rw', 'trivia_override', 'contest_results', 'conversion_refire', 'delivery_resend', 'trivia_play', 'prize_fulfillment', 'pii_eraser', 'order_review')
         -- Nobody may be a member of trivia_override, contest_results, conversion_refire, delivery_resend, trivia_play,
-        -- prize_fulfillment or pii_eraser: a member could SET ROLE to it and pass the content lock's override check, confirm
+        -- prize_fulfillment, pii_eraser or order_review: a member could SET ROLE to it and pass the content lock's override check, confirm
         -- winners, resend a conversion the sink acknowledged, resend a delivery, write the play rows and scores, move a
-        -- prize fulfilment or blank personal data, outside their functions.
-        OR g.rolname IN ('trivia_override', 'contest_results', 'conversion_refire', 'delivery_resend', 'trivia_play', 'prize_fulfillment', 'pii_eraser')
+        -- prize fulfilment, blank personal data or decide an order in review, outside their functions.
+        OR g.rolname IN ('trivia_override', 'contest_results', 'conversion_refire', 'delivery_resend', 'trivia_play', 'prize_fulfillment', 'pii_eraser', 'order_review')
   LOOP
     EXECUTE pg_catalog.format('REVOKE %I FROM %I GRANTED BY %I CASCADE', m.grp, m.member, m.grantor);
   END LOOP;
@@ -97,7 +102,7 @@ BEGIN
   -- session_replication_role, which would switch off ENABLE ORIGIN triggers.
   FOR p IN SELECT parname FROM pg_catalog.pg_parameter_acl LOOP
     EXECUTE pg_catalog.format(
-      'REVOKE ALL ON PARAMETER %I FROM public_rw, admin_rw, worker_rw, internal_rw, migrator, trivia_override, contest_results, conversion_refire, delivery_resend, trivia_play, prize_fulfillment, pii_eraser CASCADE', p.parname);
+      'REVOKE ALL ON PARAMETER %I FROM public_rw, admin_rw, worker_rw, internal_rw, migrator, trivia_override, contest_results, conversion_refire, delivery_resend, trivia_play, prize_fulfillment, pii_eraser, order_review CASCADE', p.parname);
   END LOOP;
 END
 $roles$;
@@ -109,7 +114,7 @@ $roles$;
 DO $db$
 BEGIN
   EXECUTE pg_catalog.format(
-    'REVOKE ALL ON DATABASE %I FROM PUBLIC, public_rw, admin_rw, worker_rw, internal_rw, migrator, trivia_override, contest_results, conversion_refire, delivery_resend, trivia_play, prize_fulfillment, pii_eraser',
+    'REVOKE ALL ON DATABASE %I FROM PUBLIC, public_rw, admin_rw, worker_rw, internal_rw, migrator, trivia_override, contest_results, conversion_refire, delivery_resend, trivia_play, prize_fulfillment, pii_eraser, order_review',
     pg_catalog.current_database());
   EXECUTE pg_catalog.format('GRANT CONNECT ON DATABASE %I TO public_rw, admin_rw, worker_rw, internal_rw',
     pg_catalog.current_database());
@@ -132,7 +137,8 @@ $db$;
 -- The same for the functions contest_results owns (US-028), created again by sql/contest.sql, and the one
 -- conversion_refire owns (US-024), created again by sql/conversions.sql, the one delivery_resend owns (US-025), created again by sql/delivery-resend.sql,
 -- and those trivia_play owns (US-027), created again by sql/play.sql; US-030: those prize_fulfillment owns (sql/fulfillment.sql), the
--- revoke and reinstatement contest_results owns (sql/contest.sql) and the erasure pii_eraser owns (sql/privacy.sql).
+-- revoke and reinstatement contest_results owns (sql/contest.sql) and the erasure pii_eraser owns (sql/privacy.sql); US-033: the
+-- decision order_review owns (sql/order-review.sql).
 DO $override$
 DECLARE
   f record;
@@ -147,7 +153,7 @@ BEGIN
                          'play_start_set', 'play_current', 'play_answer', 'play_reveal', 'play_attempts', 'play_leaderboard',
                          'play_standing',
                          'fulfillment_step', 'fulfillment_set_notes', 'fulfillment_set_proof', 'revoke_winner', 'reinstate_winner',
-                         'erase_data_subject')
+                         'erase_data_subject', 'order_review_decide')
   LOOP
     EXECUTE pg_catalog.format('DROP FUNCTION %s', f.sig);
   END LOOP;
@@ -155,11 +161,11 @@ END
 $override$;
 
 -- Schema public: owned by migrator; USAGE only for the app roles (and trivia_override /
--- contest_results / conversion_refire / delivery_resend / trivia_play / prize_fulfillment / pii_eraser, whose functions name public
+-- contest_results / conversion_refire / delivery_resend / trivia_play / prize_fulfillment / pii_eraser / order_review, whose functions name public
 -- tables), nothing for PUBLIC.
 ALTER SCHEMA public OWNER TO migrator;
-REVOKE ALL ON SCHEMA public FROM PUBLIC, public_rw, admin_rw, worker_rw, internal_rw, trivia_override, contest_results, conversion_refire, delivery_resend, trivia_play, prize_fulfillment, pii_eraser;
-GRANT USAGE ON SCHEMA public TO public_rw, admin_rw, worker_rw, internal_rw, trivia_override, contest_results, conversion_refire, delivery_resend, trivia_play, prize_fulfillment, pii_eraser;
+REVOKE ALL ON SCHEMA public FROM PUBLIC, public_rw, admin_rw, worker_rw, internal_rw, trivia_override, contest_results, conversion_refire, delivery_resend, trivia_play, prize_fulfillment, pii_eraser, order_review;
+GRANT USAGE ON SCHEMA public TO public_rw, admin_rw, worker_rw, internal_rw, trivia_override, contest_results, conversion_refire, delivery_resend, trivia_play, prize_fulfillment, pii_eraser, order_review;
 
 -- Objects migrator creates later get no PUBLIC privileges (functions would otherwise get
 -- EXECUTE to PUBLIC), and no app-role grants: every grant is explicit in grants.sql.

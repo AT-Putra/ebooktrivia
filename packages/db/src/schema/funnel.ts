@@ -225,6 +225,12 @@ export const orders = pgTable(
      * Never cleared again (orders_anonymized_guard).
      */
     anonymizedAt: tstz("anonymized_at"),
+    /**
+     * US-033: when the order last entered `review` (NULL in every other status). Kept by the trigger
+     * orders_review_since (sql/triggers.sql), whoever moves the status: the Owner's review queue sorts by it
+     * and the minute sweeper warns once about an order stuck there for more than 24 hours.
+     */
+    reviewSince: tstz("review_since"),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -236,6 +242,7 @@ export const orders = pgTable(
       sql`${t.anonymizedAt} IS NULL OR (${t.buyerPhone} IS NULL AND ${t.buyerName} = '' AND ${t.buyerEmail} = '' AND ${t.ip} IS NULL AND ${t.uaHash} IS NULL
           AND ${t.fbclid} IS NULL AND ${t.fbp} IS NULL AND ${t.fbc} IS NULL AND ${t.ttclid} IS NULL AND ${t.gclid} IS NULL)`,
     ),
+    check("orders_review_since_check", sql`(${t.status} = 'review') = (${t.reviewSince} IS NOT NULL)`),
     // Crockford base32 alphabet (no I, L, O, U); 8 chars = 40 bits.
     check("orders_order_code_check", sql`${t.orderCode} ~ '^[0-9A-HJKMNP-TV-Z]{8,16}$'`),
     e164Check("orders_buyer_phone_check", t.buyerPhone),
@@ -254,6 +261,8 @@ export const orders = pgTable(
     index("orders_player_idx").on(t.playerId),
     // US-030: a deletion request finds the data subject's orders by phone, and the stranger retention of wa_contacts asks whether a phone is a buyer's.
     index("orders_buyer_phone_idx").on(t.buyerPhone),
+    // US-033: the Owner's review queue, its count (dashboard, navigation badge) and the stuck-in-review sweep.
+    index("orders_review_since_idx").on(t.reviewSince).where(sql`${t.reviewSince} IS NOT NULL`),
   ],
 );
 
@@ -400,5 +409,46 @@ export const paymentReconciliationFindings = pgTable(
     inCheck("payment_reconciliation_findings_kind_check", t.kind, [...RECONCILE_FINDING_KINDS]),
     check("payment_reconciliation_findings_attempts_check", sql`jsonb_typeof(${t.attempts}) = 'array'`),
     index("payment_reconciliation_findings_order_idx").on(t.orderId),
+  ],
+);
+
+/** US-033: the Owner's decisions on an order in review (@ebooktrivia/core OWNER_DECISIONS; a core test pins them equal). */
+export const OWNER_DECISION_KINDS = ["paid", "not_paid"] as const;
+
+/**
+ * The Owner's decision ledger for orders in `review` (US-033): one row per decision, written only by the SECURITY
+ * DEFINER public.order_review_decide (sql/order-review.sql), append-only for EVERY writer (ET187). `attempts` is the
+ * fingerprint the Owner decided on: every Midtrans attempt of the order with its last re-queried status
+ * ([{n, status, fraud}], status NULL before the first re-query). The payment code honours the latest decision while an
+ * attempt's re-queried status is still the one in it (no new Midtrans event); a different status is processed normally.
+ * `request_key` makes a double click or a replayed POST a no-op with the same answer. No PII: the reason is refused
+ * when it looks like an e-mail address or a phone number.
+ */
+export const orderOwnerDecisions = pgTable(
+  "order_owner_decisions",
+  {
+    id: id(),
+    orderId: uuid("order_id")
+      .notNull()
+      .references(() => orders.id, { onDelete: "restrict" }),
+    decision: text("decision").notNull(),
+    fromStatus: orderStatus("from_status").notNull(),
+    toStatus: orderStatus("to_status").notNull(),
+    attempts: jsonb("attempts").notNull(),
+    reason: text("reason").notNull(),
+    /** admin_auth.user id of the Owner (no FK, like audit_log: the ledger never blocks or cascades). */
+    decidedByAdminUserId: text("decided_by_admin_user_id").notNull(),
+    requestKey: uuid("request_key").notNull().unique("order_owner_decisions_request_key_key"),
+    /** What the decision did (counts and the eligibility after it); returned again on a replay. */
+    effects: jsonb("effects").notNull().default({}),
+    decidedAt: tstz("decided_at").notNull().defaultNow(),
+  },
+  (t) => [
+    inCheck("order_owner_decisions_decision_check", t.decision, [...OWNER_DECISION_KINDS]),
+    check("order_owner_decisions_status_check", sql`${t.fromStatus} = 'review' AND ${t.toStatus} IN ('paid', 'gateway_failed')`),
+    check("order_owner_decisions_attempts_check", sql`jsonb_typeof(${t.attempts}) = 'array'`),
+    check("order_owner_decisions_reason_check", sql`char_length(${t.reason}) BETWEEN 10 AND 500`),
+    jsonObject("order_owner_decisions_effects_check", t.effects),
+    index("order_owner_decisions_order_idx").on(t.orderId, t.decidedAt),
   ],
 );

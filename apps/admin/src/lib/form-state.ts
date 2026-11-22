@@ -58,3 +58,11 @@ export type PreviewState =
   | { readonly status: "error"; readonly at: number; readonly error: string };
 
 export const INITIAL_PREVIEW: PreviewState = { status: "idle" };
+
+/** The review queue's "show buyer details" (US-033): the unmasked buyer, shown once per audited request. */
+export type RevealState =
+  | { readonly status: "idle" }
+  | { readonly status: "shown"; readonly at: number; readonly name: string; readonly phone: string; readonly email: string }
+  | { readonly status: "error"; readonly at: number; readonly error: string };
+
+export const INITIAL_REVEAL: RevealState = { status: "idle" };

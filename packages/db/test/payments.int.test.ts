@@ -104,10 +104,10 @@ describe("orders.paid_at and refunded_at are set once (ET081)", () => {
     await asRole("worker_rw", (tx) => tx`UPDATE public.orders SET status = 'paid', paid_at = now() WHERE id = ${orderId}`);
     // Re-stamping the same value is no change.
     await asRole("worker_rw", (tx) => tx`UPDATE public.orders SET paid_at = paid_at WHERE id = ${orderId}`);
-    for (const role of ["worker_rw", "admin_rw"] as const) {
-      expect(await sqlState(asRole(role, (tx) => tx`UPDATE public.orders SET paid_at = now() + interval '1 second' WHERE id = ${orderId}`))).toBe("ET081");
-      expect(await sqlState(asRole(role, (tx) => tx`UPDATE public.orders SET paid_at = NULL WHERE id = ${orderId}`))).toBe("ET081");
-    }
+    expect(await sqlState(asRole("worker_rw", (tx) => tx`UPDATE public.orders SET paid_at = now() + interval '1 second' WHERE id = ${orderId}`))).toBe("ET081");
+    expect(await sqlState(asRole("worker_rw", (tx) => tx`UPDATE public.orders SET paid_at = NULL WHERE id = ${orderId}`))).toBe("ET081");
+    // US-033: admin_rw holds no UPDATE on orders at all any more (its one way out of review is order_review_decide): refused before the trigger.
+    expect(await sqlState(asRole("admin_rw", (tx) => tx`UPDATE public.orders SET paid_at = NULL WHERE id = ${orderId}`))).toBe("42501");
     await asRole("worker_rw", (tx) => tx`UPDATE public.orders SET status = 'refunded', refunded_at = now() WHERE id = ${orderId}`);
     expect(await sqlState(sql`UPDATE orders SET refunded_at = NULL WHERE id = ${orderId}`)).toBe("ET081");
   });

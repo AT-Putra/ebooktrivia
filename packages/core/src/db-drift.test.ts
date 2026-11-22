@@ -1,7 +1,7 @@
 // The DB enums (packages/db) are the source of truth for state names; core must match exactly.
 import { schema } from "@ebooktrivia/db";
 import { describe, expect, it } from "vitest";
-import { CONVERSION_STATUSES, DELIVERY_STATUSES, ORDER_STATUSES, RECONCILE_FINDINGS } from "./index.ts";
+import { CONVERSION_STATUSES, DELIVERY_STATUSES, ORDER_STATUSES, OWNER_DECISIONS, RECONCILE_FINDINGS } from "./index.ts";
 
 describe("core state lists match the DB enums", () => {
   it("order_status", () => {
@@ -18,5 +18,9 @@ describe("core state lists match the DB enums", () => {
 
   it("payment_reconciliation_findings.kind (US-021)", () => {
     expect([...RECONCILE_FINDINGS]).toEqual([...schema.RECONCILE_FINDING_KINDS]);
+  });
+
+  it("order_owner_decisions.decision (US-033)", () => {
+    expect([...OWNER_DECISIONS]).toEqual([...schema.OWNER_DECISION_KINDS]);
   });
 });

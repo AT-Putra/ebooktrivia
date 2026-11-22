@@ -8,13 +8,13 @@
 // enrolled it may only enroll, and enrollment makes the user choose a new password; after the
 // deadline it cannot sign in at all until an Owner resets it (or the CLI recovers it).
 import { randomBytes } from "node:crypto";
-import postgres from "postgres";
 import { type FieldKind, type Tx, withAudit } from "./audit.ts";
 import { hashSecret } from "./auth/argon2.ts";
 import { normalizeEmail, PASSWORD_MAX, PASSWORD_MIN } from "./auth/request.ts";
 import { clearThrottle, throttleKey } from "./auth/throttle.ts";
 import type { Sql } from "./db.ts";
 import type { Role } from "./policy.ts";
+import { sqlState } from "./settings/fields.ts";
 
 export { PASSWORD_MAX, PASSWORD_MIN };
 export const ENROLL_DEADLINE_HOURS = 72;
@@ -54,7 +54,8 @@ async function insertAdminUser(tx: Tx, userId: string, input: AdminUserInput, ro
     VALUES (${userId}, ${role}, ${name}, clock_timestamp() + make_interval(hours => ${ENROLL_DEADLINE_HOURS}))`;
 }
 
-const isUniqueViolation = (error: unknown): boolean => error instanceof postgres.PostgresError && error.code === "23505";
+// By shape too (sqlState): the production build can hold a second copy of postgres.js, which fails `instanceof` (US-033).
+const isUniqueViolation = (error: unknown): boolean => sqlState(error) === "23505";
 
 class OwnerExists extends Error {}
 

@@ -5,10 +5,14 @@ import { Button } from "@ebooktrivia/ui/components/button";
 import { ConsoleNav, type NavItem } from "../../components/console-nav.tsx";
 import { ThemeToggle } from "../../components/theme-toggle.tsx";
 import { requireAdmin } from "../../lib/next/require-admin.ts";
+import { getRuntime } from "../../lib/next/runtime.ts";
 import { can, type Permission, type QuestionPermission } from "../../lib/policy.ts";
+import { reviewCount } from "../../lib/review/review.ts";
 
 const NAV: readonly (NavItem & { readonly permission: Exclude<Permission, QuestionPermission> })[] = [
   { href: "/", label: "Overview", icon: "overview", permission: "dashboard.view" },
+  // The Owner's review queue for orders (US-033), with the number waiting as its badge.
+  { href: "/orders/review", label: "Review queue", icon: "review", permission: "order.review.resolve" },
   // Reports (US-029): Staff view them (reports.view); the profit view and the ad-spend entry are Owner-only.
   { href: "/reports/sales", label: "Sales", icon: "sales", permission: "reports.view" },
   { href: "/reports/delivery", label: "Delivery", icon: "delivery", permission: "reports.view" },
@@ -38,8 +42,9 @@ const NAV: readonly (NavItem & { readonly permission: Exclude<Permission, Questi
 
 export default async function ConsoleLayout({ children }: { children: ReactNode }) {
   const admin = await requireAdmin({ permission: "dashboard.view" });
+  const waiting = can(admin.role, "order.review.resolve") ? await reviewCount((await getRuntime()).sql) : 0;
   // Controls the role may not use are not rendered at all (the pages and actions also refuse them).
-  const items = NAV.filter((item) => can(admin.role, item.permission)).map(({ href, label, icon }) => ({ href, label, icon }));
+  const items = NAV.filter((item) => can(admin.role, item.permission)).map(({ href, label, icon }) => ({ href, label, icon, ...(icon === "review" ? { badge: waiting } : {}) }));
   return (
     <div className="min-h-dvh lg:grid lg:grid-cols-[15rem_1fr]">
       <a

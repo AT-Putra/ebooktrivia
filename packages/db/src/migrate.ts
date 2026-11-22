@@ -21,8 +21,9 @@
 //      the explicit resend of a delivery, owned by the NOLOGIN role delivery_resend, created by roles.sql the same way),
 //      sql/play.sql (US-027: the question flow and the live leaderboard, owned by the NOLOGIN role trivia_play),
 //      sql/fulfillment.sql (US-030: the Owner's prize fulfilment steps, notes and proof, owned by the NOLOGIN role
-//      prize_fulfillment) and sql/privacy.sql (US-030: the UU PDP deletion = anonymization of one data subject, owned by the
-//      NOLOGIN role pii_eraser).
+//      prize_fulfillment), sql/privacy.sql (US-030: the UU PDP deletion = anonymization of one data subject, owned by the
+//      NOLOGIN role pii_eraser) and sql/order-review.sql (US-033: the Owner's decision on an order in review, owned by the
+//      NOLOGIN role order_review).
 // Every sql/ file first sets search_path = pg_catalog, pg_temp for the session. Every step is
 // re-runnable on an existing database. Each SQL file runs as one simple-protocol query, i.e. as
 // a single implicit transaction.
@@ -57,6 +58,7 @@ export async function runMigrations(databaseUrl: string): Promise<void> {
     await runFile("play.sql");
     await runFile("fulfillment.sql");
     await runFile("privacy.sql");
+    await runFile("order-review.sql");
   } finally {
     await sql.end();
   }

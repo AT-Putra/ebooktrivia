@@ -1,6 +1,6 @@
 // Criteria 2 and 4: roles, SECURITY DEFINER hygiene, the privilege matrix and the denial tests.
 // Every denial asserts the exact SQLSTATE (42501 insufficient_privilege, or the ET0xx codes).
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import postgres from "postgres";
 import { describe, expect, inject, it } from "vitest";
 import { runMigrations } from "../src/migrate.ts";
@@ -46,6 +46,9 @@ const REAWARD_FUNCTIONS = [
 ];
 /** US-030: the erasure of a data subject (sql/privacy.sql), owned by pii_eraser. */
 const ERASE_FUNCTION = "public.erase_data_subject(p_request_id uuid, p_confirmation text, p_actor_admin_user_id text, p_request text, p_ip inet)";
+/** US-033: the Owner's decision on an order in review (sql/order-review.sql), owned by order_review. */
+const REVIEW_FUNCTION =
+  "public.order_review_decide(p_order_id uuid, p_decision text, p_confirm text, p_reason text, p_request_key uuid, p_actor_admin_user_id text, p_request_id text, p_ip inet)";
 const ownerOf = (sig: string): string =>
   FULFILLMENT_FUNCTIONS.includes(sig)
     ? "prize_fulfillment"
@@ -63,7 +66,9 @@ const ownerOf = (sig: string): string =>
           ? "delivery_resend"
           : PLAY_FUNCTIONS.includes(sig)
             ? "trivia_play"
-            : "migrator";
+            : sig === REVIEW_FUNCTION
+              ? "order_review"
+              : "migrator";
 const DEFINER_FUNCTIONS = [
   "public.enqueue_mo(p_order_id uuid)",
   "public.enqueue_notification(p_inbox_id uuid)",
@@ -196,7 +201,7 @@ describe("group roles (roles.sql)", () => {
     expect(await groupMemberships()).toEqual([]);
   });
 
-  it.each(["trivia_override", "contest_results", "conversion_refire", "delivery_resend", "trivia_play", "prize_fulfillment", "pii_eraser"])("creates %s NOLOGIN, with no members and a member of nothing (US-018, US-028, US-024, US-025, US-027, US-030)", async (name) => {
+  it.each(["trivia_override", "contest_results", "conversion_refire", "delivery_resend", "trivia_play", "prize_fulfillment", "pii_eraser", "order_review"])("creates %s NOLOGIN, with no members and a member of nothing (US-018, US-028, US-024, US-025, US-027, US-030, US-033)", async (name) => {
     const [role] = await sql`
       SELECT rolcanlogin, rolsuper, rolcreatedb, rolcreaterole, rolreplication, rolbypassrls,
              (SELECT count(*)::int FROM pg_auth_members am WHERE am.roleid = r.oid OR am.member = r.oid) AS memberships
@@ -204,7 +209,7 @@ describe("group roles (roles.sql)", () => {
     expect(role).toEqual({ rolcanlogin: false, rolsuper: false, rolcreatedb: false, rolcreaterole: false, rolreplication: false, rolbypassrls: false, memberships: 0 });
   });
 
-  it.each(["trivia_override", "contest_results", "conversion_refire", "delivery_resend", "trivia_play", "prize_fulfillment", "pii_eraser"])("removes any membership in %s on a re-run (a member could SET ROLE to it)", async (name) => {
+  it.each(["trivia_override", "contest_results", "conversion_refire", "delivery_resend", "trivia_play", "prize_fulfillment", "pii_eraser", "order_review"])("removes any membership in %s on a re-run (a member could SET ROLE to it)", async (name) => {
     await sql.unsafe(`GRANT ${name} TO admin_rw`);
     try {
       await runMigrations(inject("dbUrl"));
@@ -236,6 +241,7 @@ describe("group roles (roles.sql)", () => {
         { nspname: "public", relname: "program_winners_banner", owner: "contest_results" },
         { nspname: "public", relname: "refire_conversion", owner: "conversion_refire" },
         { nspname: "public", relname: "resend_delivery", owner: "delivery_resend" },
+        { nspname: "public", relname: "order_review_decide", owner: "order_review" },
         ...["play_answer", "play_attempts", "play_current", "play_leaderboard", "play_note_unlocked", "play_program_ms", "play_ranking", "play_reveal", "play_settle", "play_settle_answer", "play_settle_pending", "play_standing", "play_start_set", "play_unlocked_count"].map(
           (relname) => ({ nspname: "public", relname, owner: "trivia_play" }),
         ),
@@ -245,7 +251,7 @@ describe("group roles (roles.sql)", () => {
         { nspname: "public", relname: "erase_data_subject", owner: "pii_eraser" },
       ]),
     );
-    expect(rows).toHaveLength(27);
+    expect(rows).toHaveLength(28);
   });
 });
 
@@ -277,7 +283,7 @@ describe("SECURITY DEFINER functions (functions.sql, triggers.sql)", () => {
       });
     }
     expect((await functions()).filter((fn) => fn.definer).map((fn) => fn.sig)).toEqual(
-      expect.arrayContaining([OVERRIDE_FUNCTION, ...CONTEST_FUNCTIONS, REFIRE_FUNCTION, ...PLAY_FUNCTIONS, ...FULFILLMENT_FUNCTIONS, ...REAWARD_FUNCTIONS, ERASE_FUNCTION]),
+      expect.arrayContaining([OVERRIDE_FUNCTION, ...CONTEST_FUNCTIONS, REFIRE_FUNCTION, ...PLAY_FUNCTIONS, ...FULFILLMENT_FUNCTIONS, ...REAWARD_FUNCTIONS, ERASE_FUNCTION, REVIEW_FUNCTION]),
     );
   });
 
@@ -514,6 +520,50 @@ describe("worker_rw denials", () => {
     ["EXECUTE enqueue_otp", "SELECT enqueue_otp(gen_random_uuid())"],
   ])("cannot %s", async (_what, statement) => {
     expect(await sqlState(asRole("worker_rw", (tx) => tx.unsafe(statement)))).toBe("42501");
+  });
+});
+
+// US-033 (security review M2): the console moves an order only through public.order_review_decide; it writes none of what a
+// payment or a decision rests on, and it only ever adds an outbox row (test-sends, the Owner's re-query).
+describe("admin_rw denials (US-033)", () => {
+  it.each([
+    ["create an order", "INSERT INTO public.orders (public_id) VALUES ('x')"],
+    ["change an order", "UPDATE public.orders SET status = 'paid'"],
+    ["delete an order", "DELETE FROM public.orders"],
+    ["write a Midtrans attempt", "UPDATE public.midtrans_attempts SET gateway_status = 'settlement'"],
+    ["create a Midtrans attempt", "INSERT INTO public.midtrans_attempts (order_id, n, midtrans_order_id) VALUES (gen_random_uuid(), 1, 'x-1')"],
+    ["write the payments ledger", "UPDATE public.payments SET settled_at = now()"],
+    ["create a payments ledger row", "INSERT INTO public.payments (order_id, gateway_txn_id, transaction_status, gross_amount_idr) VALUES (gen_random_uuid(), 'x', 'settlement', 1)"],
+    ["forge a Midtrans notification", "INSERT INTO public.payment_notifications (midtrans_order_id, transaction_status, status_code, signature, raw) VALUES ('x-1', 'settlement', '200', 'x', '{}')"],
+    ["change a Midtrans notification", "UPDATE public.payment_notifications SET processed_at = NULL"],
+    ["delete a Midtrans notification", "DELETE FROM public.payment_notifications"],
+    ["change an outbox row", "UPDATE public.outbox SET available_at = now()"],
+    ["delete an outbox row", "DELETE FROM public.outbox"],
+    ["write the decision ledger", "INSERT INTO public.order_owner_decisions (order_id, decision, from_status, to_status, attempts, reason, decided_by_admin_user_id, request_key) VALUES (gen_random_uuid(), 'paid', 'review', 'paid', '[]', 'a reason here', 'x', gen_random_uuid())"],
+  ])("cannot %s (42501)", async (_what, statement) => {
+    expect(await sqlState(asRole("admin_rw", (tx) => tx.unsafe(statement)))).toBe("42501");
+  });
+
+  it("still adds an outbox row of its two jobs (the test-send and the re-query), and no other topic (ET189)", async () => {
+    const key = (topic: string) => `${topic}:${randomBytes(8).toString("hex")}`;
+    for (const topic of ["payment.requery", "template.test_send"]) {
+      await rolledBack("admin_rw", (tx) => tx`INSERT INTO public.outbox (topic, dedupe_key, payload) VALUES (${topic}, ${key(topic)}, '{}')`);
+    }
+    // A console session cannot take the payment code's own predictable key first (order.paid:<order id>), nor enqueue another job.
+    for (const topic of ["order.paid", "payment.notification", "magic_link.resend", "otp.send"]) {
+      expect(await sqlState(asRole("admin_rw", (tx) => tx`INSERT INTO public.outbox (topic, dedupe_key, payload) VALUES (${topic}, ${`${topic}:${randomBytes(16).toString("hex")}`}, '{}')`)), topic).toBe("ET189");
+    }
+    // Nor under an allowed topic: dedupe_key is unique across all topics, so another job's key is refused too (delta review M1).
+    for (const squatted of ["order.paid:", "conversion.mo:", "magic_link.resend:", "template.test_send:"]) {
+      const statement = (tx: Tx) => tx`INSERT INTO public.outbox (topic, dedupe_key, payload) VALUES ('payment.requery', ${`${squatted}${randomUUID()}`}, '{}')`;
+      expect(await sqlState(asRole("admin_rw", statement)), squatted).toBe("ET189");
+    }
+    await rolledBack("admin_rw", (tx) => tx`INSERT INTO public.outbox (topic, dedupe_key, payload) VALUES ('payment.requery', ${`payment.requery:${randomUUID()}`}, '{}')`);
+  });
+
+  it("the outbox topic guard leaves the worker and a superuser alone (pg_has_role is true for a superuser on every role)", async () => {
+    await rolledBack("worker_rw", (tx) => tx`INSERT INTO public.outbox (topic, dedupe_key, payload) VALUES ('order.paid', ${`order.paid:${randomBytes(16).toString("hex")}`}, '{}')`);
+    await rolledBack(null, (tx) => tx`INSERT INTO public.outbox (topic, dedupe_key, payload) VALUES ('order.paid', ${`order.paid:${randomBytes(16).toString("hex")}`}, '{}')`);
   });
 });
 

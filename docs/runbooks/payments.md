@@ -40,6 +40,8 @@ attempt still holds money (a double payment) the reversal only raises a warning 
   on the login page (US-027 adds it), or you re-send a link.
 - The money is really gone: refund the order in the console (the refund flow, US-024's reversal rules then apply: the adnet reversal postback and so on),
   or leave it in review. The ebook that was sent stays with the buyer; decide whether that matters.
+- US-033: decide it in the console's **Review queue** ("mark paid" or "not paid"), see [order-review.md](order-review.md). The decision is recorded, so
+  the same Midtrans state seen again (a repeated notification, the nightly reconciliation) does not send the order back to review or alert again.
 
 ## Payment methods (Owner D11)
 
@@ -88,3 +90,6 @@ whose own clock is wrong cannot make an older answer overwrite a newer one. The 
 | `payment_chargeback` | critical | a chargeback, whatever it does to the order |
 | `checkout_no_payment_methods` | critical | D11: no payment method is enabled; the checkout answers 503 |
 | `payment_requery_failed`, `payment_requery_misconfigured` | critical | the worker cannot re-query Midtrans |
+| `order_review_stuck` | warning | US-033: an order has been in review for more than 24 hours (once per stay); decide it in the review queue |
+| `order_decision_superseded` | critical | US-033: a new Midtrans event changed an order you had decided on (a refund after "mark paid", a late settlement after "not paid") |
+| `payment_on_erased_order` | critical | US-033: Midtrans settled an order whose buyer was erased (UU PDP): it is in the review queue, nothing was delivered |

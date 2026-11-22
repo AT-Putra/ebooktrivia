@@ -402,7 +402,7 @@ describe("runSweeps", () => {
     const broken = postgres(inject("workerDbUrl"), { ...PG_CONNECTION_OPTIONS, max: 1, onnotice: () => undefined });
     await broken.end();
     await runSweeps({ sql: broken, log: captured.log, outboxQueues: new Map(), outboxStaleMs: 120_000 });
-    expect(captured.lines.filter((l) => l["level"] === 50).map((l) => l["sweeper"])).toEqual(["lease_expiry", "outbox", "snap_create", "order_expiry", "grace_end", "login_throttle", "otp_expiry", "payment_methods", "wa_contacts_retention"]);
+    expect(captured.lines.filter((l) => l["level"] === 50).map((l) => l["sweeper"])).toEqual(["lease_expiry", "outbox", "snap_create", "order_expiry", "grace_end", "login_throttle", "otp_expiry", "payment_methods", "wa_contacts_retention", "review_stuck"]);
     await runSweeps({ sql: workerSql, log: captured.log, outboxQueues: new Map(), outboxStaleMs: 120_000 });
     expect(first(await sql<{ status: string }[]>`SELECT status::text FROM orders WHERE id = ${orderId ?? ""}`).status).toBe("expired");
   });
@@ -413,7 +413,7 @@ describe("runSweeps", () => {
     const ended = await createCatalog({ salesEndAt: new Date(Date.now() - 3 * 86_400_000), graceDays: 1 });
     const captured = captureLogger("debug");
     await runSweeps({ sql: workerSql, log: captured.log, outboxQueues: new Map(), outboxStaleMs: 120_000 });
-    expect(captured.lines.filter((l) => l["msg"] === "sweep done").map((l) => l["sweeper"])).toEqual(["lease_expiry", "outbox", "snap_create", "order_expiry", "grace_end", "login_throttle", "otp_expiry", "payment_methods", "wa_contacts_retention"]);
+    expect(captured.lines.filter((l) => l["msg"] === "sweep done").map((l) => l["sweeper"])).toEqual(["lease_expiry", "outbox", "snap_create", "order_expiry", "grace_end", "login_throttle", "otp_expiry", "payment_methods", "wa_contacts_retention", "review_stuck"]);
     expect(first(await sql<{ status: string }[]>`SELECT status::text FROM programs WHERE id = ${ended.programId}`).status).toBe("awaiting_confirmation");
 
     const withPorts = captureLogger("debug");
@@ -437,6 +437,7 @@ describe("runSweeps", () => {
       "otp_expiry",
       "payment_methods",
       "wa_contacts_retention",
+      "review_stuck",
     ]);
   });
 });

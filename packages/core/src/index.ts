@@ -21,6 +21,7 @@ export * from "./midtrans-methods.ts";
 export * from "./money.ts";
 export * from "./order-machine.ts";
 export * from "./otp.ts";
+export * from "./owner-decision.ts";
 export * from "./payment.ts";
 export * from "./phone.ts";
 export * from "./ranking.ts";

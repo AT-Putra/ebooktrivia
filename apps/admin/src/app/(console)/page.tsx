@@ -8,7 +8,9 @@ import { unusedRecoveryCodes } from "../../lib/auth/recovery-codes.ts";
 import { formatBps, formatDay, formatInt, formatRupiah } from "../../lib/format.ts";
 import { requireAdmin } from "../../lib/next/require-admin.ts";
 import { getRuntime } from "../../lib/next/runtime.ts";
+import { can } from "../../lib/policy.ts";
 import { DASHBOARD_DAYS, loadDashboard } from "../../lib/reports/dashboard.ts";
+import { reviewCount } from "../../lib/review/review.ts";
 
 export const metadata: Metadata = { title: "Overview | Admin Console" };
 // The figures come from the rollups the worker refreshes every 5 minutes: never a build-time snapshot.
@@ -22,7 +24,8 @@ export default async function OverviewPage() {
   const admin = await requireAdmin({ permission: "dashboard.view" });
   const { sql } = await getRuntime();
   const now = new Date();
-  const [codesLeft, d] = await Promise.all([unusedRecoveryCodes(sql, admin.userId), loadDashboard(sql, now)]);
+  const owner = can(admin.role, "order.review.resolve");
+  const [codesLeft, d, waiting] = await Promise.all([unusedRecoveryCodes(sql, admin.userId), loadDashboard(sql, now), owner ? reviewCount(sql) : Promise.resolve(0)]);
   const t = d.todayTotals;
   const y = d.yesterdayTotals;
   return (
@@ -41,6 +44,21 @@ export default async function OverviewPage() {
             Without recovery codes, losing your authenticator locks you out.{" "}
             <Link href="/account" className="underline underline-offset-4">
               Create new codes
+            </Link>
+            .
+          </CardDescription>
+        </Card>
+      ) : null}
+      {owner && waiting > 0 ? (
+        <Card role="status" className="border-warning/60" data-testid="review-queue">
+          <CardTitle className="flex items-center gap-2 text-base">
+            <WarningIcon aria-hidden="true" size={18} weight="fill" />
+            {formatInt(waiting)} order{waiting === 1 ? " waits" : "s wait"} for your decision
+          </CardTitle>
+          <CardDescription>
+            Payments the system could not settle on its own (a payment Midtrans reversed, a fraud challenge, a partial refund or chargeback).{" "}
+            <Link href="/orders/review" className="underline underline-offset-4">
+              Open the review queue
             </Link>
             .
           </CardDescription>

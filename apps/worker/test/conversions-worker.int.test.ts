@@ -80,7 +80,7 @@ describe("the conversions in the worker", () => {
     }
     expect(first(await sql<{ processed: boolean }[]>`SELECT processed_at IS NOT NULL AS processed FROM outbox WHERE id = ${outboxId}`).processed).toBe(true);
     expect(lines.find((l) => l["msg"] === "worker started")).toMatchObject({ conversions: true, conversionSinks: true });
-    expect((lines.find((l) => l["msg"] === "worker started")?.["topics"] as string[]).sort()).toEqual(["conversion.mo", "order.paid", "payment.notification"]);
+    expect((lines.find((l) => l["msg"] === "worker started")?.["topics"] as string[]).sort()).toEqual(["conversion.mo", "order.paid", "payment.notification", "payment.requery"]);
     await retireEffects(shop);
   });
 
@@ -171,7 +171,7 @@ describe("the worker without the conversions key (security review US-024 L7, cod
     }
     // No conversions port: no MO consumer and no conversion queue, but the order.paid consumer runs.
     expect(lines.find((l) => l["msg"] === "worker started")).toMatchObject({ conversions: false, conversionSinks: false });
-    expect((lines.find((l) => l["msg"] === "worker started")?.["topics"] as string[]).sort()).toEqual(["order.paid", "payment.notification"]);
+    expect((lines.find((l) => l["msg"] === "worker started")?.["topics"] as string[]).sort()).toEqual(["order.paid", "payment.notification", "payment.requery"]);
     await retireEffects(shop);
   });
 

@@ -13,7 +13,6 @@ import { createMailSender } from "../src/delivery/access.ts";
 import { testFiles } from "./support/files.ts";
 import { createDeliveryPort } from "../src/delivery/index.ts";
 import { createLogger } from "../src/log.ts";
-import { proactiveDelayMs } from "../src/payments.ts";
 import { startWorker } from "../src/worker.ts";
 import { loadWorkerConfig } from "../src/worker-config.ts";
 import { createSecretOpener, generateScopeKeyPair } from "@ebooktrivia/crypto";
@@ -125,7 +124,7 @@ describe("PAID -> e-mail within 10 seconds (AC-D1), measured on the dev stack", 
     const latencies: number[] = [];
     try {
       expect(lines.find((l) => l["msg"] === "worker started")).toMatchObject({ deliveries: true, payments: true });
-      expect((lines.find((l) => l["msg"] === "worker started")?.["topics"] as string[]).sort()).toEqual(["order.paid", "payment.notification", "waha.inbound"]);
+      expect((lines.find((l) => l["msg"] === "worker started")?.["topics"] as string[]).sort()).toEqual(["order.paid", "payment.notification", "payment.requery", "waha.inbound"]);
       // One order at a time: the latency in isolation.
       const orders: { id: string; email: string }[] = [];
       for (let i = 0; i < 6; i++) {
@@ -174,6 +173,10 @@ describe("PAID -> e-mail within 10 seconds (AC-D1), measured on the dev stack", 
 });
 
 describe("the proactive WhatsApp delay is an admin setting (AC-D8)", () => {
+  /** The delay the PAID effects schedule the WhatsApp delivery with (US-033: public.proactive_delay_ms), as the worker's login. */
+  const proactiveDelayMs = async (db: typeof stubPool, fallbackMs: number): Promise<number> =>
+    Number(first(await db<{ ms: string }[]>`SELECT public.proactive_delay_ms(${fallbackMs})::text AS ms`).ms);
+
   it("reads delivery.wa_delay_seconds when an order is paid (default 3 minutes, 0 = at once), the env value only as the fallback", async () => {
     await sql`UPDATE app_settings SET value = '180'::jsonb WHERE key = 'delivery.wa_delay_seconds'`;
     try {

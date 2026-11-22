@@ -46,6 +46,18 @@
 //        CRITICAL payment_paid_reversed alert is raised. "Held the money" = the attempt's payments.settled_at (set once), so an
 //        intermediate pending or unknown status cannot hide the reversal. Delivery stays instant; what was already sent is never
 //        reversed here.
+// US-033 (the Owner's review queue, docs/runbooks/order-review.md):
+//   - the PAID effects, eligibility and the reversal rows are SQL (packages/db sql/functions.sql order_paid_effects,
+//     refresh_player_eligibility, order_reversal_rows), ONE implementation shared with the Owner's "mark paid" / "not paid"
+//     (sql/order-review.sql), which runs them under the same order lock;
+//   - the Owner's latest decision is honoured (core decisionCoversRequery): while the order is still in the status the
+//     decision left it in and this attempt's recorded and re-queried Midtrans state both equal the state the Owner decided
+//     on, the re-query changes nothing and alerts nothing (no move back to review, no second critical alert). Any other
+//     state is a new Midtrans event, processed as usual, plus a critical order_decision_superseded alert when it moves an
+//     order the Owner had decided on (a refund after "mark paid", a late settlement after "not paid") or the attempt leaves
+//     the decided state without a move. An attempt that showed money when the Owner marked the order paid (e.g. a
+//     challenged capture, which never set payments.settled_at) counts as holding the money (core decisionHeldMoney), so its
+//     later deny / cancel / expire / failure takes the D9 path above.
 // Exactly once: every effect is an INSERT ... ON CONFLICT DO NOTHING on a unique key (deliveries
 // order+channel, conversion_events order+sink+kind, outbox dedupe_key, player_programs pkey), paid_at is
 // stamped once (coalesce; orders_payment_stamps_guard), and deliveries / MT rows exist for paid orders
@@ -56,24 +68,24 @@ import { confirmSettlement, getTransactionStatus, type MidtransConfig, MidtransE
 import {
   attemptContext,
   decidePayment,
-  deliverySchedule,
+  decisionCoversRequery,
+  decisionHeldMoney,
+  decisionLeftByRequery,
   EFFECT_CANCELLED,
   isChargeback,
   isSettledStatus,
   isUuid,
-  mtSinks,
-  NO_MT_TEMPLATE,
   type OrderEvent,
   type OrderStatus,
   type PaymentAlert,
   requeryOverdue,
-  reversalSinks,
   type SettlementVerdict,
   winnerFlagReason,
 } from "@ebooktrivia/core";
 import type postgres from "postgres";
 import type { Logger } from "./log.ts";
 import type { OutboxConsumer } from "./outbox-consumer.ts";
+import { latestOwnerDecision } from "./owner-decisions.ts";
 import { raiseAlert, raiseAlertIn } from "./sweepers.ts";
 
 export { EFFECT_CANCELLED };
@@ -106,8 +118,8 @@ export type MidtransSource = (sql: postgres.Sql) => Promise<MidtransConfig>;
 export interface PaymentOptions {
   /** AC-D8: the proactive WhatsApp send waits this long after PAID while the admin setting delivery.wa_delay_seconds is missing (WORKER_WA_DELAY_MS). */
   readonly waDelayMs: number;
-  /** What re-queried the status (audit and alert payloads). */
-  readonly source: "notification" | "reconciliation";
+  /** What re-queried the status (audit and alert payloads); `owner_requery` = the Owner's "re-query Midtrans now" (US-033). */
+  readonly source: "notification" | "reconciliation" | "owner_requery";
 }
 
 export interface AttemptRef {
@@ -136,15 +148,8 @@ interface OrderRow {
   snap_attempt_count: number;
   player_id: string | null;
   program_id: string;
-  buyer_phone: string;
-  buyer_name: string;
-  buyer_email: string;
-  adnet_id: string | null;
-  clickid: string | null;
-  event_id: string;
-  pixels: unknown;
-  /** The order's adnet has an MT postback template (false for an organic order: no S2S row anyway). */
-  adnet_has_mt_template: boolean;
+  /** US-030: the buyer was erased (orders.anonymized_at set): no player, delivery or conversion can be made for it. */
+  anonymized: boolean;
   now: Date;
 }
 
@@ -172,86 +177,28 @@ async function audit(tx: postgres.TransactionSql, order: OrderRow, to: OrderStat
 }
 
 /**
- * eligible = the player has a PAID order of the program (an EXISTS over orders, no view); first_paid_at
- * = the earliest paid_at among those orders, NULL when none is left (Owner tie-break D4: the earlier
- * payment that still stands wins). The player_programs row is locked first and both are computed in a
- * later statement (READ COMMITTED: a fresh snapshot after the lock), so two orders of one player refunded
- * at once cannot both see the other one still paid.
+ * eligible = the player has a PAID order of the program; first_paid_at = the earliest paid_at among the orders STILL
+ * paid (Owner tie-break D4), NULL when none is left. US-033: public.refresh_player_eligibility (functions.sql), shared
+ * with the Owner's decision; it locks the player_programs row first and computes both in a later statement.
  */
 async function refreshEligibility(tx: postgres.TransactionSql, playerId: string, programId: string, now: Date, create: boolean): Promise<boolean> {
-  if (create) await tx`INSERT INTO public.player_programs (player_id, program_id) VALUES (${playerId}, ${programId}) ON CONFLICT (player_id, program_id) DO NOTHING`;
-  const locked = await tx`SELECT 1 FROM public.player_programs WHERE player_id = ${playerId} AND program_id = ${programId} FOR UPDATE`;
-  if (locked.length === 0) return false;
-  const [row] = await tx<{ eligible: boolean }[]>`
-    UPDATE public.player_programs pp
-       SET eligible = EXISTS (SELECT 1 FROM public.orders o WHERE o.player_id = pp.player_id AND o.program_id = pp.program_id AND o.status = 'paid'),
-           first_paid_at = (SELECT min(o.paid_at) FROM public.orders o WHERE o.player_id = pp.player_id AND o.program_id = pp.program_id AND o.status = 'paid'),
-           updated_at = ${now}
-     WHERE pp.player_id = ${playerId} AND pp.program_id = ${programId}
-    RETURNING eligible`;
+  const [row] = await tx<{ eligible: boolean }[]>`SELECT public.refresh_player_eligibility(${playerId}, ${programId}, ${now}, ${create}) AS eligible`;
   return row?.eligible === true;
 }
 
 /**
- * The proactive WhatsApp delay in ms (AC-D8): the admin setting delivery.wa_delay_seconds (US-025, bounded 0..86400 by
- * the database), read when the order is paid so a change applies to the next paid order. `fallbackMs` (the
- * WORKER_WA_DELAY_MS env, default 3 minutes) stands in only while the setting is missing or malformed.
+ * The PAID effects (AC-S7, AC-T4, AC-D1, AC-D8), each an INSERT ... ON CONFLICT DO NOTHING on its unique key: the buyer's
+ * player, eligibility, deliveries, one MT row per sink, the `order.paid` outbox row, and what payments cancelled on an
+ * earlier review back on the send path. US-033: public.order_paid_effects (functions.sql), the same SQL the Owner's
+ * "mark paid" runs (see its header there).
  */
-export async function proactiveDelayMs(db: postgres.Sql | postgres.TransactionSql, fallbackMs: number): Promise<number> {
-  const [row] = await db<{ value: unknown }[]>`SELECT value FROM public.app_settings WHERE key = 'delivery.wa_delay_seconds'`;
-  const seconds = row?.value;
-  return typeof seconds === "number" && Number.isSafeInteger(seconds) && seconds >= 0 && seconds <= 86_400 ? seconds * 1000 : fallbackMs;
-}
-
-/** The PAID effects (AC-S7, AC-T4, AC-D1): each an INSERT ... ON CONFLICT DO NOTHING on its unique key. */
 async function paidEffects(tx: postgres.TransactionSql, order: OrderRow, waDelayFallbackMs: number): Promise<void> {
-  const { now } = order;
-  // One buyer (WhatsApp phone) = one player (spec, AC-Q1); the profile of an existing player is kept.
-  await tx`INSERT INTO public.players (phone, name, email) VALUES (${order.buyer_phone}, ${order.buyer_name}, ${order.buyer_email}) ON CONFLICT (phone) DO NOTHING`;
-  const [player] = await tx<{ id: string }[]>`SELECT id FROM public.players WHERE phone = ${order.buyer_phone}`;
-  if (player === undefined) throw new Error("the buyer's player row is missing");
-  const [linked] = await tx<{ player_id: string }[]>`
-    UPDATE public.orders SET player_id = coalesce(player_id, ${player.id}) WHERE id = ${order.id} RETURNING player_id`;
-  await refreshEligibility(tx, linked?.player_id ?? player.id, order.program_id, now, true);
-
-  const schedule = deliverySchedule(now, await proactiveDelayMs(tx, waDelayFallbackMs));
-  await tx`
-    INSERT INTO public.deliveries (order_id, channel, not_before)
-    VALUES (${order.id}, 'email', ${schedule.email}), (${order.id}, 'whatsapp', ${schedule.whatsapp})
-    ON CONFLICT (order_id, channel) DO NOTHING`;
-  // Back from review: what this code cancelled goes out again (never a row cancelled for another reason).
-  // An MT that had already been attempted is retried too: sinks dedupe by txid / event_id (code review r1).
-  await tx`
-    UPDATE public.deliveries SET status = 'pending', last_error = NULL, not_before = CASE channel WHEN 'email' THEN ${schedule.email}::timestamptz ELSE ${schedule.whatsapp}::timestamptz END, updated_at = ${now}
-     WHERE order_id = ${order.id} AND status = 'cancelled' AND last_error = ${EFFECT_CANCELLED}`;
-
-  // txid = the order id: stable per order (adnets dedupe by it), and no public capability (unlike public_id).
-  for (const sink of mtSinks({ adnetId: order.adnet_id, clickid: order.clickid, pixels: order.pixels })) {
-    // An attributed order whose adnet has no MT template cannot be reported: its S2S row is created already
-    // failed, visibly (AC-T4), instead of being retried for 14 hours; the Owner fixes the adnet and re-fires it.
-    const unreportable = sink === "s2s" && !order.adnet_has_mt_template;
-    await tx`
-      INSERT INTO public.conversion_events (order_id, sink, kind, status, adnet_id, txid, event_id, value_idr, next_attempt_at, failed_at, last_error)
-      VALUES (${order.id}, ${sink}, 'mt', ${unreportable ? "failed" : "pending"}, ${sink === "s2s" ? order.adnet_id : null}, ${order.id}, ${order.event_id}, ${order.amount_idr}::bigint, ${now},
-              ${unreportable ? now : null}, ${unreportable ? NO_MT_TEMPLATE : null})
-      ON CONFLICT (order_id, sink, kind) DO NOTHING`;
-  }
-  await tx`
-    UPDATE public.conversion_events SET status = 'pending', failed_at = NULL, last_error = NULL, next_attempt_at = ${now}, updated_at = ${now}
-     WHERE order_id = ${order.id} AND kind = 'mt' AND status = 'failed' AND last_error = ${EFFECT_CANCELLED}`;
-  await tx`
-    INSERT INTO public.outbox (topic, dedupe_key, payload)
-    VALUES (${ORDER_PAID_TOPIC}, ${`${ORDER_PAID_TOPIC}:${order.id}`}, ${JSON.stringify({ order_id: order.id })}::text::jsonb)
-    ON CONFLICT (dedupe_key) DO NOTHING`;
+  await tx`SELECT public.order_paid_effects(${order.id}, ${order.now}, ${waDelayFallbackMs})`;
 }
 
 /** Refund / review effects (security review P2-2, Owner decision D5): see the header. */
 async function reversalEffects(tx: postgres.TransactionSql, order: OrderRow, to: OrderStatus, event: OrderEvent, attempt: AttemptRef): Promise<void> {
   const { now } = order;
-  // The MTs the sink may have counted (the sticky maybe_counted mark: a 2xx or an uncertain send, never cleared) or
-  // that are in flight (sending) need a reversal; one whose every attempt was answered with an error does not.
-  const reached = await tx<{ sink: string }[]>`
-    SELECT sink FROM public.conversion_events WHERE order_id = ${order.id} AND kind = 'mt' AND (maybe_counted OR status IN ('sending', 'sent'))`;
   await tx`
     UPDATE public.deliveries SET status = 'cancelled', last_error = ${EFFECT_CANCELLED}, updated_at = ${now}
      WHERE order_id = ${order.id} AND status = 'pending'`;
@@ -278,15 +225,10 @@ async function reversalEffects(tx: postgres.TransactionSql, order: OrderRow, to:
       }
     }
   }
-  if (to !== "refunded") return;
-  const [adnet] =
-    order.adnet_id === null ? [] : await tx<{ reversal: boolean }[]>`SELECT reversal_url_template IS NOT NULL AS reversal FROM public.adnets WHERE id = ${order.adnet_id}`;
-  for (const sink of reversalSinks(reached.map((r) => r.sink), adnet?.reversal === true)) {
-    await tx`
-      INSERT INTO public.conversion_events (order_id, sink, kind, adnet_id, txid, event_id, value_idr, next_attempt_at)
-      VALUES (${order.id}, ${sink}, 'reversal', ${order.adnet_id}, ${order.id}, ${order.event_id}, ${order.amount_idr}::bigint, ${now})
-      ON CONFLICT (order_id, sink, kind) DO NOTHING`;
-  }
+  // The MTs the sink may have counted (the sticky maybe_counted mark: a 2xx or an uncertain send, never cleared) or that are
+  // in flight need a reversal; one whose every attempt was answered with an error does not. US-033: public.order_reversal_rows
+  // (functions.sql), shared with the Owner's "not paid" (the cancel above changes neither mark, so it may run after it).
+  if (to === "refunded") await tx`SELECT public.order_reversal_rows(${order.id}, ${now})`;
 }
 
 /** The payments ledger (M10 reports): one row per Midtrans transaction, its latest re-queried status. */
@@ -323,13 +265,15 @@ async function recordPayment(tx: postgres.TransactionSql, order: OrderRow, attem
 export async function applyRequery(tx: postgres.TransactionSql, attempt: AttemptRef, status: MidtransStatus, requeriedAt: Date, options: PaymentOptions): Promise<ApplyOutcome> {
   const [order] = await tx<OrderRow[]>`
     SELECT o.id, o.status::text AS status, o.amount_idr::text AS amount_idr, o.snap_attempt_count, o.player_id, o.program_id,
-           o.buyer_phone, o.buyer_name, o.buyer_email, o.adnet_id, o.clickid, o.event_id, lp.pixels,
-           coalesce(a.mt_url_template IS NOT NULL, false) AS adnet_has_mt_template, clock_timestamp() AS now
-      FROM public.orders o JOIN public.landing_pages lp ON lp.id = o.landing_page_id
-      LEFT JOIN public.adnets a ON a.id = o.adnet_id
+           o.anonymized_at IS NOT NULL AS anonymized, clock_timestamp() AS now
+      FROM public.orders o
      WHERE o.id = ${attempt.orderId}
        FOR UPDATE OF o`;
   if (order === undefined) throw new Error("the attempt's order is missing");
+  // US-033: the Owner's latest decision on the order and this attempt's recorded state BEFORE this re-query (core decisionCoversRequery).
+  const owner = await latestOwnerDecision(tx, order.id);
+  const [prior] = await tx<{ status: string | null; fraud: string | null }[]>`
+    SELECT gateway_status AS status, gateway_fraud_status AS fraud FROM public.midtrans_attempts WHERE id = ${attempt.id}`;
   // Did this attempt EVER hold the buyer's money? Its payments.settled_at, set once (coalesce in recordPayment) when a
   // settlement or a capture+accept was counted, and cleared by nothing. A settled attempt that now answers deny / cancel /
   // expire / failure is a payment Midtrans reversed (Owner D9), not another attempt's noise; deciding it from the attempt's last
@@ -349,15 +293,27 @@ export async function applyRequery(tx: postgres.TransactionSql, attempt: Attempt
     attempt.n,
     order.snap_attempt_count,
     attempts.map((a) => ({ n: a.n, gatewayStatus: a.gateway_status, gatewayFraudStatus: a.gateway_fraud_status })),
-    held?.held === true,
+    // US-033 (security review M1): an attempt the Owner's "mark paid" counted as the money holds it too (core decisionHeldMoney).
+    held?.held === true || decisionHeldMoney(owner, order.status, attempt.n),
   );
   const decision = decidePayment(order.status, verdict, status.fraudStatus, context);
   await recordPayment(tx, order, attempt, status);
+  // US-033: the same Midtrans state the Owner already decided on is no new event: no move, no alert.
+  const requeried = { status: status.transactionStatus.slice(0, 64), fraud: status.fraudStatus?.slice(0, 64) ?? null };
+  if (decisionCoversRequery(owner, order.status, attempt.n, prior ?? { status: null, fraud: null }, requeried)) {
+    return { kind: "applied", from: order.status, to: order.status, event: decision.event, verdict: verdict.kind, alert: null };
+  }
 
   let to = order.status;
   let magicLinksRevoked: number | undefined;
-  if (decision.transition.kind === "move") {
-    to = decision.transition.to;
+  // US-033 (after US-030): money for an order whose buyer was erased (UU PDP) never makes it PAID by itself: there is no buyer to
+  // deliver to or to make eligible (a player from the emptied phone is refused, players_phone_present_check). The ledger row is kept
+  // (recordPayment above; its raw is cut by payment_raw_erased_guard), the order goes to the Owner's review queue instead, with no
+  // effect, and a critical alert; there "mark paid" keeps the money without fulfilment (sql/order-review.sql).
+  const erasedSettlement = decision.transition.kind === "move" && decision.transition.to === "paid" && order.anonymized;
+  const target = erasedSettlement ? "review" : decision.transition.kind === "move" ? decision.transition.to : order.status;
+  if (target !== order.status) {
+    to = target;
     const moved =
       to === "paid"
         ? await tx`UPDATE public.orders SET status = 'paid', paid_at = coalesce(paid_at, ${order.now}), updated_at = ${order.now} WHERE id = ${order.id} AND status = ${order.status}`
@@ -367,7 +323,7 @@ export async function applyRequery(tx: postgres.TransactionSql, attempt: Attempt
     if (moved.count !== 1) throw new Error("the order changed under its row lock");
     await audit(tx, order, to, decision.event, attempt, options.source);
     if (to === "paid") await paidEffects(tx, order, options.waDelayMs);
-    else if (to === "refunded" || to === "review") await reversalEffects(tx, order, to, decision.event, attempt);
+    else if (to === "refunded" || (to === "review" && !erasedSettlement)) await reversalEffects(tx, order, to, decision.event, attempt);
     // Owner D9: a paid order whose payment Midtrans reversed (deny, cancel, expire, failure of the attempt that held its money):
     // the buyer's live magic links are revoked (eligibility is suspended and the unsent effects cancelled by reversalEffects above;
     // what was already sent is never reversed here). The Owner is alerted by the decision's critical payment_paid_reversed.
@@ -405,6 +361,29 @@ export async function applyRequery(tx: postgres.TransactionSql, attempt: Attempt
       dedupeKey: `payment_chargeback:${order.id}:${String(attempt.n)}:${decision.event}`,
       message: "a Midtrans payment was charged back: check the order, the buyer and any prize",
       payload,
+    });
+  }
+  // US-033 (after US-030): the payment of an erased buyer's order went to review instead of PAID (above). Ids only, no PII.
+  if (erasedSettlement) {
+    await raiseAlertIn(tx, {
+      kind: "payment_on_erased_order",
+      severity: "critical",
+      dedupeKey: `payment_on_erased_order:${order.id}:${String(attempt.n)}`,
+      message: "Midtrans settled a payment of an order whose buyer was erased (UU PDP): it is in the review queue, nothing was delivered; decide it there",
+      payload: { order_id: order.id, attempt: attempt.n, event: decision.event, from: order.status, source: options.source },
+    });
+  }
+  // US-033: a new Midtrans event on an order the Owner had decided on (a refund or chargeback after "mark paid", a late
+  // settlement after "not paid", another flip): processed as usual above, and the Owner is told, when it moved the order and
+  // when the attempt has just left the decided state without moving it (security review M1).
+  const left = decisionLeftByRequery(owner, order.status, attempt.n, prior ?? { status: null, fraud: null }, requeried);
+  if (owner !== null && owner.toStatus === order.status && (to !== order.status || left)) {
+    await raiseAlertIn(tx, {
+      kind: "order_decision_superseded",
+      severity: "critical",
+      dedupeKey: `order_decision_superseded:${order.id}:${String(attempt.n)}:${decision.event}`,
+      message: "a new Midtrans event changed an order you had decided on in the review queue: check the order",
+      payload: { ...payload, decided_status: owner.toStatus },
     });
   }
   return { kind: "applied", from: order.status, to, event: decision.event, verdict: verdict.kind, alert: decision.alert };

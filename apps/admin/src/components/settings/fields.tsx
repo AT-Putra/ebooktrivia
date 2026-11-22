@@ -23,6 +23,7 @@ export function TextField({
   placeholder,
   inputMode,
   autoComplete = "off",
+  verbatim = false,
 }: {
   id: string;
   name: string;
@@ -38,6 +39,8 @@ export function TextField({
   placeholder?: string | undefined;
   inputMode?: "numeric" | "decimal" | "tel" | "email" | "url" | undefined;
   autoComplete?: string | undefined;
+  /** A value typed exactly (an id to confirm): no auto-capitalisation, auto-correction or spell check (US-033). */
+  verbatim?: boolean | undefined;
 }) {
   return (
     <div className="flex flex-col gap-1.5">
@@ -54,6 +57,7 @@ export function TextField({
         placeholder={placeholder}
         inputMode={inputMode}
         autoComplete={autoComplete}
+        {...(verbatim ? { autoCapitalize: "off", autoCorrect: "off", spellCheck: false } : {})}
         aria-describedby={hint === undefined ? undefined : `${id}-hint`}
       />
       {hint === undefined ? null : (

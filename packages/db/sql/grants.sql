@@ -616,3 +616,63 @@ GRANT SELECT (identifier), DELETE ON player_auth.verification TO pii_eraser;
 GRANT INSERT (actor_kind, actor_admin_user_id, action, entity_type, entity_id, changes, pii_refs, request_id, ip)
   ON public.audit_log TO pii_eraser;
 -- US-030 BLOCK END.
+
+-- ---------------------------------------------------------------------------------------------
+-- US-033 (M10c Owner review queue for orders) BLOCK BEGIN.
+-- The PAID effects and the reversal rows have ONE implementation (functions.sql US-033 block, SECURITY INVOKER: each caller
+-- runs them with its own privileges). The worker's payment code already holds every table privilege they use.
+GRANT EXECUTE ON FUNCTION public.proactive_delay_ms(bigint), public.refresh_player_eligibility(uuid, uuid, timestamptz, boolean),
+  public.order_paid_effects(uuid, timestamptz, bigint), public.order_reversal_rows(uuid, timestamptz)
+  TO worker_rw;
+-- ... and reads the Owner's latest decision of an order, which applyRequery and the reconciliation honour (payments.ts).
+GRANT SELECT (id, order_id, to_status, attempts, decided_at) ON public.order_owner_decisions TO worker_rw;
+-- The console decides through public.order_review_decide only (sql/order-review.sql, EXECUTE admin_rw): it reads the
+-- queue (orders, attempts, the payments ledger, the decision ledger, alerts, the audit log) but writes none of what a
+-- decision rests on. Before US-033 it could UPDATE an order's status, paid_at or player directly, or an attempt's
+-- re-queried status, or the payments ledger, which would move an order out of review without its effects or fake the
+-- Midtrans state a decision is honoured on. No console code writes orders, attempts, the ledgers or the notification inbox
+-- (security review US-033 M2: no "manual order" exists), so none of them is writable; a forged inbox row or a changed outbox
+-- row could feed the worker's payment path. The outbox keeps INSERT only: the template test-send and the Owner's "re-query
+-- Midtrans now" (topic payment.requery) enqueue through it.
+REVOKE INSERT, UPDATE, DELETE ON public.orders, public.midtrans_attempts, public.payments, public.payment_notifications, public.order_owner_decisions FROM admin_rw;
+REVOKE UPDATE, DELETE ON public.outbox FROM admin_rw;
+-- order_review: the owner of public.order_review_decide, which runs as it. It reads the order, its attempts, the Owner's
+-- profile and its own ledger; writes the order's state (status, paid_at, the player link), the PAID effects (through
+-- public.order_paid_effects: the player, player_programs, deliveries, MT rows, the order.paid outbox row) or, for "not
+-- paid", the reversal rows and the magic-link revoke; resolves the order's review alerts; appends the ledger and its audit
+-- row. UPDATE (updated_at) on midtrans_attempts is only for the FOR UPDATE row lock (it never writes it).
+REVOKE ALL ON ALL TABLES IN SCHEMA public, player_auth, admin_auth FROM order_review;
+REVOKE ALL ON ALL SEQUENCES IN SCHEMA public, player_auth, admin_auth FROM order_review;
+REVOKE ALL ON ALL FUNCTIONS IN SCHEMA public FROM order_review;
+REVOKE ALL ON SCHEMA player_auth, admin_auth, drizzle FROM order_review;
+GRANT SELECT (auth_user_id, role, disabled_at) ON public.admin_profiles TO order_review;
+GRANT SELECT (id, public_id, status, player_id, program_id, landing_page_id, buyer_phone, buyer_name, buyer_email, adnet_id, clickid,
+              event_id, amount_idr, paid_at, anonymized_at)
+  ON public.orders TO order_review;
+GRANT UPDATE (status, paid_at, player_id, updated_at) ON public.orders TO order_review;
+GRANT SELECT (order_id, n, gateway_status, gateway_fraud_status), UPDATE (updated_at) ON public.midtrans_attempts TO order_review;
+GRANT SELECT (id, pixels) ON public.landing_pages TO order_review;
+GRANT SELECT (id, mt_url_template, reversal_url_template) ON public.adnets TO order_review;
+GRANT SELECT (key, value) ON public.app_settings TO order_review;
+GRANT SELECT (id, phone), INSERT (phone, name, email) ON public.players TO order_review;
+GRANT SELECT (player_id, program_id, eligible, first_paid_at), INSERT (player_id, program_id), UPDATE (eligible, first_paid_at, updated_at)
+  ON public.player_programs TO order_review;
+GRANT SELECT (order_id, channel, status, last_error), INSERT (order_id, channel, not_before), UPDATE (status, last_error, not_before, updated_at)
+  ON public.deliveries TO order_review;
+GRANT SELECT (order_id, sink, kind, status, last_error, maybe_counted),
+  INSERT (order_id, sink, kind, status, adnet_id, txid, event_id, value_idr, next_attempt_at, failed_at, last_error),
+  UPDATE (status, failed_at, last_error, next_attempt_at, updated_at)
+  ON public.conversion_events TO order_review;
+-- SELECT (dedupe_key): the conflict target of its ON CONFLICT DO NOTHING (no payload, no sealed material).
+GRANT SELECT (dedupe_key), INSERT (topic, dedupe_key, payload) ON public.outbox TO order_review;
+GRANT SELECT (player_id, program_id, status) ON public.winners TO order_review;
+GRANT SELECT (kind, payload, resolved_at), UPDATE (resolved_at) ON public.alerts TO order_review;
+GRANT SELECT (order_id, decision, request_key, effects),
+  INSERT (id, order_id, decision, from_status, to_status, attempts, reason, decided_by_admin_user_id, request_key, effects, decided_at)
+  ON public.order_owner_decisions TO order_review;
+GRANT INSERT (actor_kind, actor_admin_user_id, action, entity_type, entity_id, changes, pii_refs, request_id, ip)
+  ON public.audit_log TO order_review;
+GRANT EXECUTE ON FUNCTION public.proactive_delay_ms(bigint), public.refresh_player_eligibility(uuid, uuid, timestamptz, boolean),
+  public.order_paid_effects(uuid, timestamptz, bigint), public.order_reversal_rows(uuid, timestamptz), public.revoke_player_magic_links(uuid)
+  TO order_review;
+-- US-033 BLOCK END.

@@ -73,6 +73,8 @@ const PLAN_TABLES = {
     // payment reconciliation (US-021)
     "payment_reconciliation_runs",
     "payment_reconciliation_findings",
+    // the Owner's decisions on orders in review (US-033)
+    "order_owner_decisions",
     // report rollups (US-029)
     "report_orders_daily",
     "report_visits_daily",

@@ -38,6 +38,8 @@
 //   login_throttle admin login-throttle rows whose window and lock are over (US-016), through the
 //                  SECURITY DEFINER public.sweep_login_throttle(): worker_rw has no other access
 //                  to admin_auth. Consecutive second-factor counts and hard locks are kept.
+//   review_stuck   an order in review for more than 24 hours raises one warning alert per stay in review (US-033,
+//                  owner-decisions.ts alertStuckReviews).
 //   payment_methods the checkout takes no orders while midtrans.enabled_methods is empty (it answers 503): one critical
 //                  alert for the Owner while that lasts (Owner D11, US-005).
 // conversions and deliveries need a port (the fire port US-024, the delivery consumer US-025):
@@ -64,6 +66,7 @@ import type postgres from "postgres";
 import { applyConversionDecision, NO_SINK_DEDUPES, type SinkDedupePolicy } from "./conversion-fire.ts";
 import type { Logger } from "./log.ts";
 import { OUTBOX_MAX_ATTEMPTS } from "./outbox-consumer.ts";
+import { alertStuckReviews } from "./owner-decisions.ts";
 import { enqueueFresh, outboxJobId, rowJobId } from "./queues.ts";
 
 export const OUTBOX_UNRELAYED_ALERT_MS = 10 * 60_000;
@@ -516,6 +519,7 @@ export async function runSweeps(deps: SweepDeps): Promise<void> {
   sweepers.push(["otp_expiry", () => sweepExpiredOtps(deps.sql)]);
   sweepers.push(["payment_methods", () => alertNoPaymentMethods(deps.sql)]);
   sweepers.push(["wa_contacts_retention", () => pruneStrangerContacts(deps.sql)]);
+  sweepers.push(["review_stuck", () => alertStuckReviews(deps.sql)]);
   for (const [name, run] of Object.entries(deps.extraSweeps ?? {})) sweepers.push([name, run]);
   for (const [sweeper, run] of sweepers) {
     try {

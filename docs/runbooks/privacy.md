@@ -40,17 +40,13 @@ transaction's own keys, never `customer_details`.
 **A refund or chargeback** of an erased, paid order is applied as usual (the order becomes refunded, the reversals go out). No
 customer data comes back.
 
-**A late settlement** of an erased order that was never paid (expired or failed when it was erased):
-- **Today, until US-033 routes it to review.** The worker fails closed. The PAID effects try to create the buyer's player from the
-  emptied phone, `players_phone_present_check` refuses it (SQLSTATE 23514), and the whole transaction rolls back: no payment row,
-  no status change, no player, no delivery. The job is retried with a backoff, failing the same way each time, up to
-  `PAYMENT_MAX_ATTEMPTS` (36 re-queries over about 30 hours). Then the outbox sweeper raises the generic critical alert
-  `outbox_stuck` (topic `payment.notification`). Nothing is sent to anybody. Pinned by
-  apps/worker/test/payments-erased.int.test.ts.
-  - What to do: check the payment in the Midtrans dashboard and refund it there. The buyer asked to be forgotten, so there is no
-    one to deliver to.
-- **Planned (US-033).** The payment is recorded and the player and delivery effects are skipped. The order moves to review, and a
-  critical `payment_on_erased_order` alert is raised with ids only. The Owner then refunds it.
+**A late settlement** of an erased order that was never paid (expired or failed when it was erased), US-033:
+- The payment is recorded (its raw cut as above) and no player, delivery, conversion or `order.paid` job is made: there is no buyer
+  to deliver to. The order moves to the console's **Review queue**, and a critical `payment_on_erased_order` alert is raised with
+  ids only. Pinned by apps/worker/test/payments-erased.int.test.ts.
+- What to do: decide it in the review queue ([order-review.md](order-review.md)). Either refund the payment in the Midtrans dashboard
+  and mark it **not paid**, or **keep the money, no fulfilment** (the order is PAID and nothing is delivered, reported or made
+  eligible; the decision ledger says fulfilment skipped). The same settlement seen again later changes nothing.
 
 ## Outside PostgreSQL
 

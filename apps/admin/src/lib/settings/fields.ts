@@ -122,5 +122,15 @@ export function calendarDate(raw: string, message: string): { readonly y: number
   return { y, m, d };
 }
 
-/** The SQLSTATE of a PostgreSQL error, else undefined. */
-export const sqlState = (error: unknown): string | undefined => (error instanceof postgres.PostgresError ? error.code : undefined);
+/**
+ * The SQLSTATE of a PostgreSQL error, else undefined. Also by shape (US-033): the production build can load two copies of
+ * postgres.js (the pool's and this module's), and then `instanceof` fails for the pool's errors, so a database refusal
+ * (e.g. ET185) would reach the form as a bare "request failed". A PostgresError carries the server's `severity` and a
+ * five-character SQLSTATE `code`; a Node system error (EPIPE, ECONNRESET) has no severity.
+ */
+export const sqlState = (error: unknown): string | undefined => {
+  if (error instanceof postgres.PostgresError) return error.code;
+  if (!(error instanceof Error)) return undefined;
+  const { code, severity } = error as { code?: unknown; severity?: unknown };
+  return typeof code === "string" && /^[0-9A-Z]{5}$/.test(code) && typeof severity === "string" ? code : undefined;
+};

@@ -14,6 +14,7 @@ import {
   EnvelopeIcon,
   GaugeIcon,
   GiftIcon,
+  ListChecksIcon,
   MedalIcon,
   MegaphoneIcon,
   PackageIcon,
@@ -31,6 +32,7 @@ import {
 
 const ICONS = {
   overview: GaugeIcon,
+  review: ListChecksIcon,
   sales: ReceiptIcon,
   delivery: TruckIcon,
   postbacks: WebhooksLogoIcon,
@@ -60,6 +62,8 @@ export interface NavItem {
   readonly href: string;
   readonly label: string;
   readonly icon: NavIcon;
+  /** A count shown next to the label (US-033: the orders waiting in the review queue); none when 0 or absent. */
+  readonly badge?: number;
 }
 
 /** The console navigation; the server passes only the items the signed-in role may open. */
@@ -68,7 +72,7 @@ export function ConsoleNav({ items, layout }: { items: readonly NavItem[]; layou
   return (
     <nav aria-label="Console">
       <ul className={layout === "sidebar" ? "flex flex-col gap-0.5" : "flex gap-1 overflow-x-auto"}>
-        {items.map(({ href, label, icon }) => {
+        {items.map(({ href, label, icon, badge }) => {
           const current = href === "/" ? pathname === "/" : pathname.startsWith(href);
           const Icon = ICONS[icon];
           return (
@@ -80,6 +84,12 @@ export function ConsoleNav({ items, layout }: { items: readonly NavItem[]; layou
               >
                 <Icon aria-hidden="true" size={16} weight={current ? "fill" : "regular"} />
                 {label}
+                {badge !== undefined && badge > 0 ? (
+                  <span className="ml-auto rounded-md bg-warning-soft px-1.5 text-xs font-semibold text-warning-soft-foreground tabular" data-testid={`nav-badge-${icon}`}>
+                    {badge}
+                    <span className="sr-only"> waiting</span>
+                  </span>
+                ) : null}
               </Link>
             </li>
           );

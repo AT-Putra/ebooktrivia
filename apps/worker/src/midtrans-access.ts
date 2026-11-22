@@ -46,7 +46,7 @@ const SANDBOX_HOSTS = /^https:\/\/(?:app|api)\.sandbox\.midtrans\.com(?=\/)/;
 /** The payment port of the production worker. */
 export interface PaymentPort {
   readonly midtrans: MidtransSource;
-  /** AC-D8 proactive WhatsApp delay when the admin setting delivery.wa_delay_seconds is missing (WORKER_WA_DELAY_MS, payments.ts proactiveDelayMs). */
+  /** AC-D8 proactive WhatsApp delay when the admin setting delivery.wa_delay_seconds is missing (WORKER_WA_DELAY_MS; the SQL public.proactive_delay_ms). */
   readonly waDelayMs: number;
   /** When the nightly reconciliation is due (tests); default the system clock. */
   readonly clock?: () => Date;

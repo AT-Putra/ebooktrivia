@@ -1,5 +1,6 @@
 // orders_status_guard: public_rw may only use the checkout states; confirmed transitions
-// (paid, refunded, review, expired, ...) belong to worker_rw / admin_rw.
+// (paid, refunded, review, expired, ...) belong to worker_rw (and, out of review, the Owner's decision: US-033).
+// admin_rw writes no order at all since US-033 (security review M2).
 import { beforeAll, describe, expect, it } from "vitest";
 import { asRole, bytes, first, sql, sqlState } from "./db.ts";
 import { createLandingPage, createProgram, orderRow, PRICE_IDR } from "./fixtures.ts";
@@ -111,8 +112,9 @@ describe("orders checkout guard (price and combination)", () => {
     }
   });
 
-  it("admin_rw is not bound by the checkout guard (manual orders)", async () => {
-    await insertAs("admin_rw", { ...valid(), amount_idr: 1 });
+  it("admin_rw cannot create an order at all, priced or not (42501; US-033: no console code writes orders)", async () => {
+    expect(await sqlState(insertAs("admin_rw", { ...valid(), amount_idr: 1 }))).toBe("42501");
+    expect(await sqlState(insertAs("admin_rw", valid()))).toBe("42501");
   });
 });
 
@@ -120,9 +122,7 @@ describe("orders checkout guard (price and combination)", () => {
 describe("orders.buyer_key and midtrans_attempts (US-020)", () => {
   it("requires a 32-byte buyer_key on every new order, for every writer", async () => {
     const withoutKey = Object.fromEntries(Object.entries(orderRow(base)).filter(([column]) => column !== "buyer_key"));
-    for (const role of ["public_rw", "admin_rw"] as const) {
-      expect(await sqlState(asRole(role, (tx) => tx`INSERT INTO public.orders ${tx(withoutKey)}`)), role).toBe("23502");
-    }
+    expect(await sqlState(asRole("public_rw", (tx) => tx`INSERT INTO public.orders ${tx(withoutKey)}`))).toBe("23502");
     expect(await sqlState(sql`INSERT INTO orders ${sql(withoutKey)}`)).toBe("23502");
     expect(await sqlState(asRole("public_rw", (tx) => tx`INSERT INTO public.orders ${tx({ ...orderRow(base), buyer_key: bytes(31) })}`))).toBe("23514");
     // public_rw may read the key back (dedupe) but never change it.

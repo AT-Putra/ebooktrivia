@@ -32,7 +32,7 @@
 //                    runWorker wires the real SMTP / WAHA senders when worker.env holds
 //                    SECRETS_MESSAGING_PRIVATE_KEY; without it template.test_send is not relayed.
 //   payments         Midtrans access (US-021, payments.ts, reconciliation.ts): the payment.notification
-//                    consumer and the nightly reconciliation loop. runWorker wires it when worker.env
+//                    consumer, the Owner's re-query (US-033, owner-requery.ts) and the nightly reconciliation loop. runWorker wires it when worker.env
 //                    holds SECRETS_PAYMENT_PRIVATE_KEY (midtrans-access.ts); without it neither runs.
 // The grace-end sweeper needs no port: its work is the SECURITY DEFINER SQL function
 // public.create_leaderboard_snapshot (US-028, sweepers.ts), so it always runs. So does the report rollup (US-029,
@@ -61,6 +61,7 @@ import { testSendFromEnv } from "./test-send-senders.ts";
 import { raiseAlert, runSweeps } from "./sweepers.ts";
 import { loadWorkerConfig, type WorkerConfig } from "./worker-config.ts";
 import { type PaymentPort, paymentsFromEnv } from "./midtrans-access.ts";
+import { createOwnerRequeryConsumer, OWNER_REQUERY_TOPIC } from "./owner-requery.ts";
 import { createPaymentNotificationConsumer, ORDER_PAID_TOPIC, PAYMENT_TOPIC } from "./payments.ts";
 import { type ConversionPort, conversionsFromEnv } from "./conversions.ts";
 import { createMoConsumer, createOrderPaidConsumer, MO_TOPIC, nudgeConversions, type OrderPaidNudge } from "./conversion-outbox.ts";
@@ -135,7 +136,7 @@ export async function startWorker(config: WorkerConfig, ports: WorkerPorts, log:
     ...consumers.map((c) => c.topic),
     ...(ports.deliveries?.topics ?? []),
     ...(ports.testSend === undefined ? [] : ["template.test_send"]),
-    ...(ports.payments === undefined ? [] : [PAYMENT_TOPIC]),
+    ...(ports.payments === undefined ? [] : [PAYMENT_TOPIC, OWNER_REQUERY_TOPIC]),
     ...(ports.conversions === undefined ? [] : [MO_TOPIC]),
     ...(nudgeSources.length === 0 ? [] : [ORDER_PAID_TOPIC]),
     ...(ports.otp === undefined ? [] : [OTP_TOPIC]),
@@ -244,7 +245,10 @@ export async function startWorker(config: WorkerConfig, ports: WorkerPorts, log:
   if (delivery !== undefined) consumers.push(...delivery.outboxConsumers);
   if (ports.testSend !== undefined) consumers.push(createTemplateTestSendConsumer({ sql, sender: ports.testSend(sql) }));
   const { payments } = ports;
-  if (payments !== undefined) consumers.push(createPaymentNotificationConsumer({ sql, midtrans: payments.midtrans, log, waDelayMs: payments.waDelayMs }));
+  if (payments !== undefined) {
+    consumers.push(createPaymentNotificationConsumer({ sql, midtrans: payments.midtrans, log, waDelayMs: payments.waDelayMs }));
+    consumers.push(createOwnerRequeryConsumer({ sql, midtrans: payments.midtrans, log, waDelayMs: payments.waDelayMs }));
+  }
   if (ports.otp !== undefined) consumers.push(createOtpSendConsumer({ sql, opener: ports.otp.opener, sender: ports.otp.sender(sql, log), log }));
   const { magicLinkResend } = ports;
   if (magicLinkResend !== undefined) {

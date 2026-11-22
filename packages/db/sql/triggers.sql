@@ -37,6 +37,8 @@
 -- US-030: ET175 a fulfilment written outside the fulfilment functions, or off its machine (one step at a time, done is
 -- final, a proof upload of kind proof), ET176 a deletion request changed once decided (or completed outside the erasure),
 -- ET179 an anonymized player or order given personal data again, or anonymized outside the erasure.
+-- US-033: ET187 the Owner's decision ledger (order_owner_decisions) changed, or written outside order_review_decide;
+-- ET189 an outbox topic the console (admin_rw) does not enqueue.
 
 SELECT pg_catalog.set_config('search_path', 'pg_catalog, pg_temp', false);
 
@@ -215,16 +217,19 @@ CREATE OR REPLACE TRIGGER question_options_content_lock
 -- Order status guard. public_rw writes orders at checkout but may only use the checkout
 -- states: INSERT as `pending`, and move between `pending` and `snap_create_failed`. Every other
 -- transition (paid, review, expired, refunded, ...) belongs to worker_rw (re-query confirmed)
--- or admin_rw. SECURITY INVOKER on purpose: current_user must be the caller.
+-- or, out of review, to the Owner's decision (order_review, US-033). SECURITY INVOKER on purpose: current_user must be the caller.
 CREATE OR REPLACE FUNCTION public.orders_status_guard()
   RETURNS trigger
   LANGUAGE plpgsql
   SET search_path = pg_catalog, pg_temp
 AS $fn$
 BEGIN
+  -- US-033: order_review is the owner of the Owner's review decision (sql/order-review.sql), the one way an order leaves
+  -- `review` other than the payment code; it is NOLOGIN and member-less, so this holds inside that function only. admin_rw
+  -- is no longer trusted here: it holds no INSERT or UPDATE on orders at all (grants.sql US-033 block).
   IF pg_has_role(current_user, 'worker_rw', 'USAGE')
-     OR pg_has_role(current_user, 'admin_rw', 'USAGE')
-     OR pg_has_role(current_user, 'migrator', 'USAGE') THEN
+     OR pg_has_role(current_user, 'migrator', 'USAGE')
+     OR current_user = 'order_review' THEN
     RETURN NEW;
   END IF;
   IF NEW.status NOT IN ('pending', 'snap_create_failed')
@@ -1437,8 +1442,9 @@ DECLARE
   -- What still moves on an anonymized row: an order's money and status columns (never its player: a later buyer of the same
   -- phone is never linked to it); nothing of a player but updated_at.
   v_moving CONSTANT text[] := CASE TG_TABLE_NAME
+    -- US-033 EDIT: review_since moves with the status (orders_review_since), a payment of an erased order goes to review.
     WHEN 'orders' THEN ARRAY['status', 'paid_at', 'refunded_at', 'updated_at', 'snap_attempt_count', 'snap_redirect_url',
-                             'snap_expires_at', 'mo_outbox_id', 'browser_mt_fired_at']
+                             'snap_expires_at', 'mo_outbox_id', 'browser_mt_fired_at', 'review_since']
     ELSE ARRAY['updated_at'] END;
 BEGIN
   IF OLD.anonymized_at IS NULL THEN
@@ -1562,6 +1568,89 @@ CREATE OR REPLACE TRIGGER payment_notifications_raw_erased_guard
   BEFORE INSERT OR UPDATE OF raw ON public.payment_notifications
   FOR EACH ROW EXECUTE FUNCTION public.payment_raw_erased_guard();
 -- US-030 BLOCK END.
+
+-- ---------------------------------------------------------------------------------------------
+-- US-033 (M10c Owner review queue for orders) BLOCK BEGIN.
+-- orders.review_since is the instant the order last ENTERED review, set here for every writer (the payment code, the
+-- Owner's decision, a fixture): kept while the order stays in review, NULL in any other status. A value written by hand
+-- is replaced (the trigger also fires on the column itself), and orders_review_since_check pins the pairing.
+CREATE OR REPLACE FUNCTION public.orders_review_since()
+  RETURNS trigger
+  LANGUAGE plpgsql
+  SET search_path = pg_catalog, pg_temp
+AS $fn$
+BEGIN
+  IF NEW.status <> 'review' THEN
+    NEW.review_since := NULL;
+  ELSIF TG_OP = 'UPDATE' AND OLD.status = 'review' THEN
+    NEW.review_since := OLD.review_since;
+  ELSE
+    NEW.review_since := clock_timestamp();
+  END IF;
+  RETURN NEW;
+END
+$fn$;
+REVOKE ALL ON FUNCTION public.orders_review_since() FROM PUBLIC;
+
+CREATE OR REPLACE TRIGGER orders_review_since
+  BEFORE INSERT OR UPDATE OF status, review_since ON public.orders
+  FOR EACH ROW EXECUTE FUNCTION public.orders_review_since();
+
+-- The Owner's decision ledger is append-only for EVERY writer, and only public.order_review_decide writes it (ET187):
+-- that function is SECURITY DEFINER owned by the NOLOGIN, member-less role order_review (roles.sql), so inside it
+-- current_user is order_review, which no login can be and no session can SET ROLE to. SECURITY INVOKER for that reason.
+CREATE OR REPLACE FUNCTION public.order_owner_decisions_guard()
+  RETURNS trigger
+  LANGUAGE plpgsql
+  SET search_path = pg_catalog, pg_temp
+AS $fn$
+BEGIN
+  IF TG_OP = 'INSERT' AND current_user = 'order_review' THEN
+    RETURN NEW;
+  END IF;
+  RAISE EXCEPTION 'the Owner''s decision ledger is append-only and written by order_review_decide only: % rejected', TG_OP USING ERRCODE = 'ET187';
+END
+$fn$;
+REVOKE ALL ON FUNCTION public.order_owner_decisions_guard() FROM PUBLIC;
+
+CREATE OR REPLACE TRIGGER order_owner_decisions_guard
+  BEFORE INSERT OR UPDATE OR DELETE ON public.order_owner_decisions
+  FOR EACH ROW EXECUTE FUNCTION public.order_owner_decisions_guard();
+
+CREATE OR REPLACE TRIGGER order_owner_decisions_guard_truncate
+  BEFORE TRUNCATE ON public.order_owner_decisions
+  FOR EACH STATEMENT EXECUTE FUNCTION public.order_owner_decisions_guard();
+
+-- The console's outbox rows (security review US-033): admin_rw INSERTs outbox rows for exactly two jobs, the template
+-- test-send (core TEST_SEND_TOPIC) and the Owner's "re-query Midtrans now", each under a dedupe key of its own topic
+-- (`<topic>:...`). Any other topic, or a key outside its topic, is refused (ET189): dedupe_key is unique across ALL topics,
+-- so with a free INSERT a console session could take another job's predictable key first (e.g. order.paid:<order id>, under
+-- any topic) and so suppress the payment code's own row (ON CONFLICT DO NOTHING) and its nudge, make enqueue_mo fail, or
+-- block a link resend. US-031 adds 'admin.password_hibp_check' to this list, under the same key rule. The caller is a member
+-- of admin_rw (the console logs in as its own login role, so current_user is never the group's name); a superuser passes
+-- every pg_has_role check and is excluded explicitly (the migrate job, the test harnesses, repairs by hand). No login is a
+-- member of two groups (preflight.sql ET091), so a worker login is never taken for the console. SECURITY INVOKER: the guard
+-- must see the caller.
+CREATE OR REPLACE FUNCTION public.outbox_admin_topic_guard()
+  RETURNS trigger
+  LANGUAGE plpgsql
+  SET search_path = pg_catalog, pg_temp
+AS $fn$
+BEGIN
+  IF (NEW.topic NOT IN ('template.test_send', 'payment.requery') OR NOT starts_with(NEW.dedupe_key, NEW.topic || ':'))
+     AND pg_has_role(current_user, 'admin_rw', 'USAGE')
+     AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles r WHERE r.rolname = current_user AND r.rolsuper) THEN
+    RAISE EXCEPTION 'the console may not enqueue outbox topic % under that key', NEW.topic USING ERRCODE = 'ET189';
+  END IF;
+  RETURN NEW;
+END
+$fn$;
+REVOKE ALL ON FUNCTION public.outbox_admin_topic_guard() FROM PUBLIC;
+
+CREATE OR REPLACE TRIGGER outbox_admin_topic_guard
+  BEFORE INSERT ON public.outbox
+  FOR EACH ROW EXECUTE FUNCTION public.outbox_admin_topic_guard();
+-- US-033 BLOCK END.
 
 -- ---------------------------------------------------------------------------------------------
 -- Fire every trigger on our tables in ALL session_replication_role modes. The default (ENABLE,

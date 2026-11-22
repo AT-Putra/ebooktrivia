@@ -18,14 +18,26 @@
 //   1. one transaction under the order's row lock: core reconcileOrder compares the order status with what
 //      Midtrans says about every attempt; each mismatch is a report row (payment_reconciliation_findings)
 //      and a critical alert, committed before anything is applied. When a re-query failed, "paid but
-//      nothing settled" is not concluded (the unchecked attempt may hold the money);
+//      nothing settled" is not concluded (the unchecked attempt may hold the money). US-033: when the Owner decided the
+//      order in the review queue and Midtrans still says exactly what it said then, there is no finding and no alert
+//      (core decisionCoversReconciliation; a new Midtrans state is reported and applied as usual);
 //   2. a second transaction applies every re-queried status with payments.ts applyRequery, exactly as a
 //      notification would: a lost settlement notification still makes the order PAID, once.
 // An order whose work fails is counted as an error and logged, and the run goes on with the next one.
 import { confirmSettlement, getTransactionStatus, MidtransError, type MidtransStatus } from "@ebooktrivia/adapters";
-import { type OrderStatus, RECONCILE_WINDOW_DAYS, type ReconcileFinding, reconcileOrder, type ReconcileVerdict, reconciliationDay } from "@ebooktrivia/core";
+import {
+  type CheckedAttempt,
+  decisionCoversReconciliation,
+  type OrderStatus,
+  RECONCILE_WINDOW_DAYS,
+  type ReconcileFinding,
+  reconcileOrder,
+  type ReconcileVerdict,
+  reconciliationDay,
+} from "@ebooktrivia/core";
 import type postgres from "postgres";
 import type { Logger } from "./log.ts";
+import { latestOwnerDecision } from "./owner-decisions.ts";
 import { applyRequery, type AttemptRef, idr, type MidtransSource, requeryInstant } from "./payments.ts";
 import { raiseAlert, raiseAlertIn } from "./sweepers.ts";
 
@@ -196,6 +208,17 @@ export async function reconcile(deps: ReconcileDeps, run: { readonly id: string;
   return summary;
 }
 
+/** US-033: each re-queried attempt's recorded state (before this run applies anything) and what Midtrans said now (NULL for a 404). */
+async function checkedStates(tx: postgres.TransactionSql, orderId: string, checked: readonly Checked[]): Promise<CheckedAttempt[]> {
+  const stored = await tx<{ n: number; status: string | null; fraud: string | null }[]>`
+    SELECT n, gateway_status AS status, gateway_fraud_status AS fraud FROM public.midtrans_attempts WHERE order_id = ${orderId}`;
+  return checked.map((c) => ({
+    n: c.attempt.n,
+    prior: stored.find((s) => s.n === c.attempt.n) ?? { status: null, fraud: null },
+    next: c.status === undefined ? { status: null, fraud: null } : { status: c.status.transactionStatus.slice(0, 64), fraud: c.status.fraudStatus?.slice(0, 64) ?? null },
+  }));
+}
+
 /** The order's mismatches as report rows and alerts, in a transaction of their own; returns how many. */
 async function report(
   sql: postgres.Sql,
@@ -209,6 +232,9 @@ async function report(
     const [order] = await tx<{ status: OrderStatus; amount_idr: string }[]>`
       SELECT status::text AS status, amount_idr::text AS amount_idr FROM public.orders WHERE id = ${orderId} FOR UPDATE`;
     if (order === undefined) return 0;
+    // US-033: Midtrans says exactly what it said when the Owner decided this order (every attempt re-queried, each still in
+    // the decided state): the mismatch is the Owner's known decision, so no report row and no critical alert again.
+    if (!incomplete && decisionCoversReconciliation(await latestOwnerDecision(tx, orderId), order.status, await checkedStates(tx, orderId, checked))) return 0;
     const amountIdr = idr(order.amount_idr);
     const said = checked.map((c) => {
       const verdict: ReconcileVerdict = c.status === undefined ? "not_found" : confirmSettlement(c.status, { midtransOrderId: c.attempt.midtransOrderId, amountIdr }).kind;
