@@ -53,10 +53,16 @@ regexes = ['''^spike-r13-secret-spike-r13-secret-0123456789$''']
 
 [[allowlists]]
 description = "The admin common-password list (US-031, ASVS V6.2.4): 10,000 public entries of the SecLists Pwdb_top-1000000 corpus (MIT), refused as passwords; some look random to any rule. Only the array lines of that one generated file"
-condition = "AND"
+# Scoped to the two rules that fire on this corpus and to this one generated file. A per-line regex cannot be used:
+# generic-api-key matches the word "password" in one entry together with the NEXT entry on the following line.
+targetRules = ["generic-api-key", "linkedin-client-id"]
 paths = ['''(?:^|/)apps/admin/src/lib/auth/common-passwords\.ts$''']
-regexTarget = "line"
-regexes = ['''^\s*"(?:[^"\\]|\\.){12,256}",\s*$''']
+
+[[allowlists]]
+description = "Two obviously patterned throwaway libsodium keys that an older backup-pitr.sh (US-015 local PITR test) hard-coded. They were never real keys; the script now generates fresh random keys on every run. History only"
+condition = "AND"
+paths = ['''(?:^|/)infra/verify/local/backup-pitr\.sh$''']
+regexes = ['''^00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff$''', '''^ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100$''']
 
 [[allowlists]]
 description = "The password-policy test: a listed common password (q1w2e3r4t5y6) the test checks is refused"

@@ -28,7 +28,9 @@ REPO=$(cd "$HERE/../../.." && pwd)
 IMAGE=${PITR_IMAGE:-localhost/ebooktrivia/postgres-walg:18.6}
 RESTIC_IMAGE=docker.io/restic/restic:0.19.1@sha256:136600b6ff6843d61d355f7f71f460a166429f35de6fd11b568fece3c9a4d510
 P=ebt-pitr
-KEY=00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff # DEV ONLY
+# Throwaway libsodium keys for this local test only, fresh on every run (never a real backup key).
+KEY=$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')
+WRONG_KEY=$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')
 ROWS=${PITR_ROWS:-300000}
 work=$(mktemp -d)
 printf '%s\n' "$KEY" >"$work/libsodium.key"
@@ -111,7 +113,7 @@ printf 'target time %s, server killed at %s\n' "$T_TARGET" "$T_KILL"
 printf '\n### 3. the storage is encrypted; a wrong key cannot restore\n'
 plain=$(docker run --rm "${mounts[@]}" --entrypoint sh "$IMAGE" -c 'cd /store && grep -rl -e before-backup -e marker-A -e after-target . 2>/dev/null | wc -l')
 expect "stored objects holding a plaintext marker" 0 "$plain"
-docker run --rm --entrypoint sh "${walg_env[@]}" -e WALG_LIBSODIUM_KEY_PATH= -e WALG_LIBSODIUM_KEY=ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100 -v "$P-store:/store" "$IMAGE" \
+docker run --rm --entrypoint sh "${walg_env[@]}" -e WALG_LIBSODIUM_KEY_PATH= -e "WALG_LIBSODIUM_KEY=$WRONG_KEY" -v "$P-store:/store" "$IMAGE" \
   -c 'mkdir -p /tmp/wrong && timeout -s KILL 45 wal-g backup-fetch /tmp/wrong LATEST >/dev/null 2>&1; if [ -f /tmp/wrong/PG_VERSION ]; then echo fetched; else echo refused; fi' >"$work/wrongkey.txt"
 expect "a backup-fetch with another key" refused "$(tr -d '\r' <"$work/wrongkey.txt")"
 
