@@ -36,6 +36,8 @@ packages/**/.omc/
 playwright-report/
 test-results/
 load/results/
+# Load-test working files: login tokens, session cookies and Cap tokens (infra/load/README.md). Never commit them.
+infra/load/work/
 
 # OS / editor
 .DS_Store

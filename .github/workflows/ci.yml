@@ -114,6 +114,9 @@ jobs:
         env:
           TEST_VALKEY_PUBLIC_USERNAME: public
           TEST_VALKEY_PUBLIC_PASSWORD: public-devonly
+      # US-032: the load-test seed, its cleanup and the AC-P8 verifier against the real schema.
+      - name: Load-test seed, cleanup and AC-P8 verifier (fresh database)
+        run: pnpm --filter @ebooktrivia/load test:int
       # Here, not in verify: the worker is mostly I/O, so its gate counts the integration tests.
       - name: Worker coverage gate (>= 95 % lines; unit + in-process integration)
         run: pnpm --filter @ebooktrivia/worker test:coverage

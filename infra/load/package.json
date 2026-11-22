@@ -1,0 +1,20 @@
+{
+  "name": "@ebooktrivia/load",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test:int": "vitest run --config vitest.int.config.ts"
+  },
+  "dependencies": {
+    "@ebooktrivia/core": "workspace:*",
+    "postgres": "4.1.0"
+  },
+  "devDependencies": {
+    "@ebooktrivia/adapters": "workspace:*",
+    "@ebooktrivia/crypto": "workspace:*",
+    "@ebooktrivia/db": "workspace:*",
+    "@ebooktrivia/test-support": "workspace:*"
+  }
+}

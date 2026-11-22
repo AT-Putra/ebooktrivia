@@ -437,6 +437,28 @@ importers:
         specifier: 4.1.0
         version: 4.1.0
 
+  infra/load:
+    dependencies:
+      '@ebooktrivia/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      postgres:
+        specifier: 4.1.0
+        version: 4.1.0
+    devDependencies:
+      '@ebooktrivia/adapters':
+        specifier: workspace:*
+        version: link:../../packages/adapters
+      '@ebooktrivia/crypto':
+        specifier: workspace:*
+        version: link:../../packages/crypto
+      '@ebooktrivia/db':
+        specifier: workspace:*
+        version: link:../../packages/db
+      '@ebooktrivia/test-support':
+        specifier: workspace:*
+        version: link:../../tools/test-support
+
   infra/midtrans-stub:
     dependencies:
       '@hono/node-server':

@@ -12,6 +12,7 @@ production).
 | `quadlet/` | Rootless podman units: `caddy` (+ `caddy.socket`), `public@` (a, b), `admin`, `worker`, `internal`, `postgres`, `valkey`, `migrate`, four networks, four volumes |
 | `caddy/Caddyfile` | The edge (`adapted.test.json` is its adaptation with test values, for `pnpm test`) |
 | `verify/` | `host-check.sh` (read-only VM check), `client-ip-probe.sh`, consistency tests (`src/`), local harnesses (`local/`) |
+| `load/` | k6 load tests (`trivia-500`, `orders-50pm`), their seed, Cap token pool, settlement and the AC-P8 verifier; run from another machine against staging ([load/README.md](load/README.md)) |
 
 Staging: follow [docs/runbooks/staging-provision.md](../docs/runbooks/staging-provision.md)
 (prerequisites, variables, run order, and how to verify on the VM).

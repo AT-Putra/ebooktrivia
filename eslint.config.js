@@ -38,4 +38,9 @@ export default defineConfig(
       globals: { ...globals.node },
     },
   },
+  {
+    // k6 scripts (infra/load/k6) run in k6's own runtime, which provides these globals (and `open` in the init context).
+    files: ["infra/load/k6/**/*.js"],
+    languageOptions: { sourceType: "module", globals: { __ENV: "readonly", __VU: "readonly", __ITER: "readonly", open: "readonly" } },
+  },
 );
