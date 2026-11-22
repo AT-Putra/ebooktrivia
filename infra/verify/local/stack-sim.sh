@@ -95,6 +95,32 @@ up() {
     exit 1
   }
   printf 'worker.env Uptime Kuma placeholder emptied; GlitchTip token taken and deleted\n'
+  # US-015: the backups' storage placeholders (the operator's in real life) get test values. There is no bucket here, so wal-g uses its FILE
+  # backend, a directory in the data volume (WALG_FILE_PREFIX; an EMPTY WALG_S3_PREFIX makes wal-g fall through to it, and keeps the key
+  # present so that a re-run of provision.sh does not put the placeholder back): the archive command, the libsodium key file and the nightly
+  # script's glue run for real; only the S3 endpoint is staging's. The directory must exist before the first start (wal-g does not create
+  # the root), and with an unreachable storage the archive command fails and the first start's temporary initdb server cannot shut down:
+  # configure the storage BEFORE the first start (docs/runbooks/backups.md).
+  app systemctl --user start ebt-pgdata-volume.service
+  local pgdata
+  pgdata=$(app podman volume inspect --format '{{.Mountpoint}}' ebt-pgdata | tr -d '\r\n')
+  app mkdir -p -m 0777 "$pgdata/walg-store"
+  sim sed -i -e 's|^WALG_S3_PREFIX=.*|WALG_S3_PREFIX=|' -e 's|^AWS_ENDPOINT=.*|AWS_ENDPOINT=https://s3.vm-sim.invalid|' -e 's|^AWS_REGION=.*|AWS_REGION=vm-sim|' /etc/ebooktrivia/walg.env
+  sim bash -c 'grep -q "^WALG_FILE_PREFIX=" /etc/ebooktrivia/walg.env || printf "WALG_FILE_PREFIX=/var/lib/postgresql/walg-store\n" >>/etc/ebooktrivia/walg.env'
+  sim sed -i 's|__SET_ME__|vm-sim|' /etc/ebooktrivia/restic.env /etc/ebooktrivia/postgres/walg_aws_credentials
+  printf 'walg.env, restic.env and walg_aws_credentials: placeholders filled with vm-sim test values\n'
+  # US-015: the public app needs the payment PRIVATE key and the messaging PUBLIC key (the Owner adds them from escrow in real life) to build its
+  # runtime: without them /healthz answers 503 and every page 500s, and a deploy's health check (rightly) fails. Throwaway X25519 pairs, made here.
+  local pay_priv msg_pub
+  pay_priv=$(node -e 'process.stdout.write(require("node:crypto").generateKeyPairSync("x25519").privateKey.export({ format: "der", type: "pkcs8" }).subarray(16).toString("base64url"))')
+  msg_pub=$(node -e 'process.stdout.write(require("node:crypto").generateKeyPairSync("x25519").publicKey.export({ format: "der", type: "spki" }).subarray(12).toString("base64url"))')
+  [[ -n $pay_priv && -n $msg_pub ]] || {
+    printf 'could not make the throwaway keys (node missing?)\n'
+    exit 1
+  }
+  # shellcheck disable=SC2016 # the $0 and $1 are the sim's shell's: the two keys
+  sim bash -c 'sed -i "/^SECRETS_\(PAYMENT_PRIVATE\|MESSAGING_PUBLIC\)_KEY=/d" /etc/ebooktrivia/public.env && printf "SECRETS_PAYMENT_PRIVATE_KEY=%s\nSECRETS_MESSAGING_PUBLIC_KEY=%s\n" "$0" "$1" >>/etc/ebooktrivia/public.env' "$pay_priv" "$msg_pub"
+  printf 'public.env: throwaway payment private key and messaging public key added\n'
 
   printf '\n### networks, Pebble, clients\n'
   docker network create --subnet 192.0.2.0/24 "$NET_A" >/dev/null 2>&1 || true
@@ -408,7 +434,8 @@ check() {
   app systemctl --user restart --no-block public@a.service
   for n in $(seq 1 40); do
     code=$(curl_from "$CLIENT" -o /dev/null -w '%{http_code}' https://play.example.test/ || true)
-    [[ $code == 200 ]] || errors=$((errors + 1))
+    # Answered: the probe instance says 200, the real app (which has its sealing keys since US-015) redirects to the login (307). An error or no answer fails.
+    [[ $code =~ ^(200|307)$ ]] || errors=$((errors + 1))
     sleep 0.25
   done
   expect "requests failing while public@a restarts (drain + lb_try_duration), of $n" 0 "$errors"

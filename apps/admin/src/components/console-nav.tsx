@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
+  BellRingingIcon,
   BookOpenIcon,
   BrowserIcon,
   ChatCircleDotsIcon,
@@ -53,6 +54,7 @@ const ICONS = {
   prizes: GiftIcon,
   legal: ScalesIcon,
   limits: SlidersHorizontalIcon,
+  alerts: BellRingingIcon,
   team: UsersThreeIcon,
   audit: ClipboardTextIcon,
   account: UserCircleIcon,

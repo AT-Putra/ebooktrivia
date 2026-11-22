@@ -169,6 +169,13 @@
       "when": 1795324341919,
       "tag": "0023_play_reveal_watch",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1795330112798,
+      "tag": "0024_alert_recipients",
+      "breakpoints": true
     }
   ]
 }

@@ -53,6 +53,9 @@ GRANT SELECT ON
   TO public_rw;
 GRANT SELECT (id, slug, name, clickid_param, active) ON public.adnets TO public_rw;
 GRANT SELECT (id, phone, status, active) ON public.waha_sessions TO public_rw;
+-- The deep GET /healthz (US-015, @ebooktrivia/db/health) reads the age of the worker's heartbeat: the component name
+-- and the time, never the `info` column.
+GRANT SELECT (component, beat_at) ON public.heartbeats TO public_rw;
 
 -- players and magic_links: NO privilege at all (US-026, the US-009 carry-over); the login reaches them
 -- only through the US-026 functions (block at the end). player_otps: what the OTP issue (insert,
@@ -187,6 +190,9 @@ GRANT SELECT, UPDATE ON public.set_attempts TO worker_rw;
 
 GRANT SELECT ON public.orders TO worker_rw;
 GRANT UPDATE (status, player_id, paid_at, refunded_at, updated_at) ON public.orders TO worker_rw;
+
+-- Where the alert relay sends the Owner's alerts (US-015): the Owner writes it in the console (admin_rw), the worker only reads it.
+GRANT SELECT ON public.alert_recipients TO worker_rw;
 
 GRANT SELECT ON public.waha_sessions TO worker_rw;
 GRANT UPDATE (status, status_at, updated_at) ON public.waha_sessions TO worker_rw;

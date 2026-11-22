@@ -27,7 +27,7 @@ function bounds(cidr: string): [string, string] {
 
 describe("podman networks vs the outbound address policy", () => {
   it("finds the ebt-* networks", () => {
-    expect(subnets.map(([f]) => f).sort()).toEqual(["ebt-admin.network", "ebt-data.network", "ebt-edge.network", "ebt-internal.network"]);
+    expect(subnets.map(([f]) => f).sort()).toEqual(["ebt-admin.network", "ebt-backup.network", "ebt-data.network", "ebt-edge.network", "ebt-internal.network"]);
   });
 
   it.each(subnets)("%s Subnet=%s is refused end to end, even for an allowlisted private host", (_file, cidr) => {

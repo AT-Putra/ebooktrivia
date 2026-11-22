@@ -124,6 +124,71 @@ jobs:
       - name: Worker chaos and load tests, production Valkey ACL (real processes, Docker)
         run: pnpm --filter @ebooktrivia/worker test:chaos
 
+  # US-015: migration compatibility. A rolling deploy migrates first and restarts the apps after, and a failed deploy rolls the
+  # images back and leaves the schema alone, so the PREVIOUS release must run on the NEW schema. This job exports the previous
+  # release (the pull request's base, or the commit before the push), gives it this checkout's migrations, SQL files and runner,
+  # and runs ITS integration tests (public, admin, worker, crypto) on it; it also refuses a migration that contracts the schema
+  # (drops, renames, retypes, NOT NULL without a default) unless it says why (infra/verify/src/expand-only.ts). Locally:
+  # infra/verify/local/migration-compat.sh [PREVIOUS_REF].
+  migration-compat:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:18.6
+        env:
+          POSTGRES_PASSWORD: ci-only # CI ONLY: throwaway service container
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+      mailpit:
+        image: axllent/mailpit:v1.33.1
+        ports: ["1025:1025", "8025:8025"]
+    env:
+      TEST_PG_URL: postgres://postgres:ci-only@127.0.0.1:5432/postgres
+      MAILPIT_SMTP_PORT: "1025"
+      MAILPIT_API: http://127.0.0.1:8025
+      TEST_VALKEY_URL: redis://127.0.0.1:6379
+      TEST_VALKEY_USERNAME: worker
+      TEST_VALKEY_PASSWORD: worker-devonly
+      TEST_VALKEY_PUBLIC_USERNAME: public
+      TEST_VALKEY_PUBLIC_PASSWORD: public-devonly
+    steps:
+      # The whole history: the previous release is a commit of it.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Start Valkey with the dev ACL users
+        run: |
+          docker run -d --name valkey -p 127.0.0.1:6379:6379 \
+            -v "$PWD/infra/dev/valkey/valkey.conf:/usr/local/etc/valkey/valkey.conf:ro" \
+            -v "$PWD/infra/dev/valkey/users.acl:/usr/local/etc/valkey/users.acl:ro" \
+            valkey/valkey:9.1.3 valkey-server /usr/local/etc/valkey/valkey.conf
+          for i in $(seq 1 30); do
+            docker exec valkey valkey-cli --user ops --pass ops-devonly --no-auth-warning ping | grep -q PONG && exit 0
+            sleep 1
+          done
+          docker logs valkey
+          exit 1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+      - name: Install pnpm
+        run: npm install -g pnpm@12.18.0
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: The previous release's tests on the new schema (and the expand-only rule)
+        env:
+          PREVIOUS_REF: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          # A new branch's first push has no "before" (all zeros): the script then takes the merge-base / HEAD~1.
+          if [[ "$PREVIOUS_REF" =~ ^0+$ ]]; then PREVIOUS_REF=""; fi
+          bash infra/verify/local/migration-compat.sh "$PREVIOUS_REF"
+
   # Static checks of the VM infrastructure (US-014). The provisioning itself and the full stack run
   # locally in infra/verify/local/{vm-sim,stack-sim}.sh (privileged systemd container, nested
   # rootless podman) and on the staging VM (docs/runbooks/staging-provision.md).
@@ -144,6 +209,10 @@ jobs:
         run: bash infra/verify/local/order-headers.sh
       - name: LP site in a real Caddy 2.11.9 (fixed types, CSP, refusals, atomic symlink swaps; US-023)
         run: bash infra/verify/local/lp-headers.sh
+      - name: Deep /healthz routing in a real Caddy 2.11.9 (the monitor's address only; a 404 for everyone else and on play / order; US-015)
+        run: bash infra/verify/local/healthz-routing.sh
+      - name: wal-g point-in-time recovery with libsodium-encrypted WAL after a killed server, and the restic copy, on the real images (FILE backends; US-015)
+        run: bash infra/verify/local/backup-pitr.sh
       - name: Quadlet generator dry run (AlmaLinux 10.2, podman 5.8)
         run: bash infra/verify/local/quadlet-dryrun.sh
 

@@ -1,0 +1,122 @@
+{
+  "_comment": "The Uptime Kuma 2.x setup of US-015 (plan M4.8), as data: what docs/runbooks/monitoring.md step 7 has you create in the UI, and what infra/monitoring/kuma-check.sh verifies through Kuma's /metrics. Uptime Kuma 2 has no supported configuration-as-code import, so the creation is by hand (about ten minutes); this file is the single list. <DOMAIN>, <VM_IP>, <WAHA_HOST>, <SESSION> and the numbers are filled in the UI; no secret is written here (the WAHA key and the SMTP password are typed into Kuma only).",
+  "notifications": [
+    {
+      "notificationName": "Owner WhatsApp (WAHA sendText)",
+      "type": "webhook",
+      "defaultEnabled": true,
+      "applyToAllMonitors": true,
+      "url": "http://<WAHA_HOST>:3000/api/sendText",
+      "contentType": "application/json",
+      "customBody": "{\"session\": \"<ALERT_SESSION>\", \"chatId\": \"<OWNER_NUMBER_DIGITS>@c.us\", \"text\": {{ msg | json }}}",
+      "additionalHeaders": "{\"X-Api-Key\": \"<WAHA_API_KEY>\"}",
+      "notes": "Straight to WAHA on this box, so it does not depend on the app VM (AC-P4). <ALERT_SESSION> is a session that stays WORKING when the pool's sessions are down. The Owner must have written to that number once, so WhatsApp lets it answer (docs/runbooks/alerts.md)."
+    },
+    {
+      "notificationName": "Owner e-mail (SMTP)",
+      "type": "smtp",
+      "defaultEnabled": true,
+      "applyToAllMonitors": true,
+      "notes": "Host, port, security, user, password, from and to are entered in Kuma. Use an SMTP account that is NOT the app's, so one outage cannot silence both."
+    }
+  ],
+  "monitors": [
+    {
+      "monitorName": "ebt api healthz",
+      "type": "keyword",
+      "url": "https://api.<DOMAIN>/healthz",
+      "keyword": "\"status\":\"ok\"",
+      "interval": 60,
+      "maxretries": 1,
+      "retryInterval": 60,
+      "acceptedStatusCodes": ["200-299"],
+      "notes": "The deep health of the public app: PostgreSQL, the worker heartbeat (at most 3 minutes old) and Valkey. Caddy answers it to MONITOR_ALLOWED_CIDRS only: this box's address."
+    },
+    {
+      "monitorName": "ebt admin healthz",
+      "type": "keyword",
+      "url": "https://admin.<DOMAIN>/healthz",
+      "keyword": "\"status\":\"ok\"",
+      "interval": 60,
+      "maxretries": 1,
+      "retryInterval": 60,
+      "acceptedStatusCodes": ["200-299"],
+      "notes": "Needs this box's address in ADMIN_ALLOWED_CIDRS (everyone else gets a 404 there)."
+    },
+    {
+      "monitorName": "ebt play",
+      "type": "http",
+      "url": "https://play.<DOMAIN>/",
+      "interval": 60,
+      "maxretries": 1,
+      "retryInterval": 60,
+      "acceptedStatusCodes": ["200-299", "300-399"],
+      "notes": "The front the players use, through Caddy and the load balancer, from outside."
+    },
+    {
+      "monitorName": "ebt order",
+      "type": "http",
+      "url": "https://order.<DOMAIN>/",
+      "interval": 60,
+      "maxretries": 1,
+      "retryInterval": 60,
+      "acceptedStatusCodes": ["200-299"],
+      "notes": "The payment status origin."
+    },
+    {
+      "monitorName": "ebt worker heartbeat",
+      "type": "push",
+      "interval": 120,
+      "maxretries": 0,
+      "notes": "UPTIME_KUMA_PUSH_URL of /etc/ebooktrivia/worker.env. The worker pushes every 60 s while PostgreSQL and Valkey answer; no push for 120 s is DOWN, so a killed worker alerts within 3 minutes (AC-P12)."
+    },
+    {
+      "monitorName": "ebt alerts backstop",
+      "type": "push",
+      "interval": 120,
+      "maxretries": 0,
+      "notes": "UPTIME_KUMA_ALERTS_PUSH_URL (same Kuma host). The worker reports DOWN while a critical alert has stayed unsent for 5 minutes (the relay or its channels are broken), UP otherwise; the message holds a count and alert kinds only. Kuma notifies on a change of state only, which is why this is the second route and the relay (apps/worker/src/alert-relay.ts) the first."
+    },
+    {
+      "monitorName": "ebt vm ping",
+      "type": "ping",
+      "hostname": "<VM_IP>",
+      "interval": 60,
+      "maxretries": 2,
+      "retryInterval": 60,
+      "notes": "The VM itself (firewalld answers ICMP echo). With the port monitor below, a powered-off VM turns both red: the VM-down drill (AC-P4)."
+    },
+    {
+      "monitorName": "ebt vm https port",
+      "type": "port",
+      "hostname": "<VM_IP>",
+      "port": 443,
+      "interval": 60,
+      "maxretries": 1,
+      "retryInterval": 60,
+      "notes": "Caddy's listener, without a Host header."
+    },
+    {
+      "monitorName": "waha session <SESSION> working",
+      "type": "json-query",
+      "url": "http://<WAHA_HOST>:3000/api/sessions/<SESSION>",
+      "jsonPath": "status",
+      "expectedValue": "WORKING",
+      "headers": "{\"X-Api-Key\": \"<WAHA_API_KEY>\"}",
+      "interval": 60,
+      "maxretries": 1,
+      "retryInterval": 60,
+      "notes": "One monitor per pool session; a READ-ONLY GET of WAHA's own status (never a change to the session's configuration). A session that leaves WORKING alerts by WhatsApp (from the alert session) and e-mail within 3 minutes, independent of the worker (D3, AC-P12)."
+    },
+    {
+      "monitorName": "glitchtip health",
+      "type": "http",
+      "url": "http://127.0.0.1:8000/_health/",
+      "interval": 60,
+      "maxretries": 1,
+      "retryInterval": 60,
+      "acceptedStatusCodes": ["200-299"],
+      "notes": "GlitchTip on this box. If /_health/ is not served by the pinned release, point it at the login page."
+    }
+  ]
+}

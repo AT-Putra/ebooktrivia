@@ -61,6 +61,9 @@ import { relayOnce } from "./relay.ts";
 import { onShutdown } from "./shutdown.ts";
 import { createTemplateTestSendConsumer, type TestSender } from "./template-test-send.ts";
 import { testSendFromEnv } from "./test-send-senders.ts";
+import { createAlertRelay, pushAlertsBackstop } from "./alert-relay.ts";
+import { type AlertRelayPort, alertRelayFromEnv } from "./alert-relay-senders.ts";
+import { checkBackups, checkValkeyMemory, checkWalArchive } from "./ops-checks.ts";
 import { startValkeyFunctionLoader } from "./valkey-functions.ts";
 import { raiseAlert, runSweeps } from "./sweepers.ts";
 import { loadWorkerConfig, type WorkerConfig } from "./worker-config.ts";
@@ -109,6 +112,8 @@ export interface WorkerPorts {
   readonly payments?: PaymentPort;
   /** US-026: the otp.send consumer's key and sender. */
   readonly otp?: OtpPort;
+  /** US-015: the senders of the alert relay (alert-relay.ts): the Owner's alerts by e-mail and WhatsApp. */
+  readonly alertRelay?: AlertRelayPort;
   /** US-027: the magic_link.resend consumer's link origin and sender. */
   readonly magicLinkResend?: MagicLinkResendPort;
   /** US-031: the admin.password_hibp_check consumer's key and breach lookup. */
@@ -287,6 +292,19 @@ export async function startWorker(config: WorkerConfig, ports: WorkerPorts, log:
   const deliveryWaQueue = delivery === undefined ? undefined : consume(DELIVERY_WA_QUEUE, delivery.process);
   deliveryQueues.whatsapp = deliveryWaQueue;
 
+  // US-015: the alert relay (every sweep, once a minute at most), and the backup, WAL and Valkey-memory alerts where they exist.
+  const alertRelay = ports.alertRelay === undefined ? undefined : createAlertRelay({ sql, log, senders: ports.alertRelay.senders(sql, log) });
+  const extraSweeps: Record<string, () => Promise<unknown>> = {
+    ...(delivery?.sweeps ?? {}),
+    ...(alertRelay === undefined ? {} : { alert_relay: () => alertRelay.sweep() }),
+    ...(config.opsChecks
+      ? {
+          backups: () => checkBackups(sql),
+          wal_archive: () => checkWalArchive(sql),
+          valkey_memory: () => checkValkeyMemory(sql, () => redis.info("memory")),
+        }
+      : {}),
+  };
   const started = Date.now();
   const loops: Loop[] = [
     startLoop({ name: "relay", intervalMs: config.relayIntervalMs, log }, async () => {
@@ -302,7 +320,7 @@ export async function startWorker(config: WorkerConfig, ports: WorkerPorts, log:
         ...(conversionQueue === undefined ? {} : { conversionQueue }),
         ...(deliveryQueue === undefined ? {} : { deliveryQueue }),
         ...(deliveryWaQueue === undefined ? {} : { deliveryWaQueue }),
-        ...(delivery === undefined ? {} : { extraSweeps: delivery.sweeps }),
+        extraSweeps,
         ...(sinkDedupesByTxid === undefined ? {} : { sinkDedupesByTxid }),
       });
       return false;
@@ -320,6 +338,8 @@ export async function startWorker(config: WorkerConfig, ports: WorkerPorts, log:
         log,
         info: () => ({ pid: process.pid, uptimeS: Math.round((Date.now() - started) / 1000), topics }),
       });
+      // US-015: the alert backstop (a second Kuma push monitor): DOWN while a critical alert has stayed unsent for 5 minutes.
+      if (config.uptimeKuma?.alertsPushUrl !== undefined) await pushAlertsBackstop({ sql, push: { fetch: heartbeatFetch, url: config.uptimeKuma.alertsPushUrl }, log });
       return false;
     }),
   ];
@@ -376,6 +396,8 @@ export async function runWorker(env: Env, ports: WorkerPorts = {}): Promise<void
   const conversions = ports.conversions ?? conversionsFromEnv(env, config);
   const otp = ports.otp ?? otpFromEnv(env, config.dev);
   if (otp === undefined) log.warn("SECRETS_MESSAGING_PRIVATE_KEY is not set: OTP login codes are not sent");
+  const alertRelay = ports.alertRelay ?? alertRelayFromEnv(env, config.dev);
+  if (alertRelay === undefined) log.warn("SECRETS_MESSAGING_PRIVATE_KEY is not set: alerts are not relayed to the Owner by WhatsApp and e-mail");
   const magicLinkResend = ports.magicLinkResend ?? magicLinkResendFromEnv(env, config.dev);
   if (magicLinkResend === undefined) log.warn("SECRETS_MESSAGING_PRIVATE_KEY or DOMAIN is not set: login links asked for again are not sent");
   const passwordCheck = ports.passwordCheck ?? passwordCheckFromEnv(env);
@@ -396,6 +418,7 @@ export async function runWorker(env: Env, ports: WorkerPorts = {}): Promise<void
       ...(payments === undefined ? {} : { payments }),
       ...(conversions === undefined ? {} : { conversions }),
       ...(otp === undefined ? {} : { otp }),
+      ...(alertRelay === undefined ? {} : { alertRelay }),
       ...(deliveries === undefined ? {} : { deliveries }),
       ...(magicLinkResend === undefined ? {} : { magicLinkResend }),
       ...(passwordCheck === undefined ? {} : { passwordCheck }),

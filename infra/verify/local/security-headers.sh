@@ -140,7 +140,7 @@ if ((!staging)); then
   docker rm -f "$NAME" >/dev/null 2>&1 || true
   docker run -d --name "$NAME" "${network[@]}" \
     -e DOMAIN="$DOMAIN" -e ACME_EMAIL=ops@example.test -e "ADMIN_ALLOWED_CIDRS=0.0.0.0/0 ::/0" \
-    -e GLITCHTIP_ALLOWED_CIDRS=192.0.2.1/32 -e WAHA_ALLOWED_CIDRS=192.0.2.1/32 \
+    -e GLITCHTIP_ALLOWED_CIDRS=192.0.2.1/32 -e WAHA_ALLOWED_CIDRS=192.0.2.1/32 -e MONITOR_ALLOWED_CIDRS=192.0.2.1/32 \
     -v "$(host_path "$work")/Caddyfile:/etc/caddy/Caddyfile:ro" -v "$(host_path "$work")/sdk:/srv/sdk:ro" -v "$(host_path "$work")/lp:/srv/lp:ro" \
     "$IMAGE" caddy run --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null
   ready=0

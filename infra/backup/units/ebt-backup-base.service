@@ -1,0 +1,10 @@
+# Managed by infra/provision (@REPO@ is the checkout that provisioned this host). The nightly wal-g base backup (US-015).
+[Unit]
+Description=ebooktrivia nightly wal-g base backup
+After=postgres.service
+Wants=postgres.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/bash @REPO@/infra/backup/walg-base-backup.sh
+TimeoutStartSec=3h

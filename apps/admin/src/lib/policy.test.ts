@@ -47,6 +47,7 @@ const STAFF_EXPECTED: Readonly<Record<Permission, boolean | "unlocked">> = {
   "ad_spend.edit": false,
   "roi.view": false,
   "app_settings.edit": false,
+  "alert_recipients.edit": false,
   "admin_user.manage": false,
   "audit.view": false,
 };

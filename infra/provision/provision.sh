@@ -42,7 +42,7 @@ step_packages() {
     END { if (in_epel && !done) print "includepkgs=fail2ban*" }' /etc/yum.repos.d/epel.repo)
   ensure_packages podman passt container-selinux policycoreutils-python-utils firewalld nftables audit \
     fail2ban-server fail2ban-firewalld fail2ban-selinux dnf-automatic dnf-plugins-core chrony \
-    openssh-server openssh-clients python3 shadow-utils procps-ng iproute
+    openssh-server openssh-clients python3 shadow-utils procps-ng iproute sudo
   local version
   version=$(podman --version | awk '{print $3}')
   # Quadlets need podman >= 4.4; Notify=healthy and template drop-ins need 5.x.
@@ -290,10 +290,10 @@ step_sshd() {
       [[ -z $other ]] || die "$file sorts before $SSHD_DROPIN and sets $other"
     fi
   done
-  local allow="" cidr
-  for cidr in $CFG_SSH_ALLOWED_CIDRS; do allow+=" $CFG_ADMIN_SSH_USER@$cidr"; done
+  local allow
+  allow=$(sshd_allow_users | xargs)
   ensure_dir /etc/ssh/sshd_config.d 755 root root
-  put_file "$SSHD_DROPIN" 600 root root < <(sed "s|@ALLOW_USERS@|${allow# }|" "$FILES/sshd-00-ebooktrivia.conf")
+  put_file "$SSHD_DROPIN" 600 root root < <(sed "s|@ALLOW_USERS@|$allow|" "$FILES/sshd-00-ebooktrivia.conf")
   if [[ -e /etc/ssh/sshd_config.d/10-ebooktrivia.conf ]]; then
     rm -f /etc/ssh/sshd_config.d/10-ebooktrivia.conf
     changed "removed the old drop-in 10-ebooktrivia.conf"
@@ -421,6 +421,10 @@ put_env_file() {
   shift 2
   rendered=$(mktemp)
   render_env "$dest" "$template" "$@" >"$rendered"
+  if [[ $dest == "$ETC/worker.env" && -e $ETC/drill-vm ]]; then
+    # A restore-drill VM's worker must not push to the real Kuma monitors or hold the keys that open a real send (lib.sh drill_scrub_worker_env).
+    drill_scrub_worker_env <"$rendered" >"$rendered.drill" && mv "$rendered.drill" "$rendered"
+  fi
   put_file "$dest" 640 root "$APP" <"$rendered"
   rm -f "$rendered"
 }
@@ -494,22 +498,39 @@ step_config_files() {
     put_file "$ETC/postgres/superuser.pass" 640 root "$APP" < <(printf '%s\n' "$current")
   fi
   local name
-  for name in public admin worker internal migrate valkey; do
+  for name in public admin worker internal migrate valkey walg restic; do
     put_env_file "$ETC/$name.env" "$FILES/env/$name.env"
     case $name in
       public) restart_needed public@a.service public@b.service ;;
-      migrate) ;;
+      migrate | restic) ;; # a one-shot job's settings: read at its next run
+      walg) restart_needed postgres.service ;;
       *) restart_needed "$name.service" ;;
     esac
   done
   put_env_file "$ETC/postgres.env" "$FILES/env/postgres.env" POSTGRES_PASSWORD
   restart_needed postgres.service
+  if [[ -e $ETC/drill-vm ]]; then note "$ETC/drill-vm: worker.env has both Kuma push URLs blank and no messaging or conversions private key (a restore drill acts on nothing real)"; fi
+
+  step "wal-g key files (mounted read-only into the postgres container, never environment)"
+  # The libsodium key encrypts every backup and WAL segment: generated ONCE (a present key is kept, and rewritten only to enforce its
+  # mode and owner), and the Owner must escrow it the day it is made (docs/escrow.md): backups cannot be read without it.
+  local walg_key walg_creds
+  walg_key=$(cat "$ETC/postgres/walg_libsodium.key" 2>/dev/null || true)
+  put_file "$ETC/postgres/walg_libsodium.key" 640 root "$APP" < <(printf '%s\n' "${walg_key:-$(random_hex)}")
+  if [[ -z $walg_key ]]; then note "NEW wal-g libsodium key in $ETC/postgres/walg_libsodium.key: put a copy in the escrow NOW (docs/escrow.md); never change it afterwards"; fi
+  restart_needed postgres.service
+  # The S3 credentials are the operator's (an AWS shared-credentials file): placeholders until filled in, which host-check.sh reports.
+  walg_creds=$(cat "$ETC/postgres/walg_aws_credentials" 2>/dev/null || true)
+  put_file "$ETC/postgres/walg_aws_credentials" 640 root "$APP" < <(printf '%s\n' "${walg_creds:-[default]
+aws_access_key_id = __SET_ME__
+aws_secret_access_key = __SET_ME__}")
+  restart_needed postgres.service
 
   step "Caddy"
   put_file "$ETC/caddy/Caddyfile" 640 root "$APP" <"$REPO/infra/caddy/Caddyfile"
   restart_needed caddy.service
-  put_file "$ETC/caddy.env" 640 root "$APP" < <(printf 'DOMAIN=%s\nACME_EMAIL=%s\nADMIN_ALLOWED_CIDRS=%s\nGLITCHTIP_ALLOWED_CIDRS=%s\nWAHA_ALLOWED_CIDRS=%s\n' \
-    "$CFG_DOMAIN" "$CFG_ACME_EMAIL" "$CFG_ADMIN_ALLOWED_CIDRS" "$CFG_GLITCHTIP_ALLOWED_CIDRS" "$CFG_WAHA_ALLOWED_CIDRS")
+  put_file "$ETC/caddy.env" 640 root "$APP" < <(printf 'DOMAIN=%s\nACME_EMAIL=%s\nADMIN_ALLOWED_CIDRS=%s\nGLITCHTIP_ALLOWED_CIDRS=%s\nWAHA_ALLOWED_CIDRS=%s\nMONITOR_ALLOWED_CIDRS=%s\n' \
+    "$CFG_DOMAIN" "$CFG_ACME_EMAIL" "$CFG_ADMIN_ALLOWED_CIDRS" "$CFG_GLITCHTIP_ALLOWED_CIDRS" "$CFG_WAHA_ALLOWED_CIDRS" "$CFG_MONITOR_ALLOWED_CIDRS")
   restart_needed caddy.service
 
   step "Valkey (ACL users with password hashes, noeviction, AOF)"
@@ -618,6 +639,99 @@ step_quadlets() {
   fi
 }
 
+# The CI deploy login (US-015, plan M4.4): a key whose ONLY power is the forced command infra/deploy/remote.sh, which takes a manifest
+# of image digests of this repository's registry prefix and nothing else. Installed root-owned in /usr/local/sbin (a stolen key can run
+# what is installed, not change it); started as `sudo -n` by the key's command=, and sudoers allows exactly its three invocations; the
+# login has a shell only because the forced command needs one, no password, no group, and a home that only root can write (it cannot
+# change its own authorized_keys). Without DEPLOY_* in provision.env no login exists, and an earlier one is revoked.
+DEPLOY_SCRIPT=/usr/local/sbin/ebt-remote-deploy
+DEPLOY_SUDOERS=/etc/sudoers.d/90-ebooktrivia-deploy
+
+step_deploy_access() {
+  step "CI deploy access (forced command $DEPLOY_SCRIPT)"
+  local user=$CFG_DEPLOY_USER dhome=/home/$CFG_DEPLOY_USER
+  put_file "$DEPLOY_SCRIPT" 755 root root <"$REPO/infra/deploy/remote.sh"
+  ensure_dir /var/lib/ebooktrivia 755 root root
+  ensure_dir /var/lib/ebooktrivia/deploy 700 root root
+  ensure_dir /var/backups 755 root root # absent on a cloud image
+  ensure_dir /var/backups/ebooktrivia 700 root root
+  ensure_dir /var/backups/ebooktrivia/predeploy 700 root root
+  if [[ -z $CFG_DEPLOY_PUBLIC_KEY ]]; then
+    note "DEPLOY_* is not set in provision.env: no deploy login (an earlier one is revoked)"
+    rm -f "$DEPLOY_SUDOERS" "$ETC/deploy.env" "$dhome/.ssh/authorized_keys" 2>/dev/null || true
+    return 0
+  fi
+  if id -u "$user" >/dev/null 2>&1; then
+    ok "user $user exists"
+  else
+    useradd --create-home --home-dir "$dhome" --shell /bin/bash --comment "ebooktrivia CI deploy (forced command)" "$user"
+    changed "user $user created"
+  fi
+  if [[ $(getent passwd "$user" | cut -d: -f7) != /bin/bash ]]; then
+    usermod --shell /bin/bash "$user"
+    changed "user $user shell /bin/bash"
+  fi
+  if [[ $(passwd -S "$user" | awk '{print $2}') =~ ^(L|LK)$ ]]; then ok "user $user password locked"; else
+    usermod -L "$user"
+    changed "user $user password locked"
+  fi
+  if id -nG "$user" | tr ' ' '\n' | grep -qx wheel; then die "$user is in group wheel: the deploy login must not be an administrator"; fi
+  # Root owns the home and .ssh (sshd's StrictModes accepts that), so the login cannot add a key or an option to its own authorized_keys.
+  ensure_dir "$dhome" 755 root root
+  ensure_dir "$dhome/.ssh" 755 root root
+  # shellcheck disable=SC2016 # the key line holds the literal text $SSH_ORIGINAL_COMMAND, which sshd's shell expands
+  put_file "$dhome/.ssh/authorized_keys" 644 root root < <(printf 'restrict,command="sudo -n %s \\"$SSH_ORIGINAL_COMMAND\\"" %s\n' "$DEPLOY_SCRIPT" "$CFG_DEPLOY_PUBLIC_KEY")
+  put_file "$ETC/deploy.env" 600 root root < <(printf '# Managed by infra/provision: read by %s (never sourced).\nREGISTRY_PREFIX=%s\nAPP_USER=%s\n' "$DEPLOY_SCRIPT" "$CFG_DEPLOY_REGISTRY_PREFIX" "$APP")
+  local rendered
+  rendered=$(mktemp)
+  printf '%s\n' "# Managed by infra/provision: the CI deploy login may run the forced command's three invocations as root, and nothing else." \
+    "Defaults:$user !requiretty" \
+    "$user ALL=(root) NOPASSWD: $DEPLOY_SCRIPT deploy, $DEPLOY_SCRIPT rollback, $DEPLOY_SCRIPT status" >"$rendered"
+  # A broken sudoers file locks everyone out of sudo: checked before it is installed.
+  if ! visudo -cf "$rendered" >/dev/null; then
+    rm -f "$rendered"
+    die "visudo rejected the deploy sudoers rule; nothing was installed"
+  fi
+  put_file "$DEPLOY_SUDOERS" 440 root root <"$rendered"
+  rm -f "$rendered"
+}
+
+# The nightly backups (US-015): the wal-g base backup 20:30 UTC and restic 21:30 UTC, as systemd user timers of the app user (every container
+# is its own). The units name this checkout (@REPO@), so it must stay readable by the app user, like the quadlets' source.
+step_backup_timers() {
+  step "backup timers (wal-g base backup, restic; units in $REPO/infra/backup/units)"
+  local udir name any=0
+  udir="$(app_home)/.config/systemd/user"
+  for name in ebt-backup-base.service ebt-backup-base.timer ebt-backup-restic.service ebt-backup-restic.timer ebt-ops-check.service ebt-ops-check.timer; do
+    app_put_file "$udir/$name" 644 < <(sed "s|@REPO@|$REPO|g" "$REPO/infra/backup/units/$name")
+    if ((LAST_CHANGED)); then any=1; fi
+  done
+  if ((any)); then
+    as_app systemctl --user daemon-reload
+    changed "systemd --user daemon-reload ($APP)"
+  fi
+  for name in ebt-backup-base.timer ebt-backup-restic.timer; do
+    if [[ -e $ETC/drill-vm ]]; then
+      # A restore-drill VM (docs/restore-drill.md step 3: root made the marker BEFORE provisioning) reads production's storage and must never
+      # back up to it: its retention would delete there. The timers stay off, and the backup scripts refuse to run (infra/backup/lib.sh).
+      if as_app systemctl --user is-enabled --quiet "$name" 2>/dev/null; then
+        as_app systemctl --user disable --now --quiet "$name"
+        changed "$name disabled ($ETC/drill-vm: a restore-drill VM)"
+      else
+        ok "$name off ($ETC/drill-vm: a restore-drill VM)"
+      fi
+    elif as_app systemctl --user is-enabled --quiet "$name" 2>/dev/null; then ok "$name enabled"; else
+      as_app systemctl --user enable --now --quiet "$name"
+      changed "$name enabled and started"
+    fi
+  done
+  # The disk and pg_wal check runs on every VM, a drill VM included (it only reads, and raises alerts in its own database).
+  if as_app systemctl --user is-enabled --quiet ebt-ops-check.timer 2>/dev/null; then ok "ebt-ops-check.timer enabled"; else
+    as_app systemctl --user enable --now --quiet ebt-ops-check.timer
+    changed "ebt-ops-check.timer enabled and started"
+  fi
+}
+
 printf 'ebooktrivia provisioning: domain %s, app user %s%s\n' "$CFG_DOMAIN" "$APP" "$( ((SIM)) && printf ' (local container stand-in)')"
 step_packages
 step_app_user
@@ -625,6 +739,7 @@ step_sysctl
 step_selinux
 step_firewalld
 step_sshd
+step_deploy_access
 step_audit_cockpit
 step_fail2ban
 step_dnf_automatic
@@ -632,6 +747,7 @@ step_chrony
 step_egress_guard
 step_config_files
 step_quadlets
+step_backup_timers
 printf '\n'
 restart_summary
 printf 'summary: %d changed, %d skipped in container\n' "$CHANGES" "$SKIPS"

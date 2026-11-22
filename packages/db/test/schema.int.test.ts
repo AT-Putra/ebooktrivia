@@ -66,6 +66,8 @@ const PLAN_TABLES = {
     "uploads",
     "alerts",
     "heartbeats",
+    // where the worker's alert relay sends the Owner's alerts (US-015)
+    "alert_recipients",
     // admin settings (US-017)
     "smtp_settings",
     "template_test_sends",

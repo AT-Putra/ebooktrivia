@@ -20,7 +20,7 @@ const BUDGET_MIB: Record<string, number> = {
 };
 const LONG_RUNNING = Object.keys(BUDGET_MIB);
 const CONTAINERS = [...LONG_RUNNING, "migrate.container"];
-const NETWORKS = ["ebt-edge", "ebt-data", "ebt-admin", "ebt-internal"];
+const NETWORKS = ["ebt-edge", "ebt-data", "ebt-admin", "ebt-internal", "ebt-backup"];
 
 function memoryMiB(value: string | undefined): number {
   const m = /^(\d+)([mg])$/.exec(value ?? "");
@@ -110,8 +110,8 @@ describe("quadlets", () => {
     expect(readQuadlet("caddy.container").get("Unit", "Requires")).toEqual(["caddy.socket"]);
   });
 
-  it("pin unique addresses on four networks; only the edge network has egress", () => {
-    const subnet: Record<string, string> = { "ebt-edge": "10.89.50.", "ebt-data": "10.89.51.", "ebt-admin": "10.89.52.", "ebt-internal": "10.89.53." };
+  it("pin unique addresses on five networks; only the edge network and the backup network (PostgreSQL alone, US-015) have egress", () => {
+    const subnet: Record<string, string> = { "ebt-edge": "10.89.50.", "ebt-data": "10.89.51.", "ebt-admin": "10.89.52.", "ebt-internal": "10.89.53.", "ebt-backup": "10.89.54." };
     const seen = new Map<string, string>();
     for (const u of units()) {
       for (const [network, ip] of Object.entries(u.networks)) {
@@ -123,7 +123,7 @@ describe("quadlets", () => {
     }
     for (const network of NETWORKS) {
       const internal = readQuadlet(`${network}.network`).get("Network", "Internal");
-      expect(internal, network).toEqual(network === "ebt-edge" ? [] : ["true"]);
+      expect(internal, network).toEqual(network === "ebt-edge" || network === "ebt-backup" ? [] : ["true"]);
     }
   });
 
@@ -132,6 +132,8 @@ describe("quadlets", () => {
     expect(members("ebt-internal")).toEqual(["caddy", "internal"]);
     expect(members("ebt-edge")).toEqual(["caddy", "public@a", "public@b", "worker"]);
     expect(members("ebt-data")).toEqual(["admin", "internal", "migrate", "postgres", "public@a", "public@b", "valkey", "worker"]);
+    // US-015: wal-g's egress to the backup storage. Only PostgreSQL joins that network, so nothing can reach it through it.
+    expect(members("ebt-backup")).toEqual(["postgres"]);
   });
 
   it("bind each app to its Caddy-facing address and trust X-Forwarded-For from Caddy's address on that network", () => {
@@ -236,7 +238,7 @@ describe("quadlets", () => {
   it("mount provisioned config read-only without relabeling (provision.sh labels it container_file_t, root owns it)", () => {
     for (const file of CONTAINERS) {
       for (const volume of readQuadlet(file).get("Container", "Volume").filter((v) => v.startsWith("/etc/"))) {
-        expect(volume, file).toMatch(/^\/etc\/ebooktrivia\/(caddy|postgres|valkey)\/[\w.]+:[\w/.]+:ro$/);
+        expect(volume, file).toMatch(/^\/etc\/ebooktrivia\/(caddy|postgres|valkey)\/[\w.]+:[\w/.-]+:ro$/);
       }
     }
   });

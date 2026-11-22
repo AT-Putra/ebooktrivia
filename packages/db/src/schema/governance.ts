@@ -511,6 +511,29 @@ export const alerts = pgTable(
   ],
 );
 
+/**
+ * Where the worker's alert relay (apps/worker alert-relay.ts, US-015) sends the Owner's alerts: one WhatsApp number, one e-mail
+ * address and the lowest severity that is sent. A singleton row (id = 1). Owner only in the console (alert_recipients.edit),
+ * audited; the worker reads it; the public app has no access (the table is in no public_rw grant).
+ */
+export const alertRecipients = pgTable(
+  "alert_recipients",
+  {
+    id: integer("id").primaryKey().default(1),
+    phone: text("phone"),
+    email: text("email"),
+    minSeverity: text("min_severity").notNull().default("warning"),
+    updatedByAdminUserId: text("updated_by_admin_user_id"),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    check("alert_recipients_singleton_check", sql`${t.id} = 1`),
+    check("alert_recipients_phone_check", sql`${t.phone} IS NULL OR ${t.phone} ~ '^\\+[1-9][0-9]{7,14}$'`),
+    check("alert_recipients_email_check", sql`${t.email} IS NULL OR (char_length(${t.email}) <= 254 AND ${t.email} ~ '^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$')`),
+    inCheck("alert_recipients_min_severity_check", t.minSeverity, ["info", "warning", "critical"]),
+  ],
+);
+
 export const heartbeats = pgTable("heartbeats", {
   component: text("component").primaryKey(),
   beatAt: tstz("beat_at").notNull().defaultNow(),

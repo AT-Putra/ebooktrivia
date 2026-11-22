@@ -85,6 +85,8 @@ WhatsApp restricts numbers that look like spam. Before a number joins the pool:
 4. **Keep the content non-spammy**: the opener is one short real message, never several; the wording varies (three variants at least); links are HTTPS and not shortened
    by a service WhatsApp has flagged. Anything that makes buyers report you costs the number.
 5. Never restart, log out or re-pair a restricted number: it does not lift the restriction (see below).
+6. **Write one message ("hello") from the Owner's alert phone to the new number**, so the Owner's alerts can come from it ([alerts.md](alerts.md): the pool picks any number for an alert, and
+   WhatsApp may refuse a first message to someone who never wrote to that number). Tick it in the go-live checklist (GL-16) for every number.
 
 ## Human-like sending (every WhatsApp message: openers, replies, login codes)
 

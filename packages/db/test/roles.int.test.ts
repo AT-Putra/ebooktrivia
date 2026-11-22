@@ -673,6 +673,26 @@ describe("hardening", () => {
     });
   });
 
+  // US-015 review (an accepted risk, docs/runbooks/backups.md): the PostgreSQL container has egress to the backup storage, so an application
+  // login must not be able to make the database host run a program or touch its files (COPY ... PROGRAM, server-side file reads and writes).
+  it("gives no app role, and no role it can become, superuser, pg_execute_server_program or the server file roles", async () => {
+    const rows = await sql<{ role: string; rolsuper: boolean; program: boolean; read_files: boolean; write_files: boolean }[]>`
+      SELECT r AS role, (SELECT rolsuper FROM pg_roles WHERE rolname = r) AS rolsuper,
+             pg_has_role(r, 'pg_execute_server_program', 'USAGE') AS program,
+             pg_has_role(r, 'pg_read_server_files', 'USAGE') AS read_files,
+             pg_has_role(r, 'pg_write_server_files', 'USAGE') AS write_files
+      FROM unnest(${[...APP_ROLES, "migrator"]}::text[]) r ORDER BY 1`;
+    expect(rows.filter((row) => row.rolsuper || row.program || row.read_files || row.write_files)).toEqual([]);
+  });
+
+  it("refuses COPY ... PROGRAM, COPY to a server file and the file functions to every app role (42501)", async () => {
+    for (const role of APP_ROLES) {
+      for (const statement of ["COPY (SELECT 1) TO PROGRAM 'true'", "COPY (SELECT 1) TO '/tmp/ebt-denied'", "SELECT pg_read_file('/etc/hostname')", "SELECT pg_ls_dir('/')"]) {
+        expect(await sqlState(asRole(role, (tx) => tx.unsafe(statement))), `${role}: ${statement}`).toBe("42501");
+      }
+    }
+  });
+
   it("pins the full privilege matrix", async () => {
     expect(await privilegeMatrix()).toMatchSnapshot();
   });

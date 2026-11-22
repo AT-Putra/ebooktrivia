@@ -33,7 +33,7 @@ sim_in() { docker exec -i -e EBT_PROVISION_SIM=1 "$NAME" "$@"; }
 
 # host-check failures that are expected here, before the stack runs (extended regular
 # expressions): what a container cannot have (SELinux mode, audit log and labels, the host clock),
-# the two operator steps (the worker placeholder, the GlitchTip token file), and everything from
+# the operator steps (the worker placeholder, the backups' S3 settings and credentials, the GlitchTip token file), and everything from
 # "== user units" on, which needs the running stack: infra/verify/local/stack-sim.sh checks those.
 EXPECTED_BEFORE_STACK='^getenforce
 ^AVC denials
@@ -42,6 +42,9 @@ EXPECTED_BEFORE_STACK='^getenforce
 ^auditd active
 ^chrony synchronised
 ^/etc/ebooktrivia/worker.env has unfilled placeholders
+^/etc/ebooktrivia/walg.env has unfilled placeholders
+^/etc/ebooktrivia/restic.env has unfilled placeholders
+^/etc/ebooktrivia/postgres/walg_aws_credentials has unfilled placeholders
 ^/etc/ebooktrivia/glitchtip-hook.token still exists'
 
 up() {
@@ -70,7 +73,12 @@ SSH_ALLOWED_CIDRS="192.0.2.0/24 2001:db8::/32"
 ADMIN_ALLOWED_CIDRS="192.0.2.0/24"
 GLITCHTIP_ALLOWED_CIDRS="198.51.100.20/32"
 WAHA_ALLOWED_CIDRS="198.51.100.20/32"
+MONITOR_ALLOWED_CIDRS="198.51.100.20/32"
 APP_USER=ebt
+# US-015: the CI deploy login (a throwaway key nobody holds the private half of) and the registry its images come from.
+DEPLOY_ALLOWED_CIDRS="203.0.113.0/24"
+DEPLOY_PUBLIC_KEY="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMamzlU+5X1y2Nb12ZmLDkPkeNFipcqZkDQ+czkyHyXd ci-deploy@vm-sim"
+DEPLOY_REGISTRY_PREFIX="ghcr.io/example/ebooktrivia"
 EOF
 }
 

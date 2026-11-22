@@ -16,6 +16,9 @@ coverage/
 .env.*
 !.env.example
 infra/dev/.env
+# The monitoring box's secrets (infra/monitoring, US-015): made on that box from the .example files, never committed.
+infra/monitoring/glitchtip.env
+infra/monitoring/glitchtip-db-password.txt
 *.pem
 *.key
 *.p12

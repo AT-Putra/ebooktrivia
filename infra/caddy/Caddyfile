@@ -13,6 +13,7 @@
 #   ADMIN_ALLOWED_CIDRS      space-separated; only these may reach admin.{$DOMAIN}
 #   GLITCHTIP_ALLOWED_CIDRS  space-separated; only these may POST the GlitchTip hook
 #   WAHA_ALLOWED_CIDRS       space-separated; only these may POST the WAHA webhook (/api/v1/webhooks/waha, US-025)
+#   MONITOR_ALLOWED_CIDRS    space-separated; only these (the Uptime Kuma host) may GET api.{$DOMAIN}/healthz (US-015)
 {
 	# No admin endpoint: the config only changes by restarting the unit.
 	admin off
@@ -206,6 +207,16 @@
 	}
 }
 
+# The deep /healthz of the public app (US-015: PostgreSQL, the worker's heartbeat, Valkey) is the monitor's: only the api
+# site serves it, and only to MONITOR_ALLOWED_CIDRS. On the play and order sites it is a 404 here, so it never reaches the
+# app from there (the shallow /livez above is the load balancer's and is blocked everywhere).
+(blocked_healthz) {
+	@healthz path /healthz /healthz/*
+	handle @healthz {
+		respond 404
+	}
+}
+
 # Port 80: redirect to HTTPS.
 http:// {
 	bind fd/3
@@ -253,6 +264,7 @@ play.{$DOMAIN} {
 	import app_headers
 	import referrer_default strict-origin-when-cross-origin
 	import blocked_paths
+	import blocked_healthz
 	handle {
 		request_body {
 			max_size 1MB
@@ -269,6 +281,7 @@ order.{$DOMAIN} {
 	import app_headers
 	import referrer_forced strict-origin
 	import blocked_paths
+	import blocked_healthz
 	request_header -Cookie
 	# No Set-Cookie, and none of Next's rewrite headers: proxy.ts rewrites /{publicId} to /order/{publicId}
 	# and Next 16 reports that rewrite to the client in x-middleware-rewrite (and, for an RSC request, in
@@ -294,6 +307,18 @@ api.{$DOMAIN} {
 	import app_headers
 	import referrer_default strict-origin-when-cross-origin
 	import blocked_paths
+	# The deep /healthz (US-015): only the monitor (Uptime Kuma) reaches the public app with it, for the path and anything under it;
+	# every other source gets a 404 here.
+	@healthz path /healthz /healthz/*
+	handle @healthz {
+		@monitor remote_ip {$MONITOR_ALLOWED_CIDRS}
+		handle @monitor {
+			import public_upstreams
+		}
+		handle {
+			respond 404
+		}
+	}
 	# The GlitchTip alert hook: only this exact path shape, only POST, only from the GlitchTip host,
 	# goes to the internal process (which checks the token by its SHA-256). Anything else under
 	# /hooks/glitchtip/ is a 404 here and never reaches an app.

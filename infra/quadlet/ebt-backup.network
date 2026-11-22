@@ -1,0 +1,12 @@
+# Backup egress network (US-015): the PostgreSQL container and nothing else. wal-g reaches the S3-compatible storage from here (the
+# archive_command of every WAL segment, and the nightly base backup), which ebt-data, an internal network, cannot do. No other
+# container joins it, so nothing can reach PostgreSQL through it, and PostgreSQL listens on its ebt-data address only
+# (listen_addresses in postgres.container). Not internal: it is the second network with egress, and the only one a database
+# process ever has. The restic job's one-shot container joins it too (infra/backup/restic-backup.sh). No port is published.
+[Unit]
+Description=ebooktrivia backup egress network
+
+[Network]
+NetworkName=ebt-backup
+Subnet=10.89.54.0/24
+Gateway=10.89.54.1

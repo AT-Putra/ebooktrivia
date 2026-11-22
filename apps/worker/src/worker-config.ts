@@ -34,8 +34,10 @@ export interface WorkerConfig {
   readonly valkey: ValkeyConfig;
   /** BullMQ key prefix (Valkey keys `<prefix>:<queue>:...`). */
   readonly prefix: string;
-  readonly uptimeKuma: { readonly pushUrl: URL; readonly allowPrivateIp: boolean } | undefined;
-  /** Dev-only adapter switches (A9); all false in production. */
+  /** pushUrl: the worker's heartbeat monitor; alertsPushUrl (US-015): the alert backstop monitor, a second push monitor on the same Kuma. */
+  readonly uptimeKuma: { readonly pushUrl: URL; readonly alertsPushUrl?: URL | undefined; readonly allowPrivateIp: boolean } | undefined;
+  /** US-015: the backup, WAL and Valkey-memory alerts (ops-checks.ts); on by default in production, where those things exist. */
+  readonly opsChecks: boolean;  /** Dev-only adapter switches (A9); all false in production. */
   readonly dev: { readonly allowHttp: boolean; readonly allowLoopback: boolean; readonly allowPlaintextSmtp: boolean };
   readonly failpoint: FailpointName | undefined;
   /** Dev / test only (refused in production): http(s)://<loopback>:<port> of infra/midtrans-stub; the sandbox hosts go there. */
@@ -125,19 +127,30 @@ function metaGraphVersion(env: Env): string {
   return value;
 }
 
-function uptimeKuma(env: Env, allowHttp: boolean): WorkerConfig["uptimeKuma"] {
-  const raw = optional(env, "UPTIME_KUMA_PUSH_URL");
+function pushUrl(env: Env, name: string, allowHttp: boolean): URL | undefined {
+  const raw = optional(env, name);
   if (raw === undefined) return undefined;
   let url: URL;
   try {
     url = new URL(raw);
   } catch {
-    throw new ConfigError("UPTIME_KUMA_PUSH_URL must be an http(s) URL");
+    throw new ConfigError(`${name} must be an http(s) URL`);
   }
   if (url.protocol !== "https:" && !(url.protocol === "http:" && allowHttp)) {
-    throw new ConfigError("UPTIME_KUMA_PUSH_URL must be https (http only with WORKER_DEV_ALLOW_HTTP outside production)");
+    throw new ConfigError(`${name} must be https (http only with WORKER_DEV_ALLOW_HTTP outside production)`);
   }
-  return { pushUrl: url, allowPrivateIp: bool(env, "UPTIME_KUMA_ALLOW_PRIVATE_IP") };
+  return url;
+}
+
+function uptimeKuma(env: Env, allowHttp: boolean): WorkerConfig["uptimeKuma"] {
+  const url = pushUrl(env, "UPTIME_KUMA_PUSH_URL", allowHttp);
+  const alertsPushUrl = pushUrl(env, "UPTIME_KUMA_ALERTS_PUSH_URL", allowHttp);
+  if (url === undefined) {
+    if (alertsPushUrl !== undefined) throw new ConfigError("UPTIME_KUMA_ALERTS_PUSH_URL needs UPTIME_KUMA_PUSH_URL (the same Kuma)");
+    return undefined;
+  }
+  if (alertsPushUrl !== undefined && alertsPushUrl.host !== url.host) throw new ConfigError("UPTIME_KUMA_ALERTS_PUSH_URL must be on the same host as UPTIME_KUMA_PUSH_URL");
+  return { pushUrl: url, ...(alertsPushUrl === undefined ? {} : { alertsPushUrl }), allowPrivateIp: bool(env, "UPTIME_KUMA_ALLOW_PRIVATE_IP") };
 }
 
 export function loadWorkerConfig(env: Env): WorkerConfig {
@@ -169,7 +182,7 @@ export function loadWorkerConfig(env: Env): WorkerConfig {
     valkey: valkey(env, production),
     prefix,
     uptimeKuma: uptimeKuma(env, dev.allowHttp),
-    dev,
+    opsChecks: optional(env, "WORKER_OPS_CHECKS") === undefined ? production : bool(env, "WORKER_OPS_CHECKS"),    dev,
     failpoint,
     midtransStubUrl: midtransStubUrl(env),
     waDelayMs: int(env, "WORKER_WA_DELAY_MS", WA_PROACTIVE_DELAY_MS, 0, 86_400_000),

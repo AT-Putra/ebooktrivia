@@ -6,7 +6,7 @@ EBT_SERVICES=(postgres valkey internal worker admin public@a public@b caddy)
 # shellcheck disable=SC2034 # read by the scripts that source this file
 EBT_ONESHOTS=(migrate)
 # shellcheck disable=SC2034 # read by the scripts that source this file
-EBT_NETWORKS=(ebt-edge ebt-data ebt-admin ebt-internal)
+EBT_NETWORKS=(ebt-edge ebt-data ebt-admin ebt-internal ebt-backup)
 # shellcheck disable=SC2034 # read by the scripts that source this file
 EBT_VOLUMES=(ebt-pgdata ebt-valkeydata ebt-caddy-data ebt-caddy-config)
 # Every service the quadlet generator must produce.

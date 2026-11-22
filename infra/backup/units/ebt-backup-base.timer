@@ -1,0 +1,11 @@
+# Managed by infra/provision. 20:30 UTC = 03:30 WIB, after the nightly payment reconciliation (02:00 WIB) and before the restic backup.
+[Unit]
+Description=ebooktrivia nightly wal-g base backup
+
+[Timer]
+OnCalendar=*-*-* 20:30:00 UTC
+RandomizedDelaySec=300
+Persistent=true
+
+[Install]
+WantedBy=timers.target

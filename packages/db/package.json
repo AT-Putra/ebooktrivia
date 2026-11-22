@@ -6,6 +6,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./connection": "./src/connection.ts",
+    "./health": "./src/health.ts",
     "./migrate": "./src/migrate.ts",
     "./login-role": "./src/login-role.ts",
     "./login-throttle": "./src/login-throttle.ts",

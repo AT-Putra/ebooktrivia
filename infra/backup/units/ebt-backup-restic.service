@@ -1,0 +1,10 @@
+# Managed by infra/provision (@REPO@ is the checkout that provisioned this host). The nightly restic secondary backup (US-015).
+[Unit]
+Description=ebooktrivia nightly restic backup
+After=postgres.service
+Wants=postgres.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/bash @REPO@/infra/backup/restic-backup.sh
+TimeoutStartSec=3h

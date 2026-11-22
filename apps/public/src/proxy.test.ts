@@ -216,6 +216,17 @@ describe("other hosts", () => {
     }
   });
 
+  // US-015: the deep /healthz is a JSON route of the api origin (Caddy lets the monitor's address reach it there and
+  // answers 404 elsewhere). The proxy hands it through untouched there, and never to the route from the play or order
+  // origin: /healthz is a program page (a 404) on the play origin and an unknown order on the order origin.
+  it("passes /healthz through untouched on the api origin, and never serves it from the play or order origin", async () => {
+    const api = await proxy(request("api.example.test", "/healthz"));
+    expect(api.headers.get("x-middleware-next")).toBe("1");
+    expect(api.headers.get("content-security-policy")).toBeNull();
+    expect(rewriteTarget(await proxy(request("play.example.test", "/healthz")))).toBe("/trivia/healthz");
+    expect(rewriteTarget(await proxy(request("order.example.test", "/healthz")))).toBe("/order/x");
+  });
+
   // US-031 (the ZAP baseline found these pages without a script policy): every page the proxy does not route gets the
   // strictest one, the trivia nonce CSP, with the play headers.
   it("gives every other page (the api origin's /, robots.txt, any 404) the strict nonce CSP and the play headers", async () => {

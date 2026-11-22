@@ -34,6 +34,8 @@ Replace every value: the example holds only reserved names and documentation add
 | `ADMIN_ALLOWED_CIDRS` | Sources that reach `admin.<DOMAIN>`; everyone else gets a 404. Include the Uptime Kuma host. `0.0.0.0/0 ::/0` opens it to all. |
 | `GLITCHTIP_ALLOWED_CIDRS` | Source(s) allowed to POST the GlitchTip hook (the WAHA/GlitchTip box). |
 | `WAHA_ALLOWED_CIDRS` | Source(s) allowed to POST the WAHA webhook `/api/v1/webhooks/waha` (acks and buyer messages; US-025), everyone else gets a 404 from Caddy. The WAHA servers' addresses as Caddy sees them (see `delivery.md`). `0.0.0.0/0 ::/0` leaves only the HMAC. |
+| `MONITOR_ALLOWED_CIDRS` | The Uptime Kuma host (the WAHA box): the only source that reaches `https://api.<DOMAIN>/healthz`, the deep health of the public app (US-015; everyone else gets a 404). Put the **same address in `ADMIN_ALLOWED_CIDRS`** too, for `admin.<DOMAIN>/healthz` ([monitoring.md](monitoring.md) section 3). |
+| `DEPLOY_USER`, `DEPLOY_ALLOWED_CIDRS`, `DEPLOY_PUBLIC_KEY`, `DEPLOY_REGISTRY_PREFIX` | Optional, all or none (US-015): the CI deploy login `ebtdeploy`, the sources that may SSH in as it, its public key (no options) and `ghcr.io/<owner>/<repo>`. Provisioning creates the login, installs `ebt-remote-deploy` and the forced command, and opens SSH for it ([deploy.md](deploy.md) section 2: the Owner decides the sources). |
 | `APP_USER` | Rootless podman user (default `ebt`). |
 
 Secrets are never typed or committed. The provisioning generates them on the VM into the env
@@ -42,7 +44,8 @@ files (`0640`, owned by root, group the app user: the containers read them, the 
 - PostgreSQL login passwords;
 - Valkey ACL passwords (`users.acl` stores only their SHA-256);
 - the PostgreSQL superuser password;
-- the GlitchTip hook token (`internal.env` stores only its SHA-256).
+- the GlitchTip hook token (`internal.env` stores only its SHA-256);
+- the wal-g libsodium key (`postgres/walg_libsodium.key`) and the restic password (`restic.env`, US-015): **escrow both the day they are made** ([escrow.md](../escrow.md)). The S3 locations and credentials of both backups are the operator's to fill in (`walg.env`, `postgres/walg_aws_credentials`, `restic.env`; [backups.md](backups.md)): `host-check.sh` fails while a placeholder is left.
 
 ## 3. Run order (all as root, from the checkout)
 
@@ -56,7 +59,11 @@ sudo infra/provision/build-images.sh              # 2. postgres-walg, public, ad
 
 - **Uptime Kuma.** In `/etc/ebooktrivia/worker.env`, set `UPTIME_KUMA_PUSH_URL`, or leave it empty
   (`UPTIME_KUMA_PUSH_URL=`) while there is no Kuma. Later provisioning runs keep the value, even an
-  empty one.
+  empty one. The **alerts backstop** (US-015) is a second push monitor on the same Kuma: uncomment
+  `UPTIME_KUMA_ALERTS_PUSH_URL` in the same file ([monitoring.md](monitoring.md), [alerts.md](alerts.md)).
+- **Alert recipients (US-015).** After the first Owner exists: Admin, Alerts: the Owner's WhatsApp number,
+  e-mail and lowest severity, then **Send a test alert** ([alerts.md](alerts.md)); the Owner first writes one
+  message to a pool number from that phone.
 - **GlitchTip token.** Copy the token from `/etc/ebooktrivia/glitchtip-hook.token` into GlitchTip's
   webhook URL, `https://api.<DOMAIN>/hooks/glitchtip/<token>`. Then delete the file.
 - **Checkout (US-020).** Add the escrowed `SECRETS_PAYMENT_PRIVATE_KEY` to `/etc/ebooktrivia/public.env` (the
@@ -128,7 +135,7 @@ After a reboot, everything comes back on its own:
 
 - linger and `caddy.socket` are enabled;
 - every long-running quadlet has `WantedBy=default.target`;
-- only `migrate` must be started by hand, or by the deploy (a later story).
+- only `migrate` must be started by hand, or by the deploy ([deploy.md](deploy.md): `deploy.yml` runs it before the rolling restart, worker first).
 
 Logs: every container logs to the journal: `sudo journalctl CONTAINER_NAME=<container>` (for example `public-a`, `caddy`).
 

@@ -355,6 +355,59 @@ describe("adapted Caddyfile", () => {
     expect(JSON.stringify(allowed?.match)).not.toContain("198.51.100.20");
   });
 
+  // US-015: the deep /healthz (public app: PostgreSQL, the worker's heartbeat, Valkey) is the monitor's. The route runs
+  // against the real Caddy in infra/verify/local/healthz-routing.sh; here the adapted JSON is asserted.
+  describe("deep /healthz (US-015)", () => {
+    const HEALTHZ = [{ path: ["/healthz", "/healthz/*"] }];
+    const siteRoutes = (host: string): Route[] => site(host).handle?.[0]?.routes ?? [];
+    const healthzIndex = (host: string): number => siteRoutes(host).findIndex((r) => JSON.stringify(r.match ?? []) === JSON.stringify(HEALTHZ));
+    const catchAllIndex = (host: string): number => siteRoutes(host).findIndex((r) => r.match === undefined && r.handle?.[0]?.handler === "subroute");
+
+    it("is served on api.<domain> to MONITOR_ALLOWED_CIDRS only, to the public app; every other source gets a 404 and no upstream", () => {
+      const outer = siteRoutes("api.example.test")[healthzIndex("api.example.test")];
+      expect(outer).toBeDefined();
+      const inner = routes(outer?.handle?.flatMap((h) => h.routes ?? []));
+      const allowed = inner.find((r) => JSON.stringify(r.match ?? []).includes("remote_ip"));
+      expect(allowed?.match).toEqual([{ remote_ip: { ranges: ["198.51.100.40/32"] } }]);
+      expect(handlers([allowed ?? {}]).filter((h) => h.handler === "reverse_proxy").flatMap(dials)).toEqual(["public-a:3000", "public-b:3000"]);
+      const refused = inner.find((r) => r.handle?.some((h) => h.handler === "static_response") === true);
+      expect(refused?.match).toBeUndefined();
+      expect(handlers([refused ?? {}]).map((h) => h["status_code"])).toEqual([404]);
+      expect(handlers([refused ?? {}]).some((h) => h.handler === "reverse_proxy")).toBe(false);
+      // Its own address list: neither the GlitchTip host's nor the WAHA host's.
+      expect(JSON.stringify(allowed?.match)).not.toMatch(/198\.51\.100\.(20|30)/);
+    });
+
+    it("is decided before the proxy to the app: the path and everything under it, ahead of the catch-all", () => {
+      expect(healthzIndex("api.example.test")).toBeGreaterThan(-1);
+      expect(healthzIndex("api.example.test")).toBeLessThan(catchAllIndex("api.example.test"));
+    });
+
+    it("is a bare 404 on the play and order sites, ahead of their proxy, so it never reaches the app from there", () => {
+      for (const host of ["play.example.test", "order.example.test"]) {
+        const route = siteRoutes(host)[healthzIndex(host)];
+        expect(route, host).toBeDefined();
+        expect(healthzIndex(host), host).toBeLessThan(catchAllIndex(host));
+        expect(handlers([route ?? {}]).filter((h) => h.handler === "static_response").map((h) => h["status_code"]), host).toEqual([404]);
+        expect(handlers([route ?? {}]).some((h) => h.handler === "reverse_proxy"), host).toBe(false);
+      }
+    });
+
+    it("needs no route on admin.<domain>: its allowlist (ADMIN_ALLOWED_CIDRS, which holds the monitor) already decides who reaches /healthz", () => {
+      expect(healthzIndex("admin.example.test")).toBe(-1);
+      const outside = siteRoutes("admin.example.test").find((r) => JSON.stringify(r.match ?? []).includes('"not"'));
+      expect(outside).toBeDefined();
+      expect(siteRoutes("admin.example.test").indexOf(outside ?? {})).toBeLessThan(catchAllIndex("admin.example.test"));
+    });
+
+    it("leaves the load balancer's shallow /livez as it is: blocked on every host, health-checked on the upstreams", () => {
+      for (const host of APP_HOSTS) {
+        const blocked = siteRoutes(host).find((r) => (r.match?.[0]?.["path"] as string[] | undefined)?.includes("/livez"));
+        expect(blocked, host).toBeDefined();
+      }
+    });
+  });
+
   it("answers 404 to admin requests from outside ADMIN_ALLOWED_CIDRS", () => {
     const outside = routes([site("admin.example.test")]).find((r) => JSON.stringify(r.match ?? []).includes('"not"'));
     expect(outside?.match).toEqual([{ not: [{ remote_ip: { ranges: ["192.0.2.0/24", "2001:db8::/32"] } }] }]);

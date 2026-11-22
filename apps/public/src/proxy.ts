@@ -110,9 +110,10 @@ const unknownOrder = (request: NextRequest): NextResponse => secured(request, "/
 
 /**
  * What the proxy hands through UNCHANGED: route handlers that answer with their own headers (the API, the signed files),
- * the self-hosted Cap files and the mockups (development only, ENABLE_MOCKUPS).
+ * the self-hosted Cap files, the mockups (development only, ENABLE_MOCKUPS) and the deep /healthz (US-015: JSON, which
+ * Caddy shows to the monitor's address on api.<DOMAIN> only).
  */
-const OWN_HEADERS = /^\/(?:api|files|cap|mockups)(?:\/|$)/;
+const OWN_HEADERS = /^\/(?:api|files|cap|mockups|healthz)(?:\/|$)/;
 
 /**
  * Every other page (US-031, found by the ZAP baseline: api.<DOMAIN>/, /robots.txt, the 404 page on the play and api

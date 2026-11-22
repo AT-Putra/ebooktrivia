@@ -6,6 +6,13 @@
 # tmpfs. The superuser password is read from a file at the first start (initdb) only. Healthy only
 # when it accepts TCP on its address: the entrypoint's temporary initdb server listens on the
 # socket only, so it never looks ready. Tuned for its 2 GB budget.
+#
+# Backups (US-015, docs/runbooks/backups.md): wal-g archives every WAL segment (archive_command, archive_timeout 60 s: the RPO is about a
+# minute) and takes the nightly base backup (infra/backup/walg-base-backup.sh, run with podman exec), encrypted client-side with libsodium,
+# to S3-compatible storage. The container is on ebt-backup too, the one network with egress that only it joins (why: ebt-backup.network);
+# it listens on its ebt-data address only. The libsodium key and the S3 credentials are FILES in /etc/ebooktrivia/postgres (written by
+# provision.sh, read-only here), never environment; walg.env holds the rest of wal-g's settings. Until walg.env and those files are filled in,
+# the archive command fails and an alert says so (wal_archive_lag): fail closed, never a silent no-op.
 [Unit]
 Description=ebooktrivia PostgreSQL
 
@@ -14,13 +21,17 @@ Image=localhost/ebooktrivia/postgres-walg:18.6
 Pull=never
 ContainerName=postgres
 Network=ebt-data.network:ip=10.89.51.2
+Network=ebt-backup.network:ip=10.89.54.2
 EnvironmentFile=/etc/ebooktrivia/postgres.env
-Exec=postgres -c hba_file=/etc/postgresql/pg_hba.conf -c listen_addresses=* -c password_encryption=scram-sha-256 -c max_connections=100 -c shared_buffers=512MB -c effective_cache_size=1GB -c work_mem=8MB -c maintenance_work_mem=128MB -c log_connections=authorization -c log_disconnections=on
+EnvironmentFile=/etc/ebooktrivia/walg.env
+Exec=postgres -c hba_file=/etc/postgresql/pg_hba.conf -c listen_addresses=10.89.51.2 -c wal_level=replica -c archive_mode=on -c "archive_command=wal-g wal-push %%p" -c archive_timeout=60 -c password_encryption=scram-sha-256 -c max_connections=100 -c shared_buffers=512MB -c effective_cache_size=1GB -c work_mem=8MB -c maintenance_work_mem=128MB -c log_connections=authorization -c log_disconnections=on
 User=999:999
 UserNS=keep-id:uid=999,gid=999
 Volume=ebt-pgdata.volume:/var/lib/postgresql:Z
 Volume=/etc/ebooktrivia/postgres/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
 Volume=/etc/ebooktrivia/postgres/superuser.pass:/etc/postgresql/superuser.pass:ro
+Volume=/etc/ebooktrivia/postgres/walg_libsodium.key:/etc/walg/libsodium.key:ro
+Volume=/etc/ebooktrivia/postgres/walg_aws_credentials:/etc/walg/aws-credentials:ro
 Tmpfs=/var/run/postgresql:rw,mode=1777,size=1m
 ShmSize=256m
 HealthCmd=pg_isready -q -h 10.89.51.2 -p 5432 -U postgres

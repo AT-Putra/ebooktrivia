@@ -179,6 +179,24 @@ describe("loadWorkerConfig", () => {
       expect(configError({ ...BASE, WORKER_ROLLUP_INTERVAL_MS: "3600001" })).toMatch(/WORKER_ROLLUP_INTERVAL_MS/);
     });
 
+    it("takes the alerts backstop's push URL (US-015) only beside the heartbeat's, on the same Kuma host", () => {
+      const heartbeat = "https://kuma.example.com/api/push/abc123?status=up";
+      const alerts = "https://kuma.example.com/api/push/def456";
+      expect(loadWorkerConfig({ ...BASE, UPTIME_KUMA_PUSH_URL: heartbeat, UPTIME_KUMA_ALERTS_PUSH_URL: alerts }).uptimeKuma?.alertsPushUrl?.href).toBe(alerts);
+      expect(loadWorkerConfig({ ...BASE, UPTIME_KUMA_PUSH_URL: heartbeat }).uptimeKuma?.alertsPushUrl).toBeUndefined();
+      expect(configError({ ...BASE, UPTIME_KUMA_ALERTS_PUSH_URL: alerts })).toMatch(/needs UPTIME_KUMA_PUSH_URL/);
+      expect(configError({ ...BASE, UPTIME_KUMA_PUSH_URL: heartbeat, UPTIME_KUMA_ALERTS_PUSH_URL: "https://other.example.com/api/push/x" })).toMatch(/same host/);
+      expect(configError({ ...BASE, UPTIME_KUMA_PUSH_URL: heartbeat, UPTIME_KUMA_ALERTS_PUSH_URL: "http://kuma.example.com/api/push/x" })).toMatch(/UPTIME_KUMA_ALERTS_PUSH_URL must be https/);
+    });
+
+    it("runs the backup, WAL and Valkey-memory alerts (US-015) by default in production only, and by WORKER_OPS_CHECKS", () => {
+      expect(loadWorkerConfig(BASE).opsChecks).toBe(false);
+      expect(loadWorkerConfig({ ...BASE, WORKER_OPS_CHECKS: "true" }).opsChecks).toBe(true);
+      const production = { ...BASE, NODE_ENV: "production" };
+      expect(loadWorkerConfig(production).opsChecks).toBe(true);
+      expect(loadWorkerConfig({ ...production, WORKER_OPS_CHECKS: "0" }).opsChecks).toBe(false);
+      expect(configError({ ...BASE, WORKER_OPS_CHECKS: "maybe" })).toMatch(/WORKER_OPS_CHECKS/);
+    });
     it("lets an http push URL through only with the dev http flag, outside production", () => {
       const url = "http://127.0.0.1:3001/api/push/x";
       expect(configError({ ...BASE, UPTIME_KUMA_PUSH_URL: url })).toMatch(/https/);

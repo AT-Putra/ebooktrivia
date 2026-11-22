@@ -83,6 +83,8 @@ const RULES = {
   // reports (dashboard, sales, delivery, postbacks, trivia) are `reports.view` / `dashboard.view`: Staff.
   "roi.view": "owner",
   "app_settings.edit": "owner",
+  // Where the worker sends the Owner's alerts, and the test alert (US-015): the Owner's own number and address.
+  "alert_recipients.edit": "owner",
   "admin_user.manage": "owner",
   "audit.view": "owner",
 } as const satisfies Record<string, Rule>;

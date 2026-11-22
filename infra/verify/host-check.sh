@@ -61,7 +61,7 @@ expect "/etc/selinux/config" "SELINUX=enforcing" "$(grep -E '^SELINUX=' /etc/sel
 avc=$(ausearch -m AVC,USER_AVC -ts boot 2>&1)
 if [[ $avc == *"<no matches>"* ]]; then pass "no AVC denial since boot"; else fail "AVC denials since boot (ausearch -m AVC,USER_AVC -ts boot): $(head -c 300 <<<"$avc")"; fi
 for path in /srv/lp /srv/data /srv/data/deliverables "$ETC/caddy" "$ETC/caddy/Caddyfile" "$ETC/postgres/pg_hba.conf" \
-  "$ETC/postgres/superuser.pass" "$ETC/valkey/valkey.conf" "$ETC/valkey/users.acl"; do
+  "$ETC/postgres/superuser.pass" "$ETC/postgres/walg_libsodium.key" "$ETC/postgres/walg_aws_credentials" "$ETC/valkey/valkey.conf" "$ETC/valkey/users.acl"; do
   label=$(stat -c %C "$path" 2>/dev/null)
   if [[ $label == *:container_file_t:* ]]; then pass "$path labeled container_file_t"; else fail "$path label: ${label:-<none>}"; fi
 done
@@ -126,7 +126,7 @@ if sshd_t=$(sshd -T 2>/dev/null); then
     "allowagentforwarding no" "disableforwarding yes" "maxauthtries 3"; do
     expect "sshd ${kv%% *}" "$kv" "$(grep -m1 "^${kv%% *} " <<<"$sshd_t")"
   done
-  expect "sshd allowusers" "$(for c in $CFG_SSH_ALLOWED_CIDRS; do printf 'allowusers %s@%s\n' "$CFG_ADMIN_SSH_USER" "$c"; done)" \
+  expect "sshd allowusers" "$(sshd_allow_users | sed 's/^/allowusers /')" \
     "$(grep '^allowusers ' <<<"$sshd_t")"
 else
   fail "sshd -T"
@@ -230,7 +230,7 @@ esac
 section "/etc/ebooktrivia"
 expect "$ETC" "750 root $APP" "$(stat -c '%a %U %G' "$ETC")"
 for dir in caddy postgres valkey; do expect "$ETC/$dir" "750 root $APP" "$(stat -c '%a %U %G' "$ETC/$dir" 2>/dev/null)"; done
-for name in public admin worker internal migrate postgres valkey caddy; do
+for name in public admin worker internal migrate postgres valkey caddy walg restic; do
   file=$ETC/$name.env
   expect "$file mode/owner" "640 root $APP" "$(stat -c '%a %U %G' "$file" 2>/dev/null)"
   if grep -vE '^[[:space:]]*#' "$file" 2>/dev/null | grep -qE '__SET_ME__|@GEN@|@GEN_TOKEN_SHA256@|@DOMAIN@'; then fail "$file has unfilled placeholders"; else pass "$file has no placeholders"; fi
@@ -249,9 +249,12 @@ if grep -qiE '^[[:space:]]*SECRETS_[A-Z0-9_]*PRIVATE_KEY' "$ETC/admin.env" 2>/de
 else
   pass "$ETC/admin.env holds no private key"
 fi
-for file in caddy/Caddyfile valkey/valkey.conf valkey/users.acl postgres/pg_hba.conf postgres/superuser.pass; do
+for file in caddy/Caddyfile valkey/valkey.conf valkey/users.acl postgres/pg_hba.conf postgres/superuser.pass postgres/walg_libsodium.key postgres/walg_aws_credentials; do
   expect "$ETC/$file mode/owner" "640 root $APP" "$(stat -c '%a %U %G' "$ETC/$file" 2>/dev/null)"
 done
+# wal-g's S3 credentials are a file the operator fills in (docs/runbooks/backups.md); the libsodium key is generated: one line of 64 hex digits.
+if grep -q '__SET_ME__' "$ETC/postgres/walg_aws_credentials" 2>/dev/null; then fail "$ETC/postgres/walg_aws_credentials has unfilled placeholders"; else pass "$ETC/postgres/walg_aws_credentials has no placeholders"; fi
+if grep -qE '^[0-9a-f]{64}$' "$ETC/postgres/walg_libsodium.key" 2>/dev/null; then pass "$ETC/postgres/walg_libsodium.key is 64 hex digits"; else fail "$ETC/postgres/walg_libsodium.key is not 64 hex digits"; fi
 # Nothing under /etc/ebooktrivia belongs to the app user: it could otherwise swap entries root writes.
 expect "entries owned by $APP under $ETC" "" "$(find "$ETC" -user "$APP" 2>/dev/null | paste -sd " " -)"
 if [[ -e $ETC/glitchtip-hook.token ]]; then fail "$ETC/glitchtip-hook.token still exists (copy it to GlitchTip, then delete it)"; else pass "no GlitchTip hook token left on disk"; fi
@@ -321,7 +324,10 @@ expect "public-a -> postgres 10.89.51.2:5432 (control)" open "$(reach public-a 1
 acme_ip=$(getent ahostsv4 "$ACME_HOST" | awk 'NR == 1 { print $1 }')
 expect "worker -> $ACME_HOST:443 (egress control)" open "$(reach worker "$ACME_HOST" 443)"
 expect "valkey (data network only) -> ${acme_ip:-?}:443" closed "$(reach valkey "${acme_ip:-192.0.2.1}" 443)"
-expect "postgres (data network only) -> ${acme_ip:-?}:443" closed "$(reach postgres "${acme_ip:-192.0.2.1}" 443)"
+# US-015: PostgreSQL alone is also on ebt-backup (egress for wal-g): it reaches the storage, and nothing else joins that network.
+expect "postgres (data + backup networks) -> ${acme_ip:-?}:443 (wal-g egress control)" open "$(reach postgres "${acme_ip:-192.0.2.1}" 443)"
+expect "public-a -> postgres 10.89.54.2:5432 (backup network)" closed "$(reach public-a 10.89.54.2 5432)"
+expect "caddy -> postgres 10.89.54.2:5432 (backup network)" closed "$(reach caddy 10.89.54.2 5432)"
 if [[ -n $host_ip ]]; then expect "worker -> this host's sshd $host_ip:22" closed "$(reach worker "$host_ip" 22)"; fi
 
 section "Valkey"
@@ -408,6 +414,65 @@ check "port 80 held by the app user's systemd (socket activation)" grep -qE ':80
 check "port 443 held by the app user's systemd (socket activation)" grep -qE ':443 .*"systemd"' <<<"$listeners"
 expect "http://127.0.0.1/ redirects to HTTPS" 308 "$(curl -s -o /dev/null -m 5 -w '%{http_code}' -H "Host: play.$CFG_DOMAIN" http://127.0.0.1/)"
 expect "http://api.<domain>/ answers 400, never a redirect (US-031)" 400 "$(curl -s -o /dev/null -m 5 -w '%{http_code}' -H "Host: api.$CFG_DOMAIN" http://127.0.0.1/)"
+
+section "CI deploy access and backups (US-015)"
+DEPLOY_SCRIPT=/usr/local/sbin/ebt-remote-deploy
+if [[ -n $CFG_DEPLOY_PUBLIC_KEY ]]; then
+  du=$CFG_DEPLOY_USER
+  dhome=/home/$du
+  expect "deploy login shell" /bin/bash "$(getent passwd "$du" | cut -d: -f7)"
+  expect "deploy login password" locked "$(passwd -S "$du" 2>/dev/null | awk '{ print ($2 == "L" || $2 == "LK") ? "locked" : "open" }')"
+  expect "deploy login groups (not wheel)" "$du" "$(id -nG "$du" 2>/dev/null)"
+  expect "$dhome owner/mode (only root writes: the login cannot change its keys)" "755 root root" "$(stat -c '%a %U %G' "$dhome" 2>/dev/null)"
+  expect "$dhome/.ssh owner/mode" "755 root root" "$(stat -c '%a %U %G' "$dhome/.ssh" 2>/dev/null)"
+  expect "$dhome/.ssh/authorized_keys owner/mode" "644 root root" "$(stat -c '%a %U %G' "$dhome/.ssh/authorized_keys" 2>/dev/null)"
+  # shellcheck disable=SC2016 # the key line holds the literal text $SSH_ORIGINAL_COMMAND
+  expect "authorized_keys: one key, restricted to the forced command" 'restrict,command="sudo -n /usr/local/sbin/ebt-remote-deploy \"$SSH_ORIGINAL_COMMAND\"" '"$CFG_DEPLOY_PUBLIC_KEY" "$(cat "$dhome/.ssh/authorized_keys" 2>/dev/null)"
+  check "$DEPLOY_SCRIPT is the repository's infra/deploy/remote.sh, root-owned 0755" bash -c "cmp -s '$HERE/../deploy/remote.sh' $DEPLOY_SCRIPT && [[ \$(stat -c '%a %U' $DEPLOY_SCRIPT) == '755 root' ]]"
+  expect "/etc/sudoers.d/90-ebooktrivia-deploy owner/mode" "440 root root" "$(stat -c '%a %U %G' /etc/sudoers.d/90-ebooktrivia-deploy 2>/dev/null)"
+  check "sudoers files parse (visudo -c)" visudo -c
+  expect "the deploy login may run these three commands as root, nothing else" "($DEPLOY_SCRIPT deploy, $DEPLOY_SCRIPT rollback, $DEPLOY_SCRIPT status)" \
+    "$(sudo -l -U "$du" 2>/dev/null | awk '/NOPASSWD:/ { sub(/.*NOPASSWD: */, ""); gsub(/, /, ", "); print "(" $0 ")" }')"
+  expect "$ETC/deploy.env owner/mode" "600 root root" "$(stat -c '%a %U %G' "$ETC/deploy.env" 2>/dev/null)"
+  expect "deploy state dirs owner/mode (root only)" "700 root root|700 root root|700 root root" \
+    "$(for d in /var/lib/ebooktrivia/deploy /var/backups/ebooktrivia /var/backups/ebooktrivia/predeploy; do stat -c '%a %U %G' "$d" 2>/dev/null; done | paste -sd '|' -)"
+  if [[ -e $ETC/deploy.allow-failure-drill ]]; then printf 'NOTE  %s exists: the failure drill is allowed (staging only; remove it on production)\n' "$ETC/deploy.allow-failure-drill"; fi
+else
+  pass "no deploy access configured (DEPLOY_* not set in provision.env)"
+fi
+if ((CONTAINER)); then
+  pass "backup timers not checked in the container stand-in"
+else
+  for timer in ebt-backup-base.timer ebt-backup-restic.timer; do
+    if [[ -e $ETC/drill-vm ]]; then
+      # A restore-drill VM must never back up to the storage it reads from: the timers are OFF there (restore-pitr.sh --drill).
+      if as_app systemctl --user is-enabled --quiet "$timer" 2>/dev/null; then fail "$timer is enabled on a restore-drill VM ($ETC/drill-vm)"; else pass "$timer off on a restore-drill VM"; fi
+    else
+      check "$timer enabled (the app user's systemd)" as_app systemctl --user is-enabled --quiet "$timer"
+      check "$timer active" as_app systemctl --user is-active --quiet "$timer"
+    fi
+  done
+  check "ebt-ops-check.timer (disk and pg_wal, every 5 minutes) enabled" as_app systemctl --user is-enabled --quiet ebt-ops-check.timer
+  check "ebt-ops-check.timer active" as_app systemctl --user is-active --quiet ebt-ops-check.timer
+fi
+# A restore-drill VM acts on nothing real (docs/restore-drill.md step 3): its worker pushes to no Kuma monitor and holds neither the messaging nor
+# the conversions private key, so it cannot open a sealed secret to send the restored outbox, and nothing is posted back to the adnets.
+if [[ -e $ETC/drill-vm ]]; then
+  section "restore-drill VM ($ETC/drill-vm exists)"
+  drill_problems=$(drill_worker_env_violations "$ETC/worker.env" 2>/dev/null)
+  if [[ ! -r $ETC/worker.env ]]; then fail "$ETC/worker.env is missing or unreadable on a restore-drill VM"; elif [[ -z $drill_problems ]]; then pass "worker.env on a restore-drill VM: Kuma push URLs blank, no messaging or conversions private key"; else
+    while IFS= read -r problem; do fail "worker.env on a restore-drill VM: $problem"; done <<<"$drill_problems"
+  fi
+fi
+# PostgreSQL has egress to the backup storage (an accepted risk, docs/runbooks/backups.md): no application login may be able to run a program or touch
+# files on the database host, so there is nothing for a compromised app to turn that egress into. (ebt_migrate IS a superuser, the one login that
+# creates the roles; only the one-shot migrate job holds its password, and no app process connects as it.)
+expect "no application login or group role is a superuser or can run server programs or read and write server files" 0 \
+  "$(psql_q "SELECT count(*) FROM pg_roles r WHERE r.rolname IN ('ebt_public', 'ebt_admin', 'ebt_worker', 'ebt_internal', 'public_rw', 'admin_rw', 'worker_rw', 'internal_rw') AND (r.rolsuper OR pg_has_role(r.oid, 'pg_execute_server_program', 'USAGE') OR pg_has_role(r.oid, 'pg_read_server_files', 'USAGE') OR pg_has_role(r.oid, 'pg_write_server_files', 'USAGE'))")"
+expect "PostgreSQL archive_mode" on "$(psql_q "SHOW archive_mode")"
+expect "PostgreSQL archive_command" "wal-g wal-push %p" "$(psql_q "SHOW archive_command")"
+expect "PostgreSQL archive_timeout" "1min" "$(psql_q "SHOW archive_timeout")"
+expect "PostgreSQL listens on its data-network address only" "10.89.51.2" "$(psql_q "SHOW listen_addresses")"
 
 printf '\nsummary: %d passed, %d failed%s\n' "$PASSES" "$FAILS" "$( ((CONTAINER)) && printf ' (in a container: failures marked [container] are expected there)')"
 ((FAILS == 0))

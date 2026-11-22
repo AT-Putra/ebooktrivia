@@ -1,0 +1,242 @@
+# Deploy (US-015, plan M4.4): build the images, push them to GHCR, and hand the VM a manifest of their DIGESTS over SSH.
+#
+# - staging: after `ci` passed on main (workflow_run), or by hand;
+# - production: by hand only (workflow_dispatch, environment `production`: required reviewers), from main.
+#
+# The VM side is infra/deploy/remote.sh, the forced command of the deploy key (authorized_keys `command=`): it accepts a
+# manifest of digests of this repository's images and nothing else, pulls by digest, takes a pg_dump, migrates (expand only),
+# restarts worker, internal, public@a, public@b, admin in that order, checks health and rolls the images back on any failure.
+# See docs/runbooks/deploy.md. No secret lives in this repository: the SSH key and the pinned host key are environment
+# secrets of `staging` and `production`; the pull credential is the job's own short-lived GITHUB_TOKEN, sent over the SSH
+# connection and never stored on the VM.
+#
+# GitHub setup (docs/runbooks/deploy.md section 1): environments `staging` and `production` with their protection rules and
+# secrets DEPLOY_SSH_KEY, DEPLOY_KNOWN_HOSTS and variables DEPLOY_HOST, DEPLOY_USER, DOMAIN; repository variables
+# STAGING_DOMAIN and PRODUCTION_DOMAIN (names, not secrets: the admin image bakes its origin in at build time).
+name: deploy
+
+on:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Where to deploy
+        type: choice
+        options: [staging, production]
+        default: staging
+      force_failure:
+        description: "Failure drill, staging only: make this step fail so the automatic rollback runs (the job passes when the rollback succeeds)"
+        type: choice
+        options: ["", after_migrate, after_worker, after_internal, after_public_a, health]
+        default: ""
+      allow_contract_ok:
+        description: "Accept a `-- contract-ok` migration in the range between the release on the VM and this one (a contract step: check first that no deployed release still uses what it removes)"
+        type: boolean
+        default: false
+
+permissions: {}
+
+env:
+  # What this run deploys: the commit CI passed on (workflow_run) or the dispatched one.
+  RELEASE_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+  TARGET: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || 'staging' }}
+
+jobs:
+  gate:
+    # A workflow_run only counts when ci succeeded, on this repository's own main branch.
+    if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_repository.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Only main is deployed
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch && "$GITHUB_REF" != refs/heads/main ]]; then
+            echo "::error::deploy only runs from main (this is $GITHUB_REF)"
+            exit 1
+          fi
+      - name: Staging drills never target production
+        if: github.event_name == 'workflow_dispatch' && inputs.force_failure != '' && inputs.environment != 'staging'
+        run: |
+          echo "::error::the failure drill is for staging only"
+          exit 1
+      - name: ci has passed for this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          passed=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$RELEASE_SHA&status=completed" \
+            --jq '[.workflow_runs[] | select(.conclusion == "success")] | length')
+          if [[ "$passed" -lt 1 ]]; then
+            echo "::error::ci has not passed for $RELEASE_SHA"
+            exit 1
+          fi
+
+  build:
+    needs: gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      manifest: ${{ steps.manifest.outputs.manifest }}
+    env:
+      DOMAIN: ${{ github.event_name == 'workflow_dispatch' && inputs.environment == 'production' && vars.PRODUCTION_DOMAIN || vars.STAGING_DOMAIN }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.RELEASE_SHA }}
+          persist-credentials: false
+      - name: Log in to GHCR
+        env:
+          REGISTRY_TOKEN: ${{ github.token }}
+        run: printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+      - name: Build and push the images, and write the manifest of their digests
+        id: manifest
+        run: |
+          set -euo pipefail
+          [[ -n "$DOMAIN" ]] || { echo "::error::the repository variable STAGING_DOMAIN / PRODUCTION_DOMAIN is not set"; exit 1; }
+          prefix="ghcr.io/${GITHUB_REPOSITORY,,}"
+          tag="${RELEASE_SHA:0:12}-$TARGET"
+          app() {
+            local target="$1"
+            shift
+            docker build -f infra/images/app/Containerfile --target "$target" "$@" -t "$prefix/$target:$tag" .
+          }
+          # The same targets and arguments as infra/provision/build-images.sh. The migrate job and the internal process run
+          # the worker image, so the manifest has five images, not six.
+          docker build -t "$prefix/postgres-walg:$tag" infra/images/postgres-walg
+          app public
+          app worker
+          app admin-cli
+          # next.config.ts bakes the console's origin into the server-action allowedOrigins.
+          app admin --build-arg "ADMIN_ORIGIN=https://admin.$DOMAIN"
+          {
+            echo "version=1"
+            echo "git_sha=$RELEASE_SHA"
+            for component in public admin admin-cli worker postgres-walg; do
+              docker push -q "$prefix/$component:$tag" >/dev/null
+              ref=$(docker inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$prefix/$component:$tag" | grep -m1 "^$prefix/$component@sha256:")
+              [[ "$ref" =~ ^$prefix/$component@sha256:[0-9a-f]{64}$ ]] || { echo "::error::no digest for $component" >&2; exit 1; }
+              echo "$component=$ref"
+            done
+          } >manifest.txt
+          cat manifest.txt
+          {
+            echo 'manifest<<EOF_MANIFEST'
+            cat manifest.txt
+            echo 'EOF_MANIFEST'
+          } >>"$GITHUB_OUTPUT"
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    # A rolling deploy is minutes, a rollback after it more, and a database dump grows with the data: the job must outlive all of it. (The
+    # VM side runs in its own systemd unit and finishes, or rolls back, even if this job or its SSH connection dies: docs/runbooks/deploy.md.)
+    timeout-minutes: 60
+    # One deploy per environment at a time; a queued one waits, none is cancelled half-way.
+    concurrency:
+      group: deploy-${{ github.event_name == 'workflow_dispatch' && inputs.environment || 'staging' }}
+      cancel-in-progress: false
+    environment: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || 'staging' }}
+    permissions:
+      contents: read
+      packages: read
+    env:
+      MANIFEST: ${{ needs.build.outputs.manifest }}
+      DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+      DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+      DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+      DEPLOY_DOMAIN: ${{ vars.DOMAIN }}
+      REGISTRY_TOKEN: ${{ github.token }}
+      FORCE_FAILURE: ${{ github.event_name == 'workflow_dispatch' && inputs.force_failure || '' }}
+      ALLOW_CONTRACT_OK: ${{ github.event_name == 'workflow_dispatch' && inputs.allow_contract_ok || false }}
+    steps:
+      # The whole history: the release on the VM is a commit of it, and the migrations between it and this release are what the range check reads.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.RELEASE_SHA }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+      - name: "Deploy over SSH (the forced command accepts a manifest of digests and nothing else)"
+        run: |
+          set -euo pipefail
+          for name in DEPLOY_SSH_KEY DEPLOY_KNOWN_HOSTS DEPLOY_HOST DEPLOY_USER DEPLOY_DOMAIN; do
+            [[ -n "${!name}" ]] || { echo "::error::$name is not set in the $TARGET environment"; exit 1; }
+          done
+          key="$RUNNER_TEMP/deploy_key"
+          known="$RUNNER_TEMP/known_hosts"
+          install -m 600 /dev/null "$key"
+          printf '%s\n' "$DEPLOY_SSH_KEY" >"$key"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" >"$known"
+          ssh_vm() {
+            ssh -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$known" \
+              -o ConnectTimeout=20 -o ServerAliveInterval=30 "$DEPLOY_USER@$DEPLOY_HOST" "$@"
+          }
+          # The migrations of EVERY commit between the release running on the VM and this one must only expand the schema, and a `contract-ok`
+          # line is not accepted in such a range (it promises only that the PREVIOUS release is done with what it removes) unless this run says
+          # so: the VM may be many commits behind. The release on the VM is the git_sha of its current manifest; none yet means a first deploy.
+          current=$(ssh_vm status | awk '/^== /{block=$0} block == "== current manifest" && /^git_sha=/{sub(/^git_sha=/, ""); print; exit}') ||
+            { echo "::error::could not read the release running on the VM (ssh ... status)"; exit 1; }
+          if [[ -z "$current" ]]; then
+            echo "range check: the VM has no current manifest (a first deploy): nothing to compare"
+          else
+            [[ "$current" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::the VM reports an odd git_sha: $current"; exit 1; }
+            echo "range check: the VM runs $current; this release is $RELEASE_SHA"
+            git cat-file -e "$current^{commit}" 2>/dev/null || { echo "::error::$current is not in this repository's history: refusing to deploy over a release that cannot be compared"; exit 1; }
+            flags=(--refuse-contract-ok)
+            if [[ "$ALLOW_CONTRACT_OK" == true ]]; then
+              echo "::warning::allow_contract_ok: contract-ok migrations in the range are accepted"
+              flags=()
+            fi
+            bash infra/verify/local/expand-only.sh "${flags[@]}" "$current" || { echo "::error::the migrations since the release on the VM are not all expand-only (see above); nothing was deployed"; exit 1; }
+          fi
+          payload() {
+            printf '%s\n' "$MANIFEST"
+            printf 'registry_user=%s\nregistry_token=%s\n' "$GITHUB_ACTOR" "$REGISTRY_TOKEN"
+            if [[ -n "$FORCE_FAILURE" ]]; then printf 'force_fail=%s\n' "$FORCE_FAILURE"; fi
+          }
+          set +e
+          payload | ssh_vm deploy
+          status=$?
+          if [[ "$status" -eq 255 ]]; then
+            # The connection was lost (ssh itself exits 255). The deploy is not: it runs in its own unit on the VM and ends in a success or in its own
+            # rollback. Wait for it (up to 40 minutes) and read how it ended from `status`: the last run's result names the release.
+            echo "::warning::the SSH connection was lost; the deploy goes on on the VM, waiting for it to end"
+            out=""
+            for _ in $(seq 1 120); do
+              sleep 20
+              out=$(ssh_vm status 2>/dev/null) || continue
+              if grep -q '^deploy running: no$' <<<"$out"; then break; fi
+            done
+            last=$(grep '^last deploy: ' <<<"$out" | tail -n 1)
+            echo "after the lost connection: ${last:-no result}"
+            case "$last" in
+              *" $RELEASE_SHA OK") status=0 ;;
+              *" $RELEASE_SHA ROLLED_BACK") status=10 ;;
+              *) status=2 ;;
+            esac
+          fi
+          set -e
+          if [[ -n "$FORCE_FAILURE" ]]; then
+            # The drill passes when the deploy failed on purpose AND rolled back (exit 10), and the stack is healthy again.
+            [[ "$status" -eq 10 ]] || { echo "::error::the failure drill did not end in a clean rollback (exit $status; 10 = rolled back)"; exit 1; }
+            ssh_vm status
+            echo "failure drill: the forced failure at $FORCE_FAILURE was rolled back"
+          else
+            [[ "$status" -eq 0 ]] || { echo "::error::deploy failed (exit $status; 10 = failed and rolled back, 2 = rollback failed)"; exit 1; }
+          fi
+      - name: Smoke test through the public edge
+        run: |
+          curl --fail --silent --show-error --location --retry 10 --retry-delay 6 --retry-connrefused \
+            --output /dev/null "https://play.$DEPLOY_DOMAIN/"
+          echo "play.$DEPLOY_DOMAIN answers"

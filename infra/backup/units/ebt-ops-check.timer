@@ -1,0 +1,11 @@
+# Managed by infra/provision. Every 5 minutes: a failing WAL archive fills the disk at about 16 MB a minute, so the alert must not wait for a night.
+[Unit]
+Description=ebooktrivia disk and pg_wal check
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

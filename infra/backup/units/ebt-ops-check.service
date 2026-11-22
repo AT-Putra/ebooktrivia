@@ -1,0 +1,10 @@
+# Managed by infra/provision (@REPO@ is the checkout that provisioned this host). The VM's free disk and PostgreSQL's pg_wal (US-015 review).
+[Unit]
+Description=ebooktrivia disk and pg_wal check
+After=postgres.service
+Wants=postgres.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/bash @REPO@/infra/backup/ops-check.sh
+TimeoutStartSec=2min

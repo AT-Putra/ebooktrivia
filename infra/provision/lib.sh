@@ -235,6 +235,25 @@ env_value() {
   awk -v k="$2" 'index($0, k "=") == 1 { v = substr($0, length(k) + 2) } END { if (v != "") print v }' "$1"
 }
 
+# A restore-DRILL VM (the marker /etc/ebooktrivia/drill-vm, docs/restore-drill.md) must not act on the real world: its worker would push to the
+# real Uptime Kuma monitors (a drill's heartbeat would hide a real outage) and, holding the messaging and conversion private keys, open the sealed
+# secrets and drain the restored outbox through real WAHA, SMTP and the adnets' postbacks. Without those two keys the worker has no deliveries, no
+# alert relay and no conversions (apps/worker/src/worker.ts: they are built from the keys), so no existing switch is needed beyond them.
+# drill_scrub_worker_env: worker.env on stdin, the drill's worker.env on stdout (Kuma push URLs blanked, the two private keys removed).
+drill_scrub_worker_env() {
+  sed -E -e 's/^(UPTIME_KUMA_PUSH_URL|UPTIME_KUMA_ALERTS_PUSH_URL)=.*/\1=/' -e '/^(SECRETS_MESSAGING_PRIVATE_KEY|SECRETS_CONVERSIONS_PRIVATE_KEY)=/d'
+}
+# drill_worker_env_violations FILE: one line per way FILE is unsafe on a restore-drill VM; nothing when it is safe (what host-check.sh asserts).
+drill_worker_env_violations() {
+  local file=$1 key
+  for key in UPTIME_KUMA_PUSH_URL UPTIME_KUMA_ALERTS_PUSH_URL; do
+    if grep -qE "^$key=." "$file"; then printf '%s is set: a drill would push to the real Kuma monitor\n' "$key"; fi
+  done
+  for key in SECRETS_MESSAGING_PRIVATE_KEY SECRETS_CONVERSIONS_PRIVATE_KEY; do
+    if grep -qE "^$key=." "$file"; then printf '%s is present: a drill could open sealed secrets and send for real\n' "$key"; fi
+  done
+}
+
 # ---------------------------------------------------------------------------------------------
 # Configuration (/etc/ebooktrivia/provision.env): parsed line by line, never sourced. The CFG_*
 # variables are set by name (printf -v) and read by the sourcing scripts.
@@ -249,7 +268,18 @@ CFG_ADMIN_ALLOWED_CIDRS=""
 CFG_GLITCHTIP_ALLOWED_CIDRS=""
 # shellcheck disable=SC2034 # used by provision.sh, which sources this file
 CFG_WAHA_ALLOWED_CIDRS=""
+# shellcheck disable=SC2034 # used by provision.sh, which sources this file
+CFG_MONITOR_ALLOWED_CIDRS=""
 CFG_APP_USER="ebt"
+# The CI deploy access (US-015, optional as a group): the login whose forced command is infra/deploy/remote.sh, the
+# sources it may connect from, its public key, and the registry prefix remote.sh accepts images from.
+CFG_DEPLOY_USER="ebtdeploy"
+# shellcheck disable=SC2034 # used by provision.sh, which sources this file
+CFG_DEPLOY_ALLOWED_CIDRS=""
+# shellcheck disable=SC2034 # used by provision.sh, which sources this file
+CFG_DEPLOY_PUBLIC_KEY=""
+# shellcheck disable=SC2034 # used by provision.sh, which sources this file
+CFG_DEPLOY_REGISTRY_PREFIX=""
 
 valid_cidrs() {
   python3 -I -c '
@@ -275,7 +305,8 @@ load_config() {
     value=${BASH_REMATCH[2]}
     if [[ $value =~ ^\"(.*)\"$ ]]; then value=${BASH_REMATCH[1]}; fi
     case $key in
-      DOMAIN | ACME_EMAIL | ADMIN_SSH_USER | SSH_ALLOWED_CIDRS | ADMIN_ALLOWED_CIDRS | GLITCHTIP_ALLOWED_CIDRS | WAHA_ALLOWED_CIDRS | APP_USER)
+      DOMAIN | ACME_EMAIL | ADMIN_SSH_USER | SSH_ALLOWED_CIDRS | ADMIN_ALLOWED_CIDRS | GLITCHTIP_ALLOWED_CIDRS | WAHA_ALLOWED_CIDRS | MONITOR_ALLOWED_CIDRS | APP_USER | \
+        DEPLOY_USER | DEPLOY_ALLOWED_CIDRS | DEPLOY_PUBLIC_KEY | DEPLOY_REGISTRY_PREFIX)
         printf -v "CFG_$key" '%s' "$value"
         ;;
       *) die "$file: unknown key $key" ;;
@@ -288,12 +319,32 @@ load_config() {
   [[ $CFG_APP_USER =~ ^[a-z_][a-z0-9_-]{0,31}$ && $CFG_APP_USER != root && $CFG_APP_USER != "$CFG_ADMIN_SSH_USER" ]] ||
     die "APP_USER must be a user name other than root and ADMIN_SSH_USER"
   local name
-  for name in SSH_ALLOWED_CIDRS ADMIN_ALLOWED_CIDRS GLITCHTIP_ALLOWED_CIDRS WAHA_ALLOWED_CIDRS; do
+  for name in SSH_ALLOWED_CIDRS ADMIN_ALLOWED_CIDRS GLITCHTIP_ALLOWED_CIDRS WAHA_ALLOWED_CIDRS MONITOR_ALLOWED_CIDRS; do
     local var="CFG_$name"
     valid_cidrs "${!var}" || die "$name must be a space-separated list of CIDRs (address/prefix, host bits zero)"
     # Canonical form (2001:DB8::/32 -> 2001:db8::/32), so comparisons with firewalld are exact.
     printf -v "$var" '%s' "$(normalize_cidrs "${!var}")"
   done
+  validate_deploy_config
+}
+
+# validate_deploy_config: the deploy access is all or nothing. The public key is ONE bare key (no options: the forced
+# command and "restrict" are added by provision.sh, and a value that carried its own options could smuggle another command).
+validate_deploy_config() {
+  local set=0
+  [[ -n $CFG_DEPLOY_ALLOWED_CIDRS$CFG_DEPLOY_PUBLIC_KEY$CFG_DEPLOY_REGISTRY_PREFIX ]] && set=1
+  [[ $CFG_DEPLOY_USER =~ ^[a-z_][a-z0-9_-]{0,31}$ && $CFG_DEPLOY_USER != root && $CFG_DEPLOY_USER != "$CFG_ADMIN_SSH_USER" && $CFG_DEPLOY_USER != "$CFG_APP_USER" ]] ||
+    die "DEPLOY_USER must be a user name other than root, ADMIN_SSH_USER and APP_USER"
+  ((set)) || return 0
+  [[ -n $CFG_DEPLOY_ALLOWED_CIDRS && -n $CFG_DEPLOY_PUBLIC_KEY && -n $CFG_DEPLOY_REGISTRY_PREFIX ]] ||
+    die "DEPLOY_ALLOWED_CIDRS, DEPLOY_PUBLIC_KEY and DEPLOY_REGISTRY_PREFIX go together (all set, or none)"
+  valid_cidrs "$CFG_DEPLOY_ALLOWED_CIDRS" || die "DEPLOY_ALLOWED_CIDRS must be a space-separated list of CIDRs (address/prefix, host bits zero)"
+  CFG_DEPLOY_ALLOWED_CIDRS=$(normalize_cidrs "$CFG_DEPLOY_ALLOWED_CIDRS")
+  local key_re='^(ssh-ed25519|sk-ssh-ed25519@openssh\.com|ecdsa-sha2-nistp256) [A-Za-z0-9+/]+=*( [A-Za-z0-9_.@-]{1,64})?$'
+  local prefix_re='^ghcr\.io/[a-z0-9][a-z0-9._-]*(/[a-z0-9][a-z0-9._-]*)+$'
+  [[ $CFG_DEPLOY_PUBLIC_KEY =~ $key_re ]] || die "DEPLOY_PUBLIC_KEY must be one ed25519 (or ecdsa-sha2-nistp256) public key line, without options"
+  [[ $CFG_DEPLOY_REGISTRY_PREFIX =~ $prefix_re ]] ||
+    die "DEPLOY_REGISTRY_PREFIX must be ghcr.io/<owner>/<name>, lowercase (images are <prefix>/<component>@sha256:<digest>)"
 }
 
 # normalize_cidrs "LIST": the CIDRs in Python's canonical text form, sorted, space-separated.
@@ -305,11 +356,25 @@ print(" ".join(str(n) for n in nets))
 ' "$1"
 }
 
-# ssh_rich_rules: the firewalld rich rules that let SSH_ALLOWED_CIDRS (and nobody else) reach SSH,
+# ssh_source_cidrs: every source firewalld lets reach port 22: SSH_ALLOWED_CIDRS plus DEPLOY_ALLOWED_CIDRS (US-015, the CI
+# deploy login), canonical form, sorted, without duplicates. sshd's AllowUsers (below) still decides WHO may log in from where.
+ssh_source_cidrs() {
+  normalize_cidrs "$CFG_SSH_ALLOWED_CIDRS $CFG_DEPLOY_ALLOWED_CIDRS"
+}
+
+# sshd_allow_users: the AllowUsers entries, one per line: ADMIN_SSH_USER from each of SSH_ALLOWED_CIDRS, then DEPLOY_USER
+# from each of DEPLOY_ALLOWED_CIDRS (none when the deploy access is not configured).
+sshd_allow_users() {
+  local cidr
+  for cidr in $CFG_SSH_ALLOWED_CIDRS; do printf '%s@%s\n' "$CFG_ADMIN_SSH_USER" "$cidr"; done
+  for cidr in $CFG_DEPLOY_ALLOWED_CIDRS; do printf '%s@%s\n' "$CFG_DEPLOY_USER" "$cidr"; done
+}
+
+# ssh_rich_rules: the firewalld rich rules that let SSH_ALLOWED_CIDRS and DEPLOY_ALLOWED_CIDRS (and nobody else) reach SSH,
 # one per line, in firewalld's own normalized text form.
 ssh_rich_rules() {
   local cidr family
-  for cidr in $CFG_SSH_ALLOWED_CIDRS; do
+  for cidr in $(ssh_source_cidrs); do
     if [[ $cidr == *:* ]]; then family=ipv6; else family=ipv4; fi
     printf 'rule family="%s" source address="%s" service name="ssh" accept\n' "$family" "$cidr"
   done

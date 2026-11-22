@@ -1,0 +1,94 @@
+# Uptime Kuma and GlitchTip for the Owner's WAHA box (US-015, plan section 2 and M4.8): they live OFF the app VM, so an alert still reaches the
+# Owner when the VM is down. Installation without disturbing the other app on that box: docs/runbooks/monitoring.md.
+#
+#   docker compose -f infra/monitoring/compose.yaml --env-file infra/monitoring/.env --env-file infra/monitoring/glitchtip.env up -d
+#
+# This file is its own compose project (ebt-monitoring): its own network, its own named volumes, loopback-only ports, memory limits. It
+# defines nothing about WAHA and never touches the existing WAHA containers, volumes, networks or session configuration. Put TLS in front of
+# the two loopback ports with the reverse proxy the box already runs (a sample is in the runbook).
+#
+# Images are pinned by digest (docs/versions.md: the latest stable release at least 14 days old when this was written).
+#   Uptime Kuma 2.5.9 (2.5.10 to 2.5.12 are newer than 14 days; 3.0.0 is a beta)
+#   GlitchTip 6.2.6 (7.0.0, released 2026-11-09, was 13 days old: take it after its 14 days and the project's upgrade notes)
+#   PostgreSQL 18.6, the digest the app's own image uses (infra/images/postgres-walg/Dockerfile)
+name: ebt-monitoring
+
+services:
+  kuma:
+    image: docker.io/louislam/uptime-kuma:2.5.9@sha256:e88415a90dd2f7efecdbc18de0490aff292764a3ac471531bf1d0481725591bd
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${KUMA_PORT:-3001}:3001"
+    volumes:
+      - kuma-data:/app/data
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    # NET_RAW: the ICMP ping monitor of the VM. The rest is dropped; the container still runs as the image's own user.
+    cap_add: [NET_RAW, SETUID, SETGID, CHOWN, DAC_OVERRIDE, FOWNER]
+    mem_limit: 512m
+    networks: [monitoring]
+
+  glitchtip:
+    image: docker.io/glitchtip/glitchtip:6.2.6@sha256:a3d8eb1b36c1e1603d55ab32711ea3dd8115874742a781a57391a62a16e0dff6
+    restart: unless-stopped
+    depends_on:
+      glitchtip-postgres:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${GLITCHTIP_PORT:-8000}:8000"
+    environment:
+      # One process for the web server, the worker and the beat (the official sample's all_in_one), and no Valkey: the task queue, cache and
+      # sessions live in PostgreSQL (VALKEY_URL empty; the official sample allows it for small installs), one container less on a shared box.
+      SERVER_ROLE: all_in_one
+      VALKEY_URL: ""
+      ENABLE_ADMIN: "False"
+      ENABLE_OPENAPI: "False"
+      GLITCHTIP_ENABLE_MCP: "False"
+      GLITCHTIP_ENABLE_DUCKDB: "False"
+    env_file:
+      # SECRET_KEY, DATABASE_URL, EMAIL_URL, DEFAULT_FROM_EMAIL, GLITCHTIP_DOMAIN: infra/monitoring/glitchtip.env.example. Never in the repository.
+      - glitchtip.env
+    volumes:
+      - glitchtip-uploads:/code/uploads
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 768m
+    networks: [monitoring]
+
+  glitchtip-postgres:
+    image: docker.io/library/postgres:18.6@sha256:5a5a84b19854a9ffaa54082c166ff4ec27473a361e496e5ea167f298f2da9722
+    restart: unless-stopped
+    # GlitchTip's partitioned tables need more locks than PostgreSQL allows by default (the official sample's command).
+    command: ["postgres", "-c", "max_locks_per_transaction=512"]
+    environment:
+      POSTGRES_USER: glitchtip
+      POSTGRES_DB: glitchtip
+      POSTGRES_PASSWORD_FILE: /run/secrets/glitchtip_db_password
+    secrets:
+      - glitchtip_db_password
+    volumes:
+      - glitchtip-pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U glitchtip -d glitchtip"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 384m
+    networks: [monitoring]
+
+secrets:
+  glitchtip_db_password:
+    # A file with the database password (one line); the same value is in DATABASE_URL of glitchtip.env. Not in the repository.
+    file: ./glitchtip-db-password.txt
+
+volumes:
+  kuma-data:
+  glitchtip-uploads:
+  glitchtip-pgdata:
+
+networks:
+  monitoring:
+    name: ebt-monitoring

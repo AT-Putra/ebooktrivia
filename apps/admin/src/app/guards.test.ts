@@ -120,6 +120,10 @@ const GUARDS: Readonly<Record<string, string>> = {
   "uploads/image/trivia/route.ts#POST": "permission:trivia_set.edit",
   "uploads/questions/route.ts#POST": "permission:trivia_set.edit",
   "(console)/settings/prizes/page.tsx": "permission:prize_tier.edit",
+  // Alert recipients (US-015): the Owner's own number and address, and the test alert.
+  "(console)/settings/alerts/page.tsx": "permission:alert_recipients.edit",
+  "(console)/settings/alerts/actions.ts#saveAlertRecipientsAction": "permission:alert_recipients.edit",
+  "(console)/settings/alerts/actions.ts#sendTestAlertAction": "permission:alert_recipients.edit",
   "(console)/settings/prizes/actions.ts#createPrizeTierAction": "permission:prize_tier.edit",
   "(console)/settings/prizes/actions.ts#updatePrizeTierAction": "permission:prize_tier.edit",
   "(console)/settings/prizes/actions.ts#deletePrizeTierAction": "permission:prize_tier.edit",
@@ -181,6 +185,13 @@ const PUBLIC: Readonly<Record<string, string>> = {
   "(auth)/login/recovery/page.tsx": "sign-in step 2 with a recovery code",
 };
 const isMockup = (rel: string) => rel.startsWith("(mockups)/");
+/**
+ * Route handlers reachable without a console session, with the reason. Only GET, and only a probe that answers a fixed
+ * body: the deep health of US-015, which Caddy limits to the allowlisted addresses.
+ */
+const PUBLIC_ROUTES: Readonly<Record<string, string>> = {
+  "healthz/route.ts": "deep health probe: a fixed ok / degraded answer, no data; Caddy shows this host to ADMIN_ALLOWED_CIDRS only",
+};
 
 /** `{ permission: "x" }` -> permission:x, `{ enrollment: true }`, `{ allowUnenrolled: true }`; else "invalid". */
 function requirement(literal: string): string {
@@ -218,6 +229,7 @@ function foundGuards(): Record<string, string> {
     }
   }
   for (const rel of routes) {
+    if (PUBLIC_ROUTES[rel] !== undefined) continue;
     for (const line of read(rel).split("\n").filter((l) => /^export\b/.test(l))) {
       const method = /^export const (GET|HEAD|POST|PUT|PATCH|DELETE) = /.exec(line)?.[1] ?? line;
       const literal = /^export const [A-Z]+ = adminRoute\((\{[^}]*\}),/.exec(line)?.[1];
@@ -273,6 +285,7 @@ describe("server-action directive", () => {
       "(console)/reports/delivery/actions.ts",
       "(console)/reports/postbacks/actions.ts",
       "(console)/settings/adnets/actions.ts",
+      "(console)/settings/alerts/actions.ts",
       "(console)/settings/landing-pages/actions.ts",
       "(console)/settings/legal/actions.ts",
       "(console)/settings/limits/actions.ts",
@@ -298,6 +311,20 @@ describe("server-action directive", () => {
 describe("route handlers", () => {
   it("never offer state changes on GET (mutations are POST-only route handlers or server actions)", () => {
     for (const rel of routes) expect(read(rel), rel).not.toMatch(/^export const GET = /m);
+  });
+
+  it.each(Object.keys(PUBLIC_ROUTES))("public route %s still exists, exports GET only, and answers a fixed body without a session or any write (keep the list exact)", (rel) => {
+    expect(routes).toContain(rel);
+    const text = read(rel);
+    expect(
+      text
+        .split("\n")
+        .filter((l) => /^export\b/.test(l))
+        .map((l) => /^export (?:async function |const )(\w+)/.exec(l)?.[1]),
+    ).toEqual(["dynamic", "runtime", "GET"]);
+    expect(text).not.toMatch(/adminRoute|loadAdminSession|requireAdmin|withAudit|runMutation|cookies|headers\(\)|request\.|INSERT|UPDATE|DELETE/);
+    expect(text).toContain('"cache-control": "no-store"');
+    expect(text).toContain('{ status: ok ? "ok" : "degraded" }');
   });
 });
 
