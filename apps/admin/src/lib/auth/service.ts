@@ -22,8 +22,10 @@ import { type AuditChange, currentMutationScope, insertAudit, NoMutationScopeErr
 import { throttleBucket } from "@ebooktrivia/edge";
 import type { Sql } from "../db.ts";
 import { logEvent } from "../log.ts";
-import { hashSecret } from "./argon2.ts";
+import { hashSecret, verifySecret } from "./argon2.ts";
 import { SESSION_COOKIE, TOTP_ISSUER, TWO_FACTOR_COOKIE } from "./instance.ts";
+import { enqueuePasswordCheck } from "./password-check.ts";
+import { configuredOrigin, passwordProblem } from "./password-policy.ts";
 import { prepareRecoveryCodes, storeRecoveryCodes } from "./recovery-codes.ts";
 import { authHeaders, normalizeEmail, PASSWORD_MAX, PASSWORD_MIN } from "./request.ts";
 import type { AuthRuntime } from "./runtime.ts";
@@ -333,6 +335,10 @@ export async function startEnrollment(
   if (input.newPassword.length < PASSWORD_MIN || input.newPassword.length > PASSWORD_MAX || input.newPassword === input.password) {
     return { kind: "invalid_new_password" };
   }
+  // US-031: not a common password, no context word (the product's, the domain's, this account's e-mail); the breach
+  // check runs in the worker once the password is set (password-check.ts).
+  const [me] = await rt.sql<{ email: string }[]>`SELECT email FROM admin_auth."user" WHERE id = ${admin.userId}`;
+  if (passwordProblem(input.newPassword, { email: me?.email, origin: configuredOrigin() }) !== null) return { kind: "invalid_new_password" };
   const userKey = throttleKey("second_factor", admin.userId);
   const gate = await beginAttempt(rt.sql, [userKey, ipKey(req)], [userKey]);
   if (!gate.allowed) return refused(gate);
@@ -372,6 +378,7 @@ export async function startEnrollment(
     await tx`
       UPDATE admin_auth.account SET password = ${passwordHash}, "updatedAt" = clock_timestamp()
        WHERE "userId" = ${admin.userId} AND "providerId" = 'credential'`;
+    await enqueuePasswordCheck(tx, rt.settings.sealer, admin.userId, input.newPassword);
     audit({
       action: "admin_auth.totp_enrollment_started",
       entityType: "admin_user",
@@ -445,6 +452,61 @@ export async function regenerateRecoveryCodes(rt: AuthRuntime, admin: SignedInAd
   });
   await check.finish();
   return { kind: "codes", recoveryCodes: codes.shown };
+}
+
+export type PasswordChangeOutcome = { readonly kind: "changed" } | { readonly kind: "invalid" } | { readonly kind: "invalid_new_password" } | Locked;
+
+/**
+ * US-031 (ASVS V6.2.12): the forced change of a password the worker found in a known breach (session status
+ * "password_change", lib/access.ts). The current password and a new one: the new one passes the same rules as everywhere
+ * (and is checked against breaches in its turn), every OTHER session of the account is signed out, and the flag is
+ * cleared with the new check (password-check.ts). Wrong current passwords count on the account's second-factor key, like
+ * enrolment, so this page is no password oracle.
+ */
+export async function changeBreachedPassword(
+  rt: AuthRuntime,
+  admin: SignedInAdmin & { readonly sessionId: string },
+  input: { password: string; newPassword: string },
+  req: RequestInfo,
+): Promise<PasswordChangeOutcome> {
+  if (input.newPassword.length < PASSWORD_MIN || input.newPassword.length > PASSWORD_MAX || input.newPassword === input.password) {
+    return { kind: "invalid_new_password" };
+  }
+  const [me] = await rt.sql<{ email: string; hash: string | null }[]>`
+    SELECT u.email, a.password AS hash
+      FROM admin_auth."user" u
+      LEFT JOIN admin_auth.account a ON a."userId" = u.id AND a."providerId" = 'credential'
+     WHERE u.id = ${admin.userId}`;
+  if (passwordProblem(input.newPassword, { email: me?.email, origin: configuredOrigin() }) !== null) return { kind: "invalid_new_password" };
+  const userKey = throttleKey("second_factor", admin.userId);
+  const gate = await beginAttempt(rt.sql, [userKey, ipKey(req)], [userKey]);
+  if (!gate.allowed) return refused(gate);
+  const actor = { kind: "admin", userId: admin.userId } as const;
+  if (typeof me?.hash !== "string" || !(await verifySecret(me.hash, input.password))) {
+    const failure = await gate.attempt.failed();
+    await recordEvent(rt.sql, { action: "admin_auth.password_change_failed", entityType: "admin_user", entityId: admin.userId, facts: { reason: "wrong_password" }, actor });
+    if (await reportHardLock(rt.sql, admin.userId, failure, "password_change")) return locked(LOCK_SECONDS, true);
+    return failure.locked.length > 0 ? locked(LOCK_SECONDS) : { kind: "invalid" };
+  }
+  const passwordHash = await hashSecret(input.newPassword);
+  await withAudit(rt.sql, async (tx, audit) => {
+    await tx`
+      UPDATE admin_auth.account SET password = ${passwordHash}, "updatedAt" = clock_timestamp()
+       WHERE "userId" = ${admin.userId} AND "providerId" = 'credential'`;
+    const others = await tx`DELETE FROM admin_auth.session WHERE "userId" = ${admin.userId} AND id <> ${admin.sessionId}`;
+    await enqueuePasswordCheck(tx, rt.settings.sealer, admin.userId, input.newPassword);
+    audit({
+      action: "admin_auth.breached_password_changed",
+      entityType: "admin_user",
+      entityId: admin.userId,
+      fields: { password: "secret" },
+      after: { password: "set" },
+      facts: { other_sessions_revoked: others.count },
+      actor,
+    });
+  });
+  await gate.attempt.succeeded([userKey]);
+  return { kind: "changed" };
 }
 
 /** Ends the current session (audited before Better Auth deletes it, and after). */

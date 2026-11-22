@@ -3,9 +3,11 @@
 // run (the admin app would have written it, US-017). Dropped afterwards.
 // DEV ONLY defaults: the local dev stack (infra/dev/compose.yaml). CI sets TEST_PG_URL and
 // TEST_VALKEY_URL; the Valkey ACL is the dev stack's (user `public`).
+import { PUBLIC_VALKEY_LIBRARY_CODE } from "@ebooktrivia/adapters/valkey-functions";
 import { createSecretSealer, generateScopeKeyPair } from "@ebooktrivia/crypto";
 import { SECRET_NAMES } from "@ebooktrivia/db";
 import { createTestDatabase } from "@ebooktrivia/test-support/database";
+import { loadValkeyFunctions } from "@ebooktrivia/test-support/valkey";
 import postgres from "postgres";
 import type { TestProject } from "vitest/node";
 
@@ -51,11 +53,18 @@ export default async function setup(project: TestProject): Promise<() => Promise
   await root.end();
   project.provide("dbUrl", db.url);
   project.provide("publicDbUrl", db.logins.public_rw ?? "");
-  project.provide("valkeyUrl", process.env["TEST_VALKEY_URL"] ?? "redis://127.0.0.1:56379"); // DEV ONLY
+  const valkeyUrl = process.env["TEST_VALKEY_URL"] ?? "redis://127.0.0.1:56379"; // DEV ONLY
+  const inspect = { username: process.env["TEST_VALKEY_USERNAME"] ?? "worker", password: process.env["TEST_VALKEY_PASSWORD"] ?? "worker-devonly" }; // DEV ONLY
+  // US-031: the rate-limit function public FCALLs, loaded the way the worker loads it in production (no worker runs here).
+  await loadValkeyFunctions({ url: valkeyUrl, ...inspect }, PUBLIC_VALKEY_LIBRARY_CODE).catch(async (error: unknown) => {
+    await db.drop();
+    throw error;
+  });
+  project.provide("valkeyUrl", valkeyUrl);
   project.provide("valkeyUsername", process.env["TEST_VALKEY_PUBLIC_USERNAME"] ?? "public");
   project.provide("valkeyPassword", process.env["TEST_VALKEY_PUBLIC_PASSWORD"] ?? "public-devonly"); // DEV ONLY
-  project.provide("valkeyInspectUsername", process.env["TEST_VALKEY_USERNAME"] ?? "worker");
-  project.provide("valkeyInspectPassword", process.env["TEST_VALKEY_PASSWORD"] ?? "worker-devonly"); // DEV ONLY
+  project.provide("valkeyInspectUsername", inspect.username);
+  project.provide("valkeyInspectPassword", inspect.password);
   project.provide("paymentPrivateKey", keys.privateKey.toString("base64url"));
   project.provide("midtransServerKey", STUB_SERVER_KEY);
   return () => db.drop();

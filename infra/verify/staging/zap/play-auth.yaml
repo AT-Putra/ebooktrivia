@@ -1,0 +1,81 @@
+# ZAP 2.17.0 Automation Framework plan (US-031): the authenticated scan of play.<domain> as the staging test player.
+# The player logs in with a WhatsApp OTP sent to the staging test phone, which ZAP cannot read: the operator logs in
+# in a browser first and hands the __Host-play_session cookie to infra/verify/staging/zap-auth.sh (ZAP_PLAY_SESSION_COOKIE,
+# an environment variable, never written to disk). The replacer job sends it with every request to the play host; the
+# script checks the session before the scan and signs it out everywhere after it. The spider never posts forms; the
+# logout routes are out of scope. docs/runbooks/security-scans.md has the steps.
+env:
+  contexts:
+    - name: play
+      urls:
+        - "https://play.${ZAP_DOMAIN}/"
+      includePaths:
+        - "https://play\\.${ZAP_DOMAIN_REGEX}/.*"
+      excludePaths:
+        - "https://play\\.${ZAP_DOMAIN_REGEX}/api/v1/play/auth/logout.*"
+        - "https://play\\.${ZAP_DOMAIN_REGEX}/login.*"
+        - "https://play\\.${ZAP_DOMAIN_REGEX}/masuk.*"
+  parameters:
+    failOnError: true
+    failOnWarning: false
+    progressToStdout: true
+jobs:
+  - type: replacer
+    parameters:
+      deleteAllRules: true
+    rules:
+      - description: the staging test player's session
+        url: "https://play\\.${ZAP_DOMAIN_REGEX}/.*"
+        matchType: req_header
+        matchString: Cookie
+        matchRegex: false
+        replacementString: "__Host-play_session=${ZAP_PLAY_SESSION_COOKIE}"
+  - type: passiveScan-config
+    parameters:
+      maxAlertsPerRule: 10
+      scanOnlyInScope: true
+    # Off (security review M1): these informational rules copy the login request, the session token and the
+    # login check into the report as evidence, which would put the test account's credentials and session in it.
+    rules:
+      - id: 10111
+        name: Authentication Request Identified
+        threshold: "off"
+      - id: 10112
+        name: Session Management Response Identified
+        threshold: "off"
+      - id: 10113
+        name: Verification Request Identified
+        threshold: "off"
+  - type: requestor
+    requests:
+      - url: "https://play.${ZAP_DOMAIN}/api/v1/play/auth/session"
+        method: GET
+  - type: spider
+    parameters:
+      context: play
+      url: "https://play.${ZAP_DOMAIN}/"
+      maxDuration: 10
+      maxDepth: 6
+      postForm: false
+  - type: passiveScan-wait
+    parameters:
+      maxDuration: 10
+  # ACTIVE_SCAN (zap-auth.sh --active inserts the activeScan job here)
+  # The URLs the scan reached: zap-auth.sh fails the scan unless one is a signed-in-only page (security review M2,
+  # infra/verify/src/zap-report.ts signedInUrls). URLs only, no request or response content.
+  - type: export
+    parameters:
+      context: play
+      type: url
+      source: sitestree
+      fileName: /zap/wrk/play-urls.txt
+  - type: report
+    parameters:
+      template: traditional-json
+      reportDir: /zap/wrk
+      reportFile: play-auth.json
+  - type: report
+    parameters:
+      template: traditional-html
+      reportDir: /zap/wrk
+      reportFile: play-auth.html

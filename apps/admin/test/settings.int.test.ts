@@ -71,7 +71,7 @@ describe("write-only secrets (AC-A1/A2, plan M2.3)", () => {
     expect(() => openerFromEnv(adminEnv)).toThrow(CryptoError);
     expect(() => loadSettingsConfig({ ...adminEnv, SECRETS_PAYMENT_PRIVATE_KEY: Buffer.from(pairs.payment.privateKey).toString("base64url") })).toThrow(/must not hold a private key/);
     const loaded = loadSettingsConfig(adminEnv);
-    expect(Object.keys(loaded.sealer ?? {}).sort()).toEqual(["keyId", "scopes", "sealOtp", "sealSecret"]);
+    expect(Object.keys(loaded.sealer ?? {}).sort()).toEqual(["keyId", "scopes", "sealOtp", "sealPasswordCheck", "sealSecret"]);
   });
 
   it("a Midtrans key is sealed to the payment key: the admin login cannot read it back, the private key opens it", async () => {

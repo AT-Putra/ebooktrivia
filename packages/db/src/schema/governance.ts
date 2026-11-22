@@ -61,10 +61,20 @@ export const adminProfiles = pgTable(
     disabledAt: tstz("disabled_at"),
     /** Set while TOTP is not enrolled: after it, the account cannot sign in until an Owner resets it (US-016 SL3). */
     enrollBy: tstz("enroll_by"),
+    /**
+     * US-031 (ASVS V6.2.12): the breached-password check of the CURRENT password (a new id each time a password is set, the
+     * outbox job admin.password_hibp_check carries it), and when the worker found that password in a breach: then the admin
+     * must change it before anything else (lib/access.ts). A check of an older password never flags the current one.
+     */
+    passwordCheckId: uuid("password_check_id"),
+    passwordBreachedAt: tstz("password_breached_at"),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
-  (t) => [inCheck("admin_profiles_role_check", t.role, ["owner", "staff"])],
+  (t) => [
+    inCheck("admin_profiles_role_check", t.role, ["owner", "staff"]),
+    check("admin_profiles_breach_check", sql`${t.passwordBreachedAt} IS NULL OR ${t.passwordCheckId} IS NOT NULL`),
+  ],
 );
 
 /**
@@ -344,7 +354,8 @@ export const settingsSecrets = pgTable(
  * writer (admin_rw included) can store a value outside them. Inclusive [min, max].
  */
 export const APP_SETTING_BOUNDS = {
-  "otp.code_ttl_seconds": [60, 900],
+  // US-031 (ASVS V6.5.5): an out-of-band code lives 10 minutes at most.
+  "otp.code_ttl_seconds": [60, 600],
   "otp.max_attempts": [1, 5],
   "otp.phone_cap": [1, 10],
   "otp.phone_window_seconds": [3600, 86_400],

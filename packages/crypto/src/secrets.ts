@@ -18,9 +18,9 @@
 // Env: SECRETS_<SCOPE>_PUBLIC_KEY / SECRETS_<SCOPE>_PRIVATE_KEY, raw 32-byte X25519 keys as
 // base64url (decodeSecretKey). The opener reads only *_PRIVATE_KEY, the sealer only *_PUBLIC_KEY.
 
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { decodeSecretKey } from "@ebooktrivia/core";
-import { isSecretScope, otpAad, SECRET_SCOPES, secretAad, type SecretLabels, type SecretScope } from "./aad.ts";
+import { isSecretScope, otpAad, passwordCheckAad, SECRET_SCOPES, secretAad, type SecretLabels, type SecretScope } from "./aad.ts";
 import {
   CryptoError,
   GCM_NONCE_BYTES,
@@ -76,11 +76,22 @@ export interface OtpInput {
   readonly phone: string;
 }
 
+/** The labels of an admin password's breached-password check (outbox payload check_id + admin_user_id). */
+export interface PasswordCheckInput {
+  readonly checkId: string;
+  readonly adminUserId: string;
+}
+
 export interface SecretSealer {
   readonly scopes: readonly SecretScope[];
   keyId(scope: SecretScope): string;
   sealSecret(input: SecretInput): SealedSecret;
   sealOtp(input: OtpInput & { readonly code: string }): Buffer;
+  /**
+   * US-031 (ASVS V6.2.12): the SHA-1 of an admin password (40 uppercase hex), sealed to the messaging key for the worker's
+   * breached-password check. The password is hashed here and goes nowhere else.
+   */
+  sealPasswordCheck(input: PasswordCheckInput & { readonly password: string }): Buffer;
 }
 
 export interface SecretOpener {
@@ -88,6 +99,17 @@ export interface SecretOpener {
   openSecret(row: StoredSecretRow): string;
   /** Opens a sealed OTP from the outbox (`sealed`, payload otp_id + phone); returns the 6 digits. */
   openOtp(input: OtpInput & { readonly sealed: Uint8Array }): string;
+  /** Opens a sealed password check from the outbox (`sealed`, payload check_id + admin_user_id); returns the SHA-1. */
+  openPasswordCheck(input: PasswordCheckInput & { readonly sealed: Uint8Array }): string;
+}
+
+const SHA1_HEX = /^[0-9A-F]{40}$/;
+export const SEALED_PASSWORD_CHECK_BYTES = 40 + SEALED_BOX_OVERHEAD;
+
+/** Worker-side check of an opened password check: exactly 40 uppercase hex characters. */
+export function assertPasswordSha1(sha1: string): string {
+  if (!SHA1_HEX.test(sha1)) throw new CryptoError("invalid_input", "password check must be a SHA-1 in uppercase hex");
+  return sha1;
 }
 
 /**
@@ -182,6 +204,12 @@ export function createSecretSealer(publicKeys: ScopeKeys): SecretSealer {
       const key = keyFor("messaging");
       const code = assertOtpCode(input.code);
       return seal(key.raw, Buffer.from(code, "ascii"), otpAad(input.otpId, input.phone));
+    },
+    sealPasswordCheck(input: PasswordCheckInput & { readonly password: string }): Buffer {
+      const key = keyFor("messaging");
+      if (typeof input.password !== "string" || input.password === "") throw new CryptoError("invalid_input", "password must be a non-empty string");
+      const sha1 = createHash("sha1").update(input.password, "utf8").digest("hex").toUpperCase();
+      return seal(key.raw, Buffer.from(sha1, "ascii"), passwordCheckAad(input.checkId, input.adminUserId));
     },
   });
 }

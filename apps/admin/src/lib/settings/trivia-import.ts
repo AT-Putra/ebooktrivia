@@ -38,6 +38,7 @@ import type { Sql } from "../db.ts";
 import { InvalidInput, NotAllowed } from "./fields.ts";
 import { type Actor, type Defaults, importTarget, insertImported, type QuestionDraft, STAFF_LOCKED, validateQuestion } from "./trivia.ts";
 import { IMPORT_COLUMNS, IMPORT_MAX_BYTES, IMPORT_MAX_ROWS } from "./trivia-import-format.ts";
+import { processWide } from "../process-wide.ts";
 
 export { IMPORT_COLUMNS, IMPORT_MAX_BYTES, IMPORT_MAX_ROWS, IMPORT_TEMPLATE_CSV } from "./trivia-import-format.ts";
 
@@ -174,17 +175,17 @@ async function xlsxRows(canonical: Buffer): Promise<SheetRow[]> {
  */
 export const XLSX_MAX_WAITING = 3;
 export const IMPORT_BUSY = "The server is busy reading other spreadsheet imports. Try again in a minute.";
-let xlsxQueue: Promise<unknown> = Promise.resolve();
-let xlsxWaiting = 0;
+// Per process, not per bundle (lib/process-wide.ts).
+const xlsx = processWide<{ queue: Promise<unknown>; waiting: number }>("xlsx-queue", () => ({ queue: Promise.resolve(), waiting: 0 }));
 function oneXlsxAtATime<T>(fn: () => Promise<T>): Promise<T> {
-  if (xlsxWaiting > XLSX_MAX_WAITING - 1) return Promise.reject(new InvalidInput(IMPORT_BUSY));
-  xlsxWaiting++;
+  if (xlsx.waiting > XLSX_MAX_WAITING - 1) return Promise.reject(new InvalidInput(IMPORT_BUSY));
+  xlsx.waiting++;
   const start = (): Promise<T> => {
-    xlsxWaiting--;
+    xlsx.waiting--;
     return fn();
   };
-  const run = xlsxQueue.then(start, start);
-  xlsxQueue = run.catch(() => undefined);
+  const run = xlsx.queue.then(start, start);
+  xlsx.queue = run.catch(() => undefined);
   return run;
 }
 

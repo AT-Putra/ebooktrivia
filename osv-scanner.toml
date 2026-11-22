@@ -1,0 +1,23 @@
+# OSV-Scanner 2.7.0 configuration (US-031), found next to pnpm-lock.yaml by CI (google/osv-scanner-action) and by
+# infra/verify/local/security-scan.sh. Each entry is a reviewed finding that is not reachable here, pinned to the exact
+# package name and version (security review L4: an advisory id alone would also hide it in any other package or
+# version that pulls it in later), with its package path and an expiry: on that date the finding is back and must be
+# re-checked (docs/runbooks/security-scans.md). An override hides every advisory of that one version, so the re-check
+# also lists what else it hides. Reviewed by the lead on 2026-11-22. A reachable finding is fixed (upgrade or a scoped
+# pnpm override), never listed here.
+
+[[PackageOverrides]]
+name = "esbuild"
+version = "0.18.20"
+ecosystem = "npm"
+effectiveUntil = 2027-02-22T00:00:00Z
+vulnerability.ignore = true
+reason = "GHSA-67mh-4wv8-2f99. esbuild 0.18.20, dev only: packages/db (devDependency) > drizzle-kit 0.31.11 > @esbuild-kit/esm-loader 2.6.5 > @esbuild-kit/core-utils 3.3.2 (pins ~0.18.20). The advisory is esbuild's serve dev server answering any origin; nothing here runs esbuild serve, and drizzle-kit is in no image."
+
+[[PackageOverrides]]
+name = "minimatch"
+version = "10.2.6"
+ecosystem = "npm"
+effectiveUntil = 2027-02-22T00:00:00Z
+vulnerability.ignore = true
+reason = "GHSA-g3hv-75wg-m249. minimatch 10.2.6, dev only: eslint 10.14.0 > @eslint/config-array 0.23.5, typescript-eslint 8.72.2 > @typescript-eslint/typescript-estree, packages/ui (devDependency) > shadcn 4.23.0 > ts-morph 26.0.0 > @ts-morph/common. The advisory needs attacker-controlled glob patterns; these tools only match the repository's own config globs. Fixed only in 11.0.1, a major eslint does not accept yet (^10)."

@@ -13,6 +13,9 @@ import { promisify } from "node:util";
 import { Queue, QueueEvents, Worker } from "bullmq";
 import { Redis } from "ioredis";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { PUBLIC_VALKEY_LIBRARY, PUBLIC_VALKEY_LIBRARY_CODE, RATE_LIMIT_FUNCTION } from "@ebooktrivia/adapters/valkey-functions";
+import { createLogger } from "../src/log.ts";
+import { startValkeyFunctionLoader } from "../src/valkey-functions.ts";
 import { VALKEY_IMAGE } from "./support/docker.ts";
 
 const run = promisify(execFile);
@@ -139,17 +142,17 @@ describe("production Valkey ACL", () => {
     expect(await reply(pub.get("cache:admin:acl"))).toMatch(/NOPERM/);
     expect(await reply(pub.get("cache:worker:acl"))).toMatch(/NOPERM/);
     expect(await reply(pub.get("ebt:acl"))).toMatch(/NOPERM/);
-    // US-020: public runs an allowlist (-@all +ping +eval +incr +pttl +pexpire +set): the checkout's
-    // rate-limit script and the single-use marks of (stateless) Cap tokens. No INFO, no reads, no deletes.
+    // US-020: public runs an allowlist (-@all +ping +fcall +incr +pttl +pexpire +set): the rate-limit function the
+    // worker loads (US-031) and the single-use marks of (stateless) Cap tokens. No INFO, no reads, no deletes, no Lua.
     expect(await reply(pub.info("server"))).toMatch(/NOPERM/);
-    expect(await reply(pub.eval("redis.call('INCR', KEYS[1]); return redis.call('PTTL', KEYS[1])", 1, "rl:acl-script"))).toBe("-1");
+    expect(await reply(pub.eval("redis.call('INCR', KEYS[1]); return redis.call('PTTL', KEYS[1])", 1, "rl:acl-script"))).toMatch(/NOPERM/);
     expect(await reply(pub.set("cache:public:acl-once", "1", "PX", 60_000, "NX"))).toBe("OK");
     expect(await reply(pub.getdel("cache:public:acl-once"))).toMatch(/NOPERM/);
     expect(await reply(pub.del("cache:public:acl-once"))).toMatch(/NOPERM/);
     expect(await reply(pub.get("rl:acl"))).toMatch(/NOPERM/);
     expect(await reply(pub.exists("rl:acl"))).toMatch(/NOPERM/);
-    expect(await reply(pub.eval("return redis.call('GET', KEYS[1])", 1, "rl:acl"))).toMatch(/NOPERM|ACL failure/);
-    expect(await reply(pub.eval("return redis.call('INCR', KEYS[1])", 1, "ebt:acl"))).toMatch(/NOPERM|ACL failure/);
+    expect(await reply(pub.eval("return redis.call('GET', KEYS[1])", 1, "rl:acl"))).toMatch(/NOPERM/);
+    expect(await reply(pub.eval("return redis.call('INCR', KEYS[1])", 1, "ebt:acl"))).toMatch(/NOPERM/);
 
     expect(await reply(admin.set("cache:admin:acl", "2"))).toBe("OK");
     expect(await reply(admin.get("cache:public:acl"))).toMatch(/NOPERM/);
@@ -179,6 +182,67 @@ describe("production Valkey ACL", () => {
     }
     // Still there: nothing was flushed.
     expect(await reply(worker.get("ebt:acl"))).toBe("1");
+  });
+
+  it("US-031: the worker loads public's function at start, after a reconnect and after a flush; public may only FCALL it", async () => {
+    // The health connection's settings in src/worker.ts (lazy, ready check on: the worker may INFO).
+    const worker = new Redis({ host: "127.0.0.1", port, username: "worker", password: passwords.worker, lazyConnect: true, maxRetriesPerRequest: 1, commandTimeout: 2000 });
+    clients.push(worker);
+    const pub = client("public");
+    await pub.connect();
+    const lines: { msg: string; reason?: string }[] = [];
+    const log = createLogger({ level: "info", role: "worker" }, { write: (line: string) => void lines.push(JSON.parse(line) as { msg: string; reason?: string }) });
+    const fcall = () => reply(pub.call("FCALL", RATE_LIMIT_FUNCTION, 0));
+    const loadedFor = (reason: string) => lines.filter((l) => l.msg === "valkey functions loaded" && l.reason === reason).length;
+
+    let missingReported = 0;
+    const loader = await startValkeyFunctionLoader(worker, log, () => {
+      missingReported++;
+      return Promise.resolve();
+    });
+    try {
+      expect(loadedFor("start")).toBe(1);
+      expect(await fcall()).toBe("0,0");
+      expect(await reply(pub.call("FCALL", RATE_LIMIT_FUNCTION, 1, "rl:acl-fn", "1", "60000"))).toBe("0,0");
+      expect(await reply(pub.call("FCALL", RATE_LIMIT_FUNCTION, 1, "rl:acl-fn", "1", "60000"))).toMatch(/^1,\d+$/);
+      expect(await reply(pub.call("FCALL", RATE_LIMIT_FUNCTION, 1, "ebt:acl-fn", "1", "60000"))).toMatch(/NOPERM/);
+      for (const attempt of [
+        () => pub.call("FUNCTION", "LOAD", "REPLACE", PUBLIC_VALKEY_LIBRARY_CODE),
+        () => pub.call("FUNCTION", "DELETE", PUBLIC_VALKEY_LIBRARY),
+        () => pub.call("FUNCTION", "FLUSH"),
+        () => pub.call("SCRIPT", "LOAD", "return 1"),
+        () => pub.evalsha("e0e1f9fabfc9d4800c877a703b823ac0578ff8db", 0),
+        () => pub.eval("return 1", 0),
+      ]) {
+        expect(await reply(attempt())).toMatch(/NOPERM/);
+      }
+
+      // Flushed (a restored or replaced Valkey): the heartbeat's check loads it again.
+      expect(await reply(worker.call("FUNCTION", "FLUSH"))).toBe("OK");
+      expect(await fcall()).toMatch(/Function not found/i);
+      expect(await loader.check()).toBe(true);
+      expect(lines.filter((l) => l.msg === "valkey functions loaded" && l.reason === "missing")).toHaveLength(1);
+      expect(missingReported).toBe(1); // the worker raises valkey_function_missing from here (worker.ts)
+      expect(await fcall()).toBe("0,0");
+      expect(await loader.check()).toBe(true); // present: nothing to load, nothing to report
+      expect(lines.filter((l) => l.msg === "valkey functions loaded" && l.reason === "missing")).toHaveLength(1);
+      expect(missingReported).toBe(1);
+
+      // Flushed and then the connection drops (a Valkey restart): the reconnect loads it again.
+      expect(await reply(worker.call("FUNCTION", "FLUSH"))).toBe("OK");
+      const reconnected = new Promise<void>((resolve) => {
+        worker.once("ready", () => {
+          resolve();
+        });
+      });
+      worker.disconnect(true);
+      await reconnected;
+      for (let i = 0; i < 40 && loadedFor("reconnect") === 0; i++) await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(loadedFor("reconnect")).toBe(1);
+      expect(await fcall()).toBe("0,0");
+    } finally {
+      loader.stop();
+    }
   });
 
   it("runs with noeviction and AOF", async () => {

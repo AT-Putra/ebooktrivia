@@ -1621,23 +1621,23 @@ CREATE OR REPLACE TRIGGER order_owner_decisions_guard_truncate
   BEFORE TRUNCATE ON public.order_owner_decisions
   FOR EACH STATEMENT EXECUTE FUNCTION public.order_owner_decisions_guard();
 
--- The console's outbox rows (security review US-033): admin_rw INSERTs outbox rows for exactly two jobs, the template
--- test-send (core TEST_SEND_TOPIC) and the Owner's "re-query Midtrans now", each under a dedupe key of its own topic
+-- The console's outbox rows (security review US-033): admin_rw INSERTs outbox rows for exactly three jobs, the template
+-- test-send (core TEST_SEND_TOPIC), the Owner's "re-query Midtrans now" and (US-031) an admin password's breached-password
+-- check (apps/admin lib/auth/password-check.ts), each under a dedupe key of its own topic
 -- (`<topic>:...`). Any other topic, or a key outside its topic, is refused (ET189): dedupe_key is unique across ALL topics,
 -- so with a free INSERT a console session could take another job's predictable key first (e.g. order.paid:<order id>, under
 -- any topic) and so suppress the payment code's own row (ON CONFLICT DO NOTHING) and its nudge, make enqueue_mo fail, or
--- block a link resend. US-031 adds 'admin.password_hibp_check' to this list, under the same key rule. The caller is a member
--- of admin_rw (the console logs in as its own login role, so current_user is never the group's name); a superuser passes
--- every pg_has_role check and is excluded explicitly (the migrate job, the test harnesses, repairs by hand). No login is a
--- member of two groups (preflight.sql ET091), so a worker login is never taken for the console. SECURITY INVOKER: the guard
--- must see the caller.
+-- block a link resend. The caller is a member of admin_rw (the console logs in as its own login role, so current_user is
+-- never the group's name); a superuser passes every pg_has_role check and is excluded explicitly (the migrate job, the test
+-- harnesses, repairs by hand). No login is a member of two groups (preflight.sql ET091), so a worker login is never taken for
+-- the console. SECURITY INVOKER: the guard must see the caller.
 CREATE OR REPLACE FUNCTION public.outbox_admin_topic_guard()
   RETURNS trigger
   LANGUAGE plpgsql
   SET search_path = pg_catalog, pg_temp
 AS $fn$
 BEGIN
-  IF (NEW.topic NOT IN ('template.test_send', 'payment.requery') OR NOT starts_with(NEW.dedupe_key, NEW.topic || ':'))
+  IF (NEW.topic NOT IN ('template.test_send', 'payment.requery', 'admin.password_hibp_check') OR NOT starts_with(NEW.dedupe_key, NEW.topic || ':'))
      AND pg_has_role(current_user, 'admin_rw', 'USAGE')
      AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles r WHERE r.rolname = current_user AND r.rolsuper) THEN
     RAISE EXCEPTION 'the console may not enqueue outbox topic % under that key', NEW.topic USING ERRCODE = 'ET189';

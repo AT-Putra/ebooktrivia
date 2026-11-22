@@ -117,20 +117,36 @@
 }
 
 # Headers on the app hosts. Set when the response is written (defer), so they replace the app's
-# copies; CSP is added next to the app's nonce CSP (proxy.ts), and a browser enforces both. The one
-# argument is the site's Referrer-Policy: each site emits exactly ONE, strict-origin on order.<domain>
-# (AC-T5, where vendor scripts run) and strict-origin-when-cross-origin elsewhere. A second `header` block
-# for the same field after this one did not take effect (verified in Caddy 2.11.9), hence the argument.
+# copies; CSP is added next to the app's nonce CSP (proxy.ts), and a browser enforces both.
 (app_headers) {
 	header {
 		defer
 		Strict-Transport-Security "max-age=31536000; includeSubDomains"
 		X-Content-Type-Options nosniff
 		X-Frame-Options DENY
-		Referrer-Policy {args[0]}
-		+Content-Security-Policy "frame-ancestors 'none'"
+		+Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'"
 		-Server
 		-X-Powered-By
+	}
+}
+
+# The site's Referrer-Policy: every site emits exactly ONE (each site imports exactly one of these, and only these set
+# the field; two blocks for one field did not combine in Caddy 2.11.9).
+#   - FORCED on order.<domain> (AC-T5: vendor scripts run there): strict-origin, whatever the app or a bug sends;
+#   - a DEFAULT elsewhere (`?`, US-031): it applies only when the app set none, so a route's own stricter policy reaches
+#     the browser (no-referrer on the play login and trivia pages, same-origin on admin).
+# infra/verify/local/security-headers.sh checks each route's value; order-headers.sh that the order one is forced.
+(referrer_forced) {
+	header {
+		defer
+		Referrer-Policy {args[0]}
+	}
+}
+
+(referrer_default) {
+	header {
+		defer
+		?Referrer-Policy {args[0]}
 	}
 }
 
@@ -178,10 +194,15 @@
 
 # Blocked on every host: /internal (plan M4.3) and /livez (the load balancer's, checked on the
 # upstreams directly, never through a site). Matched case-insensitively on the cleaned path.
+# TRACE and TRACK are refused on every host before any app sees them (405; US-031, ASVS V13.4.4).
 (blocked_paths) {
 	@blocked path /internal /internal/* /livez /livez/*
 	handle @blocked {
 		respond 404
+	}
+	@trace method TRACE TRACK
+	handle @trace {
+		respond 405
 	}
 }
 
@@ -189,13 +210,23 @@
 http:// {
 	bind fd/3
 	import access_log
-	redir https://{host}{uri} 308
+	# US-031 (ASVS V4.1.2): only the pages people open in a browser are redirected. The API, its webhooks and the
+	# signed files on api.<domain> answer 400 over plain HTTP: a server-to-server caller sending plaintext is told,
+	# never silently upgraded (a 308 would keep the method and body).
+	@api host api.{$DOMAIN}
+	handle @api {
+		respond "HTTPS only" 400
+	}
+	handle {
+		redir https://{host}{uri} 308
+	}
 }
 
 admin.{$DOMAIN} {
 	import https
 	import access_log
-	import app_headers strict-origin-when-cross-origin
+	import app_headers
+	import referrer_default strict-origin-when-cross-origin
 	import blocked_paths
 	@outside not remote_ip {$ADMIN_ALLOWED_CIDRS}
 	handle @outside {
@@ -219,7 +250,8 @@ admin.{$DOMAIN} {
 play.{$DOMAIN} {
 	import https
 	import access_log
-	import app_headers strict-origin-when-cross-origin
+	import app_headers
+	import referrer_default strict-origin-when-cross-origin
 	import blocked_paths
 	handle {
 		request_body {
@@ -234,7 +266,8 @@ play.{$DOMAIN} {
 order.{$DOMAIN} {
 	import https
 	import order_access_log
-	import app_headers strict-origin
+	import app_headers
+	import referrer_forced strict-origin
 	import blocked_paths
 	request_header -Cookie
 	# No Set-Cookie, and none of Next's rewrite headers: proxy.ts rewrites /{publicId} to /order/{publicId}
@@ -258,7 +291,8 @@ order.{$DOMAIN} {
 api.{$DOMAIN} {
 	import https
 	import access_log
-	import app_headers strict-origin-when-cross-origin
+	import app_headers
+	import referrer_default strict-origin-when-cross-origin
 	import blocked_paths
 	# The GlitchTip alert hook: only this exact path shape, only POST, only from the GlitchTip host,
 	# goes to the internal process (which checks the token by its SHA-256). Anything else under

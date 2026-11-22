@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Runs the real Caddy 2.11.9 on the `order.{$DOMAIN}` site of infra/caddy/Caddyfile (the payment status
 # page origin, US-022) and checks what a browser and the access log get:
-#   - exactly ONE Referrer-Policy header, strict-origin (AC-T5: vendor scripts run on this origin);
+#   - exactly ONE Referrer-Policy header, strict-origin (AC-T5: vendor scripts run on this origin), FORCED: the stand-in
+#     upstream sends unsafe-url, the site replaces it (US-031);
 #   - HSTS, nosniff, frame-ancestors 'none', no Server header, and no Set-Cookie even when the upstream sets one
 #     (here a stand-in `respond` sets one, to prove the site removes it);
 #   - Next's rewrite headers (x-middleware-rewrite: /order/{publicId}, which proxy.ts's rewrite makes Next send)
@@ -38,6 +39,7 @@ snippet() { awk -v start="($1) {" '$0 == start { on = 1 } on { print } on && /^}
 {
   printf '{\n\tadmin off\n\tauto_https off\n}\n'
   snippet app_headers
+  snippet referrer_forced
   snippet order_access_log
   snippet blocked_paths
   # The site: its first line becomes :80 (no TLS here), `import https` goes (it binds the TLS socket), and its
@@ -49,6 +51,7 @@ snippet() { awk -v start="($1) {" '$0 == start { on = 1 } on { print } on && /^}
     on && skip && /^\t\}$/ {
       skip = 0
       printf "\thandle {\n\t\theader Set-Cookie \"sid=upstream; Path=/\"\n"
+      printf "\t\theader Referrer-Policy \"unsafe-url\"\n"
       printf "\t\theader X-Middleware-Rewrite \"/order/%s\"\n", id
       printf "\t\theader X-Nextjs-Rewritten-Path \"/order/%s\"\n", id
       printf "\t\theader X-Nextjs-Rewritten-Query \"order_id=%s-1\"\n", id
@@ -64,6 +67,7 @@ snippet() { awk -v start="($1) {" '$0 == start { on = 1 } on { print } on && /^}
 grep -q '^:80 {$' "$work/Caddyfile" || { printf 'could not find the order site in infra/caddy/Caddyfile\n' >&2; exit 1; }
 # The probe means nothing unless the stand-in really sends what the site must remove.
 grep -q "header X-Middleware-Rewrite \"/order/$id\"" "$work/Caddyfile" || { printf 'the stand-in upstream does not send x-middleware-rewrite\n' >&2; exit 1; }
+grep -q 'header Referrer-Policy "unsafe-url"' "$work/Caddyfile" || { printf 'the stand-in upstream does not send a weak Referrer-Policy\n' >&2; exit 1; }
 
 docker rm -f "$NAME" >/dev/null 2>&1 || true
 docker run -d --name "$NAME" -p "127.0.0.1:$PORT:80" -v "$(host_path "$work")/Caddyfile:/etc/caddy/Caddyfile:ro" \
@@ -96,7 +100,7 @@ check "exactly one Referrer-Policy header" 1 "$(grep -c '^referrer-policy:' <<<"
 check "Referrer-Policy is strict-origin" "referrer-policy: strict-origin" "$(grep '^referrer-policy:' <<<"$h" | head -n1)"
 check "HSTS" "strict-transport-security: max-age=31536000; includesubdomains" "$(grep '^strict-transport-security:' <<<"$h" | head -n1)"
 check "nosniff" "x-content-type-options: nosniff" "$(grep '^x-content-type-options:' <<<"$h" | head -n1)"
-check "frame-ancestors none" "content-security-policy: frame-ancestors 'none'" "$(grep '^content-security-policy:' <<<"$h" | head -n1)"
+check "the edge's global CSP (frame-ancestors, object-src, base-uri none)" "content-security-policy: frame-ancestors 'none'; object-src 'none'; base-uri 'none'" "$(grep '^content-security-policy:' <<<"$h" | head -n1)"
 check_not "no Set-Cookie, whatever the upstream sets" "set-cookie" "$h"
 check_not "no x-middleware-rewrite (it would name /order/{publicId})" "x-middleware-rewrite" "$h"
 check_not "no x-nextjs-rewritten-path / -query" "x-nextjs-rewritten" "$h"

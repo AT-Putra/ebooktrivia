@@ -7,7 +7,7 @@ import { adminAction } from "../../../lib/next/actions.ts";
 
 export const createStaffAction = adminAction({ permission: "admin_user.manage" }, async ({ rt }, _previous: CreateStaffState, form: FormData): Promise<CreateStaffState> => {
   const result = await createAdminUser(
-    rt.sql,
+    rt,
     { email: formText(form, "email", 320), displayName: formText(form, "displayName", 200), password: formText(form, "password", 256) },
     "staff",
     "admin_user.create",
@@ -32,7 +32,7 @@ export const setDisabledAction = adminAction({ permission: "admin_user.manage" }
  * action reports it; the Team page shows the control for Staff rows only.
  */
 export const resetAccessAction = adminAction({ permission: "admin_user.manage" }, async ({ rt, admin }, _previous: ResetState, form: FormData): Promise<ResetState> => {
-  const result = await resetAdminUser(rt.sql, admin.userId, formText(form, "userId", 64), formText(form, "password", 256));
+  const result = await resetAdminUser(rt, admin.userId, formText(form, "userId", 64), formText(form, "password", 256));
   if (result.kind === "reset") {
     revalidatePath("/team");
     return { status: "reset", at: Date.now() };

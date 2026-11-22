@@ -1,6 +1,6 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, expectTypeOf, it } from "vitest";
-import { canonicalAad, secretAad, type SecretLabels } from "./aad.ts";
+import { canonicalAad, passwordCheckAad, secretAad, type SecretLabels } from "./aad.ts";
 import { CryptoError, gcmDecrypt, generateScopeKeyPair, keyIdOf, open, privateKeyObject, seal } from "./sealed-box.ts";
 import { createSecretOpener, openerFromEnv } from "./opener.ts";
 import {
@@ -8,6 +8,7 @@ import {
   createSecretSealer,
   last4,
   SEALED_OTP_BYTES,
+  SEALED_PASSWORD_CHECK_BYTES,
   type SealedSecret,
   sealerFromEnv,
   type SecretOpener,
@@ -208,14 +209,15 @@ describe("a process with public keys only cannot decrypt", () => {
   it("type level: SecretSealer has no method that opens anything", () => {
     expectTypeOf<SecretSealer>().not.toHaveProperty("openSecret");
     expectTypeOf<SecretSealer>().not.toHaveProperty("openOtp");
-    expectTypeOf<keyof SecretSealer>().toEqualTypeOf<"scopes" | "keyId" | "sealSecret" | "sealOtp">();
+    expectTypeOf<SecretSealer>().not.toHaveProperty("openPasswordCheck");
+    expectTypeOf<keyof SecretSealer>().toEqualTypeOf<"scopes" | "keyId" | "sealSecret" | "sealOtp" | "sealPasswordCheck">();
     expectTypeOf<SecretOpener>().toHaveProperty("openSecret");
     // @ts-expect-error a sealer has no openSecret
     expect(sealer.openSecret).toBeUndefined();
   });
 
   it("runtime: the sealer exposes only sealing, and an opener cannot be built from admin.env", () => {
-    expect(Object.keys(sealer).sort()).toEqual(["keyId", "scopes", "sealOtp", "sealSecret"]);
+    expect(Object.keys(sealer).sort()).toEqual(["keyId", "scopes", "sealOtp", "sealPasswordCheck", "sealSecret"]);
     expect(Object.isFrozen(sealer)).toBe(true);
     expectCode(() => openerFromEnv(ADMIN_ENV), "invalid_key");
     expectCode(() => openerFromEnv({}), "invalid_key");
@@ -346,5 +348,45 @@ describe("sealed OTP codes", () => {
     const publicApp = sealerFromEnv({ SECRETS_MESSAGING_PUBLIC_KEY: ADMIN_ENV.SECRETS_MESSAGING_PUBLIC_KEY });
     const sealed = publicApp.sealOtp({ otpId, phone, code: "654321" });
     expect(worker.openOtp({ otpId, phone, sealed })).toBe("654321");
+  });
+});
+
+describe("sealed admin password checks (US-031, ASVS V6.2.12)", () => {
+  const checkId = randomUUID();
+  const adminUserId = "Ab3_dE-fGhIjKlMnOpQrStUv";
+  const password = "a long and unusual passphrase 7";
+  const sha1 = createHash("sha1").update(password).digest("hex").toUpperCase();
+
+  it("seal the password's SHA-1, never the password, and open with the outbox check_id + admin_user_id", () => {
+    const sealed = sealer.sealPasswordCheck({ checkId, adminUserId, password });
+    expect(SEALED_PASSWORD_CHECK_BYTES).toBe(88);
+    expect(sealed.length).toBe(88);
+    expect(sealed.includes(Buffer.from(password))).toBe(false);
+    expect(sealed.includes(Buffer.from(sha1))).toBe(false);
+    expect(worker.openPasswordCheck({ checkId, adminUserId, sealed })).toBe(sha1);
+    expect(sealer.sealPasswordCheck({ checkId, adminUserId, password }).equals(sealed)).toBe(false);
+  });
+
+  it("fail closed for another check or admin, a flipped byte, the wrong length, or anything but an uppercase SHA-1", () => {
+    const sealed = sealer.sealPasswordCheck({ checkId, adminUserId, password });
+    expectCode(() => worker.openPasswordCheck({ checkId: randomUUID(), adminUserId, sealed }), "decrypt_failed");
+    expectCode(() => worker.openPasswordCheck({ checkId, adminUserId: "another-admin-id", sealed }), "decrypt_failed");
+    expectCode(() => worker.openPasswordCheck({ checkId, adminUserId, sealed: flip(sealed, 40) }), "decrypt_failed");
+    expectCode(() => worker.openPasswordCheck({ checkId, adminUserId, sealed: sealed.subarray(1) }), "decrypt_failed");
+    expectCode(() => worker.openPasswordCheck({ checkId: checkId.toUpperCase(), adminUserId, sealed }), "invalid_input");
+    expectCode(() => sealer.sealPasswordCheck({ checkId, adminUserId: "not an id", password }), "invalid_input");
+    expectCode(() => sealer.sealPasswordCheck({ checkId, adminUserId, password: "" }), "invalid_input");
+    // A box of the right size that holds a lowercase hash (sealed with the public key, bypassing sealPasswordCheck).
+    const forged = seal(messaging.publicKey, Buffer.from(sha1.toLowerCase()), passwordCheckAad(checkId, adminUserId));
+    expectCode(() => worker.openPasswordCheck({ checkId, adminUserId, sealed: forged }), "invalid_input");
+    // An OTP box is no password check.
+    const otp = sealer.sealOtp({ otpId: checkId, phone: "+6281234567890", code: "123456" });
+    expectCode(() => worker.openPasswordCheck({ checkId, adminUserId, sealed: otp }), "decrypt_failed");
+  });
+
+  it("need the messaging key on both sides", () => {
+    const sealed = sealer.sealPasswordCheck({ checkId, adminUserId, password });
+    expectCode(() => createSecretSealer({ payment: payment.publicKey }).sealPasswordCheck({ checkId, adminUserId, password }), "scope_unavailable");
+    expectCode(() => openerFromEnv({ SECRETS_PAYMENT_PRIVATE_KEY: WORKER_ENV.SECRETS_PAYMENT_PRIVATE_KEY }).openPasswordCheck({ checkId, adminUserId, sealed }), "scope_unavailable");
   });
 });

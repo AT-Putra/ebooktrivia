@@ -92,7 +92,7 @@ async function main(argv: readonly string[]): Promise<number> {
       if (values.name === undefined) throw new UsageError(USAGE);
       const displayName = values.name;
       const password = await newPassword();
-      const result = await runMutation(scope, () => bootstrapOwner(rt.sql, { email, displayName, password }));
+      const result = await runMutation(scope, () => bootstrapOwner(rt, { email, displayName, password }));
       switch (result.kind) {
         case "created":
           process.stdout.write(`owner created: ${result.userId}\n`);
@@ -104,12 +104,12 @@ async function main(argv: readonly string[]): Promise<number> {
           process.stderr.write("refused: an admin with that e-mail exists\n");
           return 2;
         case "invalid":
-          process.stderr.write(`refused: invalid ${result.field}${result.field === "password" ? " (12 to 128 characters)" : ""}\n`);
+          process.stderr.write(`refused: invalid ${result.field}${result.field === "password" ? " (12 to 128 characters, not a common password, no product, domain or e-mail name in it)" : ""}\n`);
           return 2;
       }
     }
     const password = await newPassword();
-    const result = await runMutation(scope, () => recoverAdminUser(rt.sql, email, password));
+    const result = await runMutation(scope, () => recoverAdminUser(rt, email, password));
     switch (result.kind) {
       case "recovered":
         process.stdout.write(`recovered ${result.userId}: TOTP off, ${String(result.sessionsRevoked)} session(s) revoked, new password set, TOTP setup due within 72 h\n`);
@@ -118,7 +118,7 @@ async function main(argv: readonly string[]): Promise<number> {
         process.stderr.write("refused: no admin with that e-mail\n");
         return 2;
       case "invalid_password":
-        process.stderr.write("refused: invalid password (12 to 128 characters)\n");
+        process.stderr.write("refused: invalid password (12 to 128 characters, not a common password, no product, domain or e-mail name in it)\n");
         return 2;
     }
   } finally {

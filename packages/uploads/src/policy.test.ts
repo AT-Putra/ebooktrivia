@@ -59,17 +59,21 @@ describe("PDF (kind pdf)", () => {
     expect(await rejection({ kind: "pdf", bytes: PDF, filename: "a.pdf", mimeType: "text/html" })).toBe("mime_mismatch");
   });
 
+  // US-031: the production numbers are pinned here; the 100 MiB boundary runs with the same numbers scaled down in the
+  // next test (configurable limits), so this file no longer allocates 200 MiB of PDFs under parallel CI load.
   it("warns above 20 MiB and rejects above the 100 MiB hard cap (defaults)", async () => {
+    expect(DEFAULT_UPLOAD_LIMITS).toMatchObject({ pdfWarnBytes: 20 * MiB, pdfMaxBytes: 100 * MiB, xlsxMaxUncompressedBytes: 50 * MiB, xlsxMaxEntries: 1000 });
+    // Without limits the defaults apply: the warning threshold, at the byte.
     const big = await checkUpload({ kind: "pdf", bytes: padded(PDF, 20 * MiB + 1), filename: "a.pdf" });
     expect(big.warnings).toEqual(["pdf_large"]);
     expect((await checkUpload({ kind: "pdf", bytes: padded(PDF, 20 * MiB), filename: "a.pdf" })).warnings).toEqual([]);
-    expect((await checkUpload({ kind: "pdf", bytes: padded(PDF, 100 * MiB), filename: "a.pdf" })).warnings).toEqual(["pdf_large"]);
-    expect(await rejection({ kind: "pdf", bytes: padded(PDF, 100 * MiB + 1), filename: "a.pdf" })).toBe("too_large");
   });
 
   it("has a configurable hard cap and warning threshold", async () => {
     const limits = { ...DEFAULT_UPLOAD_LIMITS, pdfWarnBytes: 1000, pdfMaxBytes: 2000 };
     expect((await checkUpload({ kind: "pdf", bytes: padded(PDF, 1500), filename: "a.pdf" }, limits)).warnings).toEqual(["pdf_large"]);
+    // Exactly at the hard cap is accepted (with the warning), one byte over is refused.
+    expect((await checkUpload({ kind: "pdf", bytes: padded(PDF, 2000), filename: "a.pdf" }, limits)).warnings).toEqual(["pdf_large"]);
     expect(await rejection({ kind: "pdf", bytes: padded(PDF, 2001), filename: "a.pdf" }, limits)).toBe("too_large");
   });
 });

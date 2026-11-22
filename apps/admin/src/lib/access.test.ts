@@ -34,6 +34,21 @@ describe("decide (requireAdmin)", () => {
     expect(decide({ status: "active", admin: owner }, { permission: "admin_user.manage" })).toEqual({ kind: "allow", admin: owner });
   });
 
+  it("keeps a session whose password is in a known breach on the change page, Owner and Staff alike (US-031)", () => {
+    for (const admin of [owner, staff]) {
+      for (const permission of ["dashboard.view", "account.manage_own", "admin_user.manage"] as const) {
+        expect(decide({ status: "password_change", admin }, { permission })).toEqual({ kind: "redirect", to: "/change-password" });
+      }
+      expect(decide({ status: "password_change", admin }, { enrollment: true })).toEqual({ kind: "redirect", to: "/change-password" });
+      expect(decide({ status: "password_change", admin }, { passwordChange: true })).toEqual({ kind: "allow", admin });
+      expect(decide({ status: "password_change", admin }, { allowUnenrolled: true })).toEqual({ kind: "allow", admin });
+    }
+    // Nobody else reaches the change page: an active session goes on to the console, an un-enrolled one to enrolment.
+    expect(decide({ status: "active", admin: staff }, { passwordChange: true })).toEqual({ kind: "redirect", to: "/" });
+    expect(decide({ status: "unenrolled", admin: staff }, { passwordChange: true })).toEqual({ kind: "redirect", to: "/enroll" });
+    expect(decide({ status: "anonymous" }, { passwordChange: true })).toEqual({ kind: "redirect", to: "/login" });
+  });
+
   it("refuses an active session when a caller bypassed the type and gave no requirement", () => {
     expect(decide({ status: "active", admin: owner }, {} as RequireOptions)).toEqual({ kind: "forbidden" });
   });

@@ -617,7 +617,8 @@ $fn$;
 -- own). Returns {state: "revealed", answer_id, option_id (the recorded pick), correct, points, elapsed_ms,
 -- correct_option_id, explanation, attempt: {score, total_ms, finished}}. ET140 for another player's or an unknown
 -- row, ET148 for a row without a pick (a timeout, or not answered yet): a timeout reveals nothing. A committed pick
--- not scored yet (play_settle never ran) is scored first.
+-- not scored yet (play_settle never ran) is scored first. US-031: a reveal more than 60 s after the answer is refused,
+-- {state: "closed", answer_id} and nothing else, and flagged (answer_reveals, the play_reveal_misuse alert, RAISE LOG).
 CREATE OR REPLACE FUNCTION public.play_reveal(p_player_id uuid, p_answer_id uuid)
   RETURNS jsonb
   LANGUAGE plpgsql
@@ -628,6 +629,9 @@ AS $fn$
 DECLARE
   v_row record;
   v_attempt uuid;
+  v_now timestamptz;
+  v_late boolean;
+  v_flagged bigint;
 BEGIN
   IF pg_catalog.pg_current_xact_id_if_assigned() IS NOT NULL THEN
     RAISE EXCEPTION 'play_reveal runs in a transaction that has written nothing' USING ERRCODE = 'ET147';
@@ -653,6 +657,51 @@ BEGIN
   IF v_row.answered_at IS NULL OR v_row.option_id IS NULL THEN
     RAISE EXCEPTION 'nothing to reveal' USING ERRCODE = 'ET148';
   END IF;
+  -- US-031 BEGIN: the reveal watch (the US-027 accepted residual: a stolen public_rw login can act as a real player
+  -- and reveal answers). The app reveals a pick right after it (play_answer, play_settle, play_reveal), and again only
+  -- on its own retry, within seconds. So:
+  --   - a reveal more than 60 s after the answer is REFUSED ({state: "closed"}: no answer content ever goes out late),
+  --     counted in late_reveals and flagged; when 3 or more distinct attempts are flagged within an hour, ONE open
+  --     play_reveal_misuse alert is raised (an hour's dedupe): one player's stale tab is not a harvest, many are;
+  --   - a reveal within 60 s is answered and counted (reveals), never flagged: the app's retry shows the content the
+  --     player already got;
+  --   - every call leaves a RAISE LOG line in the server log (ids and times only; LOG goes to the server log, never to
+  --     a client at the default client_min_messages), which the caller's ROLLBACK cannot erase: the runbook's monitor
+  --     reads it (docs/runbooks/security-scans.md section 5).
+  -- Ids, counts and times only, no personal data.
+  v_now := pg_catalog.clock_timestamp();
+  v_late := v_now - v_row.answered_at > interval '60 seconds';
+  RAISE LOG 'ebt.play_reveal answer_id=% attempt_id=% after_answer_ms=% refused=%',
+    p_answer_id, v_attempt, pg_catalog.floor(pg_catalog.date_part('epoch', v_now - v_row.answered_at) * 1000)::bigint, v_late::text;
+  INSERT INTO public.answer_reveals AS r (answer_id, reveals, late_reveals, first_revealed_at, last_revealed_at, flagged_at)
+  VALUES (p_answer_id, CASE WHEN v_late THEN 0 ELSE 1 END, CASE WHEN v_late THEN 1 ELSE 0 END, v_now, v_now, CASE WHEN v_late THEN v_now END)
+  ON CONFLICT (answer_id) DO UPDATE SET
+    reveals = r.reveals + EXCLUDED.reveals,
+    late_reveals = r.late_reveals + EXCLUDED.late_reveals,
+    last_revealed_at = EXCLUDED.last_revealed_at,
+    flagged_at = COALESCE(r.flagged_at, EXCLUDED.flagged_at);
+  IF v_late THEN
+    PERFORM pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended('play_reveal_misuse', 0::bigint));
+    SELECT pg_catalog.count(DISTINCT aq.attempt_id) INTO v_flagged
+      FROM public.answer_reveals fr JOIN public.attempt_questions aq ON aq.id = fr.answer_id
+     WHERE fr.flagged_at > v_now - interval '1 hour';
+    IF v_flagged >= 3 THEN
+      INSERT INTO public.alerts (source, kind, severity, dedupe_key, message, payload)
+      SELECT 'monitor', 'play_reveal_misuse', 'warning', 'play_reveal_misuse',
+             'Answers of several attempts were asked for again long after they were answered (refused): possible misuse of the public app''s database login (docs/runbooks/security-scans.md)',
+             pg_catalog.jsonb_build_object(
+               'flagged_attempts', v_flagged,
+               'window_minutes', 60,
+               'answer_id', p_answer_id,
+               'attempt_id', v_attempt,
+               'seconds_after_answer', pg_catalog.floor(pg_catalog.date_part('epoch', v_now - v_row.answered_at))::bigint)
+       WHERE NOT EXISTS (
+         SELECT 1 FROM public.alerts a
+          WHERE a.dedupe_key = 'play_reveal_misuse' AND a.resolved_at IS NULL AND a.created_at > v_now - interval '1 hour');
+    END IF;
+    RETURN jsonb_build_object('state', 'closed', 'answer_id', p_answer_id);
+  END IF;
+  -- US-031 END.
   RETURN jsonb_build_object(
     'state', 'revealed',
     'answer_id', p_answer_id,

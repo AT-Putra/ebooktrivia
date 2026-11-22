@@ -4,6 +4,7 @@
 // concurrent bootstraps create one Owner (SL2).
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { generateScopeKeyPair } from "@ebooktrivia/crypto";
 import { describe, expect, inject, it } from "vitest";
 import { bootstrapOwner } from "../src/lib/admin-users.ts";
 import { runMutation } from "../src/lib/audit.ts";
@@ -13,6 +14,8 @@ import { auditRows, CookieJar, enroll, freshIp, newRuntime, password, root, suff
 
 const CLI = fileURLToPath(new URL("../src/cli/admin.ts", import.meta.url));
 const rt = newRuntime();
+/** admin.env holds the messaging public key in production: the CLI seals each password's breached-password check to it (US-031). */
+const MESSAGING_PUBLIC_KEY = Buffer.from(generateScopeKeyPair().publicKey).toString("base64url");
 
 function runCli(args: readonly string[], stdin: string, env: Record<string, string> = {}): Promise<{ code: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
@@ -25,6 +28,7 @@ function runCli(args: readonly string[], stdin: string, env: Record<string, stri
         ADMIN_ALLOW_INSECURE_LOOPBACK: "1",
         ADMIN_AUTH_SECRETS: TEST_CONFIG.authSecrets.map((s) => `${String(s.version)}:${s.value}`).join(","),
         DATABASE_URL_ADMIN: TEST_CONFIG.databaseUrl,
+        SECRETS_MESSAGING_PUBLIC_KEY: MESSAGING_PUBLIC_KEY,
         ...env,
       },
       stdio: ["pipe", "pipe", "pipe"],
@@ -70,7 +74,7 @@ describe("admin CLI", () => {
     const cli = { actor: { kind: "cli" as const }, requestId: "test", ip: null };
     const results = await Promise.all(
       Array.from({ length: 6 }, (_, i) =>
-        runMutation(cli, () => bootstrapOwner(rt.sql, { email: `race-${String(i)}-${suffix()}@example.test`, displayName: "Race", password: password() })),
+        runMutation(cli, () => bootstrapOwner(rt, { email: `race-${String(i)}-${suffix()}@example.test`, displayName: "Race", password: password() })),
       ),
     );
     expect(results.filter((r) => r.kind === "created")).toHaveLength(1);

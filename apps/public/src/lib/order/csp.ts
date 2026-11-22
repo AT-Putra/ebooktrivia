@@ -92,8 +92,8 @@ export function contentSecurityPolicy(options: CspOptions): string {
 /**
  * Sent with every response of the order origin. `Referrer-Policy: strict-origin` (AC-T5): a vendor
  * library or a link never sees more than `https://order.<DOMAIN>`, whatever the document's URL is.
- * Caddy sets its own Referrer-Policy on every app host after the app (defer); the order site overrides
- * it with this same value (infra/caddy/Caddyfile).
+ * Caddy forces this same value on the order site, whatever the app sends (infra/caddy/Caddyfile referrer_forced);
+ * on the other app hosts its value is only a default, so the routes' own policies below reach the browser.
  */
 export const ORDER_HEADERS: Readonly<Record<string, string>> = {
   "Referrer-Policy": "strict-origin",

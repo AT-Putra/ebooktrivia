@@ -108,7 +108,7 @@ export interface TestAdmin {
 export async function createTestAdmin(rt: AuthRuntime, role: Role = "staff"): Promise<TestAdmin> {
   const email = `admin-${suffix()}@example.test`;
   const pw = password();
-  const created = await system(() => createAdminUser(rt.sql, { email, displayName: `Admin ${suffix()}`, password: pw }, role, "admin_user.create"));
+  const created = await system(() => createAdminUser(rt, { email, displayName: `Admin ${suffix()}`, password: pw }, role, "admin_user.create"));
   if (created.kind !== "created") throw new Error(`createAdminUser: ${created.kind}`);
   return { userId: created.userId, email, password: pw };
 }

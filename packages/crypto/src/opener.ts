@@ -2,18 +2,21 @@
 // worker and the public app (payment scope) import it; the admin app imports the sealer subpath
 // (@ebooktrivia/crypto/sealer) and never this module (apps/admin/src/app/guards.test.ts).
 import type { KeyObject } from "node:crypto";
-import { isSecretScope, otpAad, secretAad, type SecretScope } from "./aad.ts";
+import { isSecretScope, otpAad, passwordCheckAad, secretAad, type SecretScope } from "./aad.ts";
 import { CryptoError, gcmDecrypt, keyIdOf, open, privateKeyObject, rawPublicKey } from "./sealed-box.ts";
 import {
   assertOtpCode,
+  assertPasswordSha1,
   configuredScopes,
   DEK_BYTES,
   type Env,
   type OtpInput,
+  type PasswordCheckInput,
   type ScopeKeys,
   scopeKeysFromEnv,
   scopeUnavailable,
   SEALED_OTP_BYTES,
+  SEALED_PASSWORD_CHECK_BYTES,
   type SecretOpener,
   type StoredSecretRow,
 } from "./secrets.ts";
@@ -57,6 +60,12 @@ export function createSecretOpener(privateKeys: ScopeKeys): SecretOpener {
       const aad = otpAad(input.otpId, input.phone);
       if (input.sealed.length !== SEALED_OTP_BYTES) throw new CryptoError("decrypt_failed", "decryption failed");
       return assertOtpCode(open(key, input.sealed, aad).toString("latin1"));
+    },
+    openPasswordCheck(input: PasswordCheckInput & { readonly sealed: Uint8Array }): string {
+      const { key } = keyFor("messaging");
+      const aad = passwordCheckAad(input.checkId, input.adminUserId);
+      if (input.sealed.length !== SEALED_PASSWORD_CHECK_BYTES) throw new CryptoError("decrypt_failed", "decryption failed");
+      return assertPasswordSha1(open(key, input.sealed, aad).toString("latin1"));
     },
   });
 }

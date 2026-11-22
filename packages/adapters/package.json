@@ -5,7 +5,9 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./address-policy": "./src/address-policy.ts"
+    "./address-policy": "./src/address-policy.ts",
+    "./pwned-passwords": "./src/pwned-passwords.ts",
+    "./valkey-functions": "./src/valkey-functions.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",

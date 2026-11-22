@@ -11,6 +11,7 @@ export default async function LoginPage() {
   const session = await currentSession();
   if (session.status === "active") redirect("/");
   if (session.status === "unenrolled") redirect("/enroll");
+  if (session.status === "password_change") redirect("/change-password");
   return (
     <AuthCard title="Sign in" description="Owner and Staff accounts only. A second factor follows.">
       <LoginForm />

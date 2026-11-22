@@ -676,3 +676,19 @@ GRANT EXECUTE ON FUNCTION public.proactive_delay_ms(bigint), public.refresh_play
   public.order_paid_effects(uuid, timestamptz, bigint), public.order_reversal_rows(uuid, timestamptz), public.revoke_player_magic_links(uuid)
   TO order_review;
 -- US-033 BLOCK END.
+
+-- ---------------------------------------------------------------------------------------------
+-- US-031 (M11a security hardening) BLOCK BEGIN.
+-- The reveal watch (sql/play.sql play_reveal, migration 0023 answer_reveals): trivia_play counts each answer's
+-- reveals and refused late reveals, flags the late ones and raises one open play_reveal_misuse alert (ids, counts and
+-- times only). public_rw, worker_rw and internal_rw have no privilege on answer_reveals; admin_rw (table-level grant
+-- above) may read it, never write it, so a compromised console cannot hide a misuse trail.
+GRANT SELECT, INSERT, UPDATE (reveals, late_reveals, last_revealed_at, flagged_at) ON public.answer_reveals TO trivia_play;
+GRANT SELECT (dedupe_key, created_at, resolved_at), INSERT (source, kind, severity, dedupe_key, message, payload)
+  ON public.alerts TO trivia_play;
+REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON public.answer_reveals FROM admin_rw;
+-- The breached-password check (ASVS V6.2.12; functions.sql flag_breached_admin_password): the worker flags an admin whose
+-- current password is in a breach, through the function only (worker_rw has no privilege on admin_profiles). The admin app
+-- writes the check id and enqueues the job with its table grants (admin_rw above: admin_profiles, outbox INSERT).
+GRANT EXECUTE ON FUNCTION public.flag_breached_admin_password(text, uuid) TO worker_rw;
+-- US-031 BLOCK END.

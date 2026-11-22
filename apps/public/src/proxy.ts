@@ -22,7 +22,8 @@
 // headers and check the Origin themselves). The trivia pages (US-027): play.<DOMAIN>/, /{programSlug} and
 // /{programSlug}/set/{n} are rewritten to their internal /trivia/... routes (a 404 on every host when asked for
 // directly) with the trivia nonce CSP (lib/order/csp.ts triviaContentSecurityPolicy) and PLAY_HEADERS.
-// Everything else passes through untouched (the checkout and Cap routes, the mockups).
+// The API routes, the signed files, the Cap files and the mockups pass through untouched; every other page (the 404
+// page, robots.txt, the api origin's /) gets the trivia nonce CSP and PLAY_HEADERS (US-031, defaultPage).
 // The vendor lookup runs the same SECURITY DEFINER read as the page (get_order_status), once per page load.
 import { randomBytes } from "node:crypto";
 import { type NextRequest, NextResponse } from "next/server";
@@ -107,6 +108,20 @@ async function runtimeOrNull(): Promise<PublicRuntime | null> {
 /** The 404 of an unknown order, a malformed id and every path the order origin does not serve. */
 const unknownOrder = (request: NextRequest): NextResponse => secured(request, "/order/x", [], ORDER_HEADERS, true);
 
+/**
+ * What the proxy hands through UNCHANGED: route handlers that answer with their own headers (the API, the signed files),
+ * the self-hosted Cap files and the mockups (development only, ENABLE_MOCKUPS).
+ */
+const OWN_HEADERS = /^\/(?:api|files|cap|mockups)(?:\/|$)/;
+
+/**
+ * Every other page (US-031, found by the ZAP baseline: api.<DOMAIN>/, /robots.txt, the 404 page on the play and api
+ * origins): the strictest policy of the app, the trivia one (the nonce and 'strict-dynamic', no vendor, no worker, no
+ * form), and the play headers (never cached, framed or indexed, no Referer).
+ */
+const defaultPage = (request: NextRequest): NextResponse =>
+  OWN_HEADERS.test(request.nextUrl.pathname) ? NextResponse.next() : withNonceCsp(request, null, (nonce, https) => triviaContentSecurityPolicy({ nonce, https }), PLAY_HEADERS, false);
+
 export async function proxy(request: NextRequest): Promise<NextResponse> {
   const route = routeOrder({
     host: request.headers.get("host"),
@@ -117,7 +132,7 @@ export async function proxy(request: NextRequest): Promise<NextResponse> {
   });
   switch (route.kind) {
     case "pass":
-      return NextResponse.next();
+      return defaultPage(request);
     case "notFound":
       return new NextResponse(null, { status: 404, headers: { "cache-control": "no-store" } });
     case "orderApi": {

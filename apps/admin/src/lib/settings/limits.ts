@@ -10,7 +10,7 @@
 // expires_at to otp.code_ttl_seconds (codes already issued keep their expiry), and the orders
 // checkout guard (orders.expiry_seconds). The rest is read by the public app (M6 / M9).
 // Bounds (chosen for a WhatsApp OTP and a Midtrans Snap checkout):
-//   otp.code_ttl_seconds      60..900      code validity (default 300 = 5 min)
+//   otp.code_ttl_seconds      60..600      code validity (default 300 = 5 min; 10 min at most, ASVS V6.5.5)
 //   otp.max_attempts          1..5         wrong codes before a code is void (5, the spec's)
 //   otp.phone_cap             1..10        codes sent per phone per window (3)
 //   otp.phone_window_seconds  3600..86400  that window (3600: never shorter than the spec's hour)

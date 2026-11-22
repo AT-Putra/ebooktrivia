@@ -87,7 +87,7 @@ describe("admin user changes in the audit log", () => {
     const email = `staff-${suffix()}@example.test`;
     const name = `Siti ${suffix()}`;
     const pw = password();
-    const res = await asAdmin(owner.userId, () => createAdminUser(rt.sql, { email, displayName: name, password: pw }, "staff", "admin_user.create"));
+    const res = await asAdmin(owner.userId, () => createAdminUser(rt, { email, displayName: name, password: pw }, "staff", "admin_user.create"));
     if (res.kind !== "created") throw new Error(res.kind);
     const [row] = await auditRows(res.userId, "admin_user.create");
     expect(row).toMatchObject({ actor_kind: "admin", actor_admin_user_id: owner.userId });
@@ -104,14 +104,14 @@ describe("admin user changes in the audit log", () => {
     const existing = await createTestAdmin(rt);
     const count = async () => (await root<{ n: number }[]>`SELECT count(*)::int AS n FROM audit_log`)[0]?.n;
     const before = await count();
-    expect(await asAdmin(owner.userId, () => createAdminUser(rt.sql, { email: existing.email.toUpperCase(), displayName: "X", password: password() }, "staff", "admin_user.create"))).toEqual({
+    expect(await asAdmin(owner.userId, () => createAdminUser(rt, { email: existing.email.toUpperCase(), displayName: "X", password: password() }, "staff", "admin_user.create"))).toEqual({
       kind: "email_taken",
     });
-    expect(await asAdmin(owner.userId, () => createAdminUser(rt.sql, { email: "no-at-sign", displayName: "X", password: password() }, "staff", "admin_user.create"))).toEqual({
+    expect(await asAdmin(owner.userId, () => createAdminUser(rt, { email: "no-at-sign", displayName: "X", password: password() }, "staff", "admin_user.create"))).toEqual({
       kind: "invalid",
       field: "email",
     });
-    expect(await asAdmin(owner.userId, () => createAdminUser(rt.sql, { email: `a-${suffix()}@example.test`, displayName: "X", password: "short" }, "staff", "admin_user.create"))).toEqual({
+    expect(await asAdmin(owner.userId, () => createAdminUser(rt, { email: `a-${suffix()}@example.test`, displayName: "X", password: "short" }, "staff", "admin_user.create"))).toEqual({
       kind: "invalid",
       field: "password",
     });

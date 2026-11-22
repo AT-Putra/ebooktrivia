@@ -11,7 +11,7 @@ import { createStaffAction } from "./actions.ts";
 const ERRORS = {
   email: "Enter a valid e-mail address.",
   display_name: "Enter a name (up to 100 characters).",
-  password: "The password needs 12 to 128 characters.",
+  password: "The password needs 12 to 128 characters, and must not be a common password or contain the site's name or the e-mail's name.",
   email_taken: "An admin with this e-mail already exists.",
 } as const;
 

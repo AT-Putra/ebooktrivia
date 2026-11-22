@@ -1,5 +1,5 @@
 user default off
-user public on >public-devonly resetkeys ~rl:* ~cache:public:* resetchannels -@all +ping +eval +incr +pttl +pexpire +set
+user public on >public-devonly resetkeys ~rl:* ~cache:public:* resetchannels -@all +ping +fcall +incr +pttl +pexpire +set
 user worker on >worker-devonly ~* +@all -@dangerous -@admin +info
 user admin on >admin-devonly ~cache:* +@all -@dangerous -@admin
 user ops on >ops-devonly resetkeys -@all +ping

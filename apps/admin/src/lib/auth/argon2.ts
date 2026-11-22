@@ -4,27 +4,28 @@
 // hashes run at once in this process: each holds 19 MiB outside the V8 heap, and the admin
 // container has 600 MiB (infra/quadlet/admin.container).
 import { hash, verify } from "@node-rs/argon2";
+import { processWide } from "../process-wide.ts";
 
 export const ARGON2_OPTIONS = { memoryCost: 19_456, timeCost: 2, parallelism: 1, outputLen: 32 } as const;
 /** Inputs longer than this are refused before hashing (Better Auth caps passwords at 128). */
 export const MAX_SECRET_LENGTH = 256;
 const MAX_CONCURRENT = 4;
 
-let running = 0;
-const queue: (() => void)[] = [];
+// Per process, not per bundle (lib/process-wide.ts): the limit bounds this process's memory (19 MiB per hash).
+const slots = processWide("argon2-slots", () => ({ running: 0, queue: [] as (() => void)[] }));
 
 /**
  * A finishing task hands its slot straight to the next queued one (running stays the same), so a
  * task started in between cannot take the freed slot as well (argon2-limit.test.ts).
  */
 async function limited<T>(task: () => Promise<T>): Promise<T> {
-  if (running < MAX_CONCURRENT) running += 1;
-  else await new Promise<void>((resolve) => queue.push(resolve));
+  if (slots.running < MAX_CONCURRENT) slots.running += 1;
+  else await new Promise<void>((resolve) => slots.queue.push(resolve));
   try {
     return await task();
   } finally {
-    const next = queue.shift();
-    if (next === undefined) running -= 1;
+    const next = slots.queue.shift();
+    if (next === undefined) slots.running -= 1;
     else next();
   }
 }

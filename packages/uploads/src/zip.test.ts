@@ -6,7 +6,10 @@ import { extraBlock, localEntry, makeZip, unicodePathExtra, xlsx } from "../test
 import { inspectZip, readZipEntries, ZipError } from "./zip.ts";
 
 const MiB = 1024 * 1024;
-const LIMITS = { maxEntries: 1000, maxUncompressedBytes: 50 * MiB };
+// A small injected budget (US-031): the bombs below only need to exceed it, so each test allocates and inflates a few
+// MiB instead of 60, and CI stays fast under parallel load. The production budget (policy.ts DEFAULT_UPLOAD_LIMITS)
+// is the same code path with a bigger number; policy.test.ts pins it.
+const LIMITS = { maxEntries: 1000, maxUncompressedBytes: 4 * MiB };
 
 async function zipError(zip: Buffer, limits = LIMITS): Promise<ZipError> {
   try {
@@ -35,21 +38,22 @@ describe("inspectZip", () => {
     expect((await zipError(makeZip([{ name: "a", data: Buffer.from("x") }], { comment: "hello" }))).message).toMatch(/comment/);
   });
 
-  // Zip bomb: ~60 KB that inflates to 60 MiB. The headers are not trusted: a lying header that
-  // claims 10 bytes is stopped at the budget all the same.
-  // Builds and inflates 60 MiB twice: allow the package's 30 s, not the root run's 5 s default.
-  it("stops a zip bomb at the budget, whatever the headers claim", { timeout: 30_000 }, async () => {
-    const bomb = xlsx([{ name: "xl/bomb.bin", data: Buffer.alloc(60 * MiB) }]);
-    expect(bomb.length).toBeLessThan(100 * 1024);
+  // Zip bomb: ~6 KB that inflates to 6 MiB, over the 4 MiB budget (the ratio is the same as a 60 MiB bomb's). The
+  // headers are not trusted: a lying header that claims 10 bytes is stopped at the budget all the same.
+  it("stops a zip bomb at the budget, whatever the headers claim", async () => {
+    const zeros = Buffer.alloc(6 * MiB);
+    const bomb = xlsx([{ name: "xl/bomb.bin", data: zeros }]);
+    expect(bomb.length).toBeLessThan(16 * 1024);
     expect((await zipError(bomb)).code).toBe("too_large_uncompressed");
-    const lying = xlsx([{ name: "xl/bomb.bin", data: Buffer.alloc(60 * MiB), declaredSize: 10 }]);
+    const lying = xlsx([{ name: "xl/bomb.bin", data: zeros, declaredSize: 10 }]);
     expect((await zipError(lying)).code).toBe("too_large_uncompressed");
   });
 
-  it("counts the budget over all entries, not per entry", { timeout: 30_000 }, async () => {
-    const parts = Array.from({ length: 6 }, (_, i) => ({ name: `xl/part${i.toString()}.bin`, data: Buffer.alloc(10 * MiB) }));
+  it("counts the budget over all entries, not per entry", async () => {
+    const part = Buffer.alloc(MiB);
+    const parts = Array.from({ length: 6 }, (_, i) => ({ name: `xl/part${i.toString()}.bin`, data: part }));
     expect((await zipError(makeZip(parts))).code).toBe("too_large_uncompressed");
-    expect((await inspectZip(makeZip(parts.slice(0, 4)), LIMITS)).uncompressedBytes).toBe(40 * MiB);
+    expect((await inspectZip(makeZip(parts.slice(0, 3)), LIMITS)).uncompressedBytes).toBe(3 * MiB);
   });
 
   it("refuses a stored entry larger than the budget", async () => {

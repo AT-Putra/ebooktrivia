@@ -12,8 +12,10 @@ import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { generateKeyPairSync, randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
+import { PUBLIC_VALKEY_LIBRARY_CODE } from "@ebooktrivia/adapters/valkey-functions";
 import { newOrderCode, newPublicId } from "@ebooktrivia/core";
 import { createTestDatabase } from "@ebooktrivia/test-support/database";
+import { loadValkeyFunctions } from "@ebooktrivia/test-support/valkey";
 import postgres from "postgres";
 
 export const ORDER_PORT = 3205;
@@ -80,6 +82,8 @@ export async function startOrderEnv(): Promise<OrderEnv> {
     CAPTCHA_HMAC_KEY: randomBytes(32).toString("hex"),
     SECRETS_PAYMENT_PRIVATE_KEY: paymentKey,
   };
+  // US-031: the worker loads public's rate-limit function in production; no worker runs here.
+  await loadValkeyFunctions({ url: env.VALKEY_URL, username: process.env["TEST_VALKEY_USERNAME"] ?? "worker", password: process.env["TEST_VALKEY_PASSWORD"] ?? "worker-devonly" }, PUBLIC_VALKEY_LIBRARY_CODE); // DEV ONLY
   const sql = postgres(db.url, { max: 4, onnotice: () => undefined });
   const child: ChildProcess = spawn(process.execPath, ["src/server.ts"], {
     cwd: publicDir,

@@ -51,6 +51,7 @@ import { logEvent } from "../log.ts";
 import { PDF_WARN_BYTES, type SettingsConfig } from "./env.ts";
 import { InvalidInput, singleLine } from "./fields.ts";
 import { PROOF_DIR, PROOF_FILE } from "./proof-files.ts";
+import { processWide } from "../process-wide.ts";
 
 export const CHUNK_BYTES = 1024 * 1024;
 export type UploadSessionKind = "pdf" | "lp_zip";
@@ -308,10 +309,11 @@ const REJECTIONS: Readonly<Partial<Record<UploadRejected["code"], string>>> = {
 };
 
 /** One completion at a time per process (disk-bound work). */
-let completions: Promise<unknown> = Promise.resolve();
+// Per process, not per bundle (lib/process-wide.ts): the upload routes and the sweeper (instrumentation.ts) share them.
+const serial = processWide<{ completions: Promise<unknown>; sweeping: Promise<SweepResult> | null }>("upload-serial", () => ({ completions: Promise.resolve(), sweeping: null }));
 function oneAtATime<T>(fn: () => Promise<T>): Promise<T> {
-  const run = completions.then(fn, fn);
-  completions = run.catch(() => undefined);
+  const run = serial.completions.then(fn, fn);
+  serial.completions = run.catch(() => undefined);
   return run;
 }
 
@@ -424,7 +426,6 @@ export function completeUpload(sql: Sql, settings: SettingsConfig, adminUserId: 
   });
 }
 
-let sweeping: Promise<SweepResult> | null = null;
 
 export interface SweepResult {
   /** Another instance held the sweep lock: nothing was done. */
@@ -488,16 +489,16 @@ async function removeOwnFile(dir: string, name: string, pattern: RegExp, minAgeM
 export function sweepUploads(sql: Sql, settings: SettingsConfig): Promise<SweepResult> {
   if (settings.dataDir === null) return Promise.resolve(NOTHING);
   const dir = settings.dataDir;
-  sweeping ??= sql
+  serial.sweeping ??= sql
     .begin(async (lock) => {
       const [held] = await lock<{ ok: boolean }[]>`SELECT pg_try_advisory_xact_lock(hashtextextended('upload_sweep', 0)) AS ok`;
       if (held?.ok !== true) return { ...NOTHING, skipped: true };
       return sweepOnce(sql, dir);
     })
     .finally(() => {
-      sweeping = null;
+      serial.sweeping = null;
     });
-  return sweeping;
+  return serial.sweeping;
 }
 
 async function sweepOnce(sql: Sql, dir: string): Promise<SweepResult> {

@@ -9,7 +9,7 @@ import { INITIAL_RESET } from "../../../lib/form-state.ts";
 import { resetAccessAction } from "./actions.ts";
 
 const ERRORS = {
-  password: "The temporary password needs 12 to 128 characters.",
+  password: "The temporary password needs 12 to 128 characters, and must not be a common password or contain the site's name.",
   not_found: "That account no longer exists.",
   self: "Use the recovery CLI for your own account.",
   owner: "Owner accounts are recovered with the VM CLI only.",

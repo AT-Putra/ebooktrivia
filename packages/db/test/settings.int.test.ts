@@ -286,7 +286,7 @@ describe("admin_rw reads no decryptable form (plan M2.3: the admin process canno
   it("can still enqueue outbox rows and read their state", async () => {
     const id = randomUUID();
     await asRole("admin_rw", async (tx) => {
-      await tx`INSERT INTO public.outbox (id, topic, dedupe_key, payload) VALUES (${id}, 'template.test_send', ${`test:${id}`}, '{}'::jsonb)`;
+      await tx`INSERT INTO public.outbox (id, topic, dedupe_key, payload) VALUES (${id}, 'template.test_send', ${`template.test_send:${id}`}, '{}'::jsonb)`;
       const [row] = await tx<{ topic: string }[]>`SELECT topic, processed_at, last_error FROM public.outbox WHERE id = ${id}`;
       expect(row?.topic).toBe("template.test_send");
     });

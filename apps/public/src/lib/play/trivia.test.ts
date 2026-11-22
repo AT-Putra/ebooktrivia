@@ -64,6 +64,11 @@ describe("40P01: one retry of a write", () => {
     const refused = await handleAnswer(deps(timedOut.sql), post({ answer_id: ID, option_id: ID }), ID);
     expect(refused.status).toBe(409);
     expect(await refused.json()).toEqual({ v: 1, error: "already_answered" });
+    // US-031: a retry more than 60 s after the answer: play_reveal refuses it ("closed"), the same 409, nothing revealed.
+    const stale = fakeSql([pgError("ET144"), [{ r: { state: "settled" } }], [{ r: { state: "closed", answer_id: ID } }]]);
+    const late = await handleAnswer(deps(stale.sql), post({ answer_id: ID, option_id: ID }), ID);
+    expect(late.status).toBe(409);
+    expect(await late.json()).toEqual({ v: 1, error: "already_answered" });
   });
 
   it("shows the question from the call after a serve, adding up the timeouts the calls closed", async () => {

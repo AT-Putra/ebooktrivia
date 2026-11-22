@@ -7,6 +7,7 @@
 //   settings_secrets: [ "settings_secrets", "ciphertext", row_id, scope, name,
 //                       adnet_id or "", bound_host or "", key_id ]
 //   player_otps:      [ "player_otps", "sealed_code", otp_id, phone ]
+//   outbox:           [ "outbox", "admin.password_hibp_check", check_id, admin_user_id ]  (passwordCheckAad, US-031)
 //
 // Every label is in the AAD, so a row relabelled in the DB (another scope, name, adnet, host or
 // key id, or another row's id) no longer decrypts.
@@ -91,4 +92,17 @@ export function otpAad(otpId: string, phone: string): Buffer {
   if (!UUID.test(otpId)) throw invalid("otp id must be a lowercase UUID");
   if (!E164.test(phone)) throw invalid("phone must be E.164");
   return canonicalAad(["player_otps", "sealed_code", otpId, phone]);
+}
+
+/** A Better Auth user id (admin_auth.user.id): random base64url, as the admin app creates it. */
+const ADMIN_USER_ID = /^[A-Za-z0-9_-]{1,64}$/;
+
+/**
+ * The breached-password check of an admin password (US-031, ASVS V6.2.12): the outbox row's `sealed` is the password's SHA-1
+ * sealed to the messaging key, bound to its check id and to the admin it belongs to.
+ */
+export function passwordCheckAad(checkId: string, adminUserId: string): Buffer {
+  if (!UUID.test(checkId)) throw invalid("check id must be a lowercase UUID");
+  if (!ADMIN_USER_ID.test(adminUserId)) throw invalid("admin user id must be a base64url id");
+  return canonicalAad(["outbox", "admin.password_hibp_check", checkId, adminUserId]);
 }

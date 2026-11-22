@@ -331,6 +331,7 @@ check() {
   expect_match "admin.example.test certificate issued by the ACME CA (Pebble)" 'issuer: CN ?= ?Pebble Intermediate CA' "$(curl_from "$CLIENT" -v -o /dev/null https://admin.example.test/ 2>&1)"
   expect "strict_sni_host: Host differs from SNI -> 421" 421 "$(curl_from "$CLIENT" -o /dev/null -w '%{http_code}' -H 'Host: admin.example.test' https://play.example.test/)"
   expect "http:// redirects to https" "308 https://play.example.test/x" "$(curl_from "$CLIENT" -o /dev/null -w '%{http_code} %{redirect_url}' http://play.example.test/x)"
+  expect "http://api. answers 400, never a redirect (US-031)" "400 " "$(curl_from "$CLIENT" -o /dev/null -w '%{http_code} %{redirect_url}' http://api.example.test/api/v1/checkout/x)"
   local headers
   headers=$(curl_from "$CLIENT" -D - -o /dev/null https://play.example.test/)
   expect_match "app hosts: HSTS" 'strict-transport-security: max-age=31536000; includesubdomains' "${headers,,}"

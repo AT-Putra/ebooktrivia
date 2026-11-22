@@ -67,6 +67,7 @@ import { applyConversionDecision, NO_SINK_DEDUPES, type SinkDedupePolicy } from 
 import type { Logger } from "./log.ts";
 import { OUTBOX_MAX_ATTEMPTS } from "./outbox-consumer.ts";
 import { alertStuckReviews } from "./owner-decisions.ts";
+import { PASSWORD_CHECK_MAX_ATTEMPTS, PASSWORD_CHECK_TOPIC } from "./password-check.ts";
 import { enqueueFresh, outboxJobId, rowJobId } from "./queues.ts";
 
 export const OUTBOX_UNRELAYED_ALERT_MS = 10 * 60_000;
@@ -275,19 +276,28 @@ export async function sweepLoginThrottle(sql: postgres.Sql, windowSeconds = LOGI
  * otp.send job that expired unsent (still queued, or past its attempt cap) loses its sealed code: past its
  * expires_at the code can neither be sent (the consumer drops it) nor used (the verify refuses it). The send
  * ledger (otp_enqueues) is pruned of rows older than 24 hours, which no cap counts any more, and expired player
- * sessions go with their session_state rows.
+ * sessions go with their session_state rows. US-031 (delta review LOW): an admin.password_hibp_check job that will never
+ * end (past its attempt cap, e.g. its last claim failed after the lookup; or 24 h old, e.g. no worker holds the messaging
+ * key) loses its sealed password hash too (`checks`): the consumer's finalize wipes it on every end it reaches, this on
+ * the ends it does not.
  */
-export async function sweepExpiredOtps(sql: postgres.Sql): Promise<{ readonly deleted: number; readonly wiped: number; readonly pruned: number; readonly sessions: number }> {
+export async function sweepExpiredOtps(
+  sql: postgres.Sql,
+): Promise<{ readonly deleted: number; readonly wiped: number; readonly checks: number; readonly pruned: number; readonly sessions: number }> {
   const deleted = await sql`DELETE FROM public.player_otps WHERE expires_at < clock_timestamp()`;
   const wiped = await sql`
     UPDATE public.outbox SET sealed = NULL
      WHERE topic = 'otp.send' AND sealed IS NOT NULL AND processed_at IS NULL
        AND payload->>'expires_at' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T'
        AND (payload->>'expires_at')::timestamptz < clock_timestamp()`;
+  const checks = await sql`
+    UPDATE public.outbox SET sealed = NULL
+     WHERE topic = ${PASSWORD_CHECK_TOPIC} AND sealed IS NOT NULL AND processed_at IS NULL
+       AND (attempts >= ${PASSWORD_CHECK_MAX_ATTEMPTS} + deferrals OR created_at < clock_timestamp() - interval '24 hours')`;
   // The send ledger past every cap's window (24 h), and expired player sessions with their state, through SQL
   // functions: the worker cannot touch a newer ledger row, and has no other access to player_auth.
   const [prune] = await sql<{ ledger: number; sessions: number }[]>`SELECT public.prune_otp_enqueues() AS ledger, public.prune_player_sessions() AS sessions`;
-  return { deleted: deleted.count, wiped: wiped.count, pruned: prune?.ledger ?? 0, sessions: prune?.sessions ?? 0 };
+  return { deleted: deleted.count, wiped: wiped.count, checks: checks.count, pruned: prune?.ledger ?? 0, sessions: prune?.sessions ?? 0 };
 }
 
 /**

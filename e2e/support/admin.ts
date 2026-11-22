@@ -7,6 +7,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
+import { generateScopeKeyPair } from "@ebooktrivia/crypto";
 import { createTestDatabase } from "@ebooktrivia/test-support/database";
 import postgres from "postgres";
 
@@ -41,6 +42,9 @@ export async function startAdminEnv(options: { readonly port?: number; readonly 
     ADMIN_ALLOW_INSECURE_LOOPBACK: "1",
     ADMIN_AUTH_SECRETS: `1:${randomBytes(32).toString("hex")}`,
     DATABASE_URL_ADMIN: db.logins.admin_rw ?? "",
+    // admin.env holds the messaging public key in production: every password set seals its breached-password check
+    // to it (US-031; no worker runs here, so the jobs are never looked up).
+    SECRETS_MESSAGING_PUBLIC_KEY: generateScopeKeyPair().publicKey.toString("base64url"),
     ...options.extraEnv,
   };
   const sql = postgres(db.url, { max: 2, onnotice: () => undefined });

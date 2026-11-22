@@ -561,6 +561,15 @@ describe("admin_rw denials (US-033)", () => {
     await rolledBack("admin_rw", (tx) => tx`INSERT INTO public.outbox (topic, dedupe_key, payload) VALUES ('payment.requery', ${`payment.requery:${randomUUID()}`}, '{}')`);
   });
 
+  it("adds the breached-password check of a password it sets (US-031), only under that topic's own key (ET189 otherwise)", async () => {
+    const topic = "admin.password_hibp_check";
+    await rolledBack("admin_rw", (tx) => tx`INSERT INTO public.outbox (topic, dedupe_key, payload) VALUES (${topic}, ${`${topic}:${randomUUID()}`}, '{}')`);
+    for (const squatted of ["order.paid:", "payment.requery:", "admin.password_hibp_check", "admin.password_hibp_checks:"]) {
+      const statement = (tx: Tx) => tx`INSERT INTO public.outbox (topic, dedupe_key, payload) VALUES (${topic}, ${`${squatted}${randomUUID()}`}, '{}')`;
+      expect(await sqlState(asRole("admin_rw", statement)), squatted).toBe("ET189");
+    }
+  });
+
   it("the outbox topic guard leaves the worker and a superuser alone (pg_has_role is true for a superuser on every role)", async () => {
     await rolledBack("worker_rw", (tx) => tx`INSERT INTO public.outbox (topic, dedupe_key, payload) VALUES ('order.paid', ${`order.paid:${randomBytes(16).toString("hex")}`}, '{}')`);
     await rolledBack(null, (tx) => tx`INSERT INTO public.outbox (topic, dedupe_key, payload) VALUES ('order.paid', ${`order.paid:${randomBytes(16).toString("hex")}`}, '{}')`);
@@ -669,6 +678,24 @@ describe("hardening", () => {
   });
 
   // Security review item 9: a table-level grant covers columns added later.
+  // US-031 follow-up (the US-026 / US-031 carry-over "narrow public_rw SELECT on players"): the columns the public app
+  // needs from players are NONE. It reaches a phone or a name only through the login functions (masked labels), so not
+  // one table or column privilege on players is left, and a direct read is refused.
+  it("gives public_rw no privilege at all on public.players, table or column", async () => {
+    const [table] = await sql<{ any: boolean }[]>`
+      SELECT has_table_privilege('public_rw', 'public.players', 'SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER') AS any`;
+    expect(table?.any).toBe(false);
+    const columns = await sql<{ column_name: string; privilege_type: string }[]>`
+      SELECT column_name, privilege_type FROM information_schema.column_privileges
+       WHERE grantee = 'public_rw' AND table_schema = 'public' AND table_name = 'players'`;
+    expect(columns).toEqual([]);
+    const [col] = await sql<{ any: boolean }[]>`SELECT has_any_column_privilege('public_rw', 'public.players', 'SELECT, INSERT, UPDATE, REFERENCES') AS any`;
+    expect(col?.any).toBe(false);
+    for (const read of ["SELECT phone FROM public.players LIMIT 1", "SELECT id FROM public.players LIMIT 1", "SELECT count(*) FROM public.players"]) {
+      expect(await sqlState(asRole("public_rw", (tx) => tx.unsafe(read))), read).toBe("42501");
+    }
+  });
+
   it("pins the column list of every table public_rw / internal_rw reach by a table-level grant", async () => {
     const columns = await tableLevelGrantColumns();
     expect(columns).toMatchSnapshot();

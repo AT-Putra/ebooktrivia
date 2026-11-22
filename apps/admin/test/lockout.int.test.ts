@@ -180,7 +180,7 @@ describe("second-factor lockout", () => {
 
     // Only the recovery CLI clears it (and a new enrollment follows).
     const fresh = password();
-    expect(await runMutation({ actor: { kind: "cli" }, requestId: "test", ip: null }, () => recoverAdminUser(rt.sql, admin.email, fresh))).toMatchObject({ kind: "recovered" });
+    expect(await runMutation({ actor: { kind: "cli" }, requestId: "test", ip: null }, () => recoverAdminUser(rt, admin.email, fresh))).toMatchObject({ kind: "recovered" });
     expect(await root`SELECT 1 FROM admin_auth.login_throttle WHERE key = ${throttleKey("second_factor", admin.userId)}`).toHaveLength(0);
     const again = await enroll(rt, "staff", { userId: admin.userId, email: admin.email, password: fresh });
     expect(await signInWithCode(again)).toEqual({ kind: "signed_in" });

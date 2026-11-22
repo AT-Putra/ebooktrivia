@@ -149,9 +149,9 @@ describe("enrollment deadline (72 h for a temporary password)", () => {
     const owner = await createTestAdmin(rt, "owner");
     const staff = await enroll(rt);
     const temporary = password();
-    expect(await asAdmin(owner.userId, () => resetAdminUser(rt.sql, owner.userId, owner.userId, temporary))).toEqual({ kind: "self" });
-    expect(await asAdmin(owner.userId, () => resetAdminUser(rt.sql, owner.userId, staff.userId, "short"))).toEqual({ kind: "invalid_password" });
-    expect(await asAdmin(owner.userId, () => resetAdminUser(rt.sql, owner.userId, staff.userId, temporary))).toEqual({ kind: "reset" });
+    expect(await asAdmin(owner.userId, () => resetAdminUser(rt, owner.userId, owner.userId, temporary))).toEqual({ kind: "self" });
+    expect(await asAdmin(owner.userId, () => resetAdminUser(rt, owner.userId, staff.userId, "short"))).toEqual({ kind: "invalid_password" });
+    expect(await asAdmin(owner.userId, () => resetAdminUser(rt, owner.userId, staff.userId, temporary))).toEqual({ kind: "reset" });
     expect(await loadAdminSession(rt, staff.jar.request(freshIp()).headers)).toEqual({ status: "anonymous" });
     expect((await system(() => signInWithPassword(rt, { email: staff.email, password: staff.password }, new CookieJar().request(freshIp())))).outcome.kind).toBe("invalid");
     const again = await enroll(rt, "staff", { ...staff, password: temporary });
@@ -165,7 +165,7 @@ describe("Owner reset from the console (code review US-016 F4)", () => {
   it("refuses another Owner (Owner recovery is CLI-only), audited, and changes nothing", async () => {
     const owner = await createTestAdmin(rt, "owner");
     const other = await enroll(rt, "owner");
-    const result = await asAdmin(owner.userId, () => resetAdminUser(rt.sql, owner.userId, other.userId, password()));
+    const result = await asAdmin(owner.userId, () => resetAdminUser(rt, owner.userId, other.userId, password()));
     expect(result).toEqual({ kind: "owner" });
     expect(await loadAdminSession(rt, other.jar.request(freshIp()).headers)).toMatchObject({ status: "active" });
     const [totp] = await root<{ n: number }[]>`SELECT count(*)::int AS n FROM admin_auth."twoFactor" WHERE "userId" = ${other.userId}`;

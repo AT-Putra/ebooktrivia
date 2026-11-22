@@ -44,6 +44,7 @@ import type { SettingsConfig } from "./env.ts";
 import { InvalidInput, singleLine } from "./fields.ts";
 import { snippet } from "./landing-pages.ts";
 import { claimLpZipSession, type InitResult, openSession } from "./uploads.ts";
+import { processWide } from "../process-wide.ts";
 
 export const LP_VERSION_RETENTION = 5;
 /** Consecutive failed relink runs after which an alert is raised (security review US-023 L5). */
@@ -78,14 +79,15 @@ export class PublishBusy extends Error {
 }
 
 // One publish at a time per process: a check holds the ZIP (25 MiB) and one inflated file (25 MiB).
-let publishBusy = false;
+// Per process, not per bundle (lib/process-wide.ts): the route and the actions share the one slot.
+const publishSlot = processWide("lp-publish-slot", () => ({ busy: false }));
 async function withPublishSlot<T>(fn: () => Promise<T>): Promise<T> {
-  if (publishBusy) throw new PublishBusy();
-  publishBusy = true;
+  if (publishSlot.busy) throw new PublishBusy();
+  publishSlot.busy = true;
   try {
     return await fn();
   } finally {
-    publishBusy = false;
+    publishSlot.busy = false;
   }
 }
 
@@ -517,7 +519,8 @@ export async function syncLpHosts(sql: Sql, settings: SettingsConfig): Promise<S
   });
 }
 
-let relinkFailures = 0;
+// Per process: the periodic run (instrumentation.ts) and the console's changes count one run of failures.
+const relink = processWide("lp-relink-failures", () => ({ failures: 0 }));
 
 /**
  * syncLpHosts after a committed change (and by the periodic run): a failure is logged, the periodic
@@ -531,13 +534,13 @@ export async function syncLpHostsQuietly(sql: Sql, settings: SettingsConfig): Pr
     logEvent("warn", "admin.lp_host_sync_failed", {}, error);
     ok = false;
   }
-  relinkFailures = ok ? 0 : relinkFailures + 1;
-  if (relinkFailures === RELINK_ALERT_AFTER) {
+  relink.failures = ok ? 0 : relink.failures + 1;
+  if (relink.failures === RELINK_ALERT_AFTER) {
     await sql`
       INSERT INTO public.alerts (source, kind, severity, dedupe_key, message, payload)
       VALUES ('admin', 'lp_relink_failed', 'warning', 'lp_relink_failed',
               ${`Landing-page host links could not be brought in line ${String(RELINK_ALERT_AFTER)} times in a row: check /srv/lp/hosts and the admin log (admin.lp_host_left_alone).`},
-              ${JSON.stringify({ failures: relinkFailures })}::text::jsonb)`.catch((error: unknown) => {
+              ${JSON.stringify({ failures: relink.failures })}::text::jsonb)`.catch((error: unknown) => {
       logEvent("error", "admin.lp_relink_alert_failed", {}, error);
     });
   }

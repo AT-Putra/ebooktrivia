@@ -1,5 +1,5 @@
 // @ebooktrivia/crypto: sealed secrets and sealed OTP codes (plan M2.3). node:crypto only.
-export { canonicalAad, isCanonicalHost, otpAad, SECRET_SCOPES, secretAad, type SecretLabels, type SecretScope } from "./aad.ts";
+export { canonicalAad, isCanonicalHost, otpAad, passwordCheckAad, SECRET_SCOPES, secretAad, type SecretLabels, type SecretScope } from "./aad.ts";
 export {
   type ConversionSecretQuery,
   type ConversionSecretStore,
@@ -12,8 +12,10 @@ export {
   type Env,
   last4,
   type OtpInput,
+  type PasswordCheckInput,
   type ScopeKeys,
   SEALED_OTP_BYTES,
+  SEALED_PASSWORD_CHECK_BYTES,
   type SealedSecret,
   sealerFromEnv,
   type SecretInput,

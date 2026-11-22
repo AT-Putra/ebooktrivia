@@ -8,7 +8,7 @@
 //   - GUARDS lists something that no longer exists (keep the table exact);
 //   - the server-action directive appears anywhere but as the first statement of a file;
 //   - anything mounts Better Auth's HTTP handler.
-// A requirement is `permission:<policy permission>`, `enrollment` or `allowUnenrolled`; an empty
+// A requirement is `permission:<policy permission>`, `enrollment`, `passwordChange` or `allowUnenrolled`; an empty
 // `{}` or a missing argument is rejected here and is a type error (lib/access.ts RequireOptions).
 import { readdirSync, readFileSync } from "node:fs";
 import { basename, dirname, join, relative } from "node:path";
@@ -31,11 +31,13 @@ const GUARDS: Readonly<Record<string, string>> = {
   "(console)/audit/page.tsx": "permission:audit.view",
   "(console)/account/page.tsx": "permission:account.manage_own",
   "(auth)/enroll/page.tsx": "enrollment",
+  "(auth)/change-password/page.tsx": "passwordChange",
   "(auth)/login/actions.ts#signInAction": "auth",
   "(auth)/login/actions.ts#verifyTotpAction": "auth",
   "(auth)/login/actions.ts#verifyRecoveryCodeAction": "auth",
   "(auth)/enroll/actions.ts#startEnrollmentAction": "enrollment",
   "(auth)/enroll/actions.ts#completeEnrollmentAction": "enrollment",
+  "(auth)/change-password/actions.ts#changeBreachedPasswordAction": "passwordChange",
   "(console)/team/actions.ts#createStaffAction": "permission:admin_user.manage",
   "(console)/team/actions.ts#setDisabledAction": "permission:admin_user.manage",
   "(console)/team/actions.ts#resetAccessAction": "permission:admin_user.manage",
@@ -186,6 +188,7 @@ function requirement(literal: string): string {
   const permission = /^\{ ?permission: "([a-z_.]+)" ?\}$/.exec(body)?.[1];
   if (permission !== undefined) return (PERMISSIONS as readonly string[]).includes(permission) ? `permission:${permission}` : "invalid";
   if (/^\{ ?enrollment: true ?\}$/.test(body)) return "enrollment";
+  if (/^\{ ?passwordChange: true ?\}$/.test(body)) return "passwordChange";
   if (/^\{ ?allowUnenrolled: true ?\}$/.test(body)) return "allowUnenrolled";
   return "invalid";
 }
@@ -248,6 +251,7 @@ describe("guards", () => {
   it("parses requirements strictly", () => {
     expect(requirement('{ permission: "audit.view" }')).toBe("permission:audit.view");
     expect(requirement("{ enrollment: true }")).toBe("enrollment");
+    expect(requirement("{ passwordChange: true }")).toBe("passwordChange");
     expect(requirement("{}")).toBe("invalid");
     expect(requirement("")).toBe("invalid");
     expect(requirement('{ permission: "not.a_permission" }')).toBe("invalid");
@@ -258,6 +262,7 @@ describe("guards", () => {
 describe("server-action directive", () => {
   it("is found in every server-action module", () => {
     expect(serverFiles.sort()).toEqual([
+      "(auth)/change-password/actions.ts",
       "(auth)/enroll/actions.ts",
       "(auth)/login/actions.ts",
       "(console)/account/actions.ts",

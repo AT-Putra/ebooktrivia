@@ -51,3 +51,8 @@ Thumbs.db
 
 # AI asset raw outputs (regenerate with pnpm assets)
 tools/assets/raw/
+
+# Security scan evidence (US-031; docs/runbooks/security-scans.md): reports of the staging scans, which can hold
+# session ids, request bodies and page content. Never committed: only the scrubbed summary goes into the evidence.
+zap-*/
+headers-evidence/

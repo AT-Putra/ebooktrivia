@@ -186,7 +186,8 @@ describe("Cap routes", () => {
   });
 
   it("need nothing beyond the `public` ACL allowlist, which refuses the rest, INFO included (dev ACL = production line)", async () => {
-    // What the app sends: PING, EVAL with INCR / PTTL / PEXPIRE, SET NX PX. No ready check, no reads, no deletes.
+    // What the app sends: PING, FCALL of the worker-loaded ebt_rate_limit_v1 (INCR / PTTL / PEXPIRE inside; US-031),
+    // SET NX PX. No ready check, no reads, no deletes, no Lua of its own (test/valkey-functions.int.test.ts).
     expect(await valkey.ping()).toBe("PONG");
     expect(await hitRateLimits(valkey, [{ key: `acl:${freshIp()}`, limit: 1, windowMs: 60_000 }])).toEqual({ allowed: true });
     expect(await valkeyCapTokenMarks(valkey).markUsed(randomBytes(16).toString("base64url"), 60_000)).toBe(true);
@@ -205,12 +206,13 @@ describe("Cap routes", () => {
       ["CLIENT LIST", () => valkey.call("CLIENT", "LIST")],
       ["SET outside the prefixes", () => valkey.set("ebt:acl", "1")],
       ["SET another app's cache", () => valkey.set("cache:admin:acl", "1")],
-      ["EVAL touching another prefix", () => valkey.eval("return redis.call('INCR', KEYS[1])", 1, "ebt:acl")],
-      ["EVAL running a command outside the list", () => valkey.eval("return redis.call('GET', KEYS[1])", 1, "rl:acl")],
+      ["EVAL (US-031: no Lua of its own)", () => valkey.eval("return redis.call('INCR', KEYS[1])", 1, "rl:acl")],
+      ["FUNCTION LOAD", () => valkey.call("FUNCTION", "LOAD", "REPLACE", "#!lua name=evil\nredis.register_function('evil', function() return 1 end)")],
+      ["FUNCTION DELETE", () => valkey.call("FUNCTION", "DELETE", "ebt_public")],
+      ["FCALL touching another prefix", () => valkey.fcall("ebt_rate_limit_v1", 1, "ebt:acl", "1", "1000")],
       ["FLUSHALL", () => valkey.flushall()],
     ] as const) {
-      // A command refused inside a script reports "ACL failure in script" instead of NOPERM.
-      expect(await refused(run()), what).toMatch(/NOPERM|ACL failure in script/);
+      expect(await refused(run()), what).toMatch(/NOPERM/);
     }
   });
 

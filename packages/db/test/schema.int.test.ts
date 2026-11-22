@@ -24,6 +24,7 @@ const PLAN_TABLES = {
     "set_attempts",
     "attempt_questions",
     "deadline_extensions", // US-028: the Owner's outage extensions, one per answer
+    "answer_reveals", // US-031: the reveal watch, written by play_reveal only
     "player_program_stats",
     "leaderboard_snapshots",
     "prize_tiers",

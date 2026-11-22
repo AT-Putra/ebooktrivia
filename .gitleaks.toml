@@ -1,0 +1,73 @@
+# gitleaks 8.30.1 configuration (US-031), read by CI (gitleaks/gitleaks-action with GITLEAKS_VERSION
+# 8.30.1) and by infra/verify/local/security-scan.sh. The default rules apply unchanged; each allowlist
+# below drops ONE reviewed false positive of the generic-api-key rule and is as narrow as it can be
+# (the file AND the exact value or value shape). A new finding is never added here without a review:
+# a real secret is rotated and removed from history first (docs/runbooks/security-scans.md).
+# Paths match a history scan (repository-relative) and the working-tree scan (/tree/...) alike.
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Midtrans fixtures: signature_key is a SHA-512 hex signature recomputed over scrubbed values with the DEV key SB-Mid-server-DEVONLY (the fixtures' _provenance), not a credential"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''(?:^|/)infra/midtrans-stub/fixtures/(?:status|notification)\.json$''']
+regexTarget = "line"
+regexes = ['''^\s*"signature_key": "[0-9a-f]{128}",?$''']
+
+[[allowlists]]
+description = "Landing-page keys (lp_...) are public identifiers by design: every LP page embeds its own in its HTML (packages/core sdk-contract lpKey); these are test fixtures"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''(?:^|/)(?:e2e/support/sdk-stub\.ts|packages/sdk/src/flow\.test\.ts)$''']
+regexes = ['''^lp_[0-9A-Za-z]{8,40}$''']
+
+[[allowlists]]
+description = "apps/admin log redaction test: a made-up token the test checks is masked"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''(?:^|/)apps/admin/src/lib/log\.test\.ts$''']
+regexes = ['''^pX4kq9Lz2VbN7sQwE1rT$''']
+
+[[allowlists]]
+description = "WhatsApp message key id of a scrubbed recorded WEBJS answer (US-005 R11), an identifier, not a credential"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''(?:^|/)packages/adapters/src/waha\.test\.ts$''']
+regexes = ['''^3EB0C767D0D2E0A1F4B3C2$''']
+
+[[allowlists]]
+description = "waha-mock: base64 of the literal text mock-media-key, the placeholder mediaKey of a recorded WEBJS file answer"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''(?:^|/)infra/waha-mock/src/app\.ts$''']
+regexes = ['''^bW9jay1tZWRpYS1rZXk=$''']
+
+[[allowlists]]
+description = "Spike R13: DEV ONLY Better Auth secret of a throwaway local spike (spikes/r13-better-auth/src/env.ts, never deployed)"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''(?:^|/)spikes/r13-better-auth/src/env\.ts$''']
+regexes = ['''^spike-r13-secret-spike-r13-secret-0123456789$''']
+
+[[allowlists]]
+description = "The admin common-password list (US-031, ASVS V6.2.4): 10,000 public entries of the SecLists Pwdb_top-1000000 corpus (MIT), refused as passwords; some look random to any rule. Only the array lines of that one generated file"
+condition = "AND"
+paths = ['''(?:^|/)apps/admin/src/lib/auth/common-passwords\.ts$''']
+regexTarget = "line"
+regexes = ['''^\s*"(?:[^"\\]|\\.){12,256}",\s*$''']
+
+[[allowlists]]
+description = "The password-policy test: a listed common password (q1w2e3r4t5y6) the test checks is refused"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''(?:^|/)apps/admin/src/lib/auth/password-policy\.test\.ts$''']
+regexes = ['''^q1w2e3r4t5y6$''']
+
+[[allowlists]]
+description = "US-033 review action test: the request key of a test form, a fixed UUID (an idempotency key, not a credential)"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''(?:^|/)apps/admin/src/app/\(console\)/orders/review/actions\.test\.ts$''']
+regexes = ['''^0b1c2d3e-4f50-4617-8829-3a4b5c6d7e8f$''']

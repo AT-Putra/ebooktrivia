@@ -1,5 +1,5 @@
 import type postgres from "postgres";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { AuditClassificationError, currentMutationScope, describeChange, NoMutationScopeError, runMutation, withAudit } from "./audit.ts";
 
 const ID = "u1";
@@ -109,5 +109,19 @@ describe("withAudit outside a mutation scope", () => {
       expect(currentMutationScope()).toBe(scope);
     });
     expect(currentMutationScope()).toBeUndefined();
+  });
+});
+
+describe("the mutation scope across bundles (US-031: e2e admin-auth, the recovery code sign-in)", () => {
+  it("is one store per process: a second copy of the module (another Next.js bundle) sees the scope the first one opened", async () => {
+    vi.resetModules();
+    const other = await import("./audit.ts");
+    expect(other.runMutation).not.toBe(runMutation);
+    const scope = { actor: { kind: "system" as const }, requestId: "r1", ip: null };
+    await runMutation(scope, () => {
+      expect(other.currentMutationScope()).toBe(scope);
+      return Promise.resolve();
+    });
+    expect(other.currentMutationScope()).toBeUndefined();
   });
 });

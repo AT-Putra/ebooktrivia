@@ -235,7 +235,7 @@ describe("override reason, limits, prize tiers, legal pages", () => {
     expect(parseLimits(form({ ...values, waDelaySeconds: "0" }))["delivery.wa_delay_seconds"]).toBe(0);
     expect(LIMITS.find((l) => l.key === "delivery.wa_delay_seconds")?.fallback).toBe(180);
     expect(Object.fromEntries(LIMITS.map((l) => [l.key, [l.min, l.max]]))).toEqual({
-      "otp.code_ttl_seconds": [60, 900],
+      "otp.code_ttl_seconds": [60, 600],
       "otp.max_attempts": [1, 5],
       "otp.phone_cap": [1, 10],
       "otp.phone_window_seconds": [3600, 86_400],

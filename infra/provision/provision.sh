@@ -516,7 +516,7 @@ step_config_files() {
   put_file "$ETC/valkey/valkey.conf" 640 root "$APP" <"$FILES/valkey/valkey.conf"
   restart_needed valkey.service
   # users.acl.template: default off; public ~rl:* ~cache:public:* with an explicit command
-  # allowlist (-@all +ping +eval +incr +pttl +pexpire +set: the checkout's rate limits and the single-use
+  # allowlist (-@all +ping +fcall +incr +pttl +pexpire +set: the worker-loaded rate-limit function, US-031, and the single-use
   # marks of Cap tokens; Cap itself is stateless; no INFO, no reads, no deletes; US-020); admin ~cache:admin:*;
   # worker ~ebt:* (BullMQ prefix) ~cache:worker:* plus +info (BullMQ and ioredis run INFO on
   # connect); admin and worker +@all -@dangerous -@admin; no pub/sub channels for any of them;

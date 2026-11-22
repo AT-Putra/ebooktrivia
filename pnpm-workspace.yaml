@@ -15,6 +15,10 @@ overrides:
   # tldts (US-017, approved 2026-11-19) asks for tldts-core ^7.4.19; newer cores are inside the
   # 2-week release-age window (docs/versions.md), so the core is pinned to the same release.
   tldts>tldts-core: "7.4.19"
+  # US-031 (OSV GHSA-w5hq-g745-h8pq, GitHub severity moderate): exceljs 4.4.0 asks for uuid ^8.3.0; 8.3.2 lacks the v3/v5/v6 buffer bounds
+  # check. exceljs only calls v4() without a buffer, but the fixed 11.1.1 (2026-04-29, still CommonJS, same {v4}) is
+  # scoped to exceljs here. Approved by the lead 2026-11-22 (docs/versions.md).
+  exceljs>uuid: "11.1.1"
 allowBuilds:
   esbuild: true
   # bullmq -> msgpackr: optional native decoder; msgpackr falls back to pure JS, so no install script runs.

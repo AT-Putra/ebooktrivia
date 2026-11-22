@@ -96,10 +96,13 @@ describe("checkLpZip: a valid landing page", () => {
 });
 
 describe("checkLpZip: zip bombs and size limits", () => {
+  // US-031: the bombs are 4 MiB of zeros (not 60): the ratio budget of a few KB archive is far below that already,
+  // so the same code path refuses them while CI allocates and inflates 15 times less.
   it("stops a zip bomb while inflating: 1 KiB of compressed zeros claiming 1 byte is refused on the ratio budget", async () => {
-    const zeros = Buffer.alloc(60 * MiB);
+    const zeros = Buffer.alloc(4 * MiB);
     const bomb = makeZip([index, { name: "bomb.js", data: zeros, declaredSize: 1, crc: 0 }]);
-    expect(bomb.length).toBeLessThan(100 * 1024);
+    expect(bomb.length).toBeLessThan(16 * 1024);
+    expect(100 * bomb.length).toBeLessThan(zeros.length); // over the 100:1 ratio budget, under every other limit
     const found = await issues(bomb);
     expect(found.map((i) => i.code)).toEqual(["too_large_uncompressed"]);
   });
@@ -119,7 +122,9 @@ describe("checkLpZip: zip bombs and size limits", () => {
   });
 
   it("refuses an archive over 25 MiB before parsing it, and more than 500 files", async () => {
-    expect(await codes(Buffer.alloc(LP_ZIP_LIMITS.maxZipBytes + 1))).toEqual(["too_large"]);
+    // The production numbers, pinned; the size check itself runs on an injected 1 MiB cap (no 25 MiB buffer).
+    expect(LP_ZIP_LIMITS).toMatchObject({ maxZipBytes: 25 * MiB, maxUncompressedBytes: 150 * MiB, maxRatio: 100, maxFiles: 500, maxFileBytes: 25 * MiB });
+    expect(await codes(Buffer.alloc(MiB + 1), { ...LP_ZIP_LIMITS, maxZipBytes: MiB })).toEqual(["too_large"]);
     const many = Array.from({ length: 501 }, (_, i) => ({ name: `f${String(i)}.txt`, data: Buffer.from("x"), method: 0 }));
     expect(await codes(makeZip([index, ...many]))).toEqual(["too_many_files"]);
     const entries = Array.from({ length: 1001 }, (_, i) => ({ name: `d${String(i)}/`, data: Buffer.alloc(0), method: 0 }));
@@ -146,7 +151,7 @@ describe("checkLpZip: names and paths", () => {
   });
 
   it("skips macOS metadata without inflating it, and leaves it out of the top-folder rule and the file count", async () => {
-    const bomb = { data: Buffer.alloc(30 * MiB), declaredSize: 1, crc: 0 }; // would fail if inflated
+    const bomb = { data: Buffer.alloc(4 * MiB), declaredSize: 1, crc: 0 }; // inflated, one alone is over the ratio budget (100 x this ZIP of a few KB)
     const zip = makeZip([
       { name: "site/", data: Buffer.alloc(0), method: 0 },
       { name: "site/index.html", data: page() },
@@ -267,11 +272,13 @@ describe("checkLpZip: the limits themselves are allowed", () => {
     expect((await check(makeZip([index, ...many]))).site.files).toHaveLength(500);
   });
 
-  it("accepts a ZIP of exactly 25 MiB", async () => {
+  it("accepts a ZIP of exactly the size cap (an injected 1 MiB; production 25 MiB, pinned above)", async () => {
+    const limits = { ...LP_ZIP_LIMITS, maxZipBytes: MiB };
     const without = makeZip([index, { name: "pad.txt", data: Buffer.alloc(0), method: 0 }]).length;
-    const zip = makeZip([index, { name: "pad.txt", data: Buffer.alloc(LP_ZIP_LIMITS.maxZipBytes - without, 0x61), method: 0 }]);
-    expect(zip.length).toBe(LP_ZIP_LIMITS.maxZipBytes);
-    expect((await check(zip)).site.files).toHaveLength(2);
+    const zip = makeZip([index, { name: "pad.txt", data: Buffer.alloc(limits.maxZipBytes - without, 0x61), method: 0 }]);
+    expect(zip.length).toBe(limits.maxZipBytes);
+    expect((await check(zip, limits)).site.files).toHaveLength(2);
+    expect(await codes(Buffer.concat([zip, Buffer.alloc(1)]), limits)).toEqual(["too_large"]);
   });
 
   it("accepts exactly 100:1 (uncompressed bytes = 100 x the ZIP's size)", async () => {
@@ -289,7 +296,7 @@ describe("checkLpZip: the limits themselves are allowed", () => {
   });
 
   it("hands each file over as soon as it is checked (never all of them at once)", async () => {
-    const zip = makeZip([index, { name: "a.js", data: Buffer.from("1") }, { name: "bomb.js", data: Buffer.alloc(60 * MiB), declaredSize: 1, crc: 0 }]);
+    const zip = makeZip([index, { name: "a.js", data: Buffer.from("1") }, { name: "bomb.js", data: Buffer.alloc(4 * MiB), declaredSize: 1, crc: 0 }]);
     const order: string[] = [];
     const failing = checkLpZip(zip, {
       sdkTag: TAG,

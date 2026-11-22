@@ -28,6 +28,9 @@
 //                    for a player who asked for one again on the play login page, out of the WhatsApp pool and US-025's
 //                    SMTP path. runWorker wires it when worker.env holds SECRETS_MESSAGING_PRIVATE_KEY and DOMAIN;
 //                    without them magic_link.resend is not relayed.
+//   passwordCheck    the admin.password_hibp_check consumer (US-031, password-check.ts): the breached-password check of
+//                    an admin password (Have I Been Pwned, k-anonymity). runWorker wires it when worker.env holds
+//                    SECRETS_MESSAGING_PRIVATE_KEY (it opens the sealed SHA-1); without it the check is not relayed.
 //   testSend         the senders of admin template test-sends (US-017, template-test-send.ts).
 //                    runWorker wires the real SMTP / WAHA senders when worker.env holds
 //                    SECRETS_MESSAGING_PRIVATE_KEY; without it template.test_send is not relayed.
@@ -58,6 +61,7 @@ import { relayOnce } from "./relay.ts";
 import { onShutdown } from "./shutdown.ts";
 import { createTemplateTestSendConsumer, type TestSender } from "./template-test-send.ts";
 import { testSendFromEnv } from "./test-send-senders.ts";
+import { startValkeyFunctionLoader } from "./valkey-functions.ts";
 import { raiseAlert, runSweeps } from "./sweepers.ts";
 import { loadWorkerConfig, type WorkerConfig } from "./worker-config.ts";
 import { type PaymentPort, paymentsFromEnv } from "./midtrans-access.ts";
@@ -67,6 +71,7 @@ import { type ConversionPort, conversionsFromEnv } from "./conversions.ts";
 import { createMoConsumer, createOrderPaidConsumer, MO_TOPIC, nudgeConversions, type OrderPaidNudge } from "./conversion-outbox.ts";
 import { createOtpSendConsumer, OTP_TOPIC } from "./otp-send.ts";
 import { otpFromEnv, type OtpPort } from "./otp-senders.ts";
+import { createPasswordCheckConsumer, PASSWORD_CHECK_TOPIC, type PasswordCheckPort, passwordCheckFromEnv } from "./password-check.ts";
 import { createMagicLinkResendConsumer, MAGIC_LINK_RESEND_TOPIC, magicLinkResendFromEnv, type MagicLinkResendPort } from "./magic-link-resend.ts";
 import { reconcileIfDue } from "./reconciliation.ts";
 import { refreshReportRollups } from "./rollups.ts";
@@ -106,6 +111,8 @@ export interface WorkerPorts {
   readonly otp?: OtpPort;
   /** US-027: the magic_link.resend consumer's link origin and sender. */
   readonly magicLinkResend?: MagicLinkResendPort;
+  /** US-031: the admin.password_hibp_check consumer's key and breach lookup. */
+  readonly passwordCheck?: PasswordCheckPort;
 }
 
 export interface RunningWorker {
@@ -141,6 +148,7 @@ export async function startWorker(config: WorkerConfig, ports: WorkerPorts, log:
     ...(nudgeSources.length === 0 ? [] : [ORDER_PAID_TOPIC]),
     ...(ports.otp === undefined ? [] : [OTP_TOPIC]),
     ...(ports.magicLinkResend === undefined ? [] : [MAGIC_LINK_RESEND_TOPIC]),
+    ...(ports.passwordCheck === undefined ? [] : [PASSWORD_CHECK_TOPIC]),
   ];
   if (new Set(topics).size !== topics.length) throw new Error("two outbox consumers registered for one topic");
 
@@ -179,6 +187,17 @@ export async function startWorker(config: WorkerConfig, ports: WorkerPorts, log:
   const redis = new Redis({ ...redisOptions(config.valkey), maxRetriesPerRequest: 1, commandTimeout: 2000, lazyConnect: true });
   redis.on("error", (err: Error) => {
     log.warn({ err }, "valkey health connection error");
+  });
+  // US-031: public's rate-limit function (public may FCALL, never load): at start, on every reconnect, and from the
+  // heartbeat, which also raises an alert when it finds the function gone (public answered 503 meanwhile).
+  const functionLoader = await startValkeyFunctionLoader(redis, log, async () => {
+    await raiseAlert(sql, {
+      kind: "valkey_function_missing",
+      severity: "warning",
+      dedupeKey: "valkey_function_missing",
+      message: "The Valkey rate-limit function of the public app was missing (flushed or a new Valkey): the worker reloaded it; public answered 503 on its rate-limited routes until then",
+      payload: { function: "ebt_rate_limit_v1" },
+    });
   });
 
   const queueOptions = { valkey: config.valkey, prefix: config.prefix };
@@ -254,6 +273,7 @@ export async function startWorker(config: WorkerConfig, ports: WorkerPorts, log:
   if (magicLinkResend !== undefined) {
     consumers.push(createMagicLinkResendConsumer({ sql, playOrigin: magicLinkResend.playOrigin, sender: magicLinkResend.sender(sql, log), log }));
   }
+  if (ports.passwordCheck !== undefined) consumers.push(createPasswordCheckConsumer({ ...ports.passwordCheck, log }));
   if (ports.conversions !== undefined) consumers.push(createMoConsumer());
   if (nudgeSources.length > 0) consumers.push(createOrderPaidConsumer(nudgeSources.map((make) => make({ sql, conversionQueue, deliveryNudge: delivery?.nudge }))));
   const outboxMaxAttempts = new Map(consumers.flatMap((c): [string, number][] => (c.maxAttempts === undefined ? [] : [[c.topic, c.maxAttempts]])));
@@ -292,6 +312,7 @@ export async function startWorker(config: WorkerConfig, ports: WorkerPorts, log:
       return false;
     }),
     startLoop({ name: "heartbeat", intervalMs: config.heartbeatIntervalMs, log }, async () => {
+      await functionLoader.check();
       await beat({
         sql,
         ping: () => redis.ping(),
@@ -336,6 +357,7 @@ export async function startWorker(config: WorkerConfig, ports: WorkerPorts, log:
       if (!valkeyUp) log.warn("Valkey unreachable at shutdown: closing consumers without waiting for jobs in flight");
       await Promise.all(workers.map((w) => w.close(!valkeyUp)));
       await Promise.all(queues.map((q) => q.close()));
+      functionLoader.stop();
       redis.disconnect();
       await sql.end({ timeout: 5 });
       await Promise.all([safeFetch.close(), heartbeatFetch.close(), payments?.close?.(), ports.conversions?.close?.()]);
@@ -356,6 +378,8 @@ export async function runWorker(env: Env, ports: WorkerPorts = {}): Promise<void
   if (otp === undefined) log.warn("SECRETS_MESSAGING_PRIVATE_KEY is not set: OTP login codes are not sent");
   const magicLinkResend = ports.magicLinkResend ?? magicLinkResendFromEnv(env, config.dev);
   if (magicLinkResend === undefined) log.warn("SECRETS_MESSAGING_PRIVATE_KEY or DOMAIN is not set: login links asked for again are not sent");
+  const passwordCheck = ports.passwordCheck ?? passwordCheckFromEnv(env);
+  if (passwordCheck === undefined) log.warn("SECRETS_MESSAGING_PRIVATE_KEY is not set: admin passwords are not checked against known breaches");
   // Code review m7: say it at start, not only through the hourly "no consumer" alert.
   if (payments === undefined) log.warn("SECRETS_PAYMENT_PRIVATE_KEY is not set: Midtrans notifications are not processed and no order can become PAID");
   if (conversions === undefined && ports.fireConversion === undefined) log.warn("SECRETS_CONVERSIONS_PRIVATE_KEY is not set: no adnet postback and no CAPI event is sent");
@@ -374,6 +398,7 @@ export async function runWorker(env: Env, ports: WorkerPorts = {}): Promise<void
       ...(otp === undefined ? {} : { otp }),
       ...(deliveries === undefined ? {} : { deliveries }),
       ...(magicLinkResend === undefined ? {} : { magicLinkResend }),
+      ...(passwordCheck === undefined ? {} : { passwordCheck }),
     },
     log,
   );

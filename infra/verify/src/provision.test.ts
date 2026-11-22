@@ -58,8 +58,10 @@ describe("provisioning", () => {
     expect(user("public")).toMatch(/ ~rl:\* ~cache:public:\* /);
     expect(user("admin")).toMatch(/ ~cache:admin:\* /);
     expect(user("worker")).toMatch(/ ~ebt:\* ~cache:worker:\* /);
-    // US-020: public has an explicit allowlist (rate-limit script, Cap token marks), no INFO, no reads or deletes.
-    expect(user("public")).toMatch(/ resetchannels -@all \+ping \+eval \+incr \+pttl \+pexpire \+set$/);
+    // US-020: public has an explicit allowlist (rate limits, Cap token marks), no INFO, no reads or deletes. US-031: the
+    // rate limits are an FCALL of the worker-loaded function, so public never runs its own Lua.
+    expect(user("public")).toMatch(/ resetchannels -@all \+ping \+fcall \+incr \+pttl \+pexpire \+set$/);
+    expect(user("public")).not.toMatch(/\+eval|\+evalsha|\+script|\+function|\+@scripting|\+fcall_ro/);
     expect(user("admin")).toMatch(/-@dangerous -@admin -scan -randomkey -script\|flush -function$/);
     for (const name of ["public", "admin"]) expect(user(name), name).not.toMatch(/~cache:\* /);
   });

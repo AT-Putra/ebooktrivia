@@ -150,23 +150,31 @@ export const handleCurrent = playAction("play.current", ["attempt_id"], async (s
 export const handleAnswer = playAction("play.answer", ["answer_id", "option_id"], async (sql, playerId, fields, request) => {
   const { ip, ua } = device(request);
   const answerId = fields["answer_id"] ?? "";
-  const revealed = async (): Promise<Record<string, unknown>> => {
+  // null: play_reveal refused it (US-031: more than 60 s after the answer, no answer content goes out).
+  const revealed = async (): Promise<Record<string, unknown> | null> => {
     await retryDeadlockOnce(() => sql`SELECT public.play_settle(${playerId}, ${answerId}) AS r`);
     const [row] = await sql<{ r: Record<string, unknown> }[]>`SELECT public.play_reveal(${playerId}, ${answerId}) AS r`;
+    if (row?.r["state"] === "closed") return null;
     return { ...(row?.r ?? {}), state: "answered" };
   };
   try {
     await retryDeadlockOnce(() => sql`SELECT public.play_answer(${playerId}, ${answerId}, ${fields["option_id"] ?? ""}, ${ip}::inet, ${ua}) AS r`);
   } catch (error) {
     if (!isPgCode(error, "ET144")) throw error;
+    let again: Record<string, unknown> | null;
     try {
-      return await revealed();
+      again = await revealed();
     } catch (reveal) {
       if (isPgCode(reveal, "ET148")) throw error;
       throw reveal;
     }
+    // A retry long after the answer (a stale tab) is the same 409 as a timeout: nothing is revealed late.
+    if (again === null) throw error;
+    return again;
   }
-  return revealed();
+  const fresh = await revealed();
+  if (fresh === null) throw new Error("play_reveal refused a pick it had just recorded");
+  return fresh;
 });
 
 /** The rate-limit key part of a player (a hash label of its own, never the id itself). */

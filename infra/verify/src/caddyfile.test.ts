@@ -111,8 +111,17 @@ describe("adapted Caddyfile", () => {
     ]);
   });
 
-  it("only redirects to HTTPS on port 80", () => {
-    expect(handlers(http?.routes).map((h) => [h.handler, h["status_code"]])).toEqual([["static_response", 308]]);
+  it("only redirects to HTTPS on port 80, and answers api.<domain> 400 there instead of redirecting it (US-031, ASVS V4.1.2)", () => {
+    expect(
+      handlers(http?.routes)
+        .filter((h) => h.handler !== "subroute")
+        .map((h) => [h.handler, h["status_code"]]),
+    ).toEqual([
+      ["static_response", 400],
+      ["static_response", 308],
+    ]);
+    const api = http?.routes?.find((r) => JSON.stringify(r).includes('"status_code":400'));
+    expect(JSON.stringify(api)).toContain('"host":["api.example.test"]');
   });
 
   it("blocks /internal (and the load balancer's /livez) on every host", () => {
@@ -120,6 +129,17 @@ describe("adapted Caddyfile", () => {
       const blocked = routes([site(host)]).find((r) => (r.match?.[0]?.["path"] as string[] | undefined)?.includes("/internal/*"));
       expect(blocked?.match?.[0]?.["path"], String(host)).toEqual(["/internal", "/internal/*", "/livez", "/livez/*"]);
       expect(handlers(blocked?.handle?.flatMap((h) => h.routes ?? [])).map((h) => h["status_code"])).toEqual([404]);
+    }
+  });
+
+  it("answers TRACE and TRACK with 405 on every host, before any app (US-031, ASVS V13.4.4)", () => {
+    for (const host of [...APP_HOSTS, null]) {
+      const all = routes([site(host)]);
+      const index = all.findIndex((r) => JSON.stringify(r.match?.[0]?.["method"]) === JSON.stringify(["TRACE", "TRACK"]));
+      expect(index, String(host)).toBeGreaterThanOrEqual(0);
+      expect(handlers(all[index]?.handle?.flatMap((h) => h.routes ?? [])).map((h) => h["status_code"]), String(host)).toEqual([405]);
+      // A route of its own next to the blocked paths, so it never reaches an upstream or a file server.
+      expect(all[index]?.terminal, String(host)).not.toBe(false);
     }
   });
 
@@ -351,18 +371,21 @@ describe("adapted Caddyfile", () => {
     });
   });
 
-  it("emits exactly ONE Referrer-Policy per app site: strict-origin on order.<domain> (AC-T5), strict-origin-when-cross-origin elsewhere", () => {
+  it("emits exactly ONE Referrer-Policy per app site: FORCED strict-origin on order.<domain> (AC-T5); elsewhere the app's own, else strict-origin-when-cross-origin", () => {
     // Every header operation that sets or adds the field, in any handler of the site: a second one (a
-    // later block that was meant to override the first) did not take effect in Caddy 2.11.9.
+    // later block that was meant to override the first) did not take effect in Caddy 2.11.9. US-031: on the order
+    // site it replaces whatever the app sends; elsewhere it is a default (`?`: only when the response has none), so a
+    // route's stricter policy wins (security-headers.sh).
     const policies = (host: string) =>
       handlers([site(host)])
         .filter((h) => h.handler === "headers")
         .flatMap((h) => {
           const response = h["response"] as Json | undefined;
-          return [(response?.["set"] as Json | undefined)?.["Referrer-Policy"], (response?.["add"] as Json | undefined)?.["Referrer-Policy"]].filter((value) => value !== undefined);
+          const values = [(response?.["set"] as Json | undefined)?.["Referrer-Policy"], (response?.["add"] as Json | undefined)?.["Referrer-Policy"]].filter((value) => value !== undefined);
+          return values.length === 0 ? [] : [{ values, onlyWhenAbsent: ((response?.["require"] as Json | undefined)?.["headers"] as Json | undefined)?.["Referrer-Policy"] === null }];
         });
-    expect(policies("order.example.test")).toEqual([["strict-origin"]]);
-    for (const host of ["admin.example.test", "play.example.test", "api.example.test"]) expect(policies(host), host).toEqual([["strict-origin-when-cross-origin"]]);
+    expect(policies("order.example.test")).toEqual([{ values: [["strict-origin"]], onlyWhenAbsent: false }]);
+    for (const host of ["admin.example.test", "play.example.test", "api.example.test"]) expect(policies(host), host).toEqual([{ values: [["strict-origin-when-cross-origin"]], onlyWhenAbsent: true }]);
   });
 
   it("sets HSTS, nosniff and frame-ancestors 'none' on the app hosts, HSTS and nosniff on LP hosts", () => {
@@ -370,7 +393,7 @@ describe("adapted Caddyfile", () => {
       const response = handlers([site(host)]).find((h) => h.handler === "headers" && h["response"] !== undefined)?.["response"] as Json;
       expect(response, host).toMatchObject({
         deferred: true,
-        add: { "Content-Security-Policy": ["frame-ancestors 'none'"] },
+        add: { "Content-Security-Policy": ["frame-ancestors 'none'; object-src 'none'; base-uri 'none'"] },
         set: { "Strict-Transport-Security": ["max-age=31536000; includeSubDomains"], "X-Content-Type-Options": ["nosniff"] },
       });
     }

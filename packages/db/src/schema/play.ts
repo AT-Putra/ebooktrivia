@@ -133,6 +133,34 @@ export const deadlineExtensions = pgTable(
   ],
 );
 
+/**
+ * The reveals of each answer (US-031, the US-027 accepted residual: a stolen public_rw login can act as a real
+ * player and reveal its answers). Written only by public.play_reveal (owner trivia_play): `reveals` counts the reveals
+ * it answered (the app reveals a pick right after it, again only on its own retry), `late_reveals` the ones it REFUSED
+ * because they came more than 60 s after the answer (no answer content is ever revealed late), and `flagged_at` the
+ * first refusal: play_reveal raises `play_reveal_misuse` when several distinct attempts are flagged within an hour.
+ * Ids, counts and times only, no personal data; the app cannot read or write it. A rolled-back call leaves no row here,
+ * but its RAISE LOG line stays in the server log (docs/runbooks/security-scans.md).
+ */
+export const answerReveals = pgTable(
+  "answer_reveals",
+  {
+    answerId: uuid("answer_id")
+      .primaryKey()
+      .references(() => attemptQuestions.id, { onDelete: "cascade" }),
+    reveals: integer("reveals").notNull().default(0),
+    lateReveals: integer("late_reveals").notNull().default(0),
+    firstRevealedAt: tstz("first_revealed_at").notNull(),
+    lastRevealedAt: tstz("last_revealed_at").notNull(),
+    flaggedAt: tstz("flagged_at"),
+  },
+  (t) => [
+    index("answer_reveals_flagged_at_idx").on(t.flaggedAt).where(sql`${t.flaggedAt} IS NOT NULL`),
+    check("answer_reveals_counts_check", sql`${t.reveals} >= 0 AND ${t.lateReveals} >= 0 AND ${t.reveals} + ${t.lateReveals} >= 1`),
+    check("answer_reveals_flagged_check", sql`(${t.flaggedAt} IS NULL) = (${t.lateReveals} = 0)`),
+  ],
+);
+
 /** Per player per program aggregate; ranking: score desc, total_ms asc, finished_at asc nulls last. */
 export const playerProgramStats = pgTable(
   "player_program_stats",

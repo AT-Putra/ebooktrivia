@@ -91,6 +91,8 @@ describe("startWorker", () => {
     expect(first(await sql<{ status: string }[]>`SELECT status::text FROM programs WHERE id = ${ended.programId}`).status).toBe("awaiting_confirmation");
     const swept = new Set(captured.lines.filter((l) => l["msg"] === "sweep done").map((l) => l["sweeper"]));
     expect([...swept].sort()).toEqual(["grace_end", "lease_expiry", "login_throttle", "order_expiry", "otp_expiry", "outbox", "payment_methods", "review_stuck", "snap_create", "wa_contacts_retention"]);
+    // US-031: the start-up loads public's Valkey rate-limit function (reload paths: prod-valkey-acl.int.test.ts).
+    expect(captured.lines.filter((l) => l["msg"] === "valkey functions loaded").map((l) => l["reason"])).toEqual(["start"]);
     expect(first(await sql<{ relayed: boolean }[]>`SELECT relayed_at IS NOT NULL AS relayed FROM outbox WHERE id = ${rowId ?? ""}`).relayed).toBe(false);
     expect(first(await sql<{ status: string }[]>`SELECT status::text FROM conversion_events WHERE id = ${eventId ?? ""}`).status).toBe("pending");
     await sql`UPDATE outbox SET processed_at = now() WHERE id = ${rowId ?? ""}`;

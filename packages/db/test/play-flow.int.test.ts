@@ -18,7 +18,7 @@
 //   - the unlock floor: a set once shown open stays open after an extend-only reschedule.
 import { randomInt } from "node:crypto";
 import postgres from "postgres";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, inject, it } from "vitest";
 import { asRole, first, sql, sqlState } from "./db.ts";
 import { createPlayer, createProgram, createTriviaSet, type Question } from "./fixtures.ts";
 
@@ -537,5 +537,124 @@ describe("the unlock floor (play_note_unlocked)", () => {
     // A player who is not eligible gets 0 and nothing is written.
     const { playerId: unpaid } = await createPlayer({ programId, eligible: false });
     expect(await asRole("public_rw", async (tx) => first(await tx<{ n: number }[]>`SELECT public.play_note_unlocked(${unpaid}, ${programId}) AS n`).n)).toBe(0);
+  });
+});
+
+// US-031: the reveal watch, the detection of the US-027 accepted residual (a stolen public_rw login acting as a player
+// can call play_reveal for the player's answers). The app reveals a pick right after it, again only on its own retry.
+describe("the reveal watch (play_reveal: late reveals refused and flagged, play_reveal_misuse on several attempts, a log line that survives ROLLBACK)", () => {
+  let programId: string;
+  let setId: string;
+  let q1: Question;
+  let q2: Question;
+  beforeAll(async () => {
+    ({ programId } = await createProgram());
+    ({ setId, q1, q2 } = await createTriviaSet(programId, 1));
+  });
+  const optionFor = async (answerId: string) => ((await questionIdOf(answerId)) === q1.id ? q1 : q2).options[1];
+  const openAlerts = () =>
+    sql<{ severity: string; source: string; payload: Json; message: string }[]>`
+      SELECT severity, source, payload, message FROM alerts WHERE dedupe_key = 'play_reveal_misuse' AND resolved_at IS NULL ORDER BY created_at`;
+  const watch = async (answerId: string) =>
+    (await sql<{ reveals: number; late: number; flagged: boolean }[]>`
+      SELECT reveals, late_reveals AS late, flagged_at IS NOT NULL AS flagged FROM answer_reveals WHERE answer_id = ${answerId}`)[0];
+  /** A player with one answered (and settled) pick, and its row's clock moved back by `secs`. */
+  async function answered(secs = 0): Promise<{ playerId: string; attemptId: string; answerId: string }> {
+    const { playerId } = await createPlayer({ programId, eligible: true });
+    const attemptId = await start(playerId, setId);
+    const answerId = String((await current(playerId, attemptId))["answer_id"]);
+    expect(await answerOnly(playerId, answerId, await optionFor(answerId))).toEqual({ state: "answered", answer_id: answerId });
+    expect(await settle(playerId, answerId)).toEqual({ state: "settled", answer_id: answerId });
+    if (secs > 0) {
+      await sql`UPDATE attempt_questions SET served_at = served_at - make_interval(secs => ${secs}), deadline_at = deadline_at - make_interval(secs => ${secs}), answered_at = answered_at - make_interval(secs => ${secs}) WHERE id = ${answerId}`;
+    }
+    return { playerId, attemptId, answerId };
+  }
+  const resolveOpenAlerts = () => sql`UPDATE alerts SET resolved_at = now() WHERE dedupe_key = 'play_reveal_misuse' AND resolved_at IS NULL`;
+  const clearFlags = () => sql`UPDATE answer_reveals SET flagged_at = flagged_at - interval '2 hours' WHERE flagged_at IS NOT NULL`;
+
+  it("answers and counts every reveal within 60 s of the answer, the app's retries too, and never flags them", async () => {
+    await resolveOpenAlerts();
+    const { playerId, answerId } = await answered();
+    for (let n = 1; n <= 4; n++) expect(await reveal(playerId, answerId)).toMatchObject({ state: "revealed", answer_id: answerId, correct_option_id: expect.any(String) as string });
+    expect(await watch(answerId)).toEqual({ reveals: 4, late: 0, flagged: false });
+    // 59 s after the answer: still the answer's reveal.
+    await sql`UPDATE attempt_questions SET answered_at = answered_at - interval '59 seconds', served_at = served_at - interval '59 seconds', deadline_at = deadline_at - interval '59 seconds' WHERE id = ${answerId}`;
+    expect(await reveal(playerId, answerId)).toMatchObject({ state: "revealed" });
+    expect(await openAlerts()).toEqual([]);
+  });
+
+  it("refuses a reveal more than 60 s after the answer (nothing of it goes out), counts and flags it", async () => {
+    const { playerId, answerId } = await answered(61);
+    const late = await reveal(playerId, answerId);
+    expect(late).toEqual({ state: "closed", answer_id: answerId });
+    expect(await watch(answerId)).toEqual({ reveals: 0, late: 1, flagged: true });
+    expect(await reveal(playerId, answerId)).toEqual({ state: "closed", answer_id: answerId });
+    expect(await watch(answerId)).toEqual({ reveals: 0, late: 2, flagged: true });
+  });
+
+  it("raises ONE open play_reveal_misuse alert once 3 distinct attempts are flagged within an hour, with ids and counts only", async () => {
+    await resolveOpenAlerts();
+    await clearFlags();
+    const first = await answered(120);
+    const second = await answered(120);
+    await reveal(first.playerId, first.answerId);
+    await reveal(first.playerId, first.answerId); // one noisy attempt is not a harvest
+    await reveal(second.playerId, second.answerId);
+    expect(await openAlerts()).toEqual([]);
+    const third = await answered(3600);
+    await reveal(third.playerId, third.answerId);
+    const [alert, ...more] = await openAlerts();
+    expect(more).toEqual([]);
+    expect(alert).toMatchObject({ source: "monitor", severity: "warning" });
+    expect(alert?.payload).toEqual({ flagged_attempts: 3, window_minutes: 60, answer_id: third.answerId, attempt_id: third.attemptId, seconds_after_answer: expect.any(Number) as number });
+    expect(Number(alert?.payload["seconds_after_answer"])).toBeGreaterThanOrEqual(3600);
+    // No personal data: no player id, phone or name anywhere in the alert.
+    for (const who of [first, second, third]) {
+      const [player] = await sql<{ phone: string; name: string }[]>`SELECT phone, name FROM players WHERE id = ${who.playerId}`;
+      for (const secret of [who.playerId, player?.phone ?? "", player?.name ?? ""]) expect(JSON.stringify(alert)).not.toContain(secret);
+    }
+    // Deduped while open (an hour): a fourth attempt is flagged, not alerted again.
+    const fourth = await answered(120);
+    await reveal(fourth.playerId, fourth.answerId);
+    expect((await watch(fourth.answerId))?.flagged).toBe(true);
+    expect(await openAlerts()).toHaveLength(1);
+  });
+
+  it("leaves a RAISE LOG line that a ROLLBACK cannot erase, while the rolled-back row and alert are gone (code review MAJOR 1)", async () => {
+    const { playerId, attemptId, answerId } = await answered(90);
+    const notices: { severity?: string; message?: string }[] = [];
+    // The test asks for LOG messages on its own session; the server log gets them whatever the client asks for.
+    const listener = postgres(inject("dbUrl"), { max: 1, onnotice: (notice) => void notices.push(notice) });
+    try {
+      await listener
+        .begin(async (tx) => {
+          await tx`SET LOCAL client_min_messages = log`;
+          await tx.unsafe("SET LOCAL ROLE public_rw");
+          expect(first(await tx<{ r: Json }[]>`SELECT public.play_reveal(${playerId}, ${answerId}) AS r`).r).toEqual({ state: "closed", answer_id: answerId });
+          throw new Error("rollback");
+        })
+        .catch((error: unknown) => {
+          if (!(error instanceof Error) || error.message !== "rollback") throw error;
+        });
+    } finally {
+      await listener.end();
+    }
+    expect(await watch(answerId)).toBeUndefined(); // the row went with the rollback
+    const line = notices.find((n) => n.message?.startsWith("ebt.play_reveal "));
+    expect(line?.severity).toBe("LOG");
+    expect(line?.message).toMatch(new RegExp(`^ebt\\.play_reveal answer_id=${answerId} attempt_id=${attemptId} after_answer_ms=\\d+ refused=true$`));
+    // Ids and times only: no player id in the line.
+    expect(line?.message).not.toContain(playerId);
+  });
+
+  it("is written by play_reveal only: public_rw, worker_rw and internal_rw cannot touch answer_reveals, admin_rw can only read it", async () => {
+    for (const role of ["public_rw", "worker_rw", "internal_rw"] as const) {
+      expect(await sqlState(asRole(role, (tx) => tx`SELECT count(*) FROM answer_reveals`)), role).toBe("42501");
+    }
+    expect(await asRole("admin_rw", async (tx) => first(await tx<{ n: number }[]>`SELECT count(*)::int AS n FROM answer_reveals`).n)).toBeGreaterThan(0);
+    for (const statement of ["UPDATE answer_reveals SET reveals = 1", "DELETE FROM answer_reveals", "TRUNCATE answer_reveals"]) {
+      expect(await sqlState(asRole("admin_rw", (tx) => tx.unsafe(statement))), statement).toBe("42501");
+    }
   });
 });

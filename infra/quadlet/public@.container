@@ -8,7 +8,9 @@
 [Unit]
 Description=ebooktrivia public app (instance %i)
 Wants=postgres.service valkey.service
-After=postgres.service valkey.service
+# After the worker too (US-031): the worker loads the Valkey rate-limit function public FCALLs; until it is loaded
+# public answers 503 on its rate-limited routes. Ordering only: a public instance still starts without it.
+After=postgres.service valkey.service worker.service
 
 [Container]
 Image=localhost/ebooktrivia/public:current

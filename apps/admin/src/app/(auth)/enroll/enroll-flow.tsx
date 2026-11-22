@@ -31,10 +31,10 @@ export function EnrollFlow() {
         <div className="flex flex-col gap-1.5">
           <Label htmlFor="newPassword">New password</Label>
           <Input id="newPassword" name="newPassword" type="password" autoComplete="new-password" required minLength={12} maxLength={128} />
-          <p className="text-xs text-muted-foreground">12 to 128 characters, different from the current one.</p>
+          <p className="text-xs text-muted-foreground">12 to 128 characters, different from the current one; not a common password and not built on the site's name or your e-mail.</p>
         </div>
         {start.error === "invalid" ? <FormError>Wrong password.</FormError> : null}
-        {start.error === "invalid_new_password" ? <FormError>The new password needs 12 to 128 characters and must differ from the current one.</FormError> : null}
+        {start.error === "invalid_new_password" ? <FormError>The new password needs 12 to 128 characters, must differ from the current one, and must not be a common password or contain the site's name or your e-mail's name.</FormError> : null}
         {start.error === "locked" ? <FormError>{lockedMessage(start)}</FormError> : null}
         <Button type="submit" variant="cta" disabled={starting}>
           Start setup

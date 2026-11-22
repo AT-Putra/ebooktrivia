@@ -208,11 +208,34 @@ describe("other hosts", () => {
     expect(post.status).toBe(404);
   });
 
-  it("passes the checkout, Cap, SDK config / visit and mockup routes through untouched", async () => {
-    for (const path of ["/api/v1/checkout/lp_x", "/api/v1/cap/lp_x/challenge", "/api/v1/lp/lp_x/config", "/api/v1/visit/lp_x", "/mockups/order/paid", "/"]) {
+  it("passes the checkout, Cap, SDK config / visit, signed-file and mockup routes through untouched", async () => {
+    for (const path of ["/api/v1/checkout/lp_x", "/api/v1/cap/lp_x/challenge", "/api/v1/lp/lp_x/config", "/api/v1/visit/lp_x", "/files/deliverables/x.pdf", "/cap/cap-v0.1.62.js", "/mockups/order/paid"]) {
       const response = await proxy(request("api.example.test", path));
       expect(response.headers.get("x-middleware-next"), path).toBe("1");
       expect(response.headers.get("content-security-policy"), path).toBeNull();
+    }
+  });
+
+  // US-031 (the ZAP baseline found these pages without a script policy): every page the proxy does not route gets the
+  // strictest one, the trivia nonce CSP, with the play headers.
+  it("gives every other page (the api origin's /, robots.txt, any 404) the strict nonce CSP and the play headers", async () => {
+    for (const [host, path] of [
+      ["api.example.test", "/"],
+      ["api.example.test", "/robots.txt"],
+      ["play.example.test", "/sitemap.xml"],
+      ["play.example.test", "/no/such/page"],
+      ["lp.example.test", "/"],
+    ] as const) {
+      const response = await proxy(request(host, path, { "x-forwarded-proto": "https" }));
+      expect(response.headers.get("x-middleware-next"), `${host}${path}`).toBe("1");
+      expect(rewriteTarget(response)).toBeNull();
+      const policy = csp(response);
+      expect(policy, `${host}${path}`).toContain(`script-src 'nonce-${nonceOf(response)}' 'strict-dynamic'`);
+      for (const directive of ["object-src 'none'", "base-uri 'none'", "frame-ancestors 'none'", "form-action 'none'", "worker-src 'none'"]) expect(policy, directive).toContain(directive);
+      expect(policy).not.toMatch(/unsafe-eval|https:\/\//); // no eval, no third-party host
+      expect(/script-src [^;]*'unsafe-inline'/.test(policy)).toBe(false);
+      expect(response.headers.get("cache-control")).toBe("no-store, max-age=0");
+      expect(response.headers.get("referrer-policy")).toBe("no-referrer");
     }
   });
 

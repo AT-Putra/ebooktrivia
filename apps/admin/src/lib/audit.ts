@@ -26,6 +26,7 @@
 // (everything written by our own SQL) always go through withAudit.
 import { AsyncLocalStorage } from "node:async_hooks";
 import type postgres from "postgres";
+import { processWide } from "./process-wide.ts";
 
 export type FieldKind = "value" | "secret" | "pii";
 export type AuditActor = { readonly kind: "admin"; readonly userId: string } | { readonly kind: "system" } | { readonly kind: "cli" };
@@ -106,7 +107,12 @@ export interface MutationScope {
   readonly ip: string | null;
 }
 
-const scopes = new AsyncLocalStorage<MutationScope>();
+// ONE store per process (lib/process-wide.ts): Next.js bundles this module more than once (the server actions, the
+// pages, instrumentation.ts), and the runtime, with its Better Auth endpoints, belongs to the bundle that created it
+// first. When the instrumentation sweepers created it (their first tick, 5 s after start), an endpoint's withAudit (the
+// recovery code sign-in, lib/auth/recovery-codes.ts) read a store the action's runMutation had never written, and
+// failed with NoMutationScopeError (found by e2e admin-auth.spec.ts, US-031).
+const scopes = processWide("mutationScopes", () => new AsyncLocalStorage<MutationScope>());
 
 export function runMutation<T>(scope: MutationScope, fn: () => Promise<T>): Promise<T> {
   return scopes.run(scope, fn);

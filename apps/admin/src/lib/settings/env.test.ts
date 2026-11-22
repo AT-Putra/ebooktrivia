@@ -33,7 +33,7 @@ describe("admin settings config (plan M2.3: the admin process holds public keys 
   it("builds a sealer from public keys, which has no way to decrypt", () => {
     const settings = loadSettingsConfig({ SECRETS_PAYMENT_PUBLIC_KEY: b64(pair.publicKey) });
     expect(settings.sealer?.scopes).toEqual(["payment"]);
-    expect(Object.keys(settings.sealer ?? {}).sort()).toEqual(["keyId", "scopes", "sealOtp", "sealSecret"]);
+    expect(Object.keys(settings.sealer ?? {}).sort()).toEqual(["keyId", "scopes", "sealOtp", "sealPasswordCheck", "sealSecret"]);
   });
 
   it("refuses a malformed public key and has no sealer without keys", () => {

@@ -6,6 +6,9 @@ export type LockedState = { readonly error: "locked"; readonly retryAfterMinutes
 
 export type AuthFormState = { readonly error: null } | { readonly error: "invalid" | "expired" } | LockedState;
 
+/** The forced change of a breached password (US-031): wrong current password, or a new one the rules refuse. */
+export type PasswordChangeState = { readonly error: null | "invalid" | "invalid_new_password" } | LockedState;
+
 export type EnrollStartState =
   | { readonly stage: "password"; readonly error: null | "invalid" | "invalid_new_password" }
   | ({ readonly stage: "password" } & LockedState)
@@ -25,6 +28,7 @@ export type CreateStaffState =
 
 export const INITIAL_AUTH: AuthFormState = { error: null };
 export const INITIAL_ENROLL: EnrollStartState = { stage: "password", error: null };
+export const INITIAL_PASSWORD_CHANGE: PasswordChangeState = { error: null };
 export const INITIAL_CODES: CodesState = { error: null, recoveryCodes: null };
 export const INITIAL_CREATE: CreateStaffState = { status: "idle" };
 export const INITIAL_RESET: ResetState = { status: "idle" };

@@ -1,13 +1,17 @@
 // Valkey for the public API (US-020), as the ACL user `public`: keys rl:* and cache:public:* only, and
 // only the commands this file sends (infra/provision/files/valkey/users.acl.template: -@all +ping
-// +eval +incr +pttl +pexpire +set; the rate-limit script's INCR / PTTL / PEXPIRE are ACL-checked too).
+// +fcall +incr +pttl +pexpire +set; the rate-limit function's INCR / PTTL / PEXPIRE are ACL-checked too).
 // No INFO: the ready check is off, `connect()` at start-up is the gate. Every key carries a TTL (Valkey
 // runs noeviction).
 //
-//   - Rate limits: fixed windows, one Lua script per call. The limits are checked IN ORDER and the
-//     script stops at the first one over its N (passed in ARGV): a request refused by an earlier limit
-//     never raises a later counter. INCR and the window's expiry are one atomic step (a counter found
-//     without a TTL gets it back).
+//   - Rate limits: fixed windows, one FCALL of the worker-loaded function ebt_rate_limit_v1 per call
+//     (@ebooktrivia/adapters/valkey-functions; US-031: public may not EVAL, so a compromised process
+//     cannot run its own Lua). The limits are checked IN ORDER and the function stops at the first one
+//     over its N: a request refused by an earlier limit never raises a later counter. INCR and the
+//     window's expiry are one atomic step (a counter found without a TTL gets it back). A missing
+//     function (the worker has not loaded it yet) fails closed like an outage, on the rate-limited
+//     routes only, and is logged as `public.valkey_function_missing`; the worker reloads it and
+//     raises an alert (apps/worker/src/valkey-functions.ts).
 //   - Cap token marks: SET NX PX, the one atomic "first time" mark of the stateless Cap provider
 //     (packages/adapters captcha.ts): a redeemed token verifies once across both apps/public
 //     instances. Cap challenges and redeems store nothing at all (Owner decision, US-020), so this is
@@ -19,8 +23,10 @@
 // Valkey neither the rate limits nor the single use of a Cap token can be enforced.
 import { createHash } from "node:crypto";
 import type { ReplayStore } from "@ebooktrivia/adapters";
+import { isFunctionMissing, RATE_LIMIT_FUNCTION } from "@ebooktrivia/adapters/valkey-functions";
 import { Redis } from "ioredis";
 import type { ValkeyConfig } from "./config.ts";
+import { logEvent } from "./log.ts";
 
 export type Valkey = Redis;
 
@@ -66,6 +72,8 @@ async function guarded<T>(call: () => Promise<T>): Promise<T> {
   try {
     return await call();
   } catch (error) {
+    // Its own line (docs/runbooks/security-scans.md): the worker has not loaded the library, not an outage.
+    if (isFunctionMissing(error)) logEvent("error", "public.valkey_function_missing", { kind: RATE_LIMIT_FUNCTION });
     throw new ValkeyUnavailable(error);
   }
 }
@@ -87,28 +95,13 @@ export type RateDecision =
   /** `index`: the position in the list of the limit that refused (no later one was counted). */
   | { readonly allowed: false; readonly index: number; readonly retryAfterSeconds: number };
 
-// KEYS[i] with ARGV[2i-1] = N and ARGV[2i] = window ms: stops at the first counter over its N.
-const RATE_SCRIPT = `
-for i, key in ipairs(KEYS) do
-  local n = redis.call('INCR', key)
-  local ttl = redis.call('PTTL', key)
-  if ttl < 0 then
-    redis.call('PEXPIRE', key, ARGV[2 * i])
-    ttl = tonumber(ARGV[2 * i])
-  end
-  if n > tonumber(ARGV[2 * i - 1]) then
-    return {i, ttl}
-  end
-end
-return {0, 0}`;
-
 /** Counts one request against the limits in order, atomically, up to and including the first one that is over. */
 export async function hitRateLimits(valkey: Valkey, limits: readonly RateLimit[]): Promise<RateDecision> {
   if (limits.length === 0) return { allowed: true };
   for (const l of limits) {
     if (!Number.isSafeInteger(l.limit) || l.limit < 1 || !Number.isSafeInteger(l.windowMs) || l.windowMs < 1) throw new RangeError("rate limits need a positive N and window");
   }
-  const reply = await guarded(() => valkey.eval(RATE_SCRIPT, limits.length, ...limits.map((l) => `rl:${l.key}`), ...limits.flatMap((l) => [String(l.limit), String(l.windowMs)])));
+  const reply = await guarded(() => valkey.fcall(RATE_LIMIT_FUNCTION, limits.length, ...limits.map((l) => `rl:${l.key}`), ...limits.flatMap((l) => [String(l.limit), String(l.windowMs)])));
   if (!Array.isArray(reply) || reply.length !== 2) throw new ValkeyUnavailable(new Error("unexpected rate-limit reply"));
   const index = Number(reply[0]);
   const ttl = Number(reply[1]);

@@ -1,0 +1,20 @@
+# ZAP rules of the US-031 scans: zap-baseline.py -c (packaged baseline) and the gate of every report
+# (infra/verify/src/zap-report.ts, which also judges the authenticated scans' reports with this file).
+# Format: <plugin id> TAB <IGNORE|INFO|WARN|FAIL> TAB (<name>) TAB <reason>. Unlisted rules WARN.
+# The gate fails on ANY High alert (an IGNORE here never hides a High), and on any alert of a FAIL rule.
+# An IGNORE needs a reason that says why the alert is wrong or irrelevant FOR THIS SYSTEM, and a review;
+# never IGNORE a High to make a scan pass (fix it, or record an accepted risk in docs/asvs-l2-checklist.md).
+#
+# Informational rules that carry no finding here:
+10109	IGNORE	(Modern Web Application)	Informational: says the site uses JavaScript and suggests the Ajax spider; not a vulnerability
+10049	IGNORE	(Storable and Cacheable Content)	Informational cache classification of every response, not a finding by itself. Where caching matters it is asserted elsewhere: apps/admin/src/proxy.ts marks every admin response no-store (e2e/tests/admin-auth.spec.ts checks a signed-in action result and the enrollment page); infra/verify/local/security-headers.sh checks no-store on the play, order and API answers it probes (unauthenticated)
+#
+# Rules this system must never trip: an alert of these fails the scan whatever its risk.
+10020	FAIL	(Anti-clickjacking Header)
+10021	FAIL	(X-Content-Type-Options Header Missing)
+10035	FAIL	(Strict-Transport-Security Header)
+10037	FAIL	(Server Leaks Information via "X-Powered-By" HTTP Response Header Field(s))
+10038	FAIL	(Content Security Policy (CSP) Header Not Set)
+10010	FAIL	(Cookie No HttpOnly Flag)
+10011	FAIL	(Cookie Without Secure Flag)
+10054	FAIL	(Cookie without SameSite Attribute)

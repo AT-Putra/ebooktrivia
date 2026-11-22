@@ -10,6 +10,8 @@
 import { randomBytes } from "node:crypto";
 import { type FieldKind, type Tx, withAudit } from "./audit.ts";
 import { hashSecret } from "./auth/argon2.ts";
+import { enqueuePasswordCheck, type PasswordCheckSealer } from "./auth/password-check.ts";
+import { configuredOrigin, passwordProblem } from "./auth/password-policy.ts";
 import { normalizeEmail, PASSWORD_MAX, PASSWORD_MIN } from "./auth/request.ts";
 import { clearThrottle, throttleKey } from "./auth/throttle.ts";
 import type { Sql } from "./db.ts";
@@ -24,17 +26,24 @@ const BOOTSTRAP_LOCK = 0x6562_7401;
 
 const USER_FIELDS: Readonly<Record<string, FieldKind>> = { email: "pii", display_name: "pii", role: "value", disabled: "value", password: "secret" };
 
+/** What setting a password needs: the pool and admin.env's sealer (the breached-password check, lib/auth/password-check.ts). */
+export interface AdminUsersRuntime {
+  readonly sql: Sql;
+  readonly settings: { readonly sealer: PasswordCheckSealer };
+}
+
 export type AdminUserInput = { readonly email: string; readonly displayName: string; readonly password: string };
 export type InputError = "email" | "display_name" | "password";
 
-const validPassword = (password: string): boolean => password.length >= PASSWORD_MIN && password.length <= PASSWORD_MAX;
+/** The password rule (lib/auth/password-policy.ts): length, not a common password, no context word of this account. */
+const validPassword = (password: string, email?: string): boolean => passwordProblem(password, { email, origin: configuredOrigin() }) === null;
 
 export function validateAdminUserInput(input: AdminUserInput): InputError | null {
   const email = normalizeEmail(input.email);
   if (email.length > 254 || !EMAIL.test(email)) return "email";
   const name = input.displayName.trim();
   if (name.length < 1 || name.length > 100 || /\p{Cc}/u.test(name)) return "display_name";
-  if (!validPassword(input.password)) return "password";
+  if (!validPassword(input.password, email)) return "password";
   return null;
 }
 
@@ -59,19 +68,20 @@ const isUniqueViolation = (error: unknown): boolean => sqlState(error) === "2350
 
 class OwnerExists extends Error {}
 
-async function create(sql: Sql, input: AdminUserInput, role: Role, action: string, bootstrap: boolean): Promise<CreateOutcome | { readonly kind: "owner_exists" }> {
+async function create(rt: AdminUsersRuntime, input: AdminUserInput, role: Role, action: string, bootstrap: boolean): Promise<CreateOutcome | { readonly kind: "owner_exists" }> {
   const invalid = validateAdminUserInput(input);
   if (invalid !== null) return { kind: "invalid", field: invalid };
   const passwordHash = await hashSecret(input.password);
   const userId = randomBytes(18).toString("base64url");
   try {
-    await withAudit(sql, async (tx, audit) => {
+    await withAudit(rt.sql, async (tx, audit) => {
       if (bootstrap) {
         await tx`SELECT pg_advisory_xact_lock(${BOOTSTRAP_LOCK})`;
         const [owners] = await tx<{ n: number }[]>`SELECT count(*)::int AS n FROM public.admin_profiles WHERE role = 'owner'`;
         if ((owners?.n ?? 0) > 0) throw new OwnerExists();
       }
       await insertAdminUser(tx, userId, input, role, passwordHash);
+      await enqueuePasswordCheck(tx, rt.settings.sealer, userId, input.password);
       audit({
         action,
         entityType: "admin_user",
@@ -90,15 +100,15 @@ async function create(sql: Sql, input: AdminUserInput, role: Role, action: strin
 }
 
 /** A new admin account (no TOTP yet: the first sign-in forces enrollment within 72 h). */
-export async function createAdminUser(sql: Sql, input: AdminUserInput, role: Role, action: string): Promise<CreateOutcome> {
-  const result = await create(sql, input, role, action, false);
+export async function createAdminUser(rt: AdminUsersRuntime, input: AdminUserInput, role: Role, action: string): Promise<CreateOutcome> {
+  const result = await create(rt, input, role, action, false);
   if (result.kind === "owner_exists") throw new Error("unreachable: not a bootstrap");
   return result;
 }
 
 /** The first Owner (VM CLI). Refused once any Owner exists, also under concurrent runs. */
-export function bootstrapOwner(sql: Sql, input: AdminUserInput): Promise<CreateOutcome | { readonly kind: "owner_exists" }> {
-  return create(sql, input, "owner", "cli.bootstrap_owner", true);
+export function bootstrapOwner(rt: AdminUsersRuntime, input: AdminUserInput): Promise<CreateOutcome | { readonly kind: "owner_exists" }> {
+  return create(rt, input, "owner", "cli.bootstrap_owner", true);
 }
 
 export type DisableOutcome = { readonly kind: "updated" } | { readonly kind: "not_found" } | { readonly kind: "self" };
@@ -191,11 +201,11 @@ export type RecoverOutcome = { readonly kind: "recovered"; readonly userId: stri
  * US-016 SM1: a recovery that kept the old password would let whoever knows it enroll their own
  * authenticator); the next sign-in forces a new TOTP enrollment within 72 h.
  */
-export async function recoverAdminUser(sql: Sql, emailInput: string, newPassword: string): Promise<RecoverOutcome> {
-  if (!validPassword(newPassword)) return { kind: "invalid_password" };
+export async function recoverAdminUser(rt: AdminUsersRuntime, emailInput: string, newPassword: string): Promise<RecoverOutcome> {
+  if (!validPassword(newPassword, emailInput.trim().toLowerCase())) return { kind: "invalid_password" };
   const email = normalizeEmail(emailInput);
   const passwordHash = await hashSecret(newPassword);
-  return withAudit(sql, async (tx, audit) => {
+  return withAudit(rt.sql, async (tx, audit) => {
     const [user] = await tx<{ id: string; two_factor: boolean | null }[]>`
       SELECT id, "twoFactorEnabled" AS two_factor FROM admin_auth."user" WHERE email = ${email} FOR UPDATE`;
     if (user === undefined) {
@@ -203,6 +213,7 @@ export async function recoverAdminUser(sql: Sql, emailInput: string, newPassword
       return { kind: "not_found" as const };
     }
     const removed = await resetAccess(tx, { id: user.id, email }, passwordHash);
+    await enqueuePasswordCheck(tx, rt.settings.sealer, user.id, newPassword);
     audit({
       action: "cli.recover_admin",
       entityType: "admin_user",
@@ -228,11 +239,11 @@ export type ResetOutcome =
  * shares. Staff accounts only (code review US-016 F4): an Owner account is recovered with the VM
  * CLI, so a console session can never take over another Owner. A refused Owner target is audited.
  */
-export async function resetAdminUser(sql: Sql, actorUserId: string, targetUserId: string, temporaryPassword: string): Promise<ResetOutcome> {
+export async function resetAdminUser(rt: AdminUsersRuntime, actorUserId: string, targetUserId: string, temporaryPassword: string): Promise<ResetOutcome> {
   if (actorUserId === targetUserId) return { kind: "self" };
   if (!validPassword(temporaryPassword)) return { kind: "invalid_password" };
   const passwordHash = await hashSecret(temporaryPassword);
-  return withAudit(sql, async (tx, audit) => {
+  return withAudit(rt.sql, async (tx, audit) => {
     const [user] = await tx<{ id: string; email: string; two_factor: boolean | null; role: string }[]>`
       SELECT u.id, u.email, u."twoFactorEnabled" AS two_factor, p.role
         FROM admin_auth."user" u JOIN public.admin_profiles p ON p.auth_user_id = u.id
@@ -246,6 +257,7 @@ export async function resetAdminUser(sql: Sql, actorUserId: string, targetUserId
       return { kind: "owner" as const };
     }
     const removed = await resetAccess(tx, user, passwordHash);
+    await enqueuePasswordCheck(tx, rt.settings.sealer, user.id, temporaryPassword);
     audit({
       action: "admin_user.reset_access",
       entityType: "admin_user",

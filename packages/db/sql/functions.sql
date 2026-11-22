@@ -1362,3 +1362,36 @@ REVOKE ALL ON FUNCTION public.refresh_player_eligibility(uuid, uuid, timestamptz
 REVOKE ALL ON FUNCTION public.order_paid_effects(uuid, timestamptz, bigint) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.order_reversal_rows(uuid, timestamptz) FROM PUBLIC;
 -- US-033 BLOCK END.
+
+-- US-031 BLOCK BEGIN: the breached-password flag of an admin (ASVS V6.2.12) -------------------------------------------------------
+-- Where a password is set, the admin app writes a new admin_profiles.password_check_id and an outbox job
+-- admin.password_hibp_check {admin_user_id, check_id} whose `sealed` is the password's SHA-1 sealed to the messaging key. The
+-- worker opens it, asks Have I Been Pwned's range API (k-anonymity) and, when the password is in a breach, calls this: it sets
+-- password_breached_at ONLY while that check is still the current password's (a check of a password changed since is a no-op),
+-- audits it (actor 'system') and raises one warning alert with the admin id only. From then on the admin's session may only
+-- change the password (apps/admin lib/access.ts). Returns whether it flagged. EXECUTE worker_rw only.
+CREATE OR REPLACE FUNCTION public.flag_breached_admin_password(p_admin_user_id text, p_check_id uuid)
+  RETURNS boolean
+  LANGUAGE plpgsql
+  SECURITY DEFINER
+  SET search_path = pg_catalog, pg_temp
+AS $fn$
+BEGIN
+  UPDATE public.admin_profiles p
+     SET password_breached_at = pg_catalog.clock_timestamp(), updated_at = pg_catalog.clock_timestamp()
+   WHERE p.auth_user_id = p_admin_user_id AND p.password_check_id = p_check_id AND p.password_breached_at IS NULL;
+  IF NOT FOUND THEN
+    RETURN false;
+  END IF;
+  INSERT INTO public.audit_log (actor_kind, action, entity_type, entity_id, changes)
+  VALUES ('system', 'admin_user.password_breached', 'admin_user', p_admin_user_id,
+          pg_catalog.jsonb_build_object('must_change_password', pg_catalog.jsonb_build_object('before', false, 'after', true)));
+  INSERT INTO public.alerts (source, kind, severity, dedupe_key, message, payload)
+  VALUES ('worker', 'admin_password_breached', 'warning', 'admin_password_breached:' || p_check_id::text,
+          'An admin password is in a known data breach (Have I Been Pwned): that admin must change it at the next sign-in (docs/runbooks/security-scans.md section 6)',
+          pg_catalog.jsonb_build_object('admin_user_id', p_admin_user_id));
+  RETURN true;
+END
+$fn$;
+REVOKE ALL ON FUNCTION public.flag_breached_admin_password(text, uuid) FROM PUBLIC;
+-- US-031 BLOCK END.

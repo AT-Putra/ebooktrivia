@@ -37,7 +37,7 @@ Replace every value: the example holds only reserved names and documentation add
 | `APP_USER` | Rootless podman user (default `ebt`). |
 
 Secrets are never typed or committed. The provisioning generates them on the VM into the env
-files (`0600`, owned by the app user):
+files (`0640`, owned by root, group the app user: the containers read them, the app user cannot change them; ASVS V13.3.1):
 
 - PostgreSQL login passwords;
 - Valkey ACL passwords (`users.acl` stores only their SHA-256);
@@ -112,6 +112,12 @@ sudo $A systemctl --user start migrate.service    # roles.sql + migrations (one-
 sudo $A systemctl --user start internal.service worker.service admin.service public@a.service public@b.service
 sudo $A systemctl --user start caddy.socket caddy.service   # :80/:443 and Caddy itself (it orders its certificates at start)
 ```
+
+Start the worker before the public instances on a fresh or restored Valkey (US-031; the line above does, and
+`public@.container` is ordered `After=worker.service`): the worker loads the Valkey function library the public rate limits
+call; until it is there a public instance answers 503 on its rate-limited routes (it stays ready and serves every other
+route), and the worker raises `valkey_function_missing` if it finds it gone later. Valkey's AOF keeps the library across restarts
+(docs/runbooks/security-scans.md, section 4).
 
 Each start returns once the unit is healthy (`Notify=healthy`): the apps answer `/livez`, the
 internal process its ask endpoint, PostgreSQL `pg_isready` on its address (not the socket, which the

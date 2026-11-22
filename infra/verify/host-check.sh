@@ -343,19 +343,19 @@ ops_pw=$(env_value "$ETC/valkey.env" REDISCLI_AUTH)
 expect "default user refused" NOAUTH "$(printf 'PING\n' | as_app podman exec -i valkey env -u REDISCLI_AUTH valkey-cli 2>&1 | grep -o NOAUTH | head -1)"
 expect "ops PING" PONG "$(valkey_as ops "$ops_pw" PING)"
 check "ops: EXISTS denied" denied "$(valkey_as ops "$ops_pw" EXISTS cache:public:host-check)"
-# public: its own keys only, through its command allowlist (US-020: -@all +ping +eval +incr +pttl
-# +pexpire +set; no INFO, no reads, no deletes).
+# public: its own keys only, through its command allowlist (US-020, US-031: -@all +ping +fcall +incr +pttl
+# +pexpire +set; no INFO, no reads, no deletes, no Lua of its own).
 expect "public: PTTL rl:* allowed" -2 "$(valkey_as public "$public_pw" PTTL rl:host-check)"
 expect "public: PTTL cache:public:* allowed" -2 "$(valkey_as public "$public_pw" PTTL cache:public:host-check)"
-for cmd in "PTTL cache:admin:host-check" "PTTL ebt:host-check" "INFO server" "GET rl:host-check" "GETDEL cache:public:host-check" "DEL cache:public:host-check" "EXISTS rl:host-check" "KEYS host-check-none" "SCAN 0 COUNT 1" "RANDOMKEY" "FUNCTION LIST" "SCRIPT FLUSH"; do
+for cmd in "PTTL cache:admin:host-check" "PTTL ebt:host-check" "INFO server" "GET rl:host-check" "GETDEL cache:public:host-check" "DEL cache:public:host-check" "EXISTS rl:host-check" "KEYS host-check-none" "SCAN 0 COUNT 1" "RANDOMKEY" "FUNCTION LIST" "SCRIPT FLUSH" "EVAL \"return 1\" 0" "EVALSHA e0e1f9fabfc9d4800c877a703b823ac0578ff8db 0" "SCRIPT LOAD \"return 1\"" "FUNCTION DELETE ebt_public" "FUNCTION FLUSH"; do
   check "public: $cmd denied" denied "$(valkey_as public "$public_pw" "$cmd")"
 done
-# A script run as public stays inside its prefixes too: the key ACL applies to every redis.call, whatever
-# the script declares in KEYS (security re-check, US-020 item 18). Valkey reports a refusal inside a script
-# as "ACL failure in script", not NOPERM. The first probe is the control: the same script on its own prefix.
-script_denied() { [[ $1 == *"ACL failure in script"* ]]; }
-expect "public: EVAL on rl:* allowed" -2 "$(valkey_as public "$public_pw" "EVAL \"return redis.call('PTTL','rl:host-check')\" 0")"
-check "public: EVAL reaching ebt:* denied" script_denied "$(valkey_as public "$public_pw" "EVAL \"return redis.call('PTTL','ebt:host-check')\" 0")"
+# US-031: public calls only the worker-loaded rate-limit function. With no keys it changes nothing and answers 0 0
+# (also the worker's heartbeat probe); "Function not found" means the worker has not loaded it. A key outside
+# public's prefixes is refused before the function runs.
+expect "public: FCALL ebt_rate_limit_v1 (worker-loaded) answers" "0
+0" "$(valkey_as public "$public_pw" FCALL ebt_rate_limit_v1 0)"
+check "public: FCALL on an ebt:* key denied" denied "$(valkey_as public "$public_pw" FCALL ebt_rate_limit_v1 1 ebt:host-check 1 1000)"
 expect "admin: EXISTS cache:admin:* allowed" 0 "$(valkey_as admin "$admin_pw" EXISTS cache:admin:host-check)"
 for cmd in "EXISTS cache:public:host-check" "EXISTS rl:host-check" "INFO server" "SCAN 0 COUNT 1" "RANDOMKEY" "FUNCTION LIST"; do
   check "admin: $cmd denied" denied "$(valkey_as admin "$admin_pw" "$cmd")"
@@ -407,6 +407,7 @@ listeners=$(ss -Hltnp 2>/dev/null | awk '$4 ~ /:(80|443)$/ { print $4, $6 }')
 check "port 80 held by the app user's systemd (socket activation)" grep -qE ':80 .*"systemd"' <<<"$listeners"
 check "port 443 held by the app user's systemd (socket activation)" grep -qE ':443 .*"systemd"' <<<"$listeners"
 expect "http://127.0.0.1/ redirects to HTTPS" 308 "$(curl -s -o /dev/null -m 5 -w '%{http_code}' -H "Host: play.$CFG_DOMAIN" http://127.0.0.1/)"
+expect "http://api.<domain>/ answers 400, never a redirect (US-031)" 400 "$(curl -s -o /dev/null -m 5 -w '%{http_code}' -H "Host: api.$CFG_DOMAIN" http://127.0.0.1/)"
 
 printf '\nsummary: %d passed, %d failed%s\n' "$PASSES" "$FAILS" "$( ((CONTAINER)) && printf ' (in a container: failures marked [container] are expected there)')"
 ((FAILS == 0))
