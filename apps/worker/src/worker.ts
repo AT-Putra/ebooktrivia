@@ -107,7 +107,7 @@ export interface WorkerPorts {
    */
   readonly magicLinks?: MagicLinksFactory;
   /** US-017: the senders of template.test_send (given the worker's pool). */
-  readonly testSend?: (sql: postgres.Sql) => TestSender;
+  readonly testSend?: (sql: postgres.Sql, log: Logger) => TestSender;
   /** US-021: Midtrans re-queries (payment.notification consumer, nightly reconciliation). */
   readonly payments?: PaymentPort;
   /** US-026: the otp.send consumer's key and sender. */
@@ -257,6 +257,7 @@ export async function startWorker(config: WorkerConfig, ports: WorkerPorts, log:
   const delivery = ports.deliveries?.create({
     sql,
     log,
+    valkey: { client: redis, prefix: config.prefix },
     enqueue: async (jobs) => {
       const { email: emailQueue, whatsapp: whatsappQueue } = deliveryQueues;
       if (emailQueue === undefined || whatsappQueue === undefined) throw new Error("the delivery queues are not up");
@@ -267,7 +268,7 @@ export async function startWorker(config: WorkerConfig, ports: WorkerPorts, log:
     },
   });
   if (delivery !== undefined) consumers.push(...delivery.outboxConsumers);
-  if (ports.testSend !== undefined) consumers.push(createTemplateTestSendConsumer({ sql, sender: ports.testSend(sql) }));
+  if (ports.testSend !== undefined) consumers.push(createTemplateTestSendConsumer({ sql, sender: ports.testSend(sql, log) }));
   const { payments } = ports;
   if (payments !== undefined) {
     consumers.push(createPaymentNotificationConsumer({ sql, midtrans: payments.midtrans, log, waDelayMs: payments.waDelayMs }));

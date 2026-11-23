@@ -4,6 +4,11 @@
 //   GET /api/contacts/check-exists?phone=<digits>&session=<name>   ->  {numberExists, chatId, pn}
 // and sends to the chat id it RETURNS. The answer is cached per phone (wa_contacts) with a refresh age (core contactCacheFresh: a month when the phone is on
 // WhatsApp, a day when it is not), reused by every later send, and the lid -> phone link it carries also answers an inbound @lid sender without asking WAHA.
+// Measured on the Owner's WAHA (2026.10.1, WEBJS, 2026-11-24): check-exists is a WhatsApp SERVER query, so it is the one lookup that knows ANY phone (for a number
+// never seen it answered {numberExists: true, chatId: "<n>@lid"} in ~250 ms, no `pn`), and afterwards the session's local LID store knows the pair. The
+// lids/{lid} and lids/pn/{phone} reads are that LOCAL store only, and it is PER SESSION: a lid never looked up on a session has `pn: null` there. So lid -> phone
+// is unreliable, while phone -> lid through check-exists is reliable. askContact is therefore also how an inbound @lid sender is matched from the PHONE side
+// (inbound.ts): the lid a candidate buyer's phone is known by, taken from the cache while that link is fresh (LID_LINK_FRESH_MS), else asked and cached here.
 //   - numberExists false: `no_whatsapp`, final: no failover (no number would change it), no health penalty, no alert; the e-mail has the ebook and the order
 //     page's WhatsApp button stays;
 //   - a failing lookup (5xx, timeout) throws the adapter's WahaError: nothing was sent, so the caller makes it not_attempted (never maybe_sent).
@@ -16,7 +21,7 @@ type Db = postgres.Sql | postgres.TransactionSql;
 
 /**
  * A lid -> phone link older than this is not trusted on its own: a @lid can be reassigned, so before a login link is issued to a sender the link led to,
- * WAHA is asked again (inbound.ts). Fresh links answer without a WAHA call.
+ * WAHA is asked again, by its lid lookup and from the phone side (inbound.ts). Fresh links answer without a WAHA call.
  */
 export const LID_LINK_FRESH_MS = 24 * 3_600_000;
 
@@ -57,6 +62,19 @@ export async function resolveContact(sql: Db, client: WahaClient, sessionName: s
     if (cached !== undefined && contactCacheFresh({ numberExists: cached.number_exists, checkedAt: cached.checked_at }, now)) {
       return cached.number_exists && cached.chat_id !== null ? { kind: "ok", chatId: cached.chat_id, lid: cached.lid } : { kind: "no_whatsapp" };
     }
+    return await askContact(sql, client, sessionName, phone);
+  } catch (error) {
+    if (error instanceof WahaError || error instanceof ContactCacheError) throw error;
+    throw new ContactCacheError(error);
+  }
+}
+
+/**
+ * Asks WAHA's check-exists on `sessionName` about `phone` (always: no cache is read) and caches the answer. The one place that writes what check-exists says: the
+ * first-contact lookup above and the inbound phone-side check (inbound.ts) both end here. Same errors as resolveContact; when the lookup fails nothing is written.
+ */
+export async function askContact(sql: Db, client: WahaClient, sessionName: string, phone: string): Promise<ContactResolution> {
+  try {
     const found = await client.checkExists(sessionName, phone);
     if (!found.numberExists || found.chatId === null) {
       await sql`
@@ -94,6 +112,12 @@ export async function knownLid(sql: Db, lid: string): Promise<{ readonly phone: 
   const [row] = await sql<{ phone: string; lid_checked_at: Date | null }[]>`
     SELECT phone, lid_checked_at FROM public.wa_contacts WHERE lid = ${lid} AND number_exists ORDER BY lid_checked_at DESC NULLS LAST, phone LIMIT 1`;
   return row === undefined ? null : { phone: row.phone, checkedAt: row.lid_checked_at ?? new Date(0) };
+}
+
+/** The lid a phone is known by, while that link was confirmed less than LID_LINK_FRESH_MS ago; null when the phone has none or it is older. */
+export async function freshLidOf(sql: Db, phone: string): Promise<string | null> {
+  const [row] = await sql<{ lid: string | null; lid_checked_at: Date | null }[]>`SELECT lid, lid_checked_at FROM public.wa_contacts WHERE phone = ${phone} AND number_exists`;
+  return row?.lid != null && row.lid_checked_at !== null && Date.now() - row.lid_checked_at.getTime() < LID_LINK_FRESH_MS ? row.lid : null;
 }
 
 /** The phone a `<lid>@lid` chat belongs to, whatever the age of the link; null when unknown. */

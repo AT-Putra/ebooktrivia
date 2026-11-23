@@ -8,7 +8,15 @@
 //   2. match      the order code (>= 40 bits) is found in the text (core extractOrderCodes) and looked up. No code, or a code of no order:
 //                 nothing is sent (a stranger gets no oracle and no chatter).
 //   3. who        the sender decides, never the code alone (core senderVerdict): a phone chat must be the order's phone; an @lid chat is
-//                 resolved through WAHA's LID lookup, and compared, or, with no number behind it, is `unresolved`.
+//                 resolved to a phone (resolveLid), and compared, or, with no number behind it, is `unresolved`. The order of the @lid resolution:
+//                   a. a link of this lid in wa_contacts confirmed within a day (no WAHA call);
+//                   b. WAHA's lid -> phone on the receiving session;
+//                   c. from the PHONE side: the lid of our own buyers' phones (the orders whose codes the message carries, the phone of a stale link, the openers
+//                      this number sent that still await the reply), asked of WhatsApp with check-exists on the receiving session; the phone whose lid equals
+//                      the sender's is the sender (phoneSideMatch). At most 5 phones per message and one such round per sender lid per hour.
+//                 Measured on the Owner's WAHA (2026.10.1, WEBJS, 2026-11-24): WAHA's LID store (lids/{lid}, lids/pn/{phone}) is LOCAL to a session and knows only
+//                 what that session looked up, so b. often has no number; check-exists is a WhatsApp SERVER query that answers for any phone, so c. is reliable.
+//                 A code-less reply of a buyer who writes from a @lid is then found by openerReplyOrder through the phone c. matched.
 //        verified    (the order's phone) claim THE SAME WhatsApp delivery row (core claimBuyerFirst: pending -> sending, ignoring
 //                 not_before), under the same locks and the same pool ledger and pacing as the proactive send, and reply from the number
 //                 the buyer wrote to, in that chat: the PDF and the login link. The proactive send then finds the row claimed and does
@@ -23,7 +31,7 @@
 //                 crash can lose a reply but never double it), and only while the number is under 80 % of its daily cap, so they can never
 //                 starve the proactive deliveries.
 // The sender's own number and the message text are never logged; the outcome is a code on the waha_inbound row.
-import { NotSentError, WahaError } from "@ebooktrivia/adapters";
+import { NotSentError, type WahaClient, WahaError } from "@ebooktrivia/adapters";
 import {
   claimBuyerFirst,
   DELIVERY_GAP_MS,
@@ -35,13 +43,15 @@ import {
   senderVerdict,
   toWaChatId,
 } from "@ebooktrivia/core";
+import type { Redis } from "ioredis";
+import { createHash } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { setTimeout as delay } from "node:timers/promises";
 import type postgres from "postgres";
 import type { Logger } from "../log.ts";
 import type { FinalizeWrites, OutboxConsumer } from "../outbox-consumer.ts";
 import type { DeliveryConfig } from "./config.ts";
-import { knownLid, LID_LINK_FRESH_MS, rememberLid } from "./contacts.ts";
+import { askContact, freshLidOf, knownLid, LID_LINK_FRESH_MS, rememberLid } from "./contacts.ts";
 import { raiseAlert } from "../sweepers.ts";
 import { applyDecision, type Delivery, lockDelivery, machineRow, type SendContext } from "./deliver.ts";
 import { deliveredSize, FILE_UNAVAILABLE, wrongFile } from "./file-check.ts";
@@ -56,6 +66,24 @@ const LOOKUP_TIMEOUT_MS = 10_000;
 const TEXT_TIMEOUT_MS = 30_000;
 /** The extra replies (texts, the PDF for an unresolved sender) stop at this share of a number's daily cap. */
 export const REPLY_CAP_SHARE = 0.8;
+/** The phone-side match of an @lid sender asks WhatsApp about at most this many phones per message. */
+export const LID_CHECK_MAX = 5;
+/** ... and a sender lid gets one such round per this many seconds. */
+export const LID_ROUND_TTL_SECONDS = 3600;
+
+/** Spends the ONE phone-side round a sender lid gets per hour; false when it is already spent. The same holder (the inbound row) may take it again: a retried job. */
+export type LidRound = (lid: string, holder: string) => Promise<boolean>;
+
+/**
+ * The per-lid round budget in Valkey: `SET key holder NX EX 3600`. The key holds a hash of the lid, never the lid itself (a sender's identifier has no business in a key
+ * space anyone with Valkey access can list). Without it (no Valkey wired) the consumer does no phone-side match at all.
+ */
+export function lidRoundFromValkey(valkey: Pick<Redis, "get" | "set">, prefix: string): LidRound {
+  return async (lid, holder) => {
+    const key = `${prefix}:lid-round:${createHash("sha256").update(lid).digest("hex")}`;
+    return (await valkey.set(key, holder, "EX", LID_ROUND_TTL_SECONDS, "NX")) === "OK" || (await valkey.get(key)) === holder;
+  };
+}
 
 export interface InboundDeps {
   readonly sql: postgres.Sql;
@@ -70,6 +98,8 @@ export interface InboundDeps {
   readonly sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
   /** Monotonic milliseconds; default performance.now. Injectable for tests, and the SAME clock the delivery uses. */
   readonly clock?: () => number;
+  /** The per-lid budget of the phone-side match of an @lid sender (lidRoundFromValkey). Absent: no phone-side match (an unresolved @lid stays unresolved). */
+  readonly lidRound?: LidRound;
 }
 
 interface InboundRow {
@@ -156,16 +186,65 @@ export function createInboundConsumer(deps: InboundDeps): OutboxConsumer {
     return "unverified";
   }
 
-  async function resolveLid(fetched: Fetched, lid: string): Promise<string | null> {
-    // What check-exists and earlier lookups taught us answers first (no WAHA call), while the link is fresh (a day): a @lid can be reassigned, so an older link is
-    // never trusted on its own, least of all before a login link is issued to the sender it leads to. Nothing is stored here: only a message that matched an
-    // order or an opener remembers its lid (handle).
+  /**
+   * The phone behind an @lid sender, or null (unresolved). In this order, the first answer wins:
+   *   1. the link check-exists and earlier lookups taught us, while it is fresh (a day): no WAHA call. A @lid can be reassigned, so an older link is never trusted on its
+   *      own, least of all before a login link is issued to the sender it leads to;
+   *   2. WAHA's lid -> phone on the receiving session. That store is LOCAL to the session (a lid never looked up there has no number), so a null is common;
+   *   3. the PHONE side (phoneSideMatch): the lid of our own buyers' phones, asked of WhatsApp itself.
+   * Nothing is stored for the sender here: only a message that matched an order or an opener remembers its lid (handle).
+   */
+  async function resolveLid(inbound: InboundRow, fetched: Fetched, lid: string, orderPhones: readonly string[]): Promise<string | null> {
     const known = await knownLid(sql, lid);
     if (known !== null && Date.now() - known.checkedAt.getTime() < LID_LINK_FRESH_MS) return known.phone;
     try {
-      return await deps.waha.withSession(fetched.sessionId, ({ sessionName, client }) => client.resolveLid(sessionName, lid), { timeoutMs: LOOKUP_TIMEOUT_MS });
+      const phone = await deps.waha.withSession(fetched.sessionId, ({ sessionName, client }) => client.resolveLid(sessionName, lid), { timeoutMs: LOOKUP_TIMEOUT_MS });
+      if (phone !== null) return phone;
     } catch (error) {
-      // An @lid WAHA has no number for (it may answer 404): unresolved, which only costs the link. Anything else is an outage: retry.
+      // An @lid WAHA has no number for (it may answer 404): no answer from this step, which only costs the link. Anything else is an outage: retry.
+      if (!(error instanceof WahaError && error.code === "rejected")) throw error;
+    }
+    return phoneSideMatch(inbound, fetched, lid, orderPhones, known?.phone ?? null);
+  }
+
+  /**
+   * The buyer's phone whose WhatsApp account IS this @lid sender, found from the phone side: a few candidate phones, each asked of WhatsApp (check-exists on the receiving
+   * session, never the session-local lids/pn), and the one whose lid equals the sender's is the sender. Candidates are OUR buyers' phones only, in this order: the orders
+   * whose codes the message carries; the phone of a stale link for this lid; the phones of openers this number sent (within a week) whose delivery still awaits the reply,
+   * newest first. At most LID_CHECK_MAX of them, so at most that many WhatsApp calls per message, and a candidate whose lid was confirmed within a day costs none. A sender
+   * lid gets ONE such round an hour (lidRound: a spammer cannot make us query WhatsApp in a loop); a spent budget, or no Valkey wired, is the same as no match.
+   * Nothing is sent, and a stranger's phone is never stored: only candidates' answers are cached (askContact). A candidate WhatsApp refuses does not match; any other
+   * failure throws (the job is retried, and the same message may take the round again).
+   */
+  async function phoneSideMatch(inbound: InboundRow, fetched: Fetched, lid: string, orderPhones: readonly string[], stalePhone: string | null): Promise<string | null> {
+    if (deps.lidRound === undefined) return null;
+    const awaiting = await sql<{ buyer_phone: string }[]>`
+      SELECT o.buyer_phone
+        FROM public.delivery_openers p
+        JOIN public.deliveries d ON d.id = p.delivery_id AND d.channel = 'whatsapp' AND d.status = 'pending'
+        JOIN public.orders o ON o.id = d.order_id
+       WHERE p.status IN ('sent', 'unknown') AND p.session_id = ${fetched.sessionId} AND p.sent_at > now() - interval '7 days'
+       GROUP BY o.buyer_phone ORDER BY max(p.sent_at) DESC LIMIT ${LID_CHECK_MAX}`;
+    const candidates = [...new Set([...orderPhones, ...(stalePhone === null ? [] : [stalePhone]), ...awaiting.map((r) => r.buyer_phone)])].filter((p) => isIdMobileE164(p)).slice(0, LID_CHECK_MAX);
+    if (candidates.length === 0 || !(await deps.lidRound(lid, inbound.id))) return null;
+    return deps.waha.withSession(
+      fetched.sessionId,
+      async ({ sessionName, client }) => {
+        for (const phone of candidates) if ((await lidOfPhone(sessionName, client, phone)) === lid) return phone;
+        return null;
+      },
+      { timeoutMs: LOOKUP_TIMEOUT_MS },
+    );
+  }
+
+  /** The lid WhatsApp knows `phone` by: the cached one while that link is fresh, else asked (and cached) with check-exists; null when it has none or WhatsApp refuses the question. */
+  async function lidOfPhone(sessionName: string, client: WahaClient, phone: string): Promise<string | null> {
+    const cached = await freshLidOf(sql, phone);
+    if (cached !== null) return cached;
+    try {
+      const contact = await askContact(sql, client, sessionName, phone);
+      return contact.kind === "ok" ? contact.lid : null;
+    } catch (error) {
       if (error instanceof WahaError && error.code === "rejected") return null;
       throw error;
     }
@@ -399,12 +478,13 @@ export function createInboundConsumer(deps: InboundDeps): OutboxConsumer {
     if (fetched.fromMe || fetched.chat.kind === "other") return "ignored";
     const codes = extractOrderCodes(fetched.body);
     const sender: InboundSender = fetched.chat.kind === "phone" ? { kind: "phone", phone: fetched.chat.phone } : { kind: "lid" };
-    const resolvedPhone = fetched.chat.kind === "lid" ? await resolveLid(fetched, fetched.chat.lid) : null;
     const orders =
       codes.length === 0
         ? []
         : await sql<{ id: string; status: string; buyer_phone: string; order_code: string }[]>`
             SELECT id, status::text AS status, buyer_phone, order_code FROM public.orders WHERE order_code = ANY(${codes}::text[])`;
+    // The orders come first: their phones are the first candidates of the phone-side match of an @lid sender (resolveLid).
+    const resolvedPhone = fetched.chat.kind === "lid" ? await resolveLid(inbound, fetched, fetched.chat.lid, orders.map((o) => o.buyer_phone)) : null;
     let order = codes.map((c) => orders.find((o) => o.order_code === c)).find((o) => o !== undefined);
     // A reply to our opener needs no code (Owner decision D7: "reply to this message"): the number that wrote IS the buyer's, and it wrote to the very
     // number that sent the opener. Nothing about the order is learnt from a message that carries no code: this only finds the order we wrote to.

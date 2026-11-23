@@ -10,6 +10,7 @@
 // `deliveriesFromEnv` is the production wiring: real WAHA, SMTP and file access with the messaging private key; without it nothing
 // is delivered (worker.ts logs that), exactly like the template test-sends. createDeliveryPort takes the ports, for the tests.
 import { openerFromEnv } from "@ebooktrivia/crypto";
+import type { Redis } from "ioredis";
 import type postgres from "postgres";
 import type { Logger } from "../log.ts";
 import type { OutboxConsumer } from "../outbox-consumer.ts";
@@ -21,7 +22,7 @@ import { createEbookFiles, createMailSender, createWahaAccess } from "./access.t
 import { type DeliveryConfig, loadDeliveryConfig } from "./config.ts";
 import { createDelivery, type DeliveryJob } from "./deliver.ts";
 import { createSessionPoller } from "./health.ts";
-import { createInboundConsumer, INBOUND_TOPIC } from "./inbound.ts";
+import { createInboundConsumer, INBOUND_TOPIC, lidRoundFromValkey } from "./inbound.ts";
 import { expireOpenerLeases } from "./opener-sweep.ts";
 import type { EbookFiles, MagicLinks, MagicLinksFactory, MailSender, WahaAccess } from "./ports.ts";
 import { resolveUnknownDeliveries } from "./resolve-unknown.ts";
@@ -46,7 +47,13 @@ export interface DeliveryRuntime {
 export interface DeliveryPort {
   /** The outbox topics the runtime consumes (known before the database connection is sized). */
   readonly topics: readonly string[];
-  create(context: { readonly sql: postgres.Sql; readonly log: Logger; readonly enqueue: (jobs: readonly DeliveryJob[]) => Promise<void> }): DeliveryRuntime;
+  create(context: {
+    readonly sql: postgres.Sql;
+    readonly log: Logger;
+    readonly enqueue: (jobs: readonly DeliveryJob[]) => Promise<void>;
+    /** The worker's Valkey and its key prefix: the per-lid budget of the inbound phone-side match lives there. Absent: that match is off. */
+    readonly valkey?: { readonly client: Pick<Redis, "get" | "set">; readonly prefix: string };
+  }): DeliveryRuntime;
 }
 
 export interface DeliveryPorts {
@@ -65,7 +72,7 @@ export interface DeliveryPorts {
 export function createDeliveryPort(ports: DeliveryPorts): DeliveryPort {
   return {
     topics: [INBOUND_TOPIC],
-    create({ sql, log, enqueue }) {
+    create({ sql, log, enqueue, valkey }) {
       const common = {
         sql,
         log,
@@ -79,7 +86,15 @@ export function createDeliveryPort(ports: DeliveryPorts): DeliveryPort {
       const poll = createSessionPoller({ sql, log, waha: ports.waha });
       return {
         process: (data) => delivery.process(data),
-        outboxConsumers: [createInboundConsumer({ ...common, delivery, files: ports.files, ...(ports.clock === undefined ? {} : { clock: ports.clock }) })],
+        outboxConsumers: [
+          createInboundConsumer({
+            ...common,
+            delivery,
+            files: ports.files,
+            ...(ports.clock === undefined ? {} : { clock: ports.clock }),
+            ...(valkey === undefined ? {} : { lidRound: lidRoundFromValkey(valkey.client, valkey.prefix) }),
+          }),
+        ],
         nudge: async (orderId) => {
           // A WhatsApp delivery whose opener already went out (or is in flight, or was given up) waits for the buyer's reply: nothing to hurry.
           const rows = await sql<{ id: string; attempts: number; channel: "email" | "whatsapp" }[]>`

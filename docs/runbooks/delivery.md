@@ -189,7 +189,11 @@ Extra replies (the texts, and the PDF for an unconfirmed `@lid`) are limited: at
 anything is sent, so two messages at once cannot both pass), and only while the number is under **80 % of its daily cap**, so they can never take the openers' share. No order code and no
 opener to answer, or a code of no order: no reply at all.
 
-**A `@lid` sender** is matched to a phone through `wa_contacts` (the lid a check-exists answer taught us) or WAHA's lid lookup. A lid belongs to **one** phone (the column is unique; writing a
+**A `@lid` sender** is matched to a phone through `wa_contacts` (the lid a check-exists answer taught us), then WAHA's lid lookup, then **from the phone side**. WAHA's lid store is local to a
+session (measured on the Owner's WAHA 2026.10.1: a lid never looked up on that session has `pn: null`), while check-exists is a WhatsApp server query that answers for any phone. So when the first two
+give no number, the worker asks check-exists, on the receiving session, about up to **5** of our buyers' phones (the orders whose codes the message carries, the phone of a stale link, the openers this number sent
+in the last 7 days whose delivery still awaits the reply, newest first) and the phone whose lid equals the sender's is the sender. A sender lid gets **one** such round an hour (a Valkey key `<prefix>:lid-round:<sha256 of the lid>`
+with a one-hour TTL; the retry of the same message may take it again), and nothing is sent or stored for a stranger. A lid belongs to **one** phone (the column is unique; writing a
 lid takes it from the phone that held it), a link older than a **day** is not trusted on its own (WAHA is asked again before a login link can go to that sender), and a phone WAHA names for a lid
 is stored only once a message from it matched an order or an opener: a stranger's phone is never kept. If the buyer's reply (the PDF) went to a `@lid` chat, the delivery remembers that chat
 (`reply_chat_id`) and the unknown-send lookup asks there as well as in the order's own chat.
