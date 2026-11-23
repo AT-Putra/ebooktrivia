@@ -95,6 +95,7 @@ test("the trivia page at 375 px: four cards, the switcher, the WIB countdown; on
   for (const name of ["Papan Peringkat", "Profil Saya", "Daftar Set"]) await expect(page.getByRole("heading", { name })).toBeVisible();
   await expect(page.getByRole("button", { name: /Ganti program/ })).toBeVisible();
   await expect(page.getByText("Juara 2-3")).toBeVisible();
+  await expect(page.getByRole("list", { name: "Hadiah" })).toContainText("Juara 2–3 · 2 pemenang");
   await expect(page.getByText(/Set berikutnya terbuka dalam/)).toBeVisible();
   await expect(page.getByText(/^Tepatnya .+, pukul 00\.00 WIB\.$/)).toBeVisible();
   await expect(page.getByRole("group", { name: /Set 2, terkunci, Terbuka .* 00\.00 WIB/ })).toBeVisible();

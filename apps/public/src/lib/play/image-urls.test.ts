@@ -1,6 +1,6 @@
 // The play pages' choice between an uploaded picture and the generic art, and the URLs of the uploaded ones.
 import { describe, expect, it } from "vitest";
-import { bannerArt, bannerImageUrl, prizeImageUrl, prizeLayout, SET_ART, setArt, setImageUrl } from "./image-urls.ts";
+import { bannerArt, bannerImageUrl, prizeArt, prizeImageUrl, SET_ART, setArt, setImageUrl } from "./image-urls.ts";
 
 const SET = "11111111-1111-4111-8111-111111111111";
 const TIER = "22222222-2222-4222-8222-222222222222";
@@ -45,39 +45,13 @@ describe("bannerArt (the banner card's big picture)", () => {
   });
 });
 
-describe("the prize list: the featured grand prize and the compact rows", () => {
-  const first = prizeImageUrl(TIER, UPLOAD);
-  const second = prizeImageUrl(SET, TIER);
-  const tier = (rankFrom: number, imageUrl: string | null) => ({ rankFrom, imageUrl });
-
-  it("features the tier that starts at rank 1, with its uploaded image", () => {
-    const layout = prizeLayout([tier(1, first), tier(2, second)]);
-    expect(layout.featured).toEqual({ tier: tier(1, first), position: 0, art: { kind: "upload", src: first } });
-    // Whatever the order of the list, the rank-1 tier is the featured one (and keeps its place for the medal's tone).
-    const reversed = prizeLayout([tier(2, second), tier(1, first)]);
-    expect(reversed.featured).toEqual({ tier: tier(1, first), position: 1, art: { kind: "upload", src: first } });
+describe("prizeArt (the picture of every prize card)", () => {
+  it("shows the tier's uploaded image when it has one, whatever its rank", () => {
+    const imageUrl = prizeImageUrl(TIER, UPLOAD);
+    expect(prizeArt({ imageUrl })).toEqual({ kind: "upload", src: imageUrl });
   });
 
-  it("shows the placeholder in the featured tile when the rank-1 tier has no image, even if another tier has one", () => {
-    expect(prizeLayout([tier(1, null), tier(2, second)]).featured?.art).toEqual({ kind: "generic", id: "prize-placeholder" });
-  });
-
-  it("has no featured tile when no tier starts at rank 1 (and none at all with no tiers)", () => {
-    expect(prizeLayout([tier(2, second)]).featured).toBeNull();
-    expect(prizeLayout([tier(2, second)]).rows).toEqual([{ tier: tier(2, second), position: 0, image: second }]);
-    expect(prizeLayout([])).toEqual({ featured: null, rows: [] });
-  });
-
-  it("gives every other tier ONE leading visual: its own image, or null (the medal icon stands in the box)", () => {
-    const { rows } = prizeLayout([tier(1, first), tier(2, second), tier(4, null)]);
-    expect(rows.map((row) => row.image)).toEqual([second, null]);
-    expect(rows.map((row) => row.position)).toEqual([1, 2]);
-  });
-
-  it("shows each tier's picture exactly once: the rank-1 tier's is in the featured tile and not in a row", () => {
-    const layout = prizeLayout([tier(1, first), tier(2, second)]);
-    expect(layout.featured?.art).toEqual({ kind: "upload", src: first });
-    expect(layout.rows.map((row) => row.tier.rankFrom)).toEqual([2]);
-    expect(layout.rows.map((row) => row.image)).toEqual([second]);
+  it("falls back to the built-in placeholder when it has none, so every card has a picture (the medal is no stand-in)", () => {
+    expect(prizeArt({ imageUrl: null })).toEqual({ kind: "generic", id: "prize-placeholder" });
   });
 });

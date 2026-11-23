@@ -48,11 +48,8 @@
     "banner": {
       "title": "Program",
       "prizes": "Hadiah",
-      "gold": "Juara 1",
-      "silver": "Juara 2",
-      "bronze": "Juara 3",
       "quizEndsIn": "Kuis ditutup dalam",
-      "deadline": "Batas akhir: {date} pukul {time} WIB",
+      "deadline": "Batas\u00a0akhir: {date} pukul\u00a0{time}\u00a0WIB",
       "days": "hari"
     },
     "profile": {
@@ -97,8 +94,10 @@
       "allUnlocked": "Semua set sudah terbuka.",
       "nextUnlockOn": "Tepatnya {date}, pukul 00.00 WIB.",
       "noRank": "Belum ada",
-      "prizeRanks": "Peringkat {from}-{to}",
-      "prizeRank": "Peringkat {n}",
+      "prizeRanks": "Juara {from}–{to}",
+      "prizeRank": "Juara {n}",
+      "prizeWinners": "· {n} pemenang",
+      "prizeTop": "Hadiah utama",
       "noPrizes": "Hadiah diumumkan oleh penyelenggara.",
       "ended": "Masa bermain telah berakhir",
       "winners": "Pemenang",

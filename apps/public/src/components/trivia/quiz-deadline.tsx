@@ -10,7 +10,7 @@ export function QuizDeadline({ quizEndsAt, secondsLeft }: { readonly quizEndsAt:
     <div className="flex flex-col items-start justify-between gap-2 rounded-lg bg-linear-to-r from-primary to-secondary px-4 py-3 text-on-primary sm:flex-row sm:items-center sm:gap-4" data-testid="quiz-deadline">
       <div className="flex flex-col gap-0.5">
         <p className="text-sm font-medium">{t("trivia.banner.quizEndsIn")}</p>
-        <p className="text-sm">{t("trivia.banner.deadline", formatWibDeadline(quizEndsAt))}</p>
+        <p className="text-sm text-balance">{t("trivia.banner.deadline", formatWibDeadline(quizEndsAt))}</p>
       </div>
       <Countdown initialSeconds={secondsLeft} dayLabel={t("trivia.banner.days")} className="timer-digits text-3xl leading-none font-bold whitespace-nowrap" />
     </div>

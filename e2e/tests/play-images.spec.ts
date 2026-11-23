@@ -11,9 +11,10 @@ import { type PlayEnv, startPlayEnv } from "../support/play.ts";
  * temporary data directory holding the WebP files) at 375 px:
  *   - the grid shows a set's uploaded thumbnail when it has one and the generic art when it has none;
  *   - the banner card shows the program's uploaded banner in a fixed 3:1 box (object-fit cover), else the built-in art;
- *   - the prize list: the rank-1 tier is the featured tile (its uploaded image, whole: object-fit contain, in a square box, NOT
- *     beside the "Hadiah" heading), every other tier a compact row with ONE leading visual (its image, else the medal), and
- *     each tier's picture appears exactly once;
+ *   - the prize list: ONE card for every tier (a square frame with its uploaded image, whole: object-fit contain, else the
+ *     built-in placeholder; the medal on the rank line), one column on a phone, the same frame size and the same edges as the
+ *     banner and the countdown, and each tier's picture appears exactly once; one column below xl, three from xl, cards of one
+ *     row equally tall;
  *   - the countdown runs to the quiz deadline ("Kuis ditutup dalam", days and hh:mm:ss, the deadline in WIB under it);
  *   - the leaderboard follows the prize tiers: a phone shows every winner (6 prize ranks: 6 rows) before "Lihat semua", and a
  *     medal sits exactly on the ranks a tier covers, in that tier's colour;
@@ -74,7 +75,7 @@ test.beforeAll(async () => {
     INSERT INTO prize_tiers (program_id, rank_from, rank_to, name, value_idr, image_upload_id) VALUES (${programId}, 1, 1, 'Juara 1', 1000000, ${prizeOne}) RETURNING id`;
   const [tierTwo] = await sql<{ id: string }[]>`
     INSERT INTO prize_tiers (program_id, rank_from, rank_to, name, value_idr, image_upload_id) VALUES (${programId}, 2, 3, 'Juara 2-3', 500000, ${prizeTwo}) RETURNING id`;
-  // A third tier without a picture (the medal stands in its box): the prize ranks reach 6, so the leaderboard shows 6 rows first.
+  // A third tier without a picture (the built-in placeholder stands in its frame): the prize ranks reach 6, so the leaderboard shows 6 rows first.
   await sql`INSERT INTO prize_tiers (program_id, rank_from, rank_to, name, value_idr) VALUES (${programId}, 4, 6, 'Juara 4-6', 100000)`;
   const banner = await upload();
   await sql`UPDATE programs SET banner_upload_id = ${banner} WHERE id = ${programId}`;
@@ -125,6 +126,12 @@ async function expectAccessible(page: Page): Promise<void> {
   expect(results.violations).toEqual([]);
 }
 
+/** The left and right edge of an element on the page. */
+async function edges(target: Locator): Promise<{ left: number; right: number }> {
+  const b = await target.boundingBox();
+  return { left: b?.x ?? -1, right: (b?.x ?? -1) + (b?.width ?? 0) };
+}
+
 /** The image is on screen, decoded and not the browser's broken-image box. */
 async function expectDecoded(image: Locator): Promise<void> {
   await image.scrollIntoViewIfNeeded();
@@ -156,52 +163,93 @@ test("the grid shows a set's uploaded thumbnail and the generic art for a set wi
   expect((bannerSize?.width ?? 0) / (bannerSize?.height ?? 1)).toBeCloseTo(3, 1);
   await expect(page.locator("img[src*='/assets/banner-program/']")).toHaveCount(0);
 
-  // The prize list. The "Hadiah" heading has an icon (no picture beside it); the rank-1 tier is the featured tile, its image in a
-  // square box, whole (object-fit contain), not repeated anywhere else; the placeholder is not used.
+  // The prize list. The "Hadiah" heading has an icon (no picture beside it) and names the list. EVERY tier is the same card: a square
+  // picture frame (76 px on a phone), the picture whole (object-fit contain), shown once; a tier without a picture shows the
+  // built-in placeholder in the same frame, never the medal.
   const prizesHeading = page.getByRole("heading", { level: 2, name: "Hadiah" });
   await expect(prizesHeading).toBeVisible();
   await expect(prizesHeading.locator("img")).toHaveCount(0);
   await expect(prizesHeading.locator("svg[aria-hidden='true']")).toHaveCount(1);
-  const featured = page.getByTestId("prize-featured");
-  await expect(featured).toContainText("Juara 1");
-  await expect(featured).toContainText("Peringkat 1");
+  const list = page.getByRole("list", { name: "Hadiah" });
+  const cards = list.getByTestId("prize-card");
+  await expect(cards).toHaveCount(3);
   const tierOneUrl = `/api/v1/play/img/prize/${content.tierOne}/${content.prizeOne}.webp`;
-  const slot = page.getByTestId("prize-featured-box").locator("img");
+  const tierTwoUrl = `/api/v1/play/img/prize/${content.tierTwo}/${content.prizeTwo}.webp`;
+  const one = cards.filter({ hasText: "Hadiah utama" });
+  await expect(one).toHaveCount(1);
+  // A one-place tier shows only its rank: the winner count would repeat it.
+  await expect(one.locator(".flex-wrap.items-center")).toHaveText("Juara 1");
+  await expect(one).not.toContainText("pemenang");
+  const slot = one.getByTestId("prize-picture").locator("img");
   await expect(slot).toHaveAttribute("src", tierOneUrl);
   await expect(slot).toHaveAttribute("alt", "");
   await expectDecoded(slot);
   expect(await slot.evaluate((el) => getComputedStyle(el).objectFit)).toBe("contain");
-  const box = await page.getByTestId("prize-featured-box").boundingBox();
-  expect(box?.width).toBe(96);
-  expect(box?.height).toBe(96);
   await expect(page.locator(`img[src="${tierOneUrl}"]`)).toHaveCount(1);
-  await expect(page.locator("img[src*='prize-placeholder']")).toHaveCount(0);
-  // The other tiers: one leading visual in a 48 px box. A tier with an image shows it (once), one without shows the medal.
-  const rows = page.getByTestId("prize-row");
-  await expect(rows).toHaveCount(2);
-  const withImage = rows.filter({ hasText: "Juara 2-3" });
-  const rowImage = withImage.locator("img");
-  await expect(rowImage).toHaveAttribute("src", `/api/v1/play/img/prize/${content.tierTwo}/${content.prizeTwo}.webp`);
-  await expectDecoded(rowImage);
-  expect(await rowImage.evaluate((el) => getComputedStyle(el).objectFit)).toBe("contain");
-  await expect(withImage.getByTestId("prize-row-box")).toHaveCount(1);
-  const rowBox = await withImage.getByTestId("prize-row-box").boundingBox();
-  expect({ width: rowBox?.width, height: rowBox?.height }).toEqual({ width: 48, height: 48 });
-  const medalRow = rows.filter({ hasText: "Juara 4-6" });
-  await expect(medalRow.locator("img")).toHaveCount(0);
-  await expect(medalRow.getByTestId("prize-row-box").locator("svg[aria-hidden='true']")).toHaveCount(1);
-  // The value badge never wraps, and on a phone it sits in the text column under the rank line, not under the picture.
-  const badge = withImage.getByText("Rp 500.000");
+  const two = cards.filter({ hasText: "Juara 2–3 · 2 pemenang" });
+  const twoImage = two.getByTestId("prize-picture").locator("img");
+  await expect(twoImage).toHaveAttribute("src", tierTwoUrl);
+  await expectDecoded(twoImage);
+  expect(await twoImage.evaluate((el) => getComputedStyle(el).objectFit)).toBe("contain");
+  await expect(page.locator(`img[src="${tierTwoUrl}"]`)).toHaveCount(1);
+  // The tier without a picture: the built-in placeholder in the same frame (one on the page), and no medal in the frame; the medal
+  // is on the rank line of every card.
+  const three = cards.filter({ hasText: "Juara 4–6 · 3 pemenang" });
+  const placeholder = three.getByTestId("prize-picture").locator("img");
+  await expect(placeholder).toHaveAttribute("src", /^\/assets\/prize-placeholder\/prize-placeholder@1x\.webp$/);
+  await expect(placeholder).toHaveAttribute("alt", "");
+  // The built-in art is 3:2: it fills the square frame (cover); an upload stays whole (contain, above).
+  expect(await placeholder.evaluate((el) => getComputedStyle(el).objectFit)).toBe("cover");
+  await expect(page.locator("img[src*='prize-placeholder']")).toHaveCount(1);
+  await expect(three.getByTestId("prize-picture").locator("svg")).toHaveCount(0);
+  for (const card of [one, two, three]) await expect(card.locator("svg[aria-hidden='true']")).toHaveCount(1);
+  // Every frame has the same size: 76 px on a phone.
+  for (const card of [one, two, three]) {
+    const frame = await card.getByTestId("prize-picture").boundingBox();
+    expect({ width: frame?.width, height: frame?.height }).toEqual({ width: 76, height: 76 });
+  }
+  // Only the rank-1 card has the accent border and "Hadiah utama", then its value; the others show only their value. A pill never
+  // wraps and sits in the text column under the rank line and the name, not under the picture.
+  expect(await one.evaluate((el) => getComputedStyle(el).borderTopColor)).not.toBe(await two.evaluate((el) => getComputedStyle(el).borderTopColor));
+  expect(await one.locator("[data-slot='badge']").allTextContents()).toEqual(["Hadiah utama", "Rp 1.000.000"]);
+  expect(await two.locator("[data-slot='badge']").allTextContents()).toEqual(["Rp 500.000"]);
+  expect(await three.locator("[data-slot='badge']").allTextContents()).toEqual(["Rp 100.000"]);
+  for (const pill of await list.locator("[data-slot='badge']").all()) expect((await pill.boundingBox())?.height ?? 99).toBeLessThan(30);
+  // The rank line is ONE line on a phone ("Juara 4–6 · 3 pemenang" at 375 px); where it ever has to break it does so only between
+  // its two parts (each part is one line), and the medal is on the first.
+  for (const card of [one, two, three]) {
+    expect((await card.locator(".flex-wrap.items-center").boundingBox())?.height ?? 99).toBeLessThan(26);
+    const [label, winners] = await card.locator(".flex-wrap.items-center > span").all();
+    const labelBox = await label?.boundingBox();
+    expect((await winners?.boundingBox())?.height ?? 0).toBeLessThan(26);
+    expect(labelBox?.height ?? 99).toBeLessThan(26);
+    const medal = await card.locator("svg[aria-hidden='true']").boundingBox();
+    expect(medal?.y ?? -1).toBeGreaterThanOrEqual((labelBox?.y ?? 0) - 1);
+    expect((medal?.y ?? 99) + (medal?.height ?? 0)).toBeLessThanOrEqual((labelBox?.y ?? 0) + (labelBox?.height ?? 0) + 1);
+  }
+  const badge = two.getByText("Rp 500.000");
   const badgeBox = await badge.boundingBox();
   expect(badgeBox?.height ?? 99).toBeLessThan(30);
-  const rankLine = await withImage.getByText("Peringkat 2-3").boundingBox();
+  const rankLine = await two.getByText("Juara 2–3 · 2 pemenang").boundingBox();
+  const nameLine = await two.getByText("Juara 2-3", { exact: true }).boundingBox();
   expect(badgeBox?.x ?? 0).toBeGreaterThanOrEqual((rankLine?.x ?? 0) - 1);
-  expect(badgeBox?.y ?? 0).toBeGreaterThan((rankLine?.y ?? 0) + (rankLine?.height ?? 0) - 2);
+  expect(nameLine?.y ?? 0).toBeGreaterThan((rankLine?.y ?? 0) + (rankLine?.height ?? 0) - 2);
+  expect(badgeBox?.y ?? 0).toBeGreaterThan((nameLine?.y ?? 0) + (nameLine?.height ?? 0) - 2);
+  await expect(three.getByText("Rp 100.000")).toHaveCount(1);
+  // One column on a phone, and the banner, the prize list and the countdown share the card's left and right edges.
+  const bannerEdges = await edges(bannerBox);
+  for (const target of [list, cards.first(), cards.last(), page.getByTestId("quiz-deadline")]) {
+    const e = await edges(target);
+    expect(e.left).toBeCloseTo(bannerEdges.left, 0);
+    expect(e.right).toBeCloseTo(bannerEdges.right, 0);
+  }
 
   // The countdown runs to the quiz deadline: no sales-end label, days then hh:mm:ss, the deadline in WIB under the label.
   const deadline = page.getByTestId("quiz-deadline");
   await expect(deadline).toContainText("Kuis ditutup dalam");
-  await expect(deadline).toContainText(/Batas akhir: \w+, \d{1,2} \w+ \d{4} pukul 23\.59 WIB/);
+  // The day, month and year, and "pukul 23.59 WIB", are held together by no-break spaces; the line breaks only after "akhir:", the
+  // weekday's comma and before "pukul".
+  await expect(deadline).toContainText(/Batas\u00a0akhir: \w+, \d{1,2}\u00a0\w+\u00a0\d{4} pukul\u00a023\.59\u00a0WIB/);
   await expect(deadline.getByRole("timer")).toHaveText(/^\d+ hari \d{2}:\d{2}:\d{2}$/);
   await expect(page.getByText("Penjualan berakhir dalam")).toHaveCount(0);
   await expectAccessible(page);
@@ -249,6 +297,55 @@ test("the grid shows a set's uploaded thumbnail and the generic art for a set wi
   await context.close();
 });
 
+const LONG_NAME = "Voucher belanja online senilai satu juta rupiah yang berlaku di semua toko mitra kami di seluruh Indonesia";
+
+test("the prize grid is one column below xl and three from xl, the cards of a row are equally tall (even with a long name), the frames grow to 112 px from md, and everything shares the banner's edges", async ({ browser }) => {
+  test.setTimeout(120_000);
+  // One tier gets a long name, so the cards of a row can only share a height if the grid stretches them (the name is restored below).
+  await play.sql`UPDATE prize_tiers SET name = ${LONG_NAME} WHERE id = ${content.tierTwo}`;
+  let context: BrowserContext | undefined;
+  try {
+    const signed = await signedIn(browser);
+    context = signed.context;
+    const page = signed.page;
+    const cards = page.getByRole("list", { name: "Hadiah" }).getByTestId("prize-card");
+    await expect(cards).toHaveCount(3);
+    await expect(cards.nth(1)).toContainText(LONG_NAME);
+    const columns = async (): Promise<number> => new Set(await cards.evaluateAll((all) => all.map((card) => Math.round(card.getBoundingClientRect().left)))).size;
+    // A card with a short name is as tall as its picture frame, its padding and its border (112 + 2 x 12 + 2 x 2 px).
+    const shortCard = 112 + 2 * 12 + 2 * 2;
+    for (const [width, expected] of [[768, 1], [1024, 1], [1279, 1], [1280, 3], [1920, 3]] as const) {
+      const at = `${String(width)} px`;
+      await page.setViewportSize({ width, height: 900 });
+      expect(await columns(), at).toBe(expected);
+      const boxes = await cards.evaluateAll((all) => all.map((card) => card.getBoundingClientRect()).map((r) => ({ top: Math.round(r.top), height: Math.round(r.height) })));
+      // The cards that share a row share its top and its height.
+      for (const row of new Set(boxes.map((b) => b.top))) expect(new Set(boxes.filter((b) => b.top === row).map((b) => b.height)).size, at).toBe(1);
+      // With three columns the row is as tall as the long card, which is taller than a short one would be alone.
+      if (expected === 3) {
+        expect(new Set(boxes.map((b) => b.top)).size, at).toBe(1);
+        expect(boxes[0]?.height ?? 0, at).toBeGreaterThan(shortCard + 10);
+      }
+      for (let i = 0; i < 3; i++) {
+        const frame = await cards.nth(i).getByTestId("prize-picture").boundingBox();
+        expect({ width: frame?.width, height: frame?.height }, at).toEqual({ width: 112, height: 112 });
+      }
+      // The banner, the prize list and the countdown share the same left and right edges.
+      const banner = await edges(page.getByTestId("banner-picture"));
+      for (const target of [page.getByRole("list", { name: "Hadiah" }), page.getByTestId("quiz-deadline")]) {
+        const e = await edges(target);
+        expect(e.left, at).toBeCloseTo(banner.left, 0);
+        expect(e.right, at).toBeCloseTo(banner.right, 0);
+      }
+      const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+      expect(overflow, at).toBeLessThanOrEqual(0);
+    }
+  } finally {
+    await context?.close();
+    await play.sql`UPDATE prize_tiers SET name = 'Juara 2-3' WHERE id = ${content.tierTwo}`;
+  }
+});
+
 test("the question screen shows no picture, even for a question that has one in the database", async ({ browser }) => {
   test.setTimeout(120_000);
   const { context, page } = await signedIn(browser);
@@ -273,6 +370,9 @@ test("the leaderboard follows the prize tiers: 6 prize ranks show 6 rows on a ph
   // winners, so "Lihat semua" is needed, and fewer than the board's size, so everyone is in it.
   await play.sql`UPDATE player_programs SET eligible = false WHERE program_id = ${play.programId}`;
   for (let i = 0; i < 8; i++) await play.eligiblePlayer();
+  // The top list is cached in-process for 5 s (lib/play/leaderboard-cache.ts): the board a previous test loaded must have expired
+  // before this one's page asks for it, or the page shows the earlier, smaller board.
+  await new Promise((resolve) => setTimeout(resolve, 5_200));
   const { context, page } = await signedIn(browser);
   const rows = page.locator("section", { has: page.locator("#leaderboard-title") }).locator("tbody tr");
   await expect(rows).toHaveCount(9);
@@ -292,7 +392,7 @@ test("the leaderboard follows the prize tiers: 6 prize ranks show 6 rows on a ph
   for (const n of [1, 2]) expect(await tone(n)).toContain("text-muted-foreground");
   for (const n of [3, 4, 5]) expect(await tone(n)).toContain("text-warning");
   for (const n of [6, 7, 8]) await expect(rows.nth(n).locator("[data-testid='rank-medal']")).toHaveCount(0);
-  const prizeMedal = (name: string) => page.getByTestId("prize-row").filter({ hasText: name }).locator("svg").first();
+  const prizeMedal = (name: string) => page.getByTestId("prize-card").filter({ hasText: name }).locator("svg").first();
   expect(await prizeMedal("Juara 2-3").getAttribute("class")).toContain("text-muted-foreground");
   expect(await prizeMedal("Juara 4-6").getAttribute("class")).toContain("text-warning");
   // A screen reader hears the rank and the prize; the visible number stays.

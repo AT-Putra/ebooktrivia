@@ -1,6 +1,7 @@
 // The time formats of the play pages: the banner's days-and-clock countdown and the WIB deadline text.
 import { describe, expect, it } from "vitest";
 import { formatHms, formatWibDeadline, splitDaysHms } from "./format.ts";
+import { t } from "./t.ts";
 
 const DAY = 86_400;
 
@@ -29,29 +30,61 @@ describe("splitDaysHms (the banner's countdown: days, then hh:mm:ss)", () => {
   });
 });
 
+const NBSP = "\u00a0";
+/** The deadline with its no-break spaces as plain ones, to compare the words. */
+const plain = (at: string): { date: string; time: string } => {
+  const { date, time } = formatWibDeadline(new Date(at));
+  return { date: date.replaceAll(NBSP, " "), time };
+};
+
 describe("formatWibDeadline (the quiz deadline as a player reads it)", () => {
   it("shows a deadline at exactly 00:00 WIB as the day before at 23.59, in WIB and not in UTC", () => {
-    expect(formatWibDeadline(new Date("2027-03-22T00:00:00+07:00"))).toEqual({ date: "Minggu, 21 Maret 2027", time: "23.59" });
+    expect(plain("2027-03-22T00:00:00+07:00")).toEqual({ date: "Minggu, 21 Maret 2027", time: "23.59" });
     // The same instant given in UTC (17:00 on the 21st).
-    expect(formatWibDeadline(new Date("2027-03-21T17:00:00Z"))).toEqual({ date: "Minggu, 21 Maret 2027", time: "23.59" });
+    expect(plain("2027-03-21T17:00:00Z")).toEqual({ date: "Minggu, 21 Maret 2027", time: "23.59" });
   });
 
   it("shows one second after midnight (and one millisecond before it) as it is", () => {
-    expect(formatWibDeadline(new Date("2027-03-22T00:00:01+07:00"))).toEqual({ date: "Senin, 22 Maret 2027", time: "00.00" });
-    expect(formatWibDeadline(new Date("2027-03-22T00:00:00.001+07:00"))).toEqual({ date: "Senin, 22 Maret 2027", time: "00.00" });
-    expect(formatWibDeadline(new Date("2027-03-21T23:59:59.999+07:00"))).toEqual({ date: "Minggu, 21 Maret 2027", time: "23.59" });
+    expect(plain("2027-03-22T00:00:01+07:00")).toEqual({ date: "Senin, 22 Maret 2027", time: "00.00" });
+    expect(plain("2027-03-22T00:00:00.001+07:00")).toEqual({ date: "Senin, 22 Maret 2027", time: "00.00" });
+    expect(plain("2027-03-21T23:59:59.999+07:00")).toEqual({ date: "Minggu, 21 Maret 2027", time: "23.59" });
   });
 
   it("keeps any other time as it is: 17.32, a two-digit hour and the minutes", () => {
-    expect(formatWibDeadline(new Date("2027-01-22T17:32:10+07:00"))).toEqual({ date: "Jumat, 22 Januari 2027", time: "17.32" });
-    expect(formatWibDeadline(new Date("2027-04-12T09:05:00+07:00"))).toEqual({ date: "Senin, 12 April 2027", time: "09.05" });
-    expect(formatWibDeadline(new Date("2027-04-12T23:59:00+07:00")).time).toBe("23.59");
+    expect(plain("2027-01-22T17:32:10+07:00")).toEqual({ date: "Jumat, 22 Januari 2027", time: "17.32" });
+    expect(plain("2027-04-12T09:05:00+07:00")).toEqual({ date: "Senin, 12 April 2027", time: "09.05" });
+    expect(plain("2027-04-12T23:59:00+07:00").time).toBe("23.59");
   });
 
   it("crosses a month and a year: 00:00 on 1 April is 31 Maret, and 00:00 on 1 January is 31 Desember of the year before", () => {
-    expect(formatWibDeadline(new Date("2027-04-01T00:00:00+07:00"))).toEqual({ date: "Rabu, 31 Maret 2027", time: "23.59" });
-    expect(formatWibDeadline(new Date("2027-01-01T00:00:00+07:00"))).toEqual({ date: "Kamis, 31 Desember 2026", time: "23.59" });
+    expect(plain("2027-04-01T00:00:00+07:00")).toEqual({ date: "Rabu, 31 Maret 2027", time: "23.59" });
+    expect(plain("2027-01-01T00:00:00+07:00")).toEqual({ date: "Kamis, 31 Desember 2026", time: "23.59" });
     // A leap year has a 29 February.
-    expect(formatWibDeadline(new Date("2028-03-01T00:00:00+07:00"))).toEqual({ date: "Selasa, 29 Februari 2028", time: "23.59" });
+    expect(plain("2028-03-01T00:00:00+07:00")).toEqual({ date: "Selasa, 29 Februari 2028", time: "23.59" });
+  });
+
+  it("holds the day, month and year together (no-break spaces) so the text can only break after the weekday's comma", () => {
+    expect(formatWibDeadline(new Date("2027-03-22T00:00:00+07:00")).date).toBe(`Minggu, 21${NBSP}Maret${NBSP}2027`);
+    expect(formatWibDeadline(new Date("2028-03-01T00:00:00+07:00")).date).toBe(`Selasa, 29${NBSP}Februari${NBSP}2028`);
+  });
+});
+
+describe("the deadline line of the quiz bar breaks only where a reader would", () => {
+  const line = (at: string): string => {
+    const { date, time } = formatWibDeadline(new Date(at));
+    return t("trivia.banner.deadline", { date, time });
+  };
+
+  it.each(["2027-03-22T00:00:00+07:00", "2027-01-22T17:32:10+07:00", "2028-03-01T00:00:00+07:00"])(
+    "%s: the only ordinary (breakable) spaces are after 'Batas akhir:', after the weekday's comma and before 'pukul'",
+    (at) => {
+      const { date, time } = formatWibDeadline(new Date(at));
+      const weekday = date.split(",")[0] ?? "";
+      expect(line(at).split(" ")).toEqual([`Batas${NBSP}akhir:`, `${weekday},`, date.slice(weekday.length + 2), `pukul${NBSP}${time}${NBSP}WIB`]);
+    },
+  );
+
+  it("reads 'Batas akhir: Minggu, 21 Maret 2027 pukul 23.59 WIB' for the 22 March midnight", () => {
+    expect(line("2027-03-22T00:00:00+07:00").replaceAll(NBSP, " ")).toBe("Batas akhir: Minggu, 21 Maret 2027 pukul 23.59 WIB");
   });
 });

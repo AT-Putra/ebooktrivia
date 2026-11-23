@@ -30,29 +30,7 @@ export function bannerArt(program: { readonly bannerUrl: string | null }): Art {
   return program.bannerUrl === null ? { kind: "generic", id: "banner-program" } : { kind: "upload", src: program.bannerUrl };
 }
 
-/** A prize tier as the banner card needs it to choose its pictures. */
-interface TierPicture {
-  readonly rankFrom: number;
-  readonly imageUrl: string | null;
-}
-
-/**
- * The prize list of the banner card: the tier that starts at rank 1 is the FEATURED grand prize (a large tile: its uploaded
- * image, else the generic placeholder); every other tier is a compact row with ONE leading visual (its uploaded image, else
- * null: the medal icon stands in the same box). Each tier's picture is shown exactly once. `position` is the tier's place in
- * the whole list (the medal's tone: gold, silver, bronze). With no tier at rank 1 there is no featured tile.
- */
-export interface PrizeLayout<T extends TierPicture> {
-  readonly featured: { readonly tier: T; readonly position: number; readonly art: Art } | null;
-  readonly rows: readonly { readonly tier: T; readonly position: number; readonly image: string | null }[];
-}
-
-export function prizeLayout<T extends TierPicture>(tiers: readonly T[]): PrizeLayout<T> {
-  const first = tiers.findIndex((tier) => tier.rankFrom === 1);
-  const entries = tiers.map((tier, position) => ({ tier, position }));
-  const featured = first < 0 ? undefined : entries[first];
-  return {
-    featured: featured === undefined ? null : { ...featured, art: featured.tier.imageUrl === null ? { kind: "generic", id: "prize-placeholder" } : { kind: "upload", src: featured.tier.imageUrl } },
-    rows: entries.filter((entry) => entry !== featured).map((entry) => ({ ...entry, image: entry.tier.imageUrl })),
-  };
+/** The picture of a prize tier in the banner card: its uploaded image, else the built-in placeholder, so every prize card has one. */
+export function prizeArt(tier: { readonly imageUrl: string | null }): Art {
+  return tier.imageUrl === null ? { kind: "generic", id: "prize-placeholder" } : { kind: "upload", src: tier.imageUrl };
 }

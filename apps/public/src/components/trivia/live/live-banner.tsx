@@ -1,8 +1,9 @@
 // Card 1, the banner (US-027, AC-Q2): the program, its prize tiers, the countdown to the quiz deadline (components/trivia/quiz-deadline.tsx)
-// and, once the Owner has confirmed them, the masked winners (program_winners_banner). The big picture
-// is the program's uploaded banner (lib/play/images.ts), else the built-in art, in a fixed 3:1 box (a picture of another shape is
-// cropped from its middle, never shifting the layout). The prizes are components/trivia/prize-list.tsx: the rank-1 tier as the
-// featured grand prize, every other tier as a compact row, each tier's uploaded picture shown once.
+// and, once the Owner has confirmed them, the masked winners (program_winners_banner). One column at every width: the title, the
+// big picture, the prizes, the countdown, all on the card's left and right edges. The big picture
+// is the program's uploaded banner (lib/play/images.ts), else the built-in art, in a fixed 3:1 box across the card (a picture of
+// another shape is cropped from its middle, never shifting the layout). The prizes are components/trivia/prize-list.tsx: one
+// card per tier, each upload shown whole (the placeholder is cropped to fill).
 import { GiftIcon, TrophyIcon } from "@phosphor-icons/react/ssr";
 import type { ProgramView } from "../../../lib/play/grid.ts";
 import { bannerArt } from "../../../lib/play/image-urls.ts";
@@ -19,26 +20,18 @@ export function LiveBanner({ page, view }: { readonly page: ProgramPage; readonl
   const banner = bannerArt(page);
   const fill = "absolute inset-0 block size-full object-cover object-center";
   return (
-    <TriviaCard titleId="banner-title">
+    <TriviaCard titleId="banner-title" className="md:gap-5">
       <CardHeading id="banner-title" level="h1" icon={<GiftIcon size={24} weight="duotone" />}>
         {page.name}
       </CardHeading>
-      <div className="grid items-start gap-4 lg:grid-cols-2 lg:gap-6">
-        <div className="relative aspect-[3/1] overflow-hidden rounded-lg bg-muted" data-testid="banner-picture">
-          {banner.kind === "upload" ? (
-            <UploadedPicture src={banner.src} alt="" width={1344} height={448} priority className={fill} />
-          ) : (
-            <Picture id={banner.id} alt="" priority sizes="(min-width: 1280px) 560px, (min-width: 768px) 672px, 100vw" className={fill} />
-          )}
-        </div>
-        <div className="flex flex-col gap-4">
-          <h2 className="flex items-center gap-2 font-heading text-lg">
-            <TrophyIcon aria-hidden="true" size={22} weight="duotone" className="shrink-0 text-primary" />
-            {t("trivia.banner.prizes")}
-          </h2>
-          {page.tiers.length === 0 ? <p className="text-base text-muted-foreground">{t("trivia.live.noPrizes")}</p> : <PrizeList tiers={page.tiers} />}
-        </div>
+      <div className="relative aspect-[3/1] overflow-hidden rounded-lg bg-muted" data-testid="banner-picture">
+        {banner.kind === "upload" ? (
+          <UploadedPicture src={banner.src} alt="" width={1344} height={448} priority className={fill} />
+        ) : (
+          <Picture id={banner.id} alt="" priority sizes="(min-width: 1280px) 1104px, (min-width: 768px) 624px, calc(100vw - 64px)" className={fill} />
+        )}
       </div>
+      <PrizeList tiers={page.tiers} headingId="banner-prizes-title" />
       {view.phase === "ended" ? (
         <div className="flex flex-col gap-2 rounded-lg bg-muted px-4 py-3">
           <p className="flex items-center gap-2 font-semibold">

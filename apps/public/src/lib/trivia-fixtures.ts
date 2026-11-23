@@ -1,5 +1,4 @@
 import type { AssetId } from "./assets.ts";
-import { t } from "./t.ts";
 
 export type SetState = "completed" | "unlocked" | "in-progress" | "locked";
 
@@ -124,12 +123,12 @@ export const PROGRAMS: Program[] = [
   },
 ];
 
-/** The mockup's prizes as the live page's tiers (one tier per place, no uploaded pictures): the banner's prize list and the leaderboard's medals follow them. */
+/** The mockup's prizes as the live page's tiers (one tier per place, real prize names, no uploaded pictures): the banner's prize list and the leaderboard's medals follow them. */
 export function mockupTiers(program: Program): { rankFrom: number; rankTo: number; name: string; valueIdr: number; imageUrl: null }[] {
   return [
-    { rankFrom: 1, rankTo: 1, name: t("trivia.banner.gold"), valueIdr: program.prizes.gold, imageUrl: null },
-    { rankFrom: 2, rankTo: 2, name: t("trivia.banner.silver"), valueIdr: program.prizes.silver, imageUrl: null },
-    { rankFrom: 3, rankTo: 3, name: t("trivia.banner.bronze"), valueIdr: program.prizes.bronze, imageUrl: null },
+    { rankFrom: 1, rankTo: 1, name: "Saldo e-wallet", valueIdr: program.prizes.gold, imageUrl: null },
+    { rankFrom: 2, rankTo: 2, name: "Voucher belanja", valueIdr: program.prizes.silver, imageUrl: null },
+    { rankFrom: 3, rankTo: 3, name: "Kaos eksklusif", valueIdr: program.prizes.bronze, imageUrl: null },
   ];
 }
 

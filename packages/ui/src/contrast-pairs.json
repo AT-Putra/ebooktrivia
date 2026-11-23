@@ -22,6 +22,8 @@
     { "fg": "destructive-soft-foreground", "bg": "destructive-soft", "level": "text" },
     { "fg": "success-soft-foreground", "bg": "success-soft", "level": "text" },
     { "fg": "warning-soft-foreground", "bg": "warning-soft", "level": "text" },
+    { "fg": "foreground", "bg": "warning-soft", "level": "text", "themes": ["trivia"] },
+    { "fg": "muted-foreground", "bg": "warning-soft", "level": "text", "themes": ["trivia"] },
     { "fg": "info-soft-foreground", "bg": "info-soft", "level": "text" },
     { "fg": "destructive", "bg": "card", "level": "text" },
     { "fg": "success", "bg": "card", "level": "text" },

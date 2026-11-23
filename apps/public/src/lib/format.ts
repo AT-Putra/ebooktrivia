@@ -61,5 +61,6 @@ export function formatWibDeadline(at: Date): { readonly date: string; readonly t
   const midnight = (at.getTime() + WIB_OFFSET_MS) % DAY_MS === 0;
   const parts = WIB_DEADLINE.formatToParts(midnight ? new Date(at.getTime() - 60_000) : at);
   const part = (type: Intl.DateTimeFormatPartTypes): string => parts.find((p) => p.type === type)?.value ?? "";
-  return { date: `${part("weekday")}, ${part("day")} ${part("month")} ${part("year")}`, time: `${part("hour").padStart(2, "0")}.${part("minute").padStart(2, "0")}` };
+  // "21 Maret 2027" holds together (no-break spaces); the text may break only after the weekday's comma.
+  return { date: `${part("weekday")}, ${part("day")}\u00a0${part("month")}\u00a0${part("year")}`, time: `${part("hour").padStart(2, "0")}.${part("minute").padStart(2, "0")}` };
 }

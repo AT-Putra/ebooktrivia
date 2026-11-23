@@ -48,11 +48,8 @@
     "banner": {
       "title": "Program",
       "prizes": "Prizes",
-      "gold": "1st place",
-      "silver": "2nd place",
-      "bronze": "3rd place",
       "quizEndsIn": "Quiz closes in",
-      "deadline": "Deadline: {date} at {time} WIB",
+      "deadline": "Deadline: {date} at\u00a0{time}\u00a0WIB",
       "days": "days"
     },
     "profile": {
@@ -97,8 +94,10 @@
       "allUnlocked": "Every set is open.",
       "nextUnlockOn": "Exactly {date}, at 00:00 WIB.",
       "noRank": "None yet",
-      "prizeRanks": "Ranks {from}-{to}",
-      "prizeRank": "Rank {n}",
+      "prizeRanks": "Places {from}–{to}",
+      "prizeRank": "Place {n}",
+      "prizeWinners": "· {n} winners",
+      "prizeTop": "Top prize",
       "noPrizes": "Prizes are announced by the organiser.",
       "ended": "The play period has ended",
       "winners": "Winners",
