@@ -1,10 +1,11 @@
 // The worker's composition (src/worker.ts) for the ports that need a key: which consumers and sweeps each port switches on, what the
 // production entry (runWorker) wires from worker.env, and the second Uptime Kuma push (the alerts backstop). worker.int.test.ts has the
 // relay -> consumer -> finalize path, the conversion queue and the graceful stop; the chaos tests run the real entry as a child process.
+import { randomUUID } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import type { Writable } from "node:stream";
-import { generateScopeKeyPair } from "@ebooktrivia/crypto";
+import { CryptoError, generateScopeKeyPair } from "@ebooktrivia/crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { ConfigError } from "../src/env.ts";
 import { INBOUND_TOPIC } from "../src/delivery/index.ts";
@@ -66,24 +67,76 @@ const stopOf = (): (() => Promise<void>) => {
   if (stop === undefined) throw new Error("runWorker registered no shutdown handler");
   return stop;
 };
+/**
+ * The topics of the ports that need a key. A worker started here would consume a job another test file left on any of them (with the real password-check lookup, that
+ * is a request to api.pwnedpasswords.com), so those rows are marked processed before it starts.
+ */
+const KEYED_TOPICS = ["admin.password_hibp_check", "magic_link.resend", "otp.send", "template.test_send"];
+/** The topics runWorker adds when the delivery and payment ports are wired from worker.env too. */
+const WIRED_TOPICS = [...KEYED_TOPICS, INBOUND_TOPIC, "order.paid", "payment.notification", "payment.requery"];
+const retireLeftoverJobs = async (topics: readonly string[]): Promise<void> => {
+  await sql`UPDATE outbox SET processed_at = now() WHERE processed_at IS NULL AND topic = ANY (${topics}::text[])`;
+};
 /** An outbox row of `topic` whose payload no consumer can use: each consumer drops it (processed), which proves it was wired to its queue. */
-const unusableJob = async (topic: string): Promise<string> =>
-  first(await sql<{ id: string }[]>`INSERT INTO outbox (topic, dedupe_key, payload) VALUES (${topic}, ${`wiring:${suffix()}`}, '{}'::jsonb) RETURNING id`).id;
+const unusableJob = async (topic: string): Promise<string> => {
+  // template.test_send wants a test-send id: one that matches no row is the no-op of a test-send that is already handled.
+  const payload = topic === "template.test_send" ? { test_send_id: randomUUID() } : {};
+  return first(await sql<{ id: string }[]>`INSERT INTO outbox (topic, dedupe_key, payload) VALUES (${topic}, ${`wiring:${suffix()}`}, ${sql.json(payload)}) RETURNING id`).id;
+};
 const processed = async (id: string): Promise<boolean> => first(await sql<{ done: boolean }[]>`SELECT processed_at IS NOT NULL AS done FROM outbox WHERE id = ${id}`).done;
+const allProcessed = async (ids: readonly string[]): Promise<boolean> => (await Promise.all(ids.map(processed))).every(Boolean);
+/** A push to the alerts monitor: its status and message as Kuma got them. */
+const alertsPushes = (): { status: string | null; msg: string | null }[] =>
+  pushes
+    .filter((p) => p.startsWith("/api/push/alerts-token"))
+    .map((p) => new URL(p, "http://kuma.invalid").searchParams)
+    .map((query) => ({ status: query.get("status"), msg: query.get("msg") }));
 
 describe("startWorker with every port that needs a key", () => {
-  it("relays and runs the jobs of each port's consumer, runs the alert relay and the delivery-free sweeps, and pushes both Kuma monitors", async () => {
-    const testSend: TestSender = { email: () => Promise.resolve(), whatsapp: () => Promise.resolve() };
-    const otpSender: OtpSender = { send: () => Promise.resolve() };
+  it("gives the port of each key-gated consumer its own queue (an unusable job of each is relayed, consumed and dropped, nothing is sent), runs the alert relay's sweep, and pushes both Kuma monitors with the alerts backstop's state", async () => {
+    const sent: string[] = [];
+    const testSend: TestSender = {
+      email: () => {
+        sent.push("test-send e-mail");
+        return Promise.resolve();
+      },
+      whatsapp: () => {
+        sent.push("test-send WhatsApp");
+        return Promise.resolve();
+      },
+    };
+    const otpSender: OtpSender = {
+      send: () => {
+        sent.push("otp");
+        return Promise.resolve();
+      },
+    };
     const ports: WorkerPorts = {
       testSend: () => testSend,
       otp: { opener: { openOtp: () => "123456" }, sender: () => otpSender },
       alertRelay: { senders: () => ({ email: () => Promise.resolve(), whatsapp: () => Promise.resolve() }) },
-      magicLinkResend: { playOrigin: "https://play.ebooktrivia.example.test", sender: () => ({ send: () => Promise.resolve() }) },
-      passwordCheck: { opener: { openPasswordCheck: () => "0".repeat(40) }, lookup: () => Promise.resolve({ status: "clean" }) },
+      magicLinkResend: {
+        playOrigin: "https://play.ebooktrivia.example.test",
+        sender: () => ({
+          send: () => {
+            sent.push("magic link");
+            return Promise.resolve();
+          },
+        }),
+      },
+      passwordCheck: {
+        opener: { openPasswordCheck: () => "0".repeat(40) },
+        lookup: () => {
+          sent.push("password lookup");
+          return Promise.resolve({ status: "clean" });
+        },
+      },
     };
-    // No recipient is saved: the relay runs but sends nothing, so alerts other test files left are not marked as sent.
+    // No recipient is saved: the relay runs but sends nothing, so alerts other test files left are not marked as sent. A critical alert another
+    // file left unsent would turn the backstop "down", so those are resolved: the state it pushes is then the one this test sets.
     await sql`DELETE FROM public.alert_recipients`;
+    await sql`UPDATE public.alerts SET resolved_at = now() WHERE severity = 'critical' AND notified_at IS NULL AND resolved_at IS NULL`;
+    await retireLeftoverJobs(KEYED_TOPICS);
     const config = loadWorkerConfig(
       workerEnv(uniquePrefix(), {
         WORKER_HEARTBEAT_INTERVAL_MS: "200",
@@ -92,22 +145,33 @@ describe("startWorker with every port that needs a key", () => {
       }),
     );
     const { log, lines } = captureLogger("debug");
-    const magicLinkJob = await unusableJob("magic_link.resend");
-    const passwordJob = await unusableJob("admin.password_hibp_check");
+    const jobs = await Promise.all(KEYED_TOPICS.map(unusableJob));
+    const probeKey = `wiring-backstop-${suffix()}`;
     const running = await startWorker(config, ports, log);
     try {
-      await waitFor("both jobs consumed", async () => (await processed(magicLinkJob)) && (await processed(passwordJob)), 20_000);
+      await waitFor("every job consumed", () => allProcessed(jobs), 20_000);
       await waitFor("alert relay swept", () => Promise.resolve(lines.some((l) => l["msg"] === "sweep done" && l["sweeper"] === "alert_relay")), 20_000);
-      await waitFor("both monitors pushed", () => Promise.resolve(pushes.some((p) => p.startsWith("/api/push/heartbeat-token")) && pushes.some((p) => p.startsWith("/api/push/alerts-token"))), 20_000);
+      await waitFor("both monitors pushed", () => Promise.resolve(pushes.some((p) => p.startsWith("/api/push/heartbeat-token")) && alertsPushes().length > 0), 20_000);
+      // No critical alert is unsent: the backstop says so.
+      expect(alertsPushes()[0]).toEqual({ status: "up", msg: "OK" });
+      // A critical alert that has stayed unsent for 10 minutes turns it down, naming the kind and never the message.
+      await sql`
+        INSERT INTO public.alerts (source, kind, severity, dedupe_key, message, payload, created_at)
+        VALUES ('worker', 'wiring_backstop_probe', 'critical', ${probeKey}, 'private text of the alert', '{}'::jsonb, now() - interval '10 minutes')`;
+      await waitFor("backstop down", () => Promise.resolve(alertsPushes().some((p) => p.status === "down")), 20_000);
     } finally {
+      await sql`UPDATE public.alerts SET resolved_at = now() WHERE dedupe_key = ${probeKey}`;
       await running.stop();
     }
+    expect(alertsPushes().find((p) => p.status === "down")?.msg).toBe("1 critical alert(s) unsent for over 5 min: wiring_backstop_probe");
+    expect(pushes.join("\n")).not.toContain("private");
     expect(lines.find((l) => l["msg"] === "worker started")).toMatchObject({ payments: false, deliveries: false, conversions: false });
     const topics = (lines.find((l) => l["msg"] === "worker started")?.["topics"] ?? []) as string[];
-    expect([...topics].sort()).toEqual(["admin.password_hibp_check", "magic_link.resend", "otp.send", "template.test_send"]);
-    // The alerts backstop says which state it is in (up while no critical alert has stayed unsent) and never what the alerts say.
-    const alertsPush = pushes.find((p) => p.startsWith("/api/push/alerts-token"));
-    expect(new URL(alertsPush ?? "", kumaUrl).searchParams.get("status")).toMatch(/^(up|down)$/);
+    expect([...topics].sort()).toEqual(KEYED_TOPICS);
+    // The unusable jobs were dropped before any sender or lookup was asked.
+    expect(sent).toEqual([]);
+    expect(lines.filter((l) => l["msg"] === "magic link resend dropped").map((l) => l["reason"])).toEqual(["bad_payload"]);
+    expect(lines.filter((l) => l["msg"] === "password check dropped").map((l) => l["reason"])).toEqual(["bad_payload"]);
   });
 });
 
@@ -136,7 +200,11 @@ describe("runWorker (the production entry, in process)", () => {
   it("refuses to start when the messaging key is set but the payment key is not (deliveries sign their download URLs with it): nothing runs, no handler is registered", async () => {
     const env = workerEnv(uniquePrefix(), { SECRETS_MESSAGING_PRIVATE_KEY: base64(), DOMAIN: "ebooktrivia.example.test" });
     await expect(runWorker(env)).rejects.toBeInstanceOf(ConfigError);
-    await expect(runWorker({ ...env, SECRETS_PAYMENT_PRIVATE_KEY: base64(), SECRETS_MESSAGING_PRIVATE_KEY: "not-a-key" })).rejects.toThrow();
+    // A key that does not parse stops the worker too, naming the variable and never the value.
+    const failure: unknown = await runWorker({ ...env, SECRETS_PAYMENT_PRIVATE_KEY: base64(), SECRETS_MESSAGING_PRIVATE_KEY: "bad-key-value-0001" }).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(CryptoError);
+    expect(failure).toMatchObject({ code: "invalid_key", message: "SECRETS_MESSAGING_PRIVATE_KEY is not a base64url X25519 key" });
+    expect((failure as Error).message).not.toContain("bad-key-value-0001");
     expect(started()).toBeUndefined();
     expect(vi.mocked(onShutdown)).not.toHaveBeenCalled();
   });
@@ -144,6 +212,8 @@ describe("runWorker (the production entry, in process)", () => {
   it("with the keys of worker.env (and a DOMAIN) wires the test-send, OTP, login-link, password-check, alert and delivery ports from them", async () => {
     await sql`DELETE FROM public.alert_recipients`;
     await retireSessions();
+    // This worker has the REAL password-check lookup (api.pwnedpasswords.com), the real senders and the delivery runtime: no job another file left may reach them.
+    await retireLeftoverJobs(WIRED_TOPICS);
     const env = workerEnv(uniquePrefix(), {
       SECRETS_MESSAGING_PRIVATE_KEY: base64(),
       SECRETS_PAYMENT_PRIVATE_KEY: base64(),
@@ -160,10 +230,11 @@ describe("runWorker (the production entry, in process)", () => {
       );
       // Only the conversions key is missing, so that is the one thing the worker says is off.
       expect(warnings()).toEqual(["SECRETS_CONVERSIONS_PRIVATE_KEY is not set: no adnet postback and no CAPI event is sent"]);
-      // A job of a port that came from the environment reaches its consumer through the relay and BullMQ.
-      const job = await unusableJob("magic_link.resend");
-      await waitFor("the login-link consumer dropped the unusable job", () => processed(job), 20_000);
-      expect(sink.lines.some((l) => l["msg"] === "magic link resend dropped" && l["reason"] === "bad_payload")).toBe(true);
+      // A job of each port that came from the environment reaches its consumer through the relay and BullMQ, and is dropped before a real sender or lookup is used.
+      const jobs = await Promise.all(KEYED_TOPICS.map(unusableJob));
+      await waitFor("every consumer dropped its unusable job", () => allProcessed(jobs), 20_000);
+      expect(sink.lines.filter((l) => l["msg"] === "magic link resend dropped").map((l) => l["reason"])).toEqual(["bad_payload"]);
+      expect(sink.lines.filter((l) => l["msg"] === "password check dropped").map((l) => l["reason"])).toEqual(["bad_payload"]);
     } finally {
       await stopOf()();
     }

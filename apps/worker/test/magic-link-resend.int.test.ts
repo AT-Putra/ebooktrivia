@@ -334,9 +334,17 @@ describe("magic_link.resend: a send that may have gone out, and a contact at its
 });
 
 describe("magic_link.resend: the other ways a job ends", () => {
+  const created: string[] = [];
+  // A job that failed or waits is left pending on purpose: no later file may find it (a worker of another file consumes this topic).
+  afterAll(async () => {
+    await sql`UPDATE outbox SET processed_at = now() WHERE id = ANY (${created}::uuid[]) AND processed_at IS NULL`;
+  });
   /** An outbox job as apps/public's enqueue writes it, but with any payload (the breaker and the 3 a day do not apply). */
-  const job = async (payload: Record<string, string | string[]>): Promise<string> =>
-    first(await sql<{ id: string }[]>`INSERT INTO outbox (topic, dedupe_key, payload) VALUES (${MAGIC_LINK_RESEND_TOPIC}, ${`edge:${suffix()}`}, ${sql.json(payload)}) RETURNING id`).id;
+  const job = async (payload: Record<string, string | string[]>): Promise<string> => {
+    const id = first(await sql<{ id: string }[]>`INSERT INTO outbox (topic, dedupe_key, payload) VALUES (${MAGIC_LINK_RESEND_TOPIC}, ${`edge:${suffix()}`}, ${sql.json(payload)}) RETURNING id`).id;
+    created.push(id);
+    return id;
+  };
   const outboxRow = async (id: string) =>
     first(await sql<{ processed: boolean; attempts: number; deferrals: number; last_error: string | null; payload: Record<string, unknown> }[]>`
       SELECT processed_at IS NOT NULL AS processed, attempts, deferrals, last_error, payload FROM outbox WHERE id = ${id}`);

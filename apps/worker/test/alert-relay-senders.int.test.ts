@@ -2,7 +2,7 @@
 // SMTP settings the Owner saved (to Mailpit here, read back through its API); WhatsApp goes through the pool, so it needs a working
 // number: without one nothing is sent and the pool says so. The relay's own behaviour (digests, limits) is alert-relay.int.test.ts's.
 import { randomBytes } from "node:crypto";
-import { createSecretOpener, generateScopeKeyPair } from "@ebooktrivia/crypto";
+import { CryptoError, createSecretOpener, generateScopeKeyPair } from "@ebooktrivia/crypto";
 import { PG_CONNECTION_OPTIONS } from "@ebooktrivia/db/connection";
 import postgres from "postgres";
 import { afterAll, beforeEach, describe, expect, inject, it } from "vitest";
@@ -92,6 +92,16 @@ describe("alertRelayFromEnv", () => {
   });
 
   it("stops the worker on a key that does not parse (a misconfigured key must not silently turn the relay off)", () => {
-    expect(() => alertRelayFromEnv({ SECRETS_MESSAGING_PRIVATE_KEY: "not-a-key" }, dev)).toThrow();
+    // It names the variable and never the value.
+    const failure: unknown = (() => {
+      try {
+        return alertRelayFromEnv({ SECRETS_MESSAGING_PRIVATE_KEY: "bad-key-value-0001" }, dev);
+      } catch (error) {
+        return error;
+      }
+    })();
+    expect(failure).toBeInstanceOf(CryptoError);
+    expect(failure).toMatchObject({ code: "invalid_key", message: "SECRETS_MESSAGING_PRIVATE_KEY is not a base64url X25519 key" });
+    expect((failure as Error).message).not.toContain("bad-key-value-0001");
   });
 });

@@ -57,11 +57,16 @@ describe("startValkeyFunctionLoader", () => {
   });
 
   it("logs a failed load as an error, answers false, and keeps running (the next ready or heartbeat retries)", async () => {
-    const { client, events } = fakeValkey({ load: [new Error("LOADING Valkey is loading the dataset in memory"), PUBLIC_VALKEY_LIBRARY] });
+    const loading = new Error("LOADING Valkey is loading the dataset in memory");
+    const { client, events } = fakeValkey({ load: [loading, loading, PUBLIC_VALKEY_LIBRARY] });
     const { log, lines } = capture();
     const loader = await startValkeyFunctionLoader(client, log);
     const failure = lines.find((l) => l["msg"] === "valkey functions could not be loaded: public answers 503 on its rate-limited routes");
     expect(failure).toMatchObject({ level: 50, reason: "start", library: PUBLIC_VALKEY_LIBRARY });
+    // A load asked for later fails the same way: false, and logged with its own reason.
+    expect(await loader.load("reconnect")).toBe(false);
+    expect(lines.filter((l) => l["level"] === 50).map((l) => l["reason"])).toEqual(["start", "reconnect"]);
+    expect(lines.some((l) => l["msg"] === "valkey functions loaded")).toBe(false);
     // The loader is up all the same: a ready after the failed start loads it.
     expect(events.listenerCount("ready")).toBe(1);
     events.emit("ready");
