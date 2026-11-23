@@ -114,7 +114,7 @@ Fills an EXISTING published program on staging with about 30 fake **PAID buyers*
 | Step | Tool | Where it runs |
 |---|---|---|
 | 1 | `seed.ts demo`: the buyers, their PAID orders and payments, one login link each, and a plan of how each one plays (`demo.json`) | on the VM, in the one-shot worker container of "Procedure on staging" |
-| 2 | `demo-play.ts`: logs the buyers in and plays their sets in real time | on your laptop, against `https://play.trivia.portalkonten.com` |
+| 2 | `demo-play.ts`: logs the buyers in and plays their sets in real time | on your laptop, against `https://play.<DOMAIN>` |
 | 3 | `seed.ts cleanup --run <run id>`: removes all of it | on the VM, same container |
 
 ### What it makes, and how
@@ -179,7 +179,7 @@ mkdir -p infra/load/work     # git-ignored
 ssh <vm> sudo cat /srv/load/demo.json > infra/load/work/demo.json
 
 # 2. on your laptop (Node 26, this checkout, pnpm install --frozen-lockfile done)
-node infra/load/src/demo-play.ts --base https://play.trivia.portalkonten.com --in infra/load/work/demo.json --concurrency 10 --speed 1
+node infra/load/src/demo-play.ts --base https://play.<DOMAIN> --in infra/load/work/demo.json --concurrency 10 --speed 1
 
 # 3. when the data has served, BEFORE the grace end, and with demo-play.ts stopped (it would write attempts while cleanup deletes the players): on the VM
 loadtool seed.ts cleanup --run <run id>            # the id is printed first by the seed and is in demo.json
