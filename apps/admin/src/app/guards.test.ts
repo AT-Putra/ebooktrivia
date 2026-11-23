@@ -58,6 +58,8 @@ const GUARDS: Readonly<Record<string, string>> = {
   "(console)/settings/programs/actions.ts#rescheduleProgramAction": "permission:program.reschedule",
   "(console)/settings/programs/actions.ts#setProgramStatusAction": "permission:program.edit",
   "(console)/settings/programs/actions.ts#cloneProgramAction": "permission:program.edit",
+  "(console)/settings/programs/actions.ts#removeProgramBannerAction": "permission:program.edit",
+  "uploads/image/banner/route.ts#POST": "permission:program.edit",
   "(console)/settings/products/actions.ts#createProductAction": "permission:product.price.edit",
   "(console)/settings/products/actions.ts#renameProductAction": "permission:product.content.edit",
   "(console)/settings/products/actions.ts#updateProductCommerceAction": "permission:product.price.edit",

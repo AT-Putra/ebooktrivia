@@ -1,18 +1,17 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { ArrowClockwiseIcon, CircleNotchIcon, MedalIcon, RankingIcon } from "@phosphor-icons/react";
+import { ArrowClockwiseIcon, CircleNotchIcon, RankingIcon } from "@phosphor-icons/react";
 import { Badge } from "@ebooktrivia/ui/components/badge";
 import { Button } from "@ebooktrivia/ui/components/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@ebooktrivia/ui/components/table";
 import { cn } from "@ebooktrivia/ui/lib/utils";
 import { formatMinSec, formatNumber } from "../../lib/format.ts";
+import { collapsedRows } from "../../lib/play/prize-ranks.ts";
 import { t } from "../../lib/t.ts";
 import type { LeaderRow } from "../../lib/trivia-fixtures.ts";
+import { type LeaderboardTier, RankCell } from "./rank-cell.tsx";
 import { CardHeading, TriviaCard } from "./trivia-card.tsx";
-
-const MEDAL_TONE: Record<number, string> = { 1: "text-accent", 2: "text-muted-foreground", 3: "text-warning" };
-const COLLAPSED_ROWS = 5;
 
 function agoLabel(seconds: number): string {
   if (seconds < 10) return t("leaderboard.justNow");
@@ -23,10 +22,13 @@ function agoLabel(seconds: number): string {
 interface LeaderboardCardProps {
   rows: LeaderRow[];
   me: LeaderRow;
+  /** The program's prize tiers: the medals and the rows shown first follow them, as on the live page. */
+  tiers: readonly LeaderboardTier[];
   initialAgeSeconds?: number;
 }
 
-export function LeaderboardCard({ rows, me, initialAgeSeconds = 120 }: LeaderboardCardProps) {
+export function LeaderboardCard({ rows, me, tiers, initialAgeSeconds = 120 }: LeaderboardCardProps) {
+  const collapsed = collapsedRows(tiers);
   const [expanded, setExpanded] = useState(false);
   const [age, setAge] = useState(initialAgeSeconds);
   const [loading, setLoading] = useState(false);
@@ -99,17 +101,12 @@ export function LeaderboardCard({ rows, me, initialAgeSeconds = 120 }: Leaderboa
         </TableHeader>
         <TableBody>
           {rows.map((r, i) => {
-            const medal = MEDAL_TONE[r.rank];
+            // The player's own row is never folded away on a phone.
+            const mine = r.rank === me.rank;
             return (
-              <TableRow key={r.rank} className={cn(i >= COLLAPSED_ROWS && !expanded && "hidden md:table-row")}>
+              <TableRow key={r.rank} className={cn(i >= collapsed && !expanded && !mine && "hidden md:table-row")}>
                 <TableCell className="h-11 font-heading text-lg">
-                  <span className="flex items-center gap-1">
-                    {medal === undefined ? null : (
-                      <MedalIcon aria-hidden="true" size={20} weight="fill" className={medal} />
-                    )}
-                    {medal === undefined ? null : <span className="sr-only">{t("leaderboard.rankMedal", { n: r.rank })}</span>}
-                    <span aria-hidden={medal === undefined ? undefined : "true"}>{r.rank}</span>
-                  </span>
+                  <RankCell rank={r.rank} tiers={tiers} />
                 </TableCell>
                 <TableCell className="h-11 font-medium">{r.name}</TableCell>
                 <TableCell className="h-11 text-right whitespace-nowrap">{formatNumber(r.score)}</TableCell>
@@ -124,7 +121,9 @@ export function LeaderboardCard({ rows, me, initialAgeSeconds = 120 }: Leaderboa
             </TableCell>
           </TableRow>
           <TableRow className="bg-muted shadow-[inset_4px_0_0_var(--color-primary)] hover:bg-muted">
-            <TableCell className="h-12 font-heading text-lg">{me.rank}</TableCell>
+            <TableCell className="h-12 font-heading text-lg">
+              <RankCell rank={me.rank} tiers={tiers} />
+            </TableCell>
             <TableCell className="h-12 font-semibold">
               <span className="flex flex-wrap items-center gap-2">
                 {me.name}
@@ -138,16 +137,18 @@ export function LeaderboardCard({ rows, me, initialAgeSeconds = 120 }: Leaderboa
         </TableBody>
       </Table>
 
-      <Button
-        variant="ghost"
-        className="md:hidden"
-        aria-expanded={expanded}
-        onClick={() => {
-          setExpanded((v) => !v);
-        }}
-      >
-        {expanded ? t("leaderboard.showLess") : t("leaderboard.showAll")}
-      </Button>
+      {rows.length > collapsed ? (
+        <Button
+          variant="ghost"
+          className="md:hidden"
+          aria-expanded={expanded}
+          onClick={() => {
+            setExpanded((v) => !v);
+          }}
+        >
+          {expanded ? t("leaderboard.showLess") : t("leaderboard.showAll")}
+        </Button>
+      ) : null}
     </TriviaCard>
   );
 }

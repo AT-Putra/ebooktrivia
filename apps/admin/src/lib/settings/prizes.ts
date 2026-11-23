@@ -155,6 +155,20 @@ export async function setPrizeImage(sql: Sql, adminUserId: string, programId: st
   await (image === null ? link() : linkImage(image, link));
 }
 
+/** The highest rank any prize tier of `p` (a programs row in the query) covers, 0 with none: the one definition both admin pages' leaderboard hints read. */
+export const PRIZE_RANKS_SQL = (sql: Sql) => sql`(SELECT coalesce(max(pt.rank_to), 0)::int FROM public.prize_tiers pt WHERE pt.program_id = p.id)`;
+
+/**
+ * The hint for the Owner (Bahasa Indonesia; read-only, no schema): the play page's leaderboard shows the top `topN`
+ * (programs.leaderboard_top_n), so when a prize tier reaches a lower rank (`prizeRanks`: the highest rank_to of the program's
+ * tiers, 0 with none) some prize winners would not appear on it. null when every prize rank fits.
+ */
+export function leaderboardHint(topN: number, prizeRanks: number): string | null {
+  return prizeRanks > topN
+    ? `Papan peringkat hanya menampilkan ${String(topN)} pemain teratas, padahal hadiah mencakup peringkat 1 sampai ${String(prizeRanks)}: sebagian pemenang hadiah tidak akan tampil di papan peringkat. Naikkan "Leaderboard size" program ini (halaman Programs) menjadi minimal ${String(prizeRanks)}.`
+    : null;
+}
+
 export interface PrizeTierRow {
   readonly id: string;
   readonly rankFrom: number;
@@ -170,12 +184,16 @@ export interface ProgramPrizes {
   readonly name: string;
   readonly status: string;
   readonly snapshot: boolean;
+  /** programs.leaderboard_top_n: how many players the play page's leaderboard shows. */
+  readonly leaderboardTopN: number;
+  /** The highest rank any tier covers (PRIZE_RANKS_SQL). */
+  readonly prizeRanks: number;
   readonly tiers: readonly PrizeTierRow[];
 }
 
 export async function listProgramPrizes(sql: Sql): Promise<ProgramPrizes[]> {
   const rows = await sql<(Omit<ProgramPrizes, "tiers"> & { tiers: PrizeTierRow[] | null })[]>`
-    SELECT p.id, p.name, p.status::text AS status,
+    SELECT p.id, p.name, p.status::text AS status, p.leaderboard_top_n AS "leaderboardTopN", ${PRIZE_RANKS_SQL(sql)} AS "prizeRanks",
            EXISTS (SELECT 1 FROM public.leaderboard_snapshots l WHERE l.program_id = p.id) AS snapshot,
            (SELECT json_agg(json_build_object('id', t.id, 'rankFrom', t.rank_from, 'rankTo', t.rank_to, 'name', t.name, 'description', t.description,
                                               'valueIdr', t.value_idr, 'imageUploadId', t.image_upload_id) ORDER BY t.rank_from)

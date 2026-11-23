@@ -3,10 +3,10 @@
 // upload (ids only, never a path or a name) and a summary.
 //
 //   node apps/admin/src/cli/images.ts backfill-display [--force] [--dry-run]
-//       Makes the display copy (images/<id>.display.webp: thumbnails fit 480 x 600, prize images 256 x 256) of every set thumbnail and
-//       prize image that has none; --force makes them again.
+//       Makes the display copy (images/<id>.display.webp: thumbnails fit 480 x 600, prize images 256 x 256, program banners 1344 x 448) of
+//       every set thumbnail, prize image and program banner that has none; --force makes them again.
 //   node apps/admin/src/cli/images.ts move-question-images [--dry-run]
-//       Moves every image players are not shown (question images, replaced thumbnails, orphans) from images/ to question-images/ (not
+//       Moves every image players are not shown (question images, replaced thumbnails and banners, orphans) from images/ to question-images/ (not
 //       mounted into the public app), each checked against the sha256 of its uploads row, and rewrites uploads.storage_path. Lists the
 //       files under images/ that no uploads row names (never deleted).
 //
@@ -48,7 +48,7 @@ async function main(argv: readonly string[]): Promise<number> {
     const report = await moveQuestionImages(db.sql, dataDir, options);
     for (const name of report.strays) process.stdout.write(`stray ${name}\n`);
     process.stdout.write(
-      `question images: ${String(report.moved)} moved, ${String(report.settled)} already in place, ${String(report.shared.length)} shared with a set or prize (left), ${String(report.missing.length)} without a file, ${String(report.damaged.length)} damaged, ${String(report.refused.length)} refused, ${String(report.strays.length)} stray files under images/${dry}\n`,
+      `question images: ${String(report.moved)} moved, ${String(report.settled)} already in place, ${String(report.shared.length)} shared with a set, prize or banner (left), ${String(report.missing.length)} without a file, ${String(report.damaged.length)} damaged, ${String(report.refused.length)} refused, ${String(report.strays.length)} stray files under images/${dry}\n`,
     );
     return report.shared.length + report.missing.length + report.damaged.length + report.refused.length + report.strays.length === 0 ? 0 : 2;
   } finally {

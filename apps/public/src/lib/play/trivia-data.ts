@@ -5,7 +5,7 @@
 // (play_attempts, play_standing, play_leaderboard: masked, and refused inside a transaction that has written).
 // Every query here is a statement (an autocommit transaction) of its own.
 import type { Sql } from "../db.ts";
-import { prizeImageUrl, setImageUrl } from "./image-urls.ts";
+import { bannerImageUrl, prizeImageUrl, setImageUrl } from "./image-urls.ts";
 
 export interface ProgramSummary {
   readonly id: string;
@@ -64,6 +64,8 @@ export interface ProgramPage {
   readonly id: string;
   readonly slug: string;
   readonly name: string;
+  /** The Owner's uploaded banner picture (lib/play/images.ts serves it), or null: the banner card shows the built-in art. */
+  readonly bannerUrl: string | null;
   readonly status: ProgramStatus;
   readonly salesEnd: Date;
   readonly graceDays: number;
@@ -84,8 +86,8 @@ export interface ProgramPage {
  * (play_note_unlocked), so what this view shows open stays open.
  */
 export async function programPage(sql: Sql, playerId: string, slug: string): Promise<ProgramPage | null> {
-  const [program] = await sql<{ id: string; slug: string; name: string; status: ProgramStatus; sales_end_at: Date; grace_days: number; first_paid_at: Date }[]>`
-    SELECT p.id, p.slug, p.name, p.status::text AS status, p.sales_end_at, p.grace_days, pp.first_paid_at
+  const [program] = await sql<{ id: string; slug: string; name: string; banner_upload_id: string | null; status: ProgramStatus; sales_end_at: Date; grace_days: number; first_paid_at: Date }[]>`
+    SELECT p.id, p.slug, p.name, p.banner_upload_id, p.status::text AS status, p.sales_end_at, p.grace_days, pp.first_paid_at
       FROM public.programs p
       JOIN public.player_programs pp ON pp.program_id = p.id AND pp.player_id = ${playerId} AND pp.eligible
      WHERE p.slug = ${slug} AND p.status <> 'draft'`;
@@ -110,6 +112,7 @@ export async function programPage(sql: Sql, playerId: string, slug: string): Pro
     id: program.id,
     slug: program.slug,
     name: program.name,
+    bannerUrl: program.banner_upload_id === null ? null : bannerImageUrl(program.id, program.banner_upload_id),
     status: program.status,
     salesEnd: program.sales_end_at,
     graceDays: program.grace_days,

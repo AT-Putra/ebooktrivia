@@ -28,7 +28,7 @@
     "you": "Kamu",
     "gap": "Peringkat di antara 10 besar dan kamu tidak ditampilkan",
     "captionTop": "10 pemain teratas dan peringkatmu",
-    "rankMedal": "Juara {n}",
+    "rankPrize": "Peringkat {n}, hadiah {prize}",
     "captionTopN": "{n} pemain teratas dan peringkatmu",
     "empty": "Belum ada pemain di papan peringkat.",
     "notPlayed": "Belum bermain",
@@ -51,9 +51,9 @@
       "gold": "Juara 1",
       "silver": "Juara 2",
       "bronze": "Juara 3",
-      "salesEndsIn": "Penjualan berakhir dalam",
-      "graceEndsIn": "Masa bermain berakhir dalam",
-      "prizeArt": "Ilustrasi hadiah utama"
+      "quizEndsIn": "Kuis ditutup dalam",
+      "deadline": "Batas akhir: {date} pukul {time} WIB",
+      "days": "hari"
     },
     "profile": {
       "title": "Profil Saya",

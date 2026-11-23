@@ -60,6 +60,7 @@ export default async function TriviaProgramPage({ params }: PageProps) {
           <LiveLeaderboard
             key={page.id}
             programId={page.id}
+            tiers={page.tiers.map(({ rankFrom, rankTo, name, valueIdr }) => ({ rankFrom, rankTo, name, valueIdr }))}
             initial={{
               top: top.rows.map((r) => ({ rank: r.rank, name: r.name, score: r.score, totalMs: r.totalMs })),
               me: { rank: me.rank, name: me.name, score: me.score, totalMs: me.totalMs, ranked: me.ranked },

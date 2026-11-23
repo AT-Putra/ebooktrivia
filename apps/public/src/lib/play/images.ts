@@ -1,16 +1,16 @@
 // The pictures the Owner uploads for the play pages (GET play.<DOMAIN>/api/v1/play/img/...; URLs in ./image-urls.ts):
-// a set's thumbnail and a prize tier's image. The admin console stores them as WebP (the upload policy re-encodes every
-// image) in <data dir>/images/<upload id>.webp together with a smaller DISPLAY COPY images/<upload id>.display.webp
-// (@ebooktrivia/core content-images.ts: thumbnails fit 480 x 600, prize images 256 x 256), which is what is served; an
+// a set's thumbnail, a prize tier's image and a program's banner. The admin console stores them as WebP (the upload policy
+// re-encodes every image) in <data dir>/images/<upload id>.webp together with a smaller DISPLAY COPY images/<upload id>.display.webp
+// (@ebooktrivia/core content-images.ts: thumbnails fit 480 x 600, prize images 256 x 256, banners 1344 x 448), which is what is served; an
 // image without a display copy (not backfilled yet) is served in its original size, with a warning in the log.
 // /srv/data/images is mounted read-only here (infra/quadlet/public@.container). A QUESTION's image is NOT served at all (it
 // is stored in question-images/, which this app does not mount, and public_rw cannot read questions.image_upload_id):
 // a picture is a part of the question and may not be readable before the question is served.
 //
-//   set/{setId}/{uploadId}.webp, prize/{tierId}/{uploadId}.webp   PUBLIC (no session: the grid and banner ask for dozens at once,
-//       and a thumbnail or a prize picture is what the Owner shows on the sales page too), but only through the owning row: the
-//       URL names the set (or tier) AND the upload id, which must be that row's own thumbnail / image, and the set's program must
-//       not be a draft (published or later). An upload id alone is never a path: no arbitrary id, no other upload kind, no
+//   set/{setId}/{uploadId}.webp, prize/{tierId}/{uploadId}.webp, banner/{programId}/{uploadId}.webp   PUBLIC (no session: the grid and
+//       banner ask for dozens at once, and a thumbnail or a prize picture is what the Owner shows on the sales page too), but only
+//       through the owning row: the URL names the set (or tier, or program) AND the upload id, which must be that row's own thumbnail /
+//       image / banner, and the program (the set's or tier's own, or the program itself) must not be a draft (published or later). An upload id alone is never a path: no arbitrary id, no other upload kind, no
 //       question image. Immutable for a year: replacing the image changes the upload id, so the URL.
 //
 // Every refusal is the same bare 404 with no detail (an unknown id, a draft program, a question image, another upload, a file
@@ -39,7 +39,9 @@ import { PLAY_LIMITS } from "./limits.ts";
 export type ImageDeps = Pick<PlayDeps, "sql" | "valkey" | "log" | "dataDir">;
 
 const UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
-const PATH = new RegExp(`^${IMAGE_PATH_PREFIX}/(set|prize)/(${UUID})/(${UUID})\\.webp$`);
+const PATH = new RegExp(`^${IMAGE_PATH_PREFIX}/(set|prize|banner)/(${UUID})/(${UUID})\\.webp$`);
+
+export type ImageKind = "set" | "prize" | "banner";
 
 export interface ImageMissLimit {
   /** Cache misses per client (an IPv6 /64 or an IPv4 address) per window. */
@@ -71,7 +73,7 @@ const bare = (status: number, extra: Record<string, string> = {}): Response => n
 const notFound = (): Response => bare(404);
 
 /** The upload the owning row points at, only for a program that is not a draft and an image the upload policy made; null otherwise. */
-async function ownedImagePath(sql: Sql, kind: "set" | "prize", ownerId: string, uploadId: string): Promise<string | null> {
+async function ownedImagePath(sql: Sql, kind: ImageKind, ownerId: string, uploadId: string): Promise<string | null> {
   const [row] =
     kind === "set"
       ? await sql<{ storage_path: string }[]>`
@@ -80,13 +82,19 @@ async function ownedImagePath(sql: Sql, kind: "set" | "prize", ownerId: string, 
             JOIN public.programs p ON p.id = s.program_id
             JOIN public.uploads u ON u.id = s.thumbnail_upload_id
            WHERE s.id = ${ownerId} AND s.thumbnail_upload_id = ${uploadId} AND p.status <> 'draft' AND u.kind = 'image' AND u.content_type = 'image/webp'`
-      : await sql<{ storage_path: string }[]>`
+      : kind === "prize"
+        ? await sql<{ storage_path: string }[]>`
           SELECT u.storage_path
             FROM public.prize_tiers t
             JOIN public.programs p ON p.id = t.program_id
             JOIN public.uploads u ON u.id = t.image_upload_id
-           WHERE t.id = ${ownerId} AND t.image_upload_id = ${uploadId} AND p.status <> 'draft' AND u.kind = 'image' AND u.content_type = 'image/webp'`;
-  // The path of a thumbnail or prize image and no other (a question image's is question-images/..., never served here).
+           WHERE t.id = ${ownerId} AND t.image_upload_id = ${uploadId} AND p.status <> 'draft' AND u.kind = 'image' AND u.content_type = 'image/webp'`
+        : await sql<{ storage_path: string }[]>`
+          SELECT u.storage_path
+            FROM public.programs p
+            JOIN public.uploads u ON u.id = p.banner_upload_id
+           WHERE p.id = ${ownerId} AND p.banner_upload_id = ${uploadId} AND p.status <> 'draft' AND u.kind = 'image' AND u.content_type = 'image/webp'`;
+  // The path of a thumbnail, prize image or banner and no other (a question image's is question-images/..., never served here).
   return row !== undefined && isPublicImagePath(uploadId, row.storage_path) ? row.storage_path : null;
 }
 
@@ -134,8 +142,8 @@ async function missLimit(deps: ImageDeps, request: Request, limits: ImageMissLim
   }
 }
 
-/** The public pictures of a set (its thumbnail) or of a prize tier, for programs that are not drafts. */
-export function ownedImageHandler(kind: "set" | "prize", cache: ImageCache = imageCache, limits: ImageMissLimit = IMAGE_MISS_LIMIT) {
+/** The public pictures of a set (its thumbnail), of a prize tier or of a program (its banner), for programs that are not drafts. */
+export function ownedImageHandler(kind: ImageKind, cache: ImageCache = imageCache, limits: ImageMissLimit = IMAGE_MISS_LIMIT) {
   const warned = new Set<string>();
   return async (deps: ImageDeps, request: Request): Promise<Response> => {
     const match = PATH.exec(new URL(request.url).pathname);
@@ -164,3 +172,4 @@ export function ownedImageHandler(kind: "set" | "prize", cache: ImageCache = ima
 
 export const handleSetImage = ownedImageHandler("set");
 export const handlePrizeImage = ownedImageHandler("prize");
+export const handleBannerImage = ownedImageHandler("banner");

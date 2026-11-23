@@ -1,4 +1,4 @@
-// Content images (US-018): a question's image, a trivia set's thumbnail, a prize tier's image.
+// Content images (US-018): a question's image, a trivia set's thumbnail, a prize tier's image, a program's banner.
 //
 // The upload policy (@ebooktrivia/uploads checkUpload, kind "image") decides from the BYTES: magic
 // bytes (JPEG, PNG or WebP; SVG refused outside landing-page ZIPs), the declared name and type must
@@ -12,12 +12,13 @@
 // no sharp, so pages and actions never do).
 //
 // Storage follows the ebook PDFs (lib/settings/uploads.ts), in the directory of the image's purpose
-// (@ebooktrivia/core content-images.ts): a set's thumbnail or a prize tier's image is stored as
+// (@ebooktrivia/core content-images.ts): a set's thumbnail, a prize tier's image or a program's banner is stored as
 // <ADMIN_DATA_DIR>/images/<upload id>.webp together with its DISPLAY COPY images/<upload id>.display.webp (a
-// smaller WebP: thumbnails fit 480 x 600, prize images 256 x 256), which is what the play pages load; a
+// smaller WebP: thumbnails fit 480 x 600, prize images 256 x 256, banners 1344 x 448), which is what the play pages load; a
 // QUESTION's image is stored as question-images/<upload id>.webp and nothing else. Written exclusively ("wx")
 // before the transaction that inserts the uploads row and links it, and removed again if that transaction
-// fails. The admin app never serves a file: the public app serves the two shown kinds to players on the play
+// fails. The admin app never serves a file (a program's banner preview is embedded in the page by lib/settings/image-preview.ts): the
+// public app serves the three shown kinds (set thumbnails, prize images, program banners) to players on the play
 // origin (apps/public lib/play/images.ts, through the row that owns the image, with nosniff), from a read-only
 // mount of <data dir>/images; question-images/ is not mounted there, so a question's picture is not readable
 // by the public app at all (question images await an encrypted, database-gated design before players see them).

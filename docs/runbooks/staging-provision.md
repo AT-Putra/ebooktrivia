@@ -218,13 +218,13 @@ sudo journalctl CONTAINER_NAME=caddy -o cat | grep remote_ip | tail -3
 - **The client-ip probe did not stop** (`client-ip-probe.sh stop` failed half-way): `sudo runuser -u ebt -- rm -f /home/ebt/.config/containers/systemd/public@b.container.d/90-client-ip-probe.conf`, `sudo rm -rf /etc/ebooktrivia/probe`, `sudo $A systemctl --user daemon-reload`, `sudo $A systemctl --user restart public@b.service`. host-check fails while the drop-in exists.
 - **Undo a provisioning run:** it only adds files under `/etc` and the app user's home and changes firewalld, sshd and SELinux settings; the lockout steps above undo the access changes. Uninstalling the packages is not needed for a retry: every step is idempotent.
 
-## Content images (set thumbnails, prize images, question images)
+## Content images (set thumbnails, prize images, program banners, question images)
 
 The Owner's pictures live under `/srv/data` (the admin app writes them; `@ebooktrivia/core` `content-images.ts` names every path):
 
 | What | Stored as | Who reads it |
 |---|---|---|
-| Set thumbnail, prize image | `images/<upload id>.webp` and its **display copy** `images/<upload id>.display.webp` (thumbnails fit 480 x 600, prize images 256 x 256, made at upload) | the public app, read-only mount of `/srv/data/images`: `play.<DOMAIN>/api/v1/play/img/set/<set>/<upload>.webp` and `.../prize/<tier>/<upload>.webp`, display copy first, the original while a copy is missing (log `display_missing`) |
+| Set thumbnail, prize image, program banner | `images/<upload id>.webp` and its **display copy** `images/<upload id>.display.webp` (thumbnails fit 480 x 600, prize images 256 x 256, banners 1344 x 448, made at upload) | the public app, read-only mount of `/srv/data/images`: `play.<DOMAIN>/api/v1/play/img/set/<set>/<upload>.webp`, `.../prize/<tier>/<upload>.webp` and `.../banner/<program>/<upload>.webp`, display copy first, the original while a copy is missing (log `display_missing`) |
 | Question image | `question-images/<upload id>.webp` only | nobody: the directory is **not mounted** into the public app, and question images are not shown to players (a picture is part of the question; showing one awaits an encrypted, database-gated design) |
 
 The route answers a bare 404 for anything else (not the row's own image, a draft program, a question image, a link, a missing file), caches the lookup in-process (2000 entries, 2 minutes, nothing negative),
@@ -235,10 +235,12 @@ counts only cache misses per client (`play:img:ip:<bucket>`, 300 a minute, faili
 **With the CI deploy** ([deploy.md](deploy.md)) instead, first check that nothing has to be moved out of `images/` (otherwise the new public instances would start with a mount that still holds images players are not shown, until the move): build the CLI image (`sudo infra/provision/build-images.sh admin-cli`), then
 
 ```sh
-sudo $A podman exec -u postgres postgres psql -X -At -d ebooktrivia -c "SELECT count(*) FROM uploads u WHERE u.kind = 'image' AND u.storage_path = 'images/' || u.id || '.webp' AND NOT EXISTS (SELECT 1 FROM trivia_sets s WHERE s.thumbnail_upload_id = u.id) AND NOT EXISTS (SELECT 1 FROM prize_tiers t WHERE t.image_upload_id = u.id)"
+sudo $A podman exec -u postgres postgres psql -X -At -d ebooktrivia -c "SELECT count(*) FROM uploads u WHERE u.kind = 'image' AND u.storage_path = 'images/' || u.id || '.webp' AND NOT EXISTS (SELECT 1 FROM trivia_sets s WHERE s.thumbnail_upload_id = u.id) AND NOT EXISTS (SELECT 1 FROM prize_tiers t WHERE t.image_upload_id = u.id) AND NOT EXISTS (SELECT 1 FROM programs p WHERE p.banner_upload_id = u.id)"
 ```
 
 and `cli move-question-images --dry-run` (the `cli` function of step 4, in a stop/start window of `admin.service`). If the count is not 0, or the dry run reports anything (a move, a `damaged`, a `stray`, a `shared`), **use the manual order below**. When both are clean: run step 1 before the deploy (it installs the quadlet and the directories; the deploy builds, migrates and restarts), and step 4's `backfill-display` after it (stop admin, run, start admin); until then the play pages serve the originals (log `display_missing`, once per upload and instance).
+
+**On the deploy that brings migration 0025 (program banners).** The count above and `cli move-question-images` read `programs.banner_upload_id`, the column 0025 adds, so run `migrate.service` FIRST (`sudo $A systemctl --user start migrate.service`, from the `worker` image of that release), and only then the count and the dry run, with an `admin-cli` image built from that same release. Never run `move-question-images` from an `admin-cli` image older than the release that brings banners: it does not know that a banner is shown to players and would move it out of `images/` (the play page then shows the built-in picture until the Owner uploads it again). A banner needs no backfill when it was uploaded after this release (the admin writes its display copy at upload); `backfill-display` covers any other.
 
 1. **`sudo infra/provision/provision.sh`** from the new checkout: creates `/srv/data/images` and `/srv/data/question-images` (750, the app user), writes the new `public@.container` (a read-only `/srv/data/images` mount), runs `daemon-reload`, prints `restart needed: public@a.service public@b.service`. Do not restart yet.
 2. **Build the images**, the `worker` one first because `migrate` runs from it and carries `grants.sql`: `sudo infra/provision/build-images.sh worker public admin admin-cli`.
@@ -251,7 +253,7 @@ and `cli move-question-images --dry-run` (the `cli` function of step 4, in a sto
    cli() { sudo $A podman run --rm --network ebt-data:ip=10.89.51.13 --userns=keep-id:uid=1000,gid=1000 -v /srv/data:/srv/data:z \
      --read-only --tmpfs /tmp --cap-drop=all --security-opt=no-new-privileges --memory=600m \
      --env-file /etc/ebooktrivia/admin.env --entrypoint node localhost/ebooktrivia/admin-cli:current apps/admin/src/cli/images.ts "$@"; }
-   cli backfill-display --dry-run && cli backfill-display      # the display copy of every set thumbnail and prize image (diet90: 90 + 2)
+   cli backfill-display --dry-run && cli backfill-display      # the display copy of every set thumbnail, prize image and program banner (diet90: 90 + 2 + banners)
    cli move-question-images --dry-run && cli move-question-images   # every image players are not shown (question images, replaced thumbnails, orphans) out of images/; staging: none expected
    ```
 

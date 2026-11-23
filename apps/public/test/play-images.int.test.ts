@@ -13,8 +13,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, inject, it } from "vitest";
 import { createPublicSql } from "../src/lib/db.ts";
-import { createImageCache, type ImageCache } from "../src/lib/play/image-cache.ts";
-import { prizeImageUrl, setImageUrl } from "../src/lib/play/image-urls.ts";
+import { createImageCache, IMAGE_CACHE_TTL_MS, type ImageCache } from "../src/lib/play/image-cache.ts";
+import { bannerImageUrl, prizeImageUrl, setImageUrl } from "../src/lib/play/image-urls.ts";
 import { IMAGE_MISS_LIMIT, type ImageDeps, ownedImageHandler } from "../src/lib/play/images.ts";
 import type { Valkey } from "../src/lib/valkey.ts";
 import { requireOrSkip } from "./capabilities.ts";
@@ -33,6 +33,7 @@ const logs = captureLog();
 const deps = (overrides: Partial<ImageDeps> = {}): ImageDeps => ({ sql: publicSql, valkey, log: logs.log, dataDir, ...overrides });
 const setHandler = (cache: ImageCache = createImageCache()) => ownedImageHandler("set", cache);
 const prizeHandler = (cache: ImageCache = createImageCache()) => ownedImageHandler("prize", cache);
+const bannerHandler = (cache: ImageCache = createImageCache()) => ownedImageHandler("banner", cache);
 
 interface Stored {
   readonly id: string;
@@ -62,10 +63,11 @@ interface Content {
   readonly thumbnail: Stored;
   readonly tierId: string;
   readonly prize: Stored;
+  readonly banner: Stored;
   readonly questionImage: Stored;
 }
 
-/** A program (`status`, on sale now) with a set that has a thumbnail, a prize tier with an image and a question with its own picture. */
+/** A program (`status`, on sale now) with a banner, a set that has a thumbnail, a prize tier with an image and a question with its own picture. */
 async function program(status: string): Promise<Content> {
   const product = await one(root<{ id: string }[]>`INSERT INTO products (title, price_idr) VALUES (${`Ebook ${suffix()}`}, 49000) RETURNING id`);
   const p = await one(root<{ id: string }[]>`
@@ -73,6 +75,8 @@ async function program(status: string): Promise<Content> {
     VALUES (${product.id}, ${`prog-${suffix()}`}, 'Program', ${status === "draft" ? "draft" : "published"}, now() - interval '1 day', now() + interval '30 days', 30) RETURNING id`);
   const thumbnail = await upload();
   const prize = await upload();
+  const banner = await upload();
+  await root`UPDATE programs SET banner_upload_id = ${banner.id} WHERE id = ${p.id}`;
   // A question's picture is stored where the admin app puts it (question-images/), not under images/.
   const questionImageId = randomUUID();
   const questionBytes = Buffer.concat([Buffer.from("RIFF"), randomBytes(512), Buffer.from("WEBP")]);
@@ -85,7 +89,7 @@ async function program(status: string): Promise<Content> {
     INSERT INTO prize_tiers (program_id, rank_from, rank_to, name, value_idr, image_upload_id) VALUES (${p.id}, 1, 1, 'Juara 1', 1000000, ${prize.id}) RETURNING id`);
   await root`INSERT INTO questions (set_id, position, prompt, points, timer_seconds, image_upload_id) VALUES (${set.id}, 1, 'Soal?', 10, 20, ${questionImageId})`;
   if (status !== "draft" && status !== "published") await root`UPDATE programs SET status = ${status} WHERE id = ${p.id}`;
-  return { programId: p.id, setId: set.id, thumbnail, tierId: tier.id, prize, questionImage: { id: questionImageId, original: questionBytes, display: questionBytes } };
+  return { programId: p.id, setId: set.id, thumbnail, tierId: tier.id, prize, banner, questionImage: { id: questionImageId, original: questionBytes, display: questionBytes } };
 }
 
 const get = (path: string, headers: Record<string, string> = {}, method = "GET"): Request => new Request(`https://play.example.test${path}`, { method, headers: { "x-forwarded-for": freshIp(), ...headers } });
@@ -294,6 +298,162 @@ describe("a set's thumbnail and a prize tier's image (public)", () => {
     await symlink(join(dataDir, `question-images/${content.questionImage.id}.webp`), join(dataDir, `images/${other.id}.webp`));
     await root`UPDATE trivia_sets SET thumbnail_upload_id = ${other.id} WHERE id = ${content.setId}`;
     await expectBare404(await setHandler()(deps(), get(setImageUrl(content.setId, other.id))));
+  });
+});
+
+describe("a program's banner (public)", () => {
+  let published: Content;
+  beforeAll(async () => {
+    published = await program("published");
+  });
+  const bannerUrl = (content: Content = published): string => bannerImageUrl(content.programId, content.banner.id);
+
+  it("serves the DISPLAY copy through the owning program: a fixed image/webp, nosniff, immutable, same-origin, never a cookie, and answers a HEAD", async () => {
+    const response = await bannerHandler()(deps(), get(bannerUrl()));
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("image/webp");
+    expect(response.headers.get("content-length")).toBe(String(published.banner.display.length));
+    expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(response.headers.get("cache-control")).toBe("public, max-age=31536000, immutable");
+    expect(response.headers.get("content-security-policy")).toBe("default-src 'none'; sandbox");
+    expect(response.headers.get("cross-origin-resource-policy")).toBe("same-origin");
+    expect(response.headers.get("set-cookie")).toBeNull();
+    const body = await bodyOf(response);
+    expect(body.equals(published.banner.display)).toBe(true);
+    expect(body.equals(published.banner.original)).toBe(false);
+    const head = await bannerHandler()(deps(), get(bannerUrl(), {}, "HEAD"));
+    expect(head.status).toBe(200);
+    expect(head.headers.get("content-length")).toBe(String(published.banner.display.length));
+    expect((await bodyOf(head)).length).toBe(0);
+    // No session is needed.
+    expect((await bannerHandler()(deps(), get(bannerUrl(), { cookie: "__Host-play_session=garbage" }))).status).toBe(200);
+  });
+
+  it("serves the original (saying so in the log, ids and paths never) while there is no display copy yet", async () => {
+    const lines = captureLog();
+    const content = await program("published");
+    const bare = await upload({ display: false });
+    await root`UPDATE programs SET banner_upload_id = ${bare.id} WHERE id = ${content.programId}`;
+    const response = await bannerHandler()(deps({ log: lines.log }), get(bannerImageUrl(content.programId, bare.id)));
+    expect(response.status).toBe(200);
+    expect((await bodyOf(response)).equals(bare.original)).toBe(true);
+    expect(lines.lines.join("\n")).toContain("display_missing");
+    expect(lines.lines.join("\n")).not.toContain(bare.id);
+    expect(lines.lines.join("\n")).not.toContain(dataDir);
+  });
+
+  it("serves a program that is published or later, and answers 404 for a draft until it is published (the refusal is not remembered)", async () => {
+    const later = await program("awaiting_confirmation");
+    expect((await bannerHandler()(deps(), get(bannerUrl(later)))).status).toBe(200);
+    const draft = await program("draft");
+    const handler = bannerHandler();
+    await expectBare404(await handler(deps(), get(bannerUrl(draft))));
+    await root`UPDATE programs SET status = 'published' WHERE id = ${draft.programId}`;
+    expect((await handler(deps(), get(bannerUrl(draft)))).status).toBe(200);
+  });
+
+  it("is 404 for any upload that is not THIS program's banner: another program's banner, a set thumbnail, a prize image, a question image, a random id", async () => {
+    const other = await program("published");
+    const handler = bannerHandler();
+    for (const uploadId of [other.banner.id, published.thumbnail.id, published.prize.id, published.questionImage.id, randomUUID()]) {
+      await expectBare404(await handler(deps(), get(bannerImageUrl(published.programId, uploadId))));
+    }
+    // An unknown program, another program's id with this banner's upload, and a set's or tier's id (no program of that id).
+    for (const owner of [randomUUID(), other.programId, published.setId, published.tierId]) {
+      await expectBare404(await handler(deps(), get(bannerImageUrl(owner, published.banner.id))));
+    }
+    // The banner's own URL on the set or prize route (and theirs on the banner route) is no path of that kind.
+    await expectBare404(await setHandler()(deps(), get(bannerUrl())));
+    await expectBare404(await prizeHandler()(deps(), get(bannerUrl())));
+    await expectBare404(await handler(deps(), get(setImageUrl(published.setId, published.thumbnail.id))));
+    await expectBare404(await handler(deps(), get(prizeImageUrl(published.tierId, published.prize.id))));
+    // The banner's upload id is no set thumbnail or prize image of this program's rows.
+    await expectBare404(await setHandler()(deps(), get(setImageUrl(published.setId, published.banner.id))));
+    await expectBare404(await prizeHandler()(deps(), get(prizeImageUrl(published.tierId, published.banner.id))));
+  });
+
+  it("is 404 for a question's image even if it was made the program's banner (its path is question-images/..., never served)", async () => {
+    const content = await program("published");
+    await root`UPDATE programs SET banner_upload_id = ${content.questionImage.id} WHERE id = ${content.programId}`;
+    await expectBare404(await bannerHandler()(deps(), get(bannerImageUrl(content.programId, content.questionImage.id))));
+  });
+
+  it("is 404 for a banner that is not an image the upload policy made (another kind or type, a path that is not its own id's, outside images/) and for a file that is missing", async () => {
+    const content = await program("published");
+    const refused = [
+      await upload({ kind: "pdf" }),
+      await upload({ contentType: "image/png" }),
+      await upload({ path: `images/${randomUUID()}.webp` }),
+      await upload({ path: `question-images/${randomUUID()}.webp` }),
+      await upload({ path: `deliverables/${randomUUID()}.webp` }),
+      await upload({ onDisk: false }),
+    ];
+    for (const u of refused) {
+      await root`UPDATE programs SET banner_upload_id = ${u.id} WHERE id = ${content.programId}`;
+      await expectBare404(await bannerHandler()(deps(), get(bannerImageUrl(content.programId, u.id))));
+    }
+    await root`UPDATE programs SET banner_upload_id = ${content.banner.id} WHERE id = ${content.programId}`;
+    expect((await bannerHandler()(deps(), get(bannerUrl(content)))).status).toBe(200);
+  });
+
+  it("is 404 for a malformed path in any spelling: no traversal, no other extension, no query-chosen file, no non-canonical uuid", async () => {
+    const good = bannerUrl();
+    const upper = (id: string) => id.toUpperCase();
+    const paths = [
+      good.replace(".webp", ".png"),
+      good.replace(".webp", ".display.webp"),
+      good.replace(".webp", ""),
+      `${good}/extra`,
+      good.toUpperCase(),
+      bannerImageUrl(upper(published.programId), published.banner.id),
+      bannerImageUrl(published.programId, upper(published.banner.id)),
+      bannerImageUrl(published.programId.replaceAll("-", ""), published.banner.id),
+      bannerImageUrl(`{${published.programId}}`, published.banner.id),
+      bannerImageUrl(published.programId, ` ${published.banner.id}`),
+      good.replace(published.banner.id, "..%2F..%2Fetc%2Fpasswd"),
+      good.replace(published.banner.id, "../../etc/passwd"),
+      `/api/v1/play/img/banner/${published.programId}/../${published.banner.id}.webp`,
+      `/api/v1/play/img/banner/${published.programId}%2F${published.banner.id}.webp`,
+      "/api/v1/play/img/banner/",
+      "/api/v1/play/img/banner/x/y.webp",
+      `/api/v1/play/img/banner/${published.banner.id}.webp`,
+    ];
+    for (const path of paths) await expectBare404(await bannerHandler()(deps(), get(path)));
+    // A query string neither changes the file nor opens another.
+    const withQuery = await bannerHandler()(deps(), get(`${good}?path=../../etc/passwd&file=x`));
+    expect((await bodyOf(withQuery)).equals(published.banner.display)).toBe(true);
+  });
+
+  it("answers a replaced banner's old URL with 404 and the new URL with the new file once the cache lapses (the URL is the version), and a removed banner's URL with 404 the same way", async () => {
+    // Its own program, one handler and one clock for all of it: nothing here touches the shared "published" content.
+    const own = await program("published");
+    let now = 0;
+    const handler = bannerHandler(createImageCache({ now: () => now }));
+    const oldUrl = bannerUrl(own);
+    expect((await handler(deps(), get(oldUrl))).status).toBe(200);
+    const replaced = await upload();
+    const newUrl = bannerImageUrl(own.programId, replaced.id);
+    await root`UPDATE programs SET banner_upload_id = ${replaced.id} WHERE id = ${own.programId}`;
+    // Within the cache's lifetime the old URL still answers from it (the documented staleness); the new URL is a lookup and is served.
+    expect((await handler(deps(), get(oldUrl))).status).toBe(200);
+    expect((await bodyOf(await handler(deps(), get(newUrl)))).equals(replaced.display)).toBe(true);
+    // The clock passes the lifetime: the old URL is asked of the database again and refused, the new one still allowed.
+    now = IMAGE_CACHE_TTL_MS;
+    await expectBare404(await handler(deps(), get(oldUrl)));
+    expect((await bodyOf(await handler(deps(), get(newUrl)))).equals(replaced.display)).toBe(true);
+    // Removed: still served until its entry lapses, then refused.
+    await root`UPDATE programs SET banner_upload_id = NULL WHERE id = ${own.programId}`;
+    expect((await handler(deps(), get(newUrl))).status).toBe(200);
+    now = 2 * IMAGE_CACHE_TTL_MS;
+    await expectBare404(await handler(deps(), get(newUrl)));
+  });
+
+  it("keeps its cache entries apart from a set's and a prize's (the key names the kind), so one kind's hit never answers another's URL", async () => {
+    const cache = createImageCache();
+    expect((await bannerHandler(cache)(deps(), get(bannerUrl()))).status).toBe(200);
+    // Same cache, the set handler and the prize handler: this banner's ids are no set or prize of that kind.
+    await expectBare404(await setHandler(cache)(deps(), get(setImageUrl(published.programId, published.banner.id))));
+    await expectBare404(await prizeHandler(cache)(deps(), get(prizeImageUrl(published.programId, published.banner.id))));
   });
 });
 

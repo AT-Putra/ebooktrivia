@@ -8,14 +8,14 @@ import { Badge } from "@ebooktrivia/ui/components/badge";
 import { Button } from "@ebooktrivia/ui/components/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@ebooktrivia/ui/components/table";
 import { cn } from "@ebooktrivia/ui/lib/utils";
-import { ArrowClockwiseIcon, CircleNotchIcon, MedalIcon, RankingIcon } from "@phosphor-icons/react";
+import { ArrowClockwiseIcon, CircleNotchIcon, RankingIcon } from "@phosphor-icons/react";
 import { useEffect, useRef, useState } from "react";
 import { formatMs, formatNumber } from "../../../lib/format.ts";
+import { collapsedRows } from "../../../lib/play/prize-ranks.ts";
 import { t } from "../../../lib/t.ts";
+import { type LeaderboardTier, RankCell } from "../rank-cell.tsx";
 import { CardHeading, TriviaCard } from "../trivia-card.tsx";
 
-const MEDAL_TONE: Record<number, string> = { 1: "text-accent", 2: "text-muted-foreground", 3: "text-warning" };
-const COLLAPSED_ROWS = 5;
 /** The button rests this long after a refresh (the server limits refreshes too). */
 const COOLDOWN_MS = 5_000;
 
@@ -62,7 +62,12 @@ function parseBoard(body: Readonly<Record<string, unknown>>): BoardData | null {
   };
 }
 
-export function LiveLeaderboard({ programId, initial }: { readonly programId: string; readonly initial: BoardData }) {
+/**
+ * `tiers`: the program's prize tiers (the page already has them). They decide how many rows a phone shows before "Lihat semua"
+ * (every winner, at least 5) and which ranks wear a medal, in their tier's colour (lib/play/prize-ranks.ts).
+ */
+export function LiveLeaderboard({ programId, initial, tiers }: { readonly programId: string; readonly initial: BoardData; readonly tiers: readonly LeaderboardTier[] }) {
+  const collapsed = collapsedRows(tiers);
   const [data, setData] = useState(initial);
   const [receivedAt, setReceivedAt] = useState(() => Date.now());
   const [now, setNow] = useState(() => Date.now());
@@ -153,19 +158,14 @@ export function LiveLeaderboard({ programId, initial }: { readonly programId: st
           </TableHeader>
           <TableBody>
             {data.top.map((r, i) => {
-              const medal = MEDAL_TONE[r.rank];
               const mine = r.rank === data.me.rank;
               return (
                 <TableRow
                   key={r.rank}
-                  className={cn(i >= COLLAPSED_ROWS && !expanded && "hidden md:table-row", mine && "bg-muted shadow-[inset_4px_0_0_var(--color-primary)] hover:bg-muted")}
+                  className={cn(i >= collapsed && !expanded && !mine && "hidden md:table-row", mine && "bg-muted shadow-[inset_4px_0_0_var(--color-primary)] hover:bg-muted")}
                 >
                   <TableCell className="h-11 font-heading text-lg">
-                    <span className="flex items-center gap-1">
-                      {medal === undefined ? null : <MedalIcon aria-hidden="true" size={20} weight="fill" className={medal} />}
-                      {medal === undefined ? null : <span className="sr-only">{t("leaderboard.rankMedal", { n: r.rank })}</span>}
-                      <span aria-hidden={medal === undefined ? undefined : "true"}>{r.rank}</span>
-                    </span>
+                    <RankCell rank={r.rank} tiers={tiers} />
                   </TableCell>
                   <TableCell className="h-11 font-medium break-words">
                     <span className="flex flex-wrap items-center gap-2">
@@ -187,7 +187,9 @@ export function LiveLeaderboard({ programId, initial }: { readonly programId: st
                   </TableCell>
                 </TableRow>
                 <TableRow className="bg-muted shadow-[inset_4px_0_0_var(--color-primary)] hover:bg-muted">
-                  <TableCell className="h-12 font-heading text-lg">{data.me.rank ?? "-"}</TableCell>
+                  <TableCell className="h-12 font-heading text-lg">
+                    <RankCell rank={data.me.rank} tiers={tiers} />
+                  </TableCell>
                   <TableCell className="h-12 font-semibold">
                     <span className="flex flex-wrap items-center gap-2">
                       {data.me.name}
@@ -204,7 +206,7 @@ export function LiveLeaderboard({ programId, initial }: { readonly programId: st
         </Table>
       )}
       {data.top.length === 0 ? null : <p className="text-sm text-muted-foreground">{t("leaderboard.penaltyNote")}</p>}
-      {data.top.length > COLLAPSED_ROWS ? (
+      {data.top.length > collapsed ? (
         <Button
           variant="ghost"
           className="md:hidden"

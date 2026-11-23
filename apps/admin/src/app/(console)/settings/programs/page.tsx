@@ -3,12 +3,15 @@ import { LockIcon } from "@phosphor-icons/react/ssr";
 import { Badge } from "@ebooktrivia/ui/components/badge";
 import { Card, CardDescription, CardTitle } from "@ebooktrivia/ui/components/card";
 import { ActionForm } from "../../../../components/settings/action-form.tsx";
-import { PageHeading, SelectField, TextField } from "../../../../components/settings/fields.tsx";
+import { Notice, PageHeading, SelectField, TextField } from "../../../../components/settings/fields.tsx";
+import { UploadFile } from "../../../../components/settings/upload-file.tsx";
 import { requireAdmin } from "../../../../lib/next/require-admin.ts";
 import { getRuntime } from "../../../../lib/next/runtime.ts";
+import { bannerPreviewSrc } from "../../../../lib/settings/image-preview.ts";
+import { leaderboardHint } from "../../../../lib/settings/prizes.ts";
 import { listProducts } from "../../../../lib/settings/products.ts";
 import { graceEndDay, lastSalesDay, listPrograms, type ProgramListRow, wibDay } from "../../../../lib/settings/programs.ts";
-import { cloneProgramAction, createProgramAction, rescheduleProgramAction, setProgramStatusAction, updateProgramAction } from "./actions.ts";
+import { cloneProgramAction, createProgramAction, removeProgramBannerAction, rescheduleProgramAction, setProgramStatusAction, updateProgramAction } from "./actions.ts";
 
 export const metadata: Metadata = { title: "Programs | Admin Console" };
 
@@ -42,8 +45,10 @@ function ProgramFields({ prefix, program, products }: { prefix: string; program?
 /** Owner only: programs (dates, grace, clone), the field lock and the extend-only reschedule. */
 export default async function ProgramsPage() {
   await requireAdmin({ permission: "program.edit" });
-  const { sql } = await getRuntime();
+  const { sql, settings } = await getRuntime();
   const [programs, products] = await Promise.all([listPrograms(sql), listProducts(sql)]);
+  // The picture is embedded in the page, so only programs still in play get one (a finalized program shows "uploaded", without the image).
+  const previews = new Map(await Promise.all(programs.flatMap((p) => (p.bannerUploadId === null || p.status === "finalized" ? [] : [bannerPreviewSrc(settings.dataDir, p.bannerUploadId).then((src) => [p.id, src] as const)]))));
   const productOptions = products.map((p) => ({ value: p.id, label: p.title }));
   return (
     <>
@@ -60,6 +65,8 @@ export default async function ProgramsPage() {
       </Card>
       {programs.map((program) => {
         const locked = program.lockedAt !== null || program.paidOrders > 0;
+        const preview = previews.get(program.id) ?? null;
+        const hint = leaderboardHint(program.leaderboardTopN, program.prizeRanks);
         return (
           <Card key={program.id} data-testid={`program-${program.slug}`}>
             <div className="flex flex-wrap items-center gap-2">
@@ -80,6 +87,41 @@ export default async function ProgramsPage() {
               <input type="hidden" name="programId" value={program.id} />
               <ProgramFields prefix={`edit-${program.id}`} program={program} products={productOptions} />
             </ActionForm>
+            {hint === null ? null : (
+              <Notice tone="warning" testId="program-leaderboard-hint">
+                {hint}
+              </Notice>
+            )}
+            <div className="grid gap-4 border-t pt-4 lg:grid-cols-2" data-testid="program-banner">
+              <div className="flex flex-col gap-2">
+                <p className="text-sm font-medium">Banner program (ditampilkan ke pemain)</p>
+                <p className="text-xs text-muted-foreground">
+                  Gambar lebar dengan rasio 3:1, misalnya 1500 x 500 piksel. Jika bentuknya lain, bagian tengah yang dipakai dan tepinya terpotong. Tanpa gambar, pemain melihat gambar bawaan.
+                </p>
+                {program.bannerUploadId === null ? (
+                  <p className="text-xs text-muted-foreground">Belum ada gambar banner: pemain melihat gambar bawaan.</p>
+                ) : preview === null ? (
+                  <p className="text-xs text-muted-foreground" data-testid="program-banner-set">Gambar banner sudah diunggah (pratinjau tidak tersedia).</p>
+                ) : (
+                  // The same 3:1 box and centred crop as the play page.
+                  <img src={preview} alt="Pratinjau banner program" width={600} height={200} className="aspect-[3/1] w-full max-w-xl rounded-lg border object-cover" data-testid="program-banner-preview" />
+                )}
+              </div>
+              <div className="flex flex-col gap-2">
+                <UploadFile
+                  id={`banner-${program.id}`}
+                  url={`/uploads/image/banner?program=${program.id}`}
+                  label={program.bannerUploadId === null ? "Unggah gambar banner (JPEG, PNG, atau WebP, maks. 2 MB)" : "Ganti gambar banner (JPEG, PNG, atau WebP, maks. 2 MB)"}
+                  accept="image/jpeg,image/png,image/webp"
+                  mode="image"
+                />
+                {program.bannerUploadId === null ? null : (
+                  <ActionForm action={removeProgramBannerAction} submitLabel="Hapus gambar banner" variant="ghost" testId="program-banner-remove">
+                    <input type="hidden" name="programId" value={program.id} />
+                  </ActionForm>
+                )}
+              </div>
+            </div>
             <div className="grid gap-4 border-t pt-4 lg:grid-cols-3">
               <ActionForm action={rescheduleProgramAction} submitLabel="Reschedule" variant="outline" testId="program-reschedule">
                 <p className="text-sm font-medium">Reschedule (extend only)</p>

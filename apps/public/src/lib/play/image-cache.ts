@@ -1,10 +1,10 @@
-// The play origin's image route (./images.ts) remembers WHICH FILE a set thumbnail or prize image is, in-process, so a
+// The play origin's image route (./images.ts) remembers WHICH FILE a set thumbnail, prize image or program banner is, in-process, so a
 // grid of 90 tiles costs one lookup per image per instance per 2 minutes instead of one query per request (each of the
 // two apps/public instances has its own cache, like the leaderboard's: no Valkey key, no invalidation).
 //   - key `${kind}:${ownerId}:${uploadId}` -> the upload's storage path; only what the database allowed is stored, so a
 //     hit is exactly as allowed as the query was, at most IMAGE_CACHE_TTL_MS ago. ACCEPTED STALENESS, up to 120 s per instance:
 //     an Owner can move a published program back to draft while it has no paid orders (the admin's unpublish), and its
-//     thumbnails and prize images stay served from the cache until their entries expire; and a replaced image has a new
+//     thumbnails, prize images and banner stay served from the cache until their entries expire; and a replaced image has a new
 //     upload id, so a stale entry only serves the old file under its old URL for that long. Both are low risk (these are
 //     pictures the Owner showed on the sales page, nothing of a player or a question);
 //   - at most IMAGE_CACHE_MAX entries, the least recently used one leaves first;

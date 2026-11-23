@@ -28,7 +28,7 @@
     "you": "You",
     "gap": "Ranks between the top 10 and you are not shown",
     "captionTop": "Top 10 players and your rank",
-    "rankMedal": "Place {n}",
+    "rankPrize": "Place {n}, prize {prize}",
     "captionTopN": "The top {n} players and your rank",
     "empty": "No player on the leaderboard yet.",
     "notPlayed": "Not played yet",
@@ -51,9 +51,9 @@
       "gold": "1st place",
       "silver": "2nd place",
       "bronze": "3rd place",
-      "salesEndsIn": "Sales end in",
-      "graceEndsIn": "Play window ends in",
-      "prizeArt": "Main prize illustration"
+      "quizEndsIn": "Quiz closes in",
+      "deadline": "Deadline: {date} at {time} WIB",
+      "days": "days"
     },
     "profile": {
       "title": "My Profile",

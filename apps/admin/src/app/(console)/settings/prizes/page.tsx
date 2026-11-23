@@ -6,7 +6,7 @@ import { Notice, PageHeading, TextArea, TextField } from "../../../../components
 import { UploadFile } from "../../../../components/settings/upload-file.tsx";
 import { requireAdmin } from "../../../../lib/next/require-admin.ts";
 import { getRuntime } from "../../../../lib/next/runtime.ts";
-import { listProgramPrizes, MAX_RANK, PRIZES_FINAL, type PrizeTierRow } from "../../../../lib/settings/prizes.ts";
+import { leaderboardHint, listProgramPrizes, MAX_RANK, PRIZES_FINAL, type PrizeTierRow, type ProgramPrizes } from "../../../../lib/settings/prizes.ts";
 import { createPrizeTierAction, deletePrizeTierAction, removePrizeImageAction, updatePrizeTierAction } from "./actions.ts";
 
 export const metadata: Metadata = { title: "Prize tiers | Admin Console" };
@@ -25,6 +25,16 @@ function TierFields({ prefix, tier }: { prefix: string; tier?: PrizeTierRow }) {
         <TextArea id={`${prefix}-description`} name="description" label="Description (optional)" rows={2} defaultValue={tier?.description} maxLength={500} />
       </div>
     </div>
+  );
+}
+
+/** Read-only hint: a leaderboard shorter than the last prize rank would leave some prize winners off it. */
+function LeaderboardHintNotice({ program }: { program: ProgramPrizes }) {
+  const hint = leaderboardHint(program.leaderboardTopN, program.prizeRanks);
+  return hint === null ? null : (
+    <Notice tone="warning" testId="leaderboard-hint">
+      {hint}
+    </Notice>
   );
 }
 
@@ -48,6 +58,7 @@ export default async function PrizesPage() {
             {program.snapshot ? <Badge variant="info">Results final</Badge> : null}
           </div>
           {program.snapshot ? <Notice tone="info">{PRIZES_FINAL}</Notice> : null}
+          <LeaderboardHintNotice program={program} />
           {program.tiers.length === 0 ? <CardDescription>No prize tier yet.</CardDescription> : null}
           {program.tiers.map((tier) => (
             <section key={tier.id} className="flex flex-col gap-3 border-t pt-3" data-testid={`tier-${String(tier.rankFrom)}`}>

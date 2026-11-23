@@ -4,9 +4,10 @@ import { contentImagePath, DISPLAY_BOXES, displayImagePath, isPublicImagePath } 
 const ID = "11111111-1111-4111-8111-111111111111";
 
 describe("content image paths", () => {
-  it("keeps set thumbnails and prize images in images/ and question images in question-images/, named by the upload id", () => {
+  it("keeps set thumbnails, prize images and program banners in images/ and question images in question-images/, named by the upload id", () => {
     expect(contentImagePath("thumbnail", ID)).toBe(`images/${ID}.webp`);
     expect(contentImagePath("prize", ID)).toBe(`images/${ID}.webp`);
+    expect(contentImagePath("banner", ID)).toBe(`images/${ID}.webp`);
     expect(contentImagePath("question", ID)).toBe(`question-images/${ID}.webp`);
   });
 
@@ -30,7 +31,7 @@ describe("content image paths", () => {
     }
   });
 
-  it("boxes a thumbnail at 480 x 600 and a prize image at 256 x 256", () => {
-    expect(DISPLAY_BOXES).toEqual({ thumbnail: { width: 480, height: 600 }, prize: { width: 256, height: 256 } });
+  it("boxes a thumbnail at 480 x 600, a prize image at 256 x 256 and a program banner at 1344 x 448 (3:1)", () => {
+    expect(DISPLAY_BOXES).toEqual({ thumbnail: { width: 480, height: 600 }, prize: { width: 256, height: 256 }, banner: { width: 1344, height: 448 } });
   });
 });

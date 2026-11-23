@@ -15,6 +15,8 @@ import type { AuditChange, FieldKind, Tx } from "../audit.ts";
 import type { Sql } from "../db.ts";
 import { auditedChange } from "./audited.ts";
 import { calendarDate, formValue, InvalidInput, singleLine, slug, uuid, wholeNumber } from "./fields.ts";
+import { insertImageRow, linkImage, type StoredImage } from "./image-link.ts";
+import { PRIZE_RANKS_SQL } from "./prizes.ts";
 
 const DAY_MS = 86_400_000;
 const WIB_OFFSET_MS = 7 * 3_600_000;
@@ -30,6 +32,7 @@ export const PROGRAM_FIELDS: Readonly<Record<string, FieldKind>> = {
   default_points: "value",
   default_timer_seconds: "value",
   leaderboard_top_n: "value",
+  banner_upload_id: "value",
 };
 
 export const LOCKED_MESSAGE =
@@ -100,6 +103,7 @@ interface ProgramRow {
   readonly default_points: number;
   readonly default_timer_seconds: number;
   readonly leaderboard_top_n: number;
+  readonly banner_upload_id: string | null;
   readonly locked: boolean;
 }
 
@@ -141,7 +145,7 @@ const audited = <T>(sql: Sql, mutate: (tx: Tx, audit: (change: AuditChange) => v
 async function lockRow(tx: Tx, id: string): Promise<ProgramRow> {
   const [row] = await tx<ProgramRow[]>`
     SELECT p.id, p.product_id, p.slug, p.name, p.status::text AS status, p.sales_start_at, p.sales_end_at, p.grace_days,
-           p.default_points, p.default_timer_seconds, p.leaderboard_top_n,
+           p.default_points, p.default_timer_seconds, p.leaderboard_top_n, p.banner_upload_id,
            (p.locked_at IS NOT NULL OR EXISTS (SELECT 1 FROM public.orders o WHERE o.program_id = p.id AND o.paid_at IS NOT NULL)) AS locked
       FROM public.programs p WHERE p.id = ${id} FOR UPDATE`;
   if (row === undefined) throw new InvalidInput("This program no longer exists.");
@@ -224,7 +228,7 @@ export async function setProgramStatus(sql: Sql, id: string, status: "draft" | "
 }
 
 /**
- * A new draft program with the source's settings and content (trivia sets, questions, options,
+ * A new draft program with the source's settings and content (banner, trivia sets, questions, options,
  * prize tiers), unlocked, linked by cloned_from_program_id. The source is not changed.
  */
 export async function cloneProgram(sql: Sql, sourceId: string, target: { readonly slug: string; readonly name: string }): Promise<string> {
@@ -232,9 +236,9 @@ export async function cloneProgram(sql: Sql, sourceId: string, target: { readonl
     const source = await lockRow(tx, sourceId);
     const [created] = await tx<{ id: string }[]>`
       INSERT INTO public.programs (product_id, slug, name, status, sales_start_at, sales_end_at, grace_days, default_points,
-                                   default_timer_seconds, leaderboard_top_n, cloned_from_program_id)
+                                   default_timer_seconds, leaderboard_top_n, banner_upload_id, cloned_from_program_id)
       SELECT product_id, ${target.slug}, ${target.name}, 'draft', sales_start_at, sales_end_at, grace_days, default_points,
-             default_timer_seconds, leaderboard_top_n, id
+             default_timer_seconds, leaderboard_top_n, banner_upload_id, id
         FROM public.programs WHERE id = ${sourceId}
       RETURNING id`;
     const id = created?.id ?? "";
@@ -263,11 +267,46 @@ export async function cloneProgram(sql: Sql, sourceId: string, target: { readonl
       entityType: "program",
       entityId: id,
       fields: PROGRAM_FIELDS,
-      after: { ...auditValues(source), slug: target.slug, name: target.name, status: "draft" },
+      // The clone starts with the source's banner (the same upload: a field of the new program, so it is recorded as one).
+      after: { ...auditValues(source), slug: target.slug, name: target.name, status: "draft", banner_upload_id: source.banner_upload_id },
       facts: { cloned_from: sourceId, trivia_sets: sets.count, questions: questions.count, prize_tiers: tiers.count },
     });
     return id;
   });
+}
+
+/** Pre-check before the banner is re-encoded and written (the link checks again): the program exists. */
+export async function checkBannerTarget(sql: Sql, programId: string): Promise<void> {
+  const [row] = await sql`SELECT 1 FROM public.programs WHERE id = ${programId}`;
+  if (row === undefined) throw new InvalidInput("Program ini sudah tidak ada.");
+}
+
+/**
+ * Links a stored image (lib/settings/images.ts storeImage, purpose banner) as the picture the play page's banner card shows
+ * for the program, or clears it (null: the built-in art). Owner only (program.edit, decided by the caller). The picture is
+ * cosmetic, so it may change at any time, also after the first paid order. A replaced or removed image keeps its file and
+ * uploads row (a clone may still use it).
+ */
+export async function setProgramBanner(sql: Sql, adminUserId: string, programId: string, image: StoredImage | null): Promise<void> {
+  const link = () =>
+    audited(sql, async (tx, audit) => {
+      const [current] = await tx<{ banner_upload_id: string | null }[]>`SELECT banner_upload_id FROM public.programs WHERE id = ${programId} FOR UPDATE`;
+      if (current === undefined) throw new InvalidInput("Program ini sudah tidak ada.");
+      if (image === null && current.banner_upload_id === null) throw new InvalidInput("Program ini belum punya gambar banner.");
+      if (image !== null) await insertImageRow(tx, image, adminUserId);
+      const next = image?.uploadId ?? null;
+      await tx`UPDATE public.programs SET banner_upload_id = ${next}, updated_at = clock_timestamp() WHERE id = ${programId}`;
+      audit({
+        action: "program.banner",
+        entityType: "program",
+        entityId: programId,
+        fields: PROGRAM_FIELDS,
+        before: { banner_upload_id: current.banner_upload_id },
+        after: { banner_upload_id: next },
+        ...(image === null ? {} : { facts: { size_bytes: image.sizeBytes } }),
+      });
+    });
+  await (image === null ? link() : linkImage(image, link));
 }
 
 export interface ProgramListRow {
@@ -284,6 +323,9 @@ export interface ProgramListRow {
   readonly defaultTimerSeconds: number;
   readonly leaderboardTopN: number;
   readonly lockedAt: Date | null;
+  readonly bannerUploadId: string | null;
+  /** The highest rank any prize tier covers (0 with none): the leaderboard should show at least this many players. */
+  readonly prizeRanks: number;
   readonly paidOrders: number;
   readonly sets: number;
 }
@@ -293,7 +335,8 @@ export async function listPrograms(sql: Sql): Promise<ProgramListRow[]> {
     SELECT p.id, p.product_id AS "productId", pr.title AS "productTitle", p.slug, p.name, p.status::text AS status,
            p.sales_start_at AS "salesStartAt", p.sales_end_at AS "salesEndAt", p.grace_days AS "graceDays",
            p.default_points AS "defaultPoints", p.default_timer_seconds AS "defaultTimerSeconds",
-           p.leaderboard_top_n AS "leaderboardTopN", p.locked_at AS "lockedAt",
+           p.leaderboard_top_n AS "leaderboardTopN", p.locked_at AS "lockedAt", p.banner_upload_id AS "bannerUploadId",
+           ${PRIZE_RANKS_SQL(sql)} AS "prizeRanks",
            (SELECT count(*)::int FROM public.orders o WHERE o.program_id = p.id AND o.paid_at IS NOT NULL) AS "paidOrders",
            (SELECT count(*)::int FROM public.trivia_sets s WHERE s.program_id = p.id) AS sets
       FROM public.programs p JOIN public.products pr ON pr.id = p.product_id

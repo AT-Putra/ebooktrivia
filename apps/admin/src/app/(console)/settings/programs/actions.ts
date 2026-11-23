@@ -1,11 +1,11 @@
 "use server";
 // Owner only (program.edit / program.reschedule, owner decision 2026-11-18). The field lock and the
 // extend-only reschedule are checked in lib/settings/programs.ts and enforced by the database.
-import { formValue, slug, singleLine, uuid } from "../../../../lib/settings/fields.ts";
+import { formValue, onlyFields, slug, singleLine, uuid } from "../../../../lib/settings/fields.ts";
 import type { SaveState } from "../../../../lib/form-state.ts";
 import { adminAction } from "../../../../lib/next/actions.ts";
 import { saveResult } from "../../../../lib/next/settings-result.ts";
-import { cloneProgram, createProgram, graceDays, parseProgramForm, rescheduleProgram, setProgramStatus, updateProgram } from "../../../../lib/settings/programs.ts";
+import { cloneProgram, createProgram, graceDays, parseProgramForm, rescheduleProgram, setProgramBanner, setProgramStatus, updateProgram } from "../../../../lib/settings/programs.ts";
 
 const PATH = "/settings/programs";
 
@@ -45,5 +45,14 @@ export const cloneProgramAction = adminAction({ permission: "program.edit" }, as
       name: singleLine(formValue(form, "name"), "Enter a name for the copy (up to 120 characters).", { max: 120 }),
     });
     return "Program cloned as a draft.";
+  }),
+);
+
+/** Back to the built-in banner art (the upload itself is /uploads/image/banner, lib/next/content-routes.ts). */
+export const removeProgramBannerAction = adminAction({ permission: "program.edit" }, async ({ rt, admin }, _previous: SaveState, form: FormData): Promise<SaveState> =>
+  saveResult(PATH, async () => {
+    onlyFields(form, ["programId"]);
+    await setProgramBanner(rt.sql, admin.userId, uuid(formValue(form, "programId")), null);
+    return "Gambar banner dihapus.";
   }),
 );

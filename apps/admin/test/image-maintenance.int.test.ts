@@ -88,6 +88,23 @@ describe("backfillDisplayCopies", () => {
     expect(lines.join("\n")).not.toContain(dataDir);
   });
 
+  it("makes the display copy of a program's banner too (1344 x 448, never enlarged), and the thumbnail box wins for an upload both a set and a banner show", async () => {
+    const banner = await upload(1800, 600);
+    const small = await upload(600, 200);
+    const both = await upload(1800, 600);
+    await root`UPDATE programs SET banner_upload_id = ${banner.id} WHERE id = ${(await program()).programId}`;
+    await root`UPDATE programs SET banner_upload_id = ${small.id} WHERE id = ${(await program()).programId}`;
+    const shown = await program();
+    await root`UPDATE programs SET banner_upload_id = ${both.id} WHERE id = ${shown.programId}`;
+    await root`UPDATE trivia_sets SET thumbnail_upload_id = ${both.id} WHERE id = ${shown.setId}`;
+    const report = await backfillDisplayCopies(rt.sql, dataDir);
+    expect(report.missing).not.toContain(banner.id);
+    expect(await dims(`images/${banner.id}.display.webp`)).toEqual({ width: 1344, height: 448 });
+    expect(await dims(`images/${small.id}.display.webp`)).toEqual({ width: 600, height: 200 });
+    expect(await dims(`images/${both.id}.display.webp`)).toEqual({ width: 480, height: 160 });
+    expect((await readFile(join(dataDir, banner.path))).equals(banner.bytes)).toBe(true);
+  });
+
   it("is re-runnable: a second run makes nothing and keeps what it made; --force makes them again; a dry run writes nothing", async () => {
     const { setId } = await program();
     const thumbnail = await upload(900, 1500);
@@ -178,6 +195,31 @@ describe("moveQuestionImages", () => {
     expect(await exists(`images/${rewritten.id}.webp`)).toBe(false);
     expect(await exists(`question-images/${rewritten.id}.webp`)).toBe(true);
     expect(await rowPath(rewritten.id)).toBe(`question-images/${rewritten.id}.webp`);
+  });
+
+  it("leaves a program's banner in images/ (players are shown it), reports one a question also uses, and still moves an image nothing shows", async () => {
+    const { programId } = await program();
+    const banner = await upload(1800, 600);
+    await root`UPDATE programs SET banner_upload_id = ${banner.id} WHERE id = ${programId}`;
+    const { programId: sharedProgram, questionId } = await program();
+    const shared = await upload(1800, 600);
+    await root`UPDATE programs SET banner_upload_id = ${shared.id} WHERE id = ${sharedProgram}`;
+    await root`UPDATE questions SET image_upload_id = ${shared.id} WHERE id = ${questionId}`;
+    const orphan = await upload(800, 600);
+    const report = await moveQuestionImages(rt.sql, dataDir);
+    expect(report.shared).toContain(shared.id);
+    for (const kept of [banner, shared]) {
+      expect(await rowPath(kept.id)).toBe(`images/${kept.id}.webp`);
+      expect(await exists(`images/${kept.id}.webp`)).toBe(true);
+      expect(await exists(`question-images/${kept.id}.webp`)).toBe(false);
+    }
+    // Nothing shows the orphan, so it is taken out of the directory the public app mounts.
+    expect(await rowPath(orphan.id)).toBe(`question-images/${orphan.id}.webp`);
+    expect(await exists(`images/${orphan.id}.webp`)).toBe(false);
+    // The banner's display copy (made by the backfill) is not touched by the move either.
+    await backfillDisplayCopies(rt.sql, dataDir);
+    await moveQuestionImages(rt.sql, dataDir);
+    expect(await dims(`images/${banner.id}.display.webp`)).toEqual({ width: 1344, height: 448 });
   });
 
   it("leaves an upload that a set or a prize tier also shows where it is, and says so; a dry run changes nothing", async () => {

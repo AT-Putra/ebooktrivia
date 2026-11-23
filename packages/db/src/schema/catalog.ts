@@ -56,6 +56,8 @@ export const programs = pgTable(
       onDelete: "set null",
     }),
     winnersConfirmedAt: tstz("winners_confirmed_at"),
+    /** The wide picture the play page's banner card shows (the Owner's upload, images/); null: the built-in art. */
+    bannerUploadId: uuid("banner_upload_id").references(() => uploads.id, { onDelete: "set null" }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },

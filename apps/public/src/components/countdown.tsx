@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { formatHms } from "../lib/format.ts";
+import { formatHms, splitDaysHms } from "../lib/format.ts";
 
 /** Ticks down once per second. Fixed-width tabular digits so nothing shifts. */
 function useRemaining(initialSeconds: number): number {
@@ -17,11 +17,22 @@ function useRemaining(initialSeconds: number): number {
   return seconds;
 }
 
-export function Countdown({ initialSeconds, className }: { initialSeconds: number; className?: string }) {
+/**
+ * The time left as whole days, then hh:mm:ss ("89 hari 04:18:22", or just "04:18:22" under a day), so a long wait never reads as
+ * thousands of hours; `dayLabel` is the unit ("hari"). The digits are tabular, so nothing jiggles. Not a live region (aria-live
+ * off): a screen reader reads it when asked, not every second.
+ */
+export function Countdown({ initialSeconds, dayLabel, className }: { initialSeconds: number; dayLabel: string; className?: string }) {
   const seconds = useRemaining(initialSeconds);
+  const { days, hms } = splitDaysHms(seconds);
   return (
     <span role="timer" aria-live="off" className={className ?? "timer-digits"}>
-      {formatHms(seconds)}
+      {days > 0 ? (
+        <>
+          {days} <span className="text-base font-semibold">{dayLabel}</span>{" "}
+        </>
+      ) : null}
+      {hms}
     </span>
   );
 }

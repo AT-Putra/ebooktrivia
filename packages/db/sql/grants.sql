@@ -56,9 +56,9 @@ GRANT SELECT (id, phone, status, active) ON public.waha_sessions TO public_rw;
 -- The deep GET /healthz (US-015, @ebooktrivia/db/health) reads the age of the worker's heartbeat: the component name
 -- and the time, never the `info` column.
 GRANT SELECT (component, beat_at) ON public.heartbeats TO public_rw;
--- uploads: only the columns the play origin's image route reads (apps/public lib/play/images.ts: the upload a set or prize
--- tier points at, of kind image and type image/webp, and where it is stored); never the original file name, the size, the
--- digest or the admin who uploaded it.
+-- uploads: only the columns the play origin's image route reads (apps/public lib/play/images.ts: the upload a set, a prize
+-- tier or a program (programs.banner_upload_id) points at, of kind image and type image/webp, and where it is stored); never
+-- the original file name, the size, the digest or the admin who uploaded it.
 GRANT SELECT (id, kind, storage_path, content_type) ON public.uploads TO public_rw;
 
 -- players and magic_links: NO privilege at all (US-026, the US-009 carry-over); the login reaches them

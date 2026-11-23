@@ -1,18 +1,18 @@
 // One-off, re-runnable maintenance of the content images on disk (run by src/cli/images.ts on the VM; runbook
 // docs/runbooks/staging-provision.md "Content images"). Two jobs, both safe to run again and again:
 //
-//   backfillDisplayCopies  every set thumbnail and prize image gets its DISPLAY COPY images/<id>.display.webp (what the play pages
-//                          load; storeImage makes one for every new upload), made from the stored original with the same box
-//                          (thumbnail 480 x 600, prize 256 x 256) and written atomically (a temporary file, then a rename). An
-//                          existing copy is left alone unless `force`.
+//   backfillDisplayCopies  every set thumbnail, prize image and program banner gets its DISPLAY COPY images/<id>.display.webp (what the
+//                          play pages load; storeImage makes one for every new upload), made from the stored original with the same
+//                          box (thumbnail 480 x 600, prize 256 x 256, banner 1344 x 448) and written atomically (a temporary file,
+//                          then a rename). An existing copy is left alone unless `force`.
 //   moveQuestionImages     every image upload that players are NOT shown lives in question-images/, which the public app does not mount
 //                          (storeImage puts every new question image there): a question's image, and any other image under images/
-//                          that no set thumbnail and no prize tier shows (a replaced thumbnail, an orphan). It is copied to a
+//                          that no set thumbnail, no prize tier and no program banner shows (a replaced thumbnail, an orphan). It is copied to a
 //                          temporary file, flushed, checked against the sha256 of its uploads row and renamed into place; the row is
 //                          rewritten (exactly one row or an error); only then is the old file (and any display copy) removed, so the
 //                          only good copy is never deleted and an interrupted run leaves a state the next run finishes. A file that
-//                          does not match its row's digest is reported (`damaged`) and left alone. An upload a question uses AND a set
-//                          or a prize tier shows stays where it is and is reported: it is the Owner's decision which use to give up.
+//                          does not match its row's digest is reported (`damaged`) and left alone. An upload a question uses AND a set,
+//                          a prize tier or a program banner shows stays where it is and is reported: it is the Owner's decision which use to give up.
 //                          A missing file leaves its row alone and is reported. Files under images/ that no uploads row names are
 //                          reported, never deleted.
 //
@@ -55,12 +55,16 @@ export interface BackfillReport {
 
 export async function backfillDisplayCopies(sql: Sql, dataDir: string, options: MaintenanceOptions & { readonly force?: boolean } = {}): Promise<BackfillReport> {
   const log = options.log ?? (() => undefined);
-  // Every upload a set shows as its thumbnail or a prize tier shows (a thumbnail box wins when both).
-  const rows = await sql<{ id: string; kind: string; content_type: string; storage_path: string; thumbnail: boolean }[]>`
-    SELECT u.id, u.kind, u.content_type, u.storage_path, bool_or(shown.purpose = 'thumbnail') AS thumbnail
+  // Every upload a set shows as its thumbnail, a prize tier as its image or a program as its banner (one upload shown for more than one of
+  // these, which no console upload is, gets the thumbnail box, else the banner's).
+  const rows = await sql<{ id: string; kind: string; content_type: string; storage_path: string; purpose: "thumbnail" | "banner" | "prize" }[]>`
+    SELECT u.id, u.kind, u.content_type, u.storage_path,
+           CASE WHEN bool_or(shown.purpose = 'thumbnail') THEN 'thumbnail' WHEN bool_or(shown.purpose = 'banner') THEN 'banner' ELSE 'prize' END AS purpose
       FROM (SELECT thumbnail_upload_id AS id, 'thumbnail' AS purpose FROM public.trivia_sets WHERE thumbnail_upload_id IS NOT NULL
             UNION ALL
-            SELECT image_upload_id, 'prize' FROM public.prize_tiers WHERE image_upload_id IS NOT NULL) shown
+            SELECT image_upload_id, 'prize' FROM public.prize_tiers WHERE image_upload_id IS NOT NULL
+            UNION ALL
+            SELECT banner_upload_id, 'banner' FROM public.programs WHERE banner_upload_id IS NOT NULL) shown
       JOIN public.uploads u ON u.id = shown.id
      GROUP BY u.id, u.kind, u.content_type, u.storage_path
      ORDER BY u.id`;
@@ -88,7 +92,7 @@ export async function backfillDisplayCopies(sql: Sql, dataDir: string, options: 
     if (options.dryRun !== true) {
       let copy: Buffer;
       try {
-        copy = await displayCopy(await readFile(original), DISPLAY_BOXES[row.thumbnail ? "thumbnail" : "prize"]);
+        copy = await displayCopy(await readFile(original), DISPLAY_BOXES[row.purpose]);
       } catch (error) {
         if (!(error instanceof UploadRejected)) throw error;
         refused.push(row.id);
@@ -116,7 +120,7 @@ export interface MoveReport {
   readonly moved: number;
   /** Already in question-images/ with a verified file and a row that says so. */
   readonly settled: number;
-  /** Upload ids a question uses and a set or a prize tier ALSO shows: left where they are. */
+  /** Upload ids a question uses and a set, a prize tier or a program banner ALSO shows: left where they are. */
   readonly shared: readonly string[];
   /** Upload ids with no file at either place: their rows are not touched. */
   readonly missing: readonly string[];
@@ -184,7 +188,7 @@ async function strayFiles(sql: Sql, dataDir: string): Promise<string[]> {
 
 /**
  * Takes every image the public app could read but players are not shown out of images/ into question-images/: a question's image, and
- * any other image upload no set thumbnail and no prize tier shows (a replaced thumbnail, an orphan). The old file is removed only
+ * any other image upload no set thumbnail, no prize tier and no program banner shows (a replaced thumbnail, an orphan). The old file is removed only
  * after a copy whose sha256 equals the row's is in place AND the row is rewritten (exactly one row): the only good copy is never
  * deleted. A file whose bytes do not match the row is reported (`damaged`) and left as it is.
  */
@@ -193,7 +197,8 @@ export async function moveQuestionImages(sql: Sql, dataDir: string, options: Mai
   const rows = await sql<{ id: string; kind: string; content_type: string; storage_path: string; sha256: string; shown: boolean; questioned: boolean }[]>`
     SELECT u.id, u.kind, u.content_type, u.storage_path, encode(u.sha256, 'hex') AS sha256,
            (EXISTS (SELECT 1 FROM public.trivia_sets s WHERE s.thumbnail_upload_id = u.id)
-            OR EXISTS (SELECT 1 FROM public.prize_tiers t WHERE t.image_upload_id = u.id)) AS shown,
+            OR EXISTS (SELECT 1 FROM public.prize_tiers t WHERE t.image_upload_id = u.id)
+            OR EXISTS (SELECT 1 FROM public.programs p WHERE p.banner_upload_id = u.id)) AS shown,
            EXISTS (SELECT 1 FROM public.questions q WHERE q.image_upload_id = u.id) AS questioned
       FROM public.uploads u
      WHERE (u.kind = 'image' AND u.storage_path = 'images/' || u.id || '.webp')
@@ -206,10 +211,10 @@ export async function moveQuestionImages(sql: Sql, dataDir: string, options: Mai
   const damaged: string[] = [];
   const refused: string[] = [];
   for (const row of rows) {
-    if (row.shown && !row.questioned) continue; // a set's or a prize's image: players are shown it, it stays in images/
+    if (row.shown && !row.questioned) continue; // a set's, a prize's or a program's image: players are shown it, it stays in images/
     if (row.shown) {
       shared.push(row.id);
-      log(`shared ${row.id}: a question uses it and a set or a prize shows it, left where it is`);
+      log(`shared ${row.id}: a question uses it and a set, a prize or a banner shows it, left where it is`);
       continue;
     }
     const before = contentImagePath("thumbnail", row.id); // images/<id>.webp

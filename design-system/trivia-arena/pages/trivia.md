@@ -12,8 +12,8 @@ A sticky top bar (program switcher + account menu) sits above the cards and rese
 
 | # | Card | Content |
 |---|------|---------|
-| 1 | Banner | Program name + cover art, prize tiers (gold/silver/bronze rows with Rp amounts), sales countdown then grace-period countdown, later masked winners (only after Owner confirmation). One countdown visible at a time, labelled ("Penjualan berakhir dalam", "Masa bermain berakhir dalam"). |
-| 2 | Leaderboard | Top N rows (rank, masked name, score, total time) plus a pinned "Peringkat saya" row. Header shows "Diperbarui X lalu" and a "Perbarui" button. |
+| 1 | Banner | Program name + the program's banner picture (the Owner's upload, else the built-in art) in a fixed 3:1 box (cropped from the middle, never shifting the layout). Prizes ("Hadiah", trophy icon): the rank-1 tier is a featured tile (square picture box, 96 px on phones and 112 px from `sm`, the picture shown whole), every other tier a compact row with one leading visual (48 px picture box, or the medal when the tier has no picture) and its Rp badge (on the right from `sm`, under the rank line on phones, never wrapping). One countdown, always to the quiz deadline (the grace end): label "Kuis ditutup dalam", the exact deadline in WIB under it ("Batas akhir: Senin, 22 Maret 2027 pukul 00.00 WIB"), the time left as "89 hari 04:18:22" (days only while there is at least one), later masked winners (only after Owner confirmation). |
+| 2 | Leaderboard | Top N rows (rank, masked name, score, total time) plus a pinned "Peringkat saya" row. A phone shows every prize winner (the highest rank any prize tier covers, at least 5 rows) before "Lihat semua". A rank gets a medal only when a prize tier covers it, in the colour of that tier in the prize list (gold, silver, bronze, then primary); a screen reader hears "Peringkat 2, hadiah ...". Header shows "Diperbarui X lalu" and a "Perbarui" button. |
 | 3 | Profile | Masked name (e.g. "Bu*** S***"), score, total time (mm:ss, tabular), sets completed "12/90", rank, "Set berikutnya terbuka dalam hh:mm:ss (00.00 WIB)". |
 | 4 | Trivia grid | Thumbnail per set in locked / unlocked / completed states. |
 

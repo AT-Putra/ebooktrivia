@@ -21,6 +21,7 @@ function page(over: Partial<ProgramPage> = {}): ProgramPage {
     id: "p",
     slug: "juni-2026",
     name: "Program",
+    bannerUrl: null,
     status: "published",
     salesEnd: wib("2027-01-11"),
     graceDays: 0,
@@ -45,7 +46,7 @@ describe("programView", () => {
     expect(view.tiles[9]?.unlocksAt).toEqual(wib("2027-01-10"));
     expect(view.tiles[0]?.unlocksAt).toBeNull();
     expect(view.tiles.filter((t) => t.next).map((t) => t.n)).toEqual([1]);
-    expect(view).toMatchObject({ phase: "sales", phaseEndsAt: wib("2027-01-11"), closed: false, done: 0 });
+    expect(view).toMatchObject({ phase: "sales", closed: false, done: 0 });
   });
 
   it("marks completed and started sets, and the next set to play", () => {
@@ -71,11 +72,23 @@ describe("programView", () => {
 
   it("shows the grace phase after the sales end, and closes play at the grace end or once the contest ended", () => {
     const grace = programView(page({ graceDays: 5, now: wib("2027-01-12", "09:00:00.000") }));
-    expect(grace).toMatchObject({ phase: "grace", phaseEndsAt: wib("2027-01-16"), closed: false, unlocked: 10, nextUnlockAt: null });
+    expect(grace).toMatchObject({ phase: "grace", quizEndsAt: wib("2027-01-16"), closed: false, unlocked: 10, nextUnlockAt: null });
     const ended = programView(page({ now: wib("2027-01-11", "00:00:01.000") }));
-    expect(ended).toMatchObject({ phase: "ended", phaseEndsAt: null, closed: true, nextUnlockAt: null, unlocked: 10 });
+    expect(ended).toMatchObject({ phase: "ended", closed: true, nextUnlockAt: null, unlocked: 10 });
     expect(ended.tiles.some((t) => t.next)).toBe(false);
     expect(programView(page({ status: "awaiting_confirmation" }))).toMatchObject({ closed: true, phase: "ended" });
+  });
+
+  it("counts the banner down to the quiz deadline (the grace end) in the sales phase AND in the grace phase, never to the sales end", () => {
+    // Sales end 2027-01-11, 5 days of grace: the deadline is 2027-01-16 00:00 WIB.
+    const sales = programView(page({ graceDays: 5, now: wib("2027-01-03", "08:00:00.000") }));
+    expect(sales).toMatchObject({ phase: "sales" });
+    expect(sales.quizEndsAt).toEqual(wib("2027-01-16"));
+    const grace = programView(page({ graceDays: 5, now: wib("2027-01-12", "09:00:00.000") }));
+    expect(grace).toMatchObject({ phase: "grace" });
+    expect(grace.quizEndsAt).toEqual(wib("2027-01-16"));
+    // No grace: the deadline is the sales end itself.
+    expect(programView(page()).quizEndsAt).toEqual(wib("2027-01-11"));
   });
 
   it("reports no next unlock once every set is open", () => {

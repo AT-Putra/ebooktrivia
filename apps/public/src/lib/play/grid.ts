@@ -26,8 +26,8 @@ export interface ProgramView {
   /** When the next set opens (the countdown), null when every set is open or play has ended. */
   readonly nextUnlockAt: Date | null;
   readonly phase: Phase;
-  /** When the phase ends (sales end, grace end), null once ended. */
-  readonly phaseEndsAt: Date | null;
+  /** The QUIZ DEADLINE (the grace end), in every phase: what the banner's countdown runs to. After it no set can be started. */
+  readonly quizEndsAt: Date;
   /** No set can be started or served any more (after the grace end, or the program is no longer published). */
   readonly closed: boolean;
 }
@@ -51,7 +51,7 @@ export function programView(page: Pick<ProgramPage, "status" | "salesEnd" | "gra
     done: page.sets.filter((s) => s.attempt?.finished === true).length,
     nextUnlockAt: closed ? null : nextUnlockAt({ ...schedule, now: page.now, attempted, floor }),
     phase,
-    phaseEndsAt: phase === "sales" ? page.salesEnd : phase === "grace" ? graceEnd : null,
+    quizEndsAt: graceEnd,
     closed,
   };
 }

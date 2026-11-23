@@ -1,5 +1,5 @@
 // Route handlers of the content uploads (US-018): question images and set thumbnails, prize images,
-// and the CSV / XLSX question import. POST only, behind adminRoute (Origin check, session, the
+// program banners, and the CSV / XLSX question import. POST only, behind adminRoute (Origin check, session, the
 // route's permission, mutation scope). Files are sent as the raw request body (one request, no
 // multipart), read with a hard cap before anything is parsed; the original name comes URL-encoded
 // in `x-file-name`, the type in `content-type`. The query names the target ids (each scoped to its
@@ -7,9 +7,11 @@
 // A role refused (NotAllowed: Staff on a set with attempts) answers 403 with the reason. The role,
 // the lock and the target are checked BEFORE an image is re-encoded or written (code review US-018
 // F8), and again in the linking transaction.
+import { can } from "../policy.ts";
 import { InvalidInput, NotAllowed, onlyParams, uuid } from "../settings/fields.ts";
 import { IMAGE_MAX_BYTES, parseFilename, storeImage } from "../settings/images.ts";
 import { checkPrizeImageTarget, setPrizeImage } from "../settings/prizes.ts";
+import { checkBannerTarget, setProgramBanner } from "../settings/programs.ts";
 import { IMPORT_MAX_BYTES, importQuestionFile } from "../settings/trivia-import.ts";
 import { checkImageTarget, setQuestionImage, setSetThumbnail } from "../settings/trivia.ts";
 import { readCapped, TooLarge } from "./pdf-upload-routes.ts";
@@ -49,6 +51,20 @@ export function triviaImage({ rt, admin }: RouteContext, request: Request): Prom
     const image = await storeImage(rt.settings, await file(request, IMAGE_MAX_BYTES), questionId === undefined ? "thumbnail" : "question");
     if (questionId === undefined) await setSetThumbnail(rt.sql, actor, programId, setId, image);
     else await setQuestionImage(rt.sql, actor, { programId, setId, questionId }, image);
+    return json(200, { ok: true });
+  });
+}
+
+/** ?program= (the picture the play page's banner card shows for the program; Owner only: adminRoute asks `program.edit`, and this checks it again). */
+export function bannerImage({ rt, admin }: RouteContext, request: Request): Promise<Response> {
+  return answer(async () => {
+    if (!can(admin.role, "program.edit")) throw new NotAllowed("Hanya Owner yang dapat mengubah gambar banner program.");
+    const params = new URL(request.url).searchParams;
+    onlyParams(params, ["program"]);
+    const programId = uuid(params.get("program") ?? "");
+    await checkBannerTarget(rt.sql, programId);
+    const image = await storeImage(rt.settings, await file(request, IMAGE_MAX_BYTES), "banner");
+    await setProgramBanner(rt.sql, admin.userId, programId, image);
     return json(200, { ok: true });
   });
 }

@@ -34,13 +34,14 @@ const LOGIN_ROUTES = [
 ];
 
 /**
- * The routes that serve a PUBLIC picture (a set's thumbnail, a prize tier's image: lib/play/images.ts): they read no session at all, so
+ * The routes that serve a PUBLIC picture (a set's thumbnail, a prize tier's image, a program's banner: lib/play/images.ts): they read no session at all, so
  * they do not go through withPlayer; the rest of this file still applies to them (playRoute, GET, no session reader).
  * There is no route for a QUESTION's picture: question images are not shown to players (an encrypted, database-gated design is needed first).
  */
 const PUBLIC_IMAGE_ROUTES: Readonly<Record<string, string>> = {
   "app/api/v1/play/img/set/[...path]/route.ts": "handleSetImage",
   "app/api/v1/play/img/prize/[...path]/route.ts": "handlePrizeImage",
+  "app/api/v1/play/img/banner/[...path]/route.ts": "handleBannerImage",
 };
 
 /** What reads a session (or its cookie) other than through withPlayer. */
@@ -116,7 +117,7 @@ describe("player login guards", () => {
   });
 
   // The pictures of lib/play/images.ts: public, no session. Nothing takes a path from the client, and no question image is reachable.
-  it("the picture routes are the two public GET / HEAD playRoutes (set, prize) that read no session; there is no route, query or function for a question image", () => {
+  it("the picture routes are the three public GET / HEAD playRoutes (set, prize, banner) that read no session; there is no route, query or function for a question image", () => {
     const imageRoutes = playRoutes.filter((route) => route.startsWith("app/api/v1/play/img/"));
     expect(imageRoutes.sort()).toEqual(Object.keys(PUBLIC_IMAGE_ROUTES).sort());
     for (const [route, handler] of Object.entries(PUBLIC_IMAGE_ROUTES)) {
@@ -131,7 +132,7 @@ describe("player login guards", () => {
     expect(images).not.toMatch(/play_question_image|public.questions|attempt_questions|playerId/);
     // The file comes from the uploads row the set or tier pointed at (and only a path that is exactly its own id's), never from the request.
     expect(images).not.toMatch(/searchParams/);
-    expect(images.match(/JOIN public.uploads/g)).toHaveLength(2);
+    expect(images.match(/JOIN public.uploads/g)).toHaveLength(3);
     expect(images).toContain("isPublicImagePath(uploadId, row.storage_path)");
   });
 

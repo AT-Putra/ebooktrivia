@@ -1,4 +1,5 @@
 import type { AssetId } from "./assets.ts";
+import { t } from "./t.ts";
 
 export type SetState = "completed" | "unlocked" | "in-progress" | "locked";
 
@@ -26,8 +27,9 @@ export interface Program {
   done: number;
   total: number;
   prizes: { gold: number; silver: number; bronze: number };
-  phase: "sales" | "grace";
-  phaseSeconds: number;
+  /** The quiz deadline (the grace end) and the time left to it. */
+  quizEndsAt: Date;
+  quizSeconds: number;
   profile: { name: string; score: number; seconds: number; rank: number; nextUnlockSeconds: number };
   leaderboard: LeaderRow[];
   me: LeaderRow;
@@ -80,8 +82,8 @@ export const PROGRAMS: Program[] = [
     done: 12,
     total: 90,
     prizes: { gold: 5_000_000, silver: 2_500_000, bronze: 1_000_000 },
-    phase: "sales",
-    phaseSeconds: 52 * 3600 + 14 * 60 + 9,
+    quizEndsAt: new Date("2027-03-22T00:00:00+07:00"),
+    quizSeconds: 89 * 86_400 + 4 * 3600 + 18 * 60 + 22,
     profile: { name: "Bu** S***", score: 1240, seconds: 2538, rank: 47, nextUnlockSeconds: 3 * 3600 + 12 * 60 + 45 },
     leaderboard: buildBoard(3480, 110, 3185),
     me: { rank: 47, name: "Bu** S***", score: 1240, seconds: 2538 },
@@ -104,8 +106,8 @@ export const PROGRAMS: Program[] = [
     done: 3,
     total: 30,
     prizes: { gold: 2_000_000, silver: 1_000_000, bronze: 500_000 },
-    phase: "grace",
-    phaseSeconds: 71 * 3600 + 5 * 60 + 30,
+    quizEndsAt: new Date("2027-04-12T00:00:00+07:00"),
+    quizSeconds: 21 * 86_400 + 5 * 3600 + 5 * 60 + 30,
     profile: { name: "Bu** S***", score: 420, seconds: 905, rank: 112, nextUnlockSeconds: 7 * 3600 + 48 * 60 + 2 },
     leaderboard: buildBoard(1820, 60, 1450),
     me: { rank: 112, name: "Bu** S***", score: 420, seconds: 905 },
@@ -121,6 +123,15 @@ export const PROGRAMS: Program[] = [
     ]),
   },
 ];
+
+/** The mockup's prizes as the live page's tiers (one tier per place, no uploaded pictures): the banner's prize list and the leaderboard's medals follow them. */
+export function mockupTiers(program: Program): { rankFrom: number; rankTo: number; name: string; valueIdr: number; imageUrl: null }[] {
+  return [
+    { rankFrom: 1, rankTo: 1, name: t("trivia.banner.gold"), valueIdr: program.prizes.gold, imageUrl: null },
+    { rankFrom: 2, rankTo: 2, name: t("trivia.banner.silver"), valueIdr: program.prizes.silver, imageUrl: null },
+    { rankFrom: 3, rankTo: 3, name: t("trivia.banner.bronze"), valueIdr: program.prizes.bronze, imageUrl: null },
+  ];
+}
 
 export function findProgram(slug: string | undefined): Program {
   const found = PROGRAMS.find((p) => p.slug === slug);

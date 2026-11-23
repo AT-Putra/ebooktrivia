@@ -6,7 +6,7 @@ import { SetGridCard } from "../../../../components/trivia/set-grid-card.tsx";
 import { TriviaHeader } from "../../../../components/trivia/trivia-header.tsx";
 import { assertMockupsEnabled } from "../../../../lib/guard.ts";
 import { t } from "../../../../lib/t.ts";
-import { findProgram, PROGRAMS } from "../../../../lib/trivia-fixtures.ts";
+import { findProgram, mockupTiers, PROGRAMS } from "../../../../lib/trivia-fixtures.ts";
 
 export const metadata: Metadata = { title: "Trivia | Trivia Arena" };
 // Per-request render: a build-time notFound() would otherwise be baked in as a static 404.
@@ -39,7 +39,7 @@ export default async function TriviaMockupPage({ searchParams }: PageProps) {
           <BannerCard program={program} />
         </div>
         <div className="xl:col-span-7">
-          <LeaderboardCard key={program.slug} rows={program.leaderboard} me={program.me} />
+          <LeaderboardCard key={program.slug} rows={program.leaderboard} me={program.me} tiers={mockupTiers(program)} />
         </div>
         <div className="xl:col-span-5">
           <ProfileCard program={program} />
