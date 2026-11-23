@@ -242,7 +242,10 @@ docker run --rm -i -e RESTIC_PASSWORD=restic-devonly -v "$P-restic:/repo:ro" -v 
 }
 T_DATA=$(secs "$t" "$(now)")
 restored=$(docker run --rm -v "$P-srvdata:/srv/data:ro" --entrypoint sh "$RESTIC_IMAGE" -c 'stat -c "%u:%g" /srv/data/deliverables/book.pdf; cat /srv/data/deliverables/book.pdf' | tr -d '\r' | paste -sd ' ' -)
-expect "restic: /srv/data restored with 'restore latest --host ebooktrivia --path /srv/data --target /' (owner, content)" "0:0 ebook pdf stand-in" "$restored"
+# The owner the snapshot recorded is the source file's owner as restic saw it (root on Docker Desktop, the runner's own
+# uid on a Linux CI host), so the restore must give back exactly that, not a fixed root.
+source_owner=$(docker run --rm -v "$(host_path "$work/data"):/srv/data:ro" --entrypoint sh "$RESTIC_IMAGE" -c 'stat -c "%u:%g" /srv/data/deliverables/book.pdf' | tr -d '\r\n')
+expect "restic: /srv/data restored with 'restore latest --host ebooktrivia --path /srv/data --target /' (owner, content)" "$source_owner ebook pdf stand-in" "$restored"
 printf 'restic restore of /srv/data (the tree, read-only repository): %s s\n' "$T_DATA"
 
 printf '\n### timings (rows: %s)\n' "$ROWS"
