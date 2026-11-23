@@ -18,7 +18,10 @@ export interface Session {
 }
 
 export interface LoginFetch {
-  (url: string, init: { method: string; headers: Record<string, string>; body: string }): Promise<{ status: number; headers: { get(name: string): string | null; getSetCookie(): string[] } }>;
+  (
+    url: string,
+    init: { method: string; headers: Record<string, string>; body: string },
+  ): Promise<{ status: number; headers: { get(name: string): string | null; getSetCookie(): string[] }; body?: { cancel(): Promise<void> } | null }>;
 }
 
 export interface LoginOptions {
@@ -45,6 +48,8 @@ export async function loginAll(options: LoginOptions): Promise<Session[]> {
           headers: { origin: options.playOrigin, "content-type": "application/json", accept: "application/json" },
           body: JSON.stringify({ channel: "whatsapp", token: options.tokens[index] }),
         });
+        // The body is never read: cancelling it frees the connection (a 429 that is retried, a refusal, and the answer of a login that worked).
+        await response.body?.cancel().catch(() => undefined);
         if (response.status === 429 && attempt < 200) {
           const retryAfter = Number(response.headers.get("retry-after") ?? "30");
           await sleep((Number.isFinite(retryAfter) ? Math.min(Math.max(retryAfter, 1), 900) : 30) * 1000);

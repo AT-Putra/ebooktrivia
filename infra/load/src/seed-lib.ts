@@ -23,20 +23,22 @@ type Sql = postgres.Sql;
 
 export const newRunId = (): string => randomBytes(4).toString("hex");
 
-const first = <T>(rows: readonly T[]): T => {
+export const first = <T>(rows: readonly T[]): T => {
   const [row] = rows;
   if (row === undefined) throw new Error("the statement returned no row");
   return row;
 };
 
-/** `count` distinct valid Indonesian mobile numbers (E.164) that no player has yet. */
-async function freshPhones(sql: Sql, count: number): Promise<string[]> {
+/** `count` distinct valid Indonesian mobile numbers (E.164) that no player has yet and that no order (a buyer who never became a player) carries. */
+export async function freshPhones(sql: Sql, count: number): Promise<string[]> {
   const phones = new Set<string>();
   while (phones.size < count) {
     const candidate = `+62812${String(randomInt(10_000_000, 99_999_999))}`;
     if (normalizeIdMobile(candidate).ok) phones.add(candidate);
   }
-  const taken = await sql<{ phone: string }[]>`SELECT phone FROM public.players WHERE phone IN ${sql([...phones])}`;
+  const taken = await sql<{ phone: string }[]>`
+    SELECT phone FROM public.players WHERE phone IN ${sql([...phones])}
+    UNION SELECT buyer_phone FROM public.orders WHERE buyer_phone IN ${sql([...phones])}`;
   for (const { phone } of taken) phones.delete(phone);
   return phones.size === count ? [...phones] : [...phones, ...(await freshPhones(sql, count - phones.size))];
 }
@@ -170,7 +172,7 @@ export async function seedOrders(sql: Sql, options: OrdersOptions): Promise<Orde
 }
 
 export interface CleanupReport {
-  readonly kind: "trivia" | "orders";
+  readonly kind: "trivia" | "orders" | "demo";
   readonly removed: Readonly<Record<string, number>>;
 }
 
