@@ -1,18 +1,17 @@
 // Card 4, the set grid (US-027, AC-Q2, AC-Q12): every set of the program as a locked, open, started or completed
-// tile (lib/play/grid.ts: core unlock.ts with the max rule), with the AI-generated set art and state overlays of
-// the asset pipeline. An open or started set links to its play page /{programSlug}/set/{n}; a locked one says
+// tile (lib/play/grid.ts: core unlock.ts with the max rule), with the set's uploaded thumbnail (lib/play/images.ts), else the
+// AI-generated set art of the asset pipeline, and the state overlays. An open or started set links to its play page /{programSlug}/set/{n}; a locked one says
 // when it opens (WIB).
 import { Badge } from "@ebooktrivia/ui/components/badge";
 import { cn } from "@ebooktrivia/ui/lib/utils";
 import { CheckCircleIcon, LockSimpleIcon, PlayIcon, SquaresFourIcon } from "@phosphor-icons/react/ssr";
-import type { AssetId } from "../../../lib/assets.ts";
 import { formatWibDate } from "../../../lib/format.ts";
 import type { ProgramView, Tile } from "../../../lib/play/grid.ts";
+import { setArt } from "../../../lib/play/image-urls.ts";
 import { t } from "../../../lib/t.ts";
 import { Picture } from "../../picture.tsx";
+import { UploadedPicture } from "../../uploaded-picture.tsx";
 import { CardHeading, TriviaCard } from "../trivia-card.tsx";
-
-const ART: readonly AssetId[] = ["set-history", "set-science", "set-nature", "set-geography", "set-culture", "set-sports"];
 
 const lockedLabel = (tile: Tile): string =>
   tile.unlocksAt === null ? t("trivia.grid.locked") : t("trivia.grid.unlocksOn", { date: formatWibDate(tile.unlocksAt) });
@@ -51,6 +50,8 @@ function StatusLine({ tile, closed }: { readonly tile: Tile; readonly closed: bo
 function TileBody({ tile, closed }: { readonly tile: Tile; readonly closed: boolean }) {
   const locked = tile.state === "locked";
   const playable = !closed && (tile.state === "unlocked" || tile.state === "in-progress");
+  const art = setArt(tile.set, tile.n);
+  const artClass = cn("absolute inset-0 size-full object-cover", (locked || closed) && "grayscale");
   return (
     <>
       <span
@@ -60,12 +61,11 @@ function TileBody({ tile, closed }: { readonly tile: Tile; readonly closed: bool
           playable && tile.state === "in-progress" && "ring-2 ring-accent",
         )}
       >
-        <Picture
-          id={ART[(tile.n - 1) % ART.length] ?? "set-history"}
-          alt=""
-          sizes="(min-width: 1280px) 220px, (min-width: 768px) 220px, 45vw"
-          className={cn("absolute inset-0 size-full object-cover", (locked || closed) && "grayscale")}
-        />
+        {art.kind === "upload" ? (
+          <UploadedPicture src={art.src} alt="" width={220} height={275} className={artClass} />
+        ) : (
+          <Picture id={art.id} alt="" sizes="(min-width: 1280px) 220px, (min-width: 768px) 220px, 45vw" className={artClass} />
+        )}
         {playable ? <Picture id="overlay-unlocked-glow" alt="" sizes="220px" className="pointer-events-none absolute inset-0 size-full object-cover" /> : null}
         {locked ? (
           <>

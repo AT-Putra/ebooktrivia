@@ -151,6 +151,33 @@ async function reencodeImage(bytes: Buffer, type: FileType, limits: UploadLimits
   });
 }
 
+/** A box an image is scaled down to fit inside. */
+export interface DisplayBox {
+  readonly width: number;
+  readonly height: number;
+}
+
+/**
+ * A smaller WebP copy of an image the policy already re-encoded (what the play pages load instead of the original):
+ * scaled down to fit `box` (never enlarged, the aspect ratio kept), re-encoded without any metadata, under the same
+ * pixel limit, timeout and concurrency slots as the upload itself. Throws UploadRejected when it cannot be decoded.
+ */
+export async function displayCopy(webp: Uint8Array, box: DisplayBox, limits: UploadLimits = DEFAULT_UPLOAD_LIMITS): Promise<Buffer> {
+  const bytes = Buffer.from(webp.buffer, webp.byteOffset, webp.byteLength);
+  const options = { limitInputPixels: limits.imageMaxInputPixels, failOn: "error", animated: false } as const;
+  return withImageSlot(limits.imageMaxConcurrency, async () => {
+    try {
+      return await sharp(bytes, options)
+        .timeout({ seconds: limits.imageTimeoutSeconds })
+        .resize({ width: box.width, height: box.height, fit: "inside", withoutEnlargement: true })
+        .webp({ quality: 80 })
+        .toBuffer();
+    } catch (error) {
+      throw new UploadRejected("invalid_image", `the image cannot be resized within the limits: ${(error as Error).message}`);
+    }
+  });
+}
+
 /** Applies the policy; throws UploadRejected, or returns what to store. */
 export async function checkUpload(input: UploadInput, limits: UploadLimits = DEFAULT_UPLOAD_LIMITS): Promise<AcceptedUpload> {
   const bytes = Buffer.from(input.bytes.buffer, input.bytes.byteOffset, input.bytes.byteLength);

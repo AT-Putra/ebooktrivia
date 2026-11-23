@@ -53,6 +53,7 @@ beforeAll(async () => {
     sealer: createSecretSealer({ messaging: messaging.publicKey }),
     otpPepper: pepper,
     playOrigin: PLAY_ORIGIN,
+    dataDir: "/srv/data",
     log: () => undefined,
     defer: () => undefined,
   };

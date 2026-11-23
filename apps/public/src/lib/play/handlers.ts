@@ -78,6 +78,8 @@ export interface PlayDeps {
   readonly sealer: Pick<SecretSealer, "sealOtp">;
   readonly otpPepper: Uint8Array;
   readonly playOrigin: string;
+  /** The data directory (default /srv/data): the uploaded images are read from images/<upload id>.webp under it (lib/play/images.ts). */
+  readonly dataDir: string;
   readonly log: Logger;
   /** Runs `task` after the answer has been sent (next/server after() in the routes). Never awaited by a handler. */
   readonly defer: (task: () => Promise<void>) => void;

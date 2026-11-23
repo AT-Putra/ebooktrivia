@@ -34,8 +34,11 @@ export interface PlayEnv {
   stop(): Promise<void>;
 }
 
-/** `port`: each spec that starts its own server takes its own (the specs run in parallel workers). */
-export async function startPlayEnv(port = PLAY_PORT): Promise<PlayEnv> {
+/**
+ * `port`: each spec that starts its own server takes its own (the specs run in parallel workers). `dataDir`: the app's
+ * PUBLIC_DATA_DIR, where it reads the uploaded images from images/<upload id>.webp (the default is /srv/data).
+ */
+export async function startPlayEnv(port = PLAY_PORT, options: { readonly dataDir?: string } = {}): Promise<PlayEnv> {
   const url = `http://127.0.0.1:${String(port)}`;
   const db = await createTestDatabase("ebt_e2e_play", ["public_rw"]);
   const sql = postgres(db.url, { max: 2, onnotice: () => undefined });
@@ -74,6 +77,7 @@ export async function startPlayEnv(port = PLAY_PORT): Promise<PlayEnv> {
     PLAYER_AUTH_SECRETS: `1:${randomBytes(32).toString("hex")}`,
     PLAYER_OTP_PEPPER: randomBytes(32).toString("hex"),
     PUBLIC_DEV_PLAY_ORIGIN: url,
+    ...(options.dataDir === undefined ? {} : { PUBLIC_DATA_DIR: options.dataDir }),
   };
   // US-031: the worker loads public's rate-limit function in production; no worker runs here.
   await loadValkeyFunctions({ url: env.VALKEY_URL, username: process.env["TEST_VALKEY_USERNAME"] ?? "worker", password: process.env["TEST_VALKEY_PASSWORD"] ?? "worker-devonly" }, PUBLIC_VALKEY_LIBRARY_CODE); // DEV ONLY

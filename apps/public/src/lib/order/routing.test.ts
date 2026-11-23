@@ -74,7 +74,7 @@ describe("play.<DOMAIN>", () => {
 // US-026 security review L2: the player login lives on the play origin only.
 describe("the player login (play.<DOMAIN> only)", () => {
   const PLAY_PAGES = ["/login", "/masuk", "/login/", "/Login", "/%6Cogin", "/MASUK"];
-  const PLAY_API = ["/api/v1/play/auth/otp", "/api/v1/play/auth/otp/verify", "/api/v1/play/auth/magic-link", "/api/v1/play/auth/logout", "/api/v1/play/auth/session", "/api/v1/play/cap/challenge", "/api/v1/play/cap/redeem", "/API/V1/PLAY/auth/otp", "/api/v1/%70lay/auth/otp", "/api/v1/play"];
+  const PLAY_API = ["/api/v1/play/auth/otp", "/api/v1/play/auth/otp/verify", "/api/v1/play/auth/magic-link", "/api/v1/play/auth/logout", "/api/v1/play/auth/session", "/api/v1/play/cap/challenge", "/api/v1/play/cap/redeem", "/api/v1/play/img/set/00000000-0000-4000-8000-000000000001/00000000-0000-4000-8000-000000000001.webp", "/api/v1/play/img/prize/00000000-0000-4000-8000-000000000001/00000000-0000-4000-8000-000000000001.webp", "/API/V1/PLAY/auth/otp", "/api/v1/%70lay/auth/otp", "/api/v1/play"];
 
   it("serves the login pages (with the play CSP) and every /api/v1/play route on play.<DOMAIN>", () => {
     for (const path of PLAY_PAGES) expect(route(`play.${DOMAIN}`, path), path).toEqual({ kind: "playPage" });

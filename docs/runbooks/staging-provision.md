@@ -218,6 +218,49 @@ sudo journalctl CONTAINER_NAME=caddy -o cat | grep remote_ip | tail -3
 - **The client-ip probe did not stop** (`client-ip-probe.sh stop` failed half-way): `sudo runuser -u ebt -- rm -f /home/ebt/.config/containers/systemd/public@b.container.d/90-client-ip-probe.conf`, `sudo rm -rf /etc/ebooktrivia/probe`, `sudo $A systemctl --user daemon-reload`, `sudo $A systemctl --user restart public@b.service`. host-check fails while the drop-in exists.
 - **Undo a provisioning run:** it only adds files under `/etc` and the app user's home and changes firewalld, sshd and SELinux settings; the lockout steps above undo the access changes. Uninstalling the packages is not needed for a retry: every step is idempotent.
 
+## Content images (set thumbnails, prize images, question images)
+
+The Owner's pictures live under `/srv/data` (the admin app writes them; `@ebooktrivia/core` `content-images.ts` names every path):
+
+| What | Stored as | Who reads it |
+|---|---|---|
+| Set thumbnail, prize image | `images/<upload id>.webp` and its **display copy** `images/<upload id>.display.webp` (thumbnails fit 480 x 600, prize images 256 x 256, made at upload) | the public app, read-only mount of `/srv/data/images`: `play.<DOMAIN>/api/v1/play/img/set/<set>/<upload>.webp` and `.../prize/<tier>/<upload>.webp`, display copy first, the original while a copy is missing (log `display_missing`) |
+| Question image | `question-images/<upload id>.webp` only | nobody: the directory is **not mounted** into the public app, and question images are not shown to players (a picture is part of the question; showing one awaits an encrypted, database-gated design) |
+
+The route answers a bare 404 for anything else (not the row's own image, a draft program, a question image, a link, a missing file), caches the lookup in-process (2000 entries, 2 minutes, nothing negative),
+counts only cache misses per client (`play:img:ip:<bucket>`, 300 a minute, failing open without Valkey: log `play.image` `valkey_unavailable`) and refuses a symbolic link.
+
+**Release that introduces this (first time), in this order** (`$A` as above).
+
+**With the CI deploy** ([deploy.md](deploy.md)) instead, first check that nothing has to be moved out of `images/` (otherwise the new public instances would start with a mount that still holds images players are not shown, until the move): build the CLI image (`sudo infra/provision/build-images.sh admin-cli`), then
+
+```sh
+sudo $A podman exec -u postgres postgres psql -X -At -d ebooktrivia -c "SELECT count(*) FROM uploads u WHERE u.kind = 'image' AND u.storage_path = 'images/' || u.id || '.webp' AND NOT EXISTS (SELECT 1 FROM trivia_sets s WHERE s.thumbnail_upload_id = u.id) AND NOT EXISTS (SELECT 1 FROM prize_tiers t WHERE t.image_upload_id = u.id)"
+```
+
+and `cli move-question-images --dry-run` (the `cli` function of step 4, in a stop/start window of `admin.service`). If the count is not 0, or the dry run reports anything (a move, a `damaged`, a `stray`, a `shared`), **use the manual order below**. When both are clean: run step 1 before the deploy (it installs the quadlet and the directories; the deploy builds, migrates and restarts), and step 4's `backfill-display` after it (stop admin, run, start admin); until then the play pages serve the originals (log `display_missing`, once per upload and instance).
+
+1. **`sudo infra/provision/provision.sh`** from the new checkout: creates `/srv/data/images` and `/srv/data/question-images` (750, the app user), writes the new `public@.container` (a read-only `/srv/data/images` mount), runs `daemon-reload`, prints `restart needed: public@a.service public@b.service`. Do not restart yet.
+2. **Build the images**, the `worker` one first because `migrate` runs from it and carries `grants.sql`: `sudo infra/provision/build-images.sh worker public admin admin-cli`.
+3. **Migrate**: `sudo $A systemctl --user start migrate.service`. `grants.sql` narrows `public_rw` on `uploads` to `id, kind, storage_path, content_type` (nothing else of the app reads more). Old and new apps both run on it.
+4. **Backfill**, with the admin unit stopped (pg_hba admits `ebt_admin` from admin's own address, 10.89.51.13, which the one-off container takes over):
+
+   ```sh
+   A=infra/provision/as-app.sh
+   sudo $A systemctl --user stop admin.service
+   cli() { sudo $A podman run --rm --network ebt-data:ip=10.89.51.13 --userns=keep-id:uid=1000,gid=1000 -v /srv/data:/srv/data:z \
+     --read-only --tmpfs /tmp --cap-drop=all --security-opt=no-new-privileges --memory=600m \
+     --env-file /etc/ebooktrivia/admin.env --entrypoint node localhost/ebooktrivia/admin-cli:current apps/admin/src/cli/images.ts "$@"; }
+   cli backfill-display --dry-run && cli backfill-display      # the display copy of every set thumbnail and prize image (diet90: 90 + 2)
+   cli move-question-images --dry-run && cli move-question-images   # every image players are not shown (question images, replaced thumbnails, orphans) out of images/; staging: none expected
+   ```
+
+   Both print one line per upload (ids only) and a summary, are safe to run again, and exit 0, or 2 when they list something they could not handle: a missing file, a file whose bytes do not match the digest in its row (`damaged`: nothing is changed or deleted; restore it from the restic copy), one a question uses and a set or prize also shows (`shared`), one that is not a stored image, or a `stray` file under `images/` that no row names (reported, never deleted). Look at the lines, fix, run again.
+   `move-question-images` copies to a temporary file, flushes it, checks its sha256 against the row, renames it into place, rewrites the row (exactly one row, or it stops) and only then removes the old file, so the only good copy is never deleted. The container only writes `/srv/data` (mounted), hence the read-only root.
+   `backfill-display --force` makes every copy again. A crash leaves at most a temporary file: `images/.<id>.display.tmp` (reported as a `stray` by the next move run: delete it) or `question-images/.<id>.tmp` (the next run replaces it); the next run finishes an interrupted move.
+5. **Restart**: `sudo $A systemctl --user restart public@a.service` (wait for it), then `public@b.service`, then `sudo $A systemctl --user start admin.service` (it was stopped in 4; on the new image its uploads already go to the right directory).
+   Check one tile in a browser as a signed-in player, and `sudo journalctl CONTAINER_NAME=public-a | grep display_missing` (none).
+
 ## Routine operations
 
 - **Rotate the GlitchTip token:** run `sudo infra/provision/rotate-glitchtip-token.sh`. It writes a new token file, puts the new SHA-256 in `internal.env` and restarts `internal`; the old token then gets a 404. Put the new URL in GlitchTip and delete the file. Caddy logs never contain the token: the URI of `/hooks/glitchtip/*` is redacted before a log line is written.
@@ -241,7 +284,7 @@ sudo journalctl CONTAINER_NAME=caddy -o cat | grep remote_ip | tail -3
 - **Admin and internal have no egress.** If admin must reach an outside service later (GlitchTip error reports via `@sentry/nextjs`), give it an egress-only network of its own rather than `ebt-edge`.
 - **sshd** (review C-M3, S5): the drop-in is `00-ebooktrivia.conf`, so it sorts first. provision.sh refuses a drop-in sorted before it that sets one of its keywords, any other `AllowUsers` / `AllowGroups` (they add up across files), and any `Match` block. It does not refuse AlmaLinux's own `50-redhat.conf`, which sets some of the same keywords but sorts after it and so cannot win. After every change it checks that `sshd -T` shows each setting. `AllowUsers` admits only `ADMIN_SSH_USER`, so the deploy story's forced-command login needs its own `AllowUsers` entry (and a shell: `ebt` has none).
 - **Root never writes inside a tree the app user owns** (review S1). `/etc/ebooktrivia` and its subdirectories are `root:ebt 0750`, files `0640`; the root helpers refuse a path with a non-root ancestor; files under the app user's home are written by the app user. Provisioned config is labeled `container_file_t` by `semanage fcontext` and mounted read-only without relabeling (rootless podman cannot relabel root-owned files).
-- **Data directories** (review S7): `/srv/data/deliverables` (ebook PDFs and public images) is read-only for public and the worker; `/srv/data` as a whole (imports, proofs) is mounted into admin only.
+- **Data directories** (review S7): `/srv/data/deliverables` (ebook PDFs) is read-only for public and the worker; `/srv/data/images` (the set thumbnails and prize images the admin app writes as `images/<upload id>.webp`, each with a `.display.webp` copy) is read-only for public, which serves them on the play origin only (`/api/v1/play/img/...`, `apps/public/src/lib/play/images.ts`); question images are stored in `question-images/`, which public does not mount; `/srv/data` as a whole (imports, proofs) is mounted into admin only. See [Content images](#content-images-set-thumbnails-prize-images-question-images).
 - **Egress guard** (review S6): an nftables table `inet ebt_egress` (`ebt-egress-guard.service`) drops the app user's traffic to 169.254.0.0/16 (provider metadata) and to this host's own addresses, except DNS (port 53, wherever the resolver is) and replies on connections others opened (Caddy's listeners); IPv6 link-local and `fd00:ec2::254` too. The app user's systemd requires the guard, so without it no container starts (fail closed).
 - **Accepted risk** (review S11): `net.ipv4.ip_unprivileged_port_start=80` lets any local user bind ports 80-1023. The VM is single-tenant (root, the admin user and `ebt` only); the alternative (a root-owned socket unit handing fds to a user service) was judged not worth its complexity.
 - **Accepted risk, M11 item** (review S8): Valkey runs `noeviction` with `maxmemory 384mb`; `public` can write `rl:*` and `cache:public:*` without a bound, so a bug or abuse could fill it and make every write fail. Valkey has no per-user memory quota, so every `rl:*` and `cache:public:*` key must carry a TTL, and monitoring must alert on `used_memory` (for example above 80 % of `maxmemory`); M11 load tests must watch it too.

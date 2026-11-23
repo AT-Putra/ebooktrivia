@@ -350,7 +350,8 @@ describe("sealed secrets (plan M2.3: the admin process cannot decrypt)", () => {
     // US-018: content images are re-encoded with sharp and imports go through inspectZip, both in
     // @ebooktrivia/uploads; every other module keeps to the PDF-only subpath. Nothing imports sharp itself.
     // US-030: a fulfilment proof is checked (and an image re-encoded) by the same policy, in its own module.
-    const fullUploads = ["lib/settings/fulfillment-proof.ts", "lib/settings/images.ts", "lib/settings/trivia-import.ts"];
+    // The image maintenance (lib/settings/image-maintenance.ts: display copies of older images) runs only from src/cli/images.ts on the VM, never from a page.
+    const fullUploads = ["lib/settings/fulfillment-proof.ts", "lib/settings/image-maintenance.ts", "lib/settings/images.ts", "lib/settings/trivia-import.ts"];
     for (const file of srcFiles) {
       expect(file.text, file.rel).not.toMatch(/from "@ebooktrivia\/crypto"|import\("@ebooktrivia\/crypto"\)/);
       expect(file.text, file.rel).not.toMatch(/from "sharp"/);

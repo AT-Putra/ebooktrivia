@@ -48,7 +48,7 @@ GRANT USAGE ON SCHEMA admin_auth TO admin_rw;
 GRANT SELECT ON
   public.products, public.programs, public.trivia_sets, public.questions, public.question_options,
   public.prize_tiers, public.legal_pages, public.landing_pages, public.landing_page_adnets,
-  public.lp_domains, public.app_settings, public.uploads, public.leaderboard_snapshots,
+  public.lp_domains, public.app_settings, public.leaderboard_snapshots,
   public.winners, public.player_programs
   TO public_rw;
 GRANT SELECT (id, slug, name, clickid_param, active) ON public.adnets TO public_rw;
@@ -56,6 +56,10 @@ GRANT SELECT (id, phone, status, active) ON public.waha_sessions TO public_rw;
 -- The deep GET /healthz (US-015, @ebooktrivia/db/health) reads the age of the worker's heartbeat: the component name
 -- and the time, never the `info` column.
 GRANT SELECT (component, beat_at) ON public.heartbeats TO public_rw;
+-- uploads: only the columns the play origin's image route reads (apps/public lib/play/images.ts: the upload a set or prize
+-- tier points at, of kind image and type image/webp, and where it is stored); never the original file name, the size, the
+-- digest or the admin who uploaded it.
+GRANT SELECT (id, kind, storage_path, content_type) ON public.uploads TO public_rw;
 
 -- players and magic_links: NO privilege at all (US-026, the US-009 carry-over); the login reaches them
 -- only through the US-026 functions (block at the end). player_otps: what the OTP issue (insert,
@@ -475,7 +479,9 @@ GRANT EXECUTE ON FUNCTION public.report_source_label(uuid), public.mask_name(tex
 -- explanation, correctness or answer row (AC-Q9; US-027 contract: a compromised public app must neither read a
 -- question before it is served nor read another player's pick, which names the correct option id everyone gets):
 -- of questions only what the trivia page counts (id, set, position, points, timer), nothing of question_options
--- or attempt_questions. No score either (security review HIGH-1, the rollback probe: a score read in the
+-- or attempt_questions. A question's image is out of reach as well: questions.image_upload_id is not in that column
+-- list, and the file is stored in question-images/, which the public app's container does not mount (until question
+-- images are delivered by an encrypted, database-gated design, players are not shown one). No score either (security review HIGH-1, the rollback probe: a score read in the
 -- transaction of a pick tells whether the pick was right before it is committed): of set_attempts only which sets
 -- the player started and finished, nothing of player_program_stats. Scores and ranks are read only through the
 -- play functions that refuse a transaction that has written (sql/play.sql play_attempts, play_standing,

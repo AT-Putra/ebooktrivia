@@ -46,7 +46,7 @@ export function triviaImage({ rt, admin }: RouteContext, request: Request): Prom
     const questionId = rawQuestion === null ? undefined : uuid(rawQuestion);
     const actor = { userId: admin.userId, role: admin.role };
     await checkImageTarget(rt.sql, actor, questionId === undefined ? { programId, setId } : { programId, setId, questionId });
-    const image = await storeImage(rt.settings, await file(request, IMAGE_MAX_BYTES));
+    const image = await storeImage(rt.settings, await file(request, IMAGE_MAX_BYTES), questionId === undefined ? "thumbnail" : "question");
     if (questionId === undefined) await setSetThumbnail(rt.sql, actor, programId, setId, image);
     else await setQuestionImage(rt.sql, actor, { programId, setId, questionId }, image);
     return json(200, { ok: true });
@@ -61,7 +61,7 @@ export function prizeImage({ rt, admin }: RouteContext, request: Request): Promi
     const programId = uuid(params.get("program") ?? "");
     const tierId = uuid(params.get("tier") ?? "");
     await checkPrizeImageTarget(rt.sql, programId, tierId);
-    const image = await storeImage(rt.settings, await file(request, IMAGE_MAX_BYTES));
+    const image = await storeImage(rt.settings, await file(request, IMAGE_MAX_BYTES), "prize");
     await setPrizeImage(rt.sql, admin.userId, programId, tierId, image);
     return json(200, { ok: true });
   });

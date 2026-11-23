@@ -30,7 +30,7 @@ Staging: follow [docs/runbooks/staging-provision.md](../docs/runbooks/staging-pr
 - **Pinned addresses.** Every container has one. `pg_hba.conf` admits each app login to the `ebooktrivia` database only, from its own address.
 - **Config files.** `/etc/ebooktrivia` belongs to root (group `ebt`, files `0640`); secrets in its `*.env` files are generated on the VM, never in the repository or a unit file. Under the app user's home only the app user writes.
 - **SDK.** `/srv/sdk` holds the landing-page SDK files (`sudo infra/provision/build-images.sh sdk`): the app user writes them, Caddy mounts them read-only and serves them at `api.<DOMAIN>/sdk/`, versioned files immutable for a year and the `v1.js` alias for 5 minutes. Old versions stay (pages hold them).
-- **Data.** `/srv/data/deliverables` (ebook PDFs) is read-only for public and the worker; the rest of `/srv/data` is admin's.
+- **Data.** `/srv/data/deliverables` (ebook PDFs) is read-only for public and the worker; `/srv/data/images` (the set thumbnails and prize images the Owner uploads, with their display copies) is read-only for public, which shows them to players (question images are in `question-images/`, not mounted); the rest of `/srv/data` is admin's.
 - **Landing pages.** `/srv/lp` is written by admin only (US-023: `versions/<lpId>/<n>` per uploaded ZIP, `hosts/<host>/current` a symlink swapped by rename) and read by Caddy, which serves it on the registered LP domains with on-demand TLS. The worker, which holds the private keys, has no access.
 - **Memory.** Limits follow the plan M4.2 budget: PostgreSQL 2 GB, Valkey 512 MB, public 2 × 700 MB, admin 600 MB, worker 600 MB, internal 120 MB, Caddy 150 MB.
 

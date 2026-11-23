@@ -60,7 +60,7 @@ expect "getenforce" Enforcing "$(getenforce 2>/dev/null || printf 'unavailable')
 expect "/etc/selinux/config" "SELINUX=enforcing" "$(grep -E '^SELINUX=' /etc/selinux/config 2>/dev/null)"
 avc=$(ausearch -m AVC,USER_AVC -ts boot 2>&1)
 if [[ $avc == *"<no matches>"* ]]; then pass "no AVC denial since boot"; else fail "AVC denials since boot (ausearch -m AVC,USER_AVC -ts boot): $(head -c 300 <<<"$avc")"; fi
-for path in /srv/lp /srv/data /srv/data/deliverables "$ETC/caddy" "$ETC/caddy/Caddyfile" "$ETC/postgres/pg_hba.conf" \
+for path in /srv/lp /srv/data /srv/data/deliverables /srv/data/images /srv/data/question-images "$ETC/caddy" "$ETC/caddy/Caddyfile" "$ETC/postgres/pg_hba.conf" \
   "$ETC/postgres/superuser.pass" "$ETC/postgres/walg_libsodium.key" "$ETC/postgres/walg_aws_credentials" "$ETC/valkey/valkey.conf" "$ETC/valkey/users.acl"; do
   label=$(stat -c %C "$path" 2>/dev/null)
   if [[ $label == *:container_file_t:* ]]; then pass "$path labeled container_file_t"; else fail "$path label: ${label:-<none>}"; fi

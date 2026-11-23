@@ -33,6 +33,16 @@ const LOGIN_ROUTES = [
   "app/api/v1/play/cap/redeem/route.ts",
 ];
 
+/**
+ * The routes that serve a PUBLIC picture (a set's thumbnail, a prize tier's image: lib/play/images.ts): they read no session at all, so
+ * they do not go through withPlayer; the rest of this file still applies to them (playRoute, GET, no session reader).
+ * There is no route for a QUESTION's picture: question images are not shown to players (an encrypted, database-gated design is needed first).
+ */
+const PUBLIC_IMAGE_ROUTES: Readonly<Record<string, string>> = {
+  "app/api/v1/play/img/set/[...path]/route.ts": "handleSetImage",
+  "app/api/v1/play/img/prize/[...path]/route.ts": "handlePrizeImage",
+};
+
 /** What reads a session (or its cookie) other than through withPlayer. */
 const SESSION_READER = /resolvePlayer|readPlayer|playerSession|getSession|chainStart|PLAY_SESSION_COOKIE|__Host-play_session|cookies\(\)|get\(\s*["']cookie["']\s*\)/;
 
@@ -60,7 +70,7 @@ describe("player login guards", () => {
     for (const route of playRoutes) {
       const text = read(route);
       expect(text, route).not.toMatch(SESSION_READER);
-      if (!LOGIN_ROUTES.includes(route)) expect(text, `${route} must wrap its work in withPlayer(deps, request, (playerId) => ...)`).toMatch(/withPlayer\(/);
+      if (!LOGIN_ROUTES.includes(route) && !(route in PUBLIC_IMAGE_ROUTES)) expect(text, `${route} must wrap its work in withPlayer(deps, request, (playerId) => ...)`).toMatch(/withPlayer\(/);
     }
     // The guard itself: a route that reads the session directly, or a player route without withPlayer, fails.
     expect('export const GET = playRoute("x", (deps, request) => resolvePlayer(deps, request.headers));').toMatch(SESSION_READER);
@@ -103,6 +113,26 @@ describe("player login guards", () => {
       "public.play_answer(${playerId}",
     ]);
     expect(trivia).not.toMatch(/Date\.parse|new Date\(|timestamptz/);
+  });
+
+  // The pictures of lib/play/images.ts: public, no session. Nothing takes a path from the client, and no question image is reachable.
+  it("the picture routes are the two public GET / HEAD playRoutes (set, prize) that read no session; there is no route, query or function for a question image", () => {
+    const imageRoutes = playRoutes.filter((route) => route.startsWith("app/api/v1/play/img/"));
+    expect(imageRoutes.sort()).toEqual(Object.keys(PUBLIC_IMAGE_ROUTES).sort());
+    for (const [route, handler] of Object.entries(PUBLIC_IMAGE_ROUTES)) {
+      const text = read(route);
+      expect(text, route).toContain(`export const GET = playRoute("play.image", (deps, request) => ${handler}(deps, request));`);
+      expect(text, route).not.toMatch(SESSION_READER);
+      expect([...text.matchAll(/^export const ([A-Z]+) = /gm)].map((m) => m[1]), route).toEqual(["GET", "HEAD"]);
+      expect(text, route).toContain("export const HEAD = GET;");
+    }
+    const images = read("lib/play/images.ts");
+    expect(images).not.toMatch(SESSION_READER);
+    expect(images).not.toMatch(/play_question_image|public.questions|attempt_questions|playerId/);
+    // The file comes from the uploads row the set or tier pointed at (and only a path that is exactly its own id's), never from the request.
+    expect(images).not.toMatch(/searchParams/);
+    expect(images.match(/JOIN public.uploads/g)).toHaveLength(2);
+    expect(images).toContain("isPublicImagePath(uploadId, row.storage_path)");
   });
 
   it("every state-changing play handler checks the exact Origin before anything else", () => {

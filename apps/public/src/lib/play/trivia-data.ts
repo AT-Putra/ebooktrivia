@@ -5,6 +5,7 @@
 // (play_attempts, play_standing, play_leaderboard: masked, and refused inside a transaction that has written).
 // Every query here is a statement (an autocommit transaction) of its own.
 import type { Sql } from "../db.ts";
+import { prizeImageUrl, setImageUrl } from "./image-urls.ts";
 
 export interface ProgramSummary {
   readonly id: string;
@@ -35,6 +36,8 @@ export interface PageSet {
   readonly id: string;
   readonly position: number;
   readonly title: string;
+  /** The Owner's uploaded thumbnail (lib/play/images.ts serves it), or null: the grid shows its generic art. */
+  readonly thumbnailUrl: string | null;
   readonly questionCount: number;
   /** The sum of the set's question points. */
   readonly maxScore: number;
@@ -42,10 +45,13 @@ export interface PageSet {
 }
 
 export interface PrizeTier {
+  readonly id: string;
   readonly rankFrom: number;
   readonly rankTo: number;
   readonly name: string;
   readonly valueIdr: number;
+  /** The Owner's uploaded image of the tier (lib/play/images.ts serves it), or null: the banner shows its generic art. */
+  readonly imageUrl: string | null;
 }
 
 export interface BannerWinner {
@@ -85,8 +91,8 @@ export async function programPage(sql: Sql, playerId: string, slug: string): Pro
      WHERE p.slug = ${slug} AND p.status <> 'draft'`;
   if (program === undefined) return null;
   const [noted] = await sql<{ floor: number; now: Date }[]>`SELECT public.play_note_unlocked(${playerId}, ${program.id}) AS floor, clock_timestamp() AS now`;
-  const sets = await sql<{ id: string; position: number; title: string; question_count: number; max_score: number; attempt_id: string | null; score: number | null; finished: boolean | null }[]>`
-    SELECT s.id, s.position, s.title,
+  const sets = await sql<{ id: string; position: number; title: string; thumbnail_upload_id: string | null; question_count: number; max_score: number; attempt_id: string | null; score: number | null; finished: boolean | null }[]>`
+    SELECT s.id, s.position, s.title, s.thumbnail_upload_id,
            (SELECT count(*)::int FROM public.questions q WHERE q.set_id = s.id) AS question_count,
            (SELECT coalesce(sum(q.points), 0)::int FROM public.questions q WHERE q.set_id = s.id) AS max_score,
            a.attempt_id, a.score, a.finished
@@ -94,8 +100,8 @@ export async function programPage(sql: Sql, playerId: string, slug: string): Pro
       LEFT JOIN public.play_attempts(${playerId}, ${program.id}) a ON a.set_id = s.id
      WHERE s.program_id = ${program.id}
      ORDER BY s.position`;
-  const tiers = await sql<{ rank_from: number; rank_to: number; name: string; value_idr: string }[]>`
-    SELECT rank_from, rank_to, name, value_idr FROM public.prize_tiers WHERE program_id = ${program.id} ORDER BY rank_from`;
+  const tiers = await sql<{ id: string; rank_from: number; rank_to: number; name: string; value_idr: string; image_upload_id: string | null }[]>`
+    SELECT id, rank_from, rank_to, name, value_idr, image_upload_id FROM public.prize_tiers WHERE program_id = ${program.id} ORDER BY rank_from`;
   const winners =
     program.status === "finalized"
       ? await sql<{ rank: number; prize_name: string; masked_name: string }[]>`SELECT rank, prize_name, masked_name FROM public.program_winners_banner(${program.id})`
@@ -114,11 +120,19 @@ export async function programPage(sql: Sql, playerId: string, slug: string): Pro
       id: s.id,
       position: s.position,
       title: s.title,
+      thumbnailUrl: s.thumbnail_upload_id === null ? null : setImageUrl(s.id, s.thumbnail_upload_id),
       questionCount: s.question_count,
       maxScore: s.max_score,
       attempt: s.attempt_id === null ? null : { id: s.attempt_id, score: s.score ?? 0, finished: s.finished === true },
     })),
-    tiers: tiers.map((t) => ({ rankFrom: t.rank_from, rankTo: t.rank_to, name: t.name, valueIdr: Number(t.value_idr) })),
+    tiers: tiers.map((t) => ({
+      id: t.id,
+      rankFrom: t.rank_from,
+      rankTo: t.rank_to,
+      name: t.name,
+      valueIdr: Number(t.value_idr),
+      imageUrl: t.image_upload_id === null ? null : prizeImageUrl(t.id, t.image_upload_id),
+    })),
     winners: winners.map((w) => ({ rank: w.rank, prizeName: w.prize_name, maskedName: w.masked_name })),
   };
 }

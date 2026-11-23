@@ -42,6 +42,7 @@ const deps: PlayDeps = {
   sealer: { sealOtp: () => Buffer.alloc(54) },
   otpPepper: randomBytes(32),
   playOrigin: PLAY_ORIGIN,
+  dataDir: "/srv/data",
   log: () => undefined,
   defer: () => undefined,
 };

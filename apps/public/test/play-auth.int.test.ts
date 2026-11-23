@@ -97,6 +97,7 @@ function playDeps(overrides: Partial<PlayDeps> = {}): TestDeps {
     sealer,
     otpPepper: PEPPER,
     playOrigin: PLAY_ORIGIN,
+    dataDir: "/srv/data",
     log: logs.log,
     defer: (task) => deferred.push(task),
     deferred,

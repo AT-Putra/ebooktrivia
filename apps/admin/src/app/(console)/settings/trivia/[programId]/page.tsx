@@ -81,7 +81,7 @@ export default async function TriviaSetsPage({ params }: { params: Promise<{ pro
               ) : null}
             </div>
             <CardDescription>
-              {set.questionCount} question{set.questionCount === 1 ? "" : "s"} · {set.thumbnailUploadId === null ? "no thumbnail" : "thumbnail set (shown to players from M9)"}
+              {set.questionCount} question{set.questionCount === 1 ? "" : "s"} · {set.thumbnailUploadId === null ? "no thumbnail" : "thumbnail set (shown to players)"}
             </CardDescription>
             {editable ? (
               <div className="grid gap-4 border-t pt-4 lg:grid-cols-2">

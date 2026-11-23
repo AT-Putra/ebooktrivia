@@ -101,7 +101,7 @@ export async function createRuntime(env: Env): Promise<PublicRuntime> {
       log: logEvent,
       maxAttempts: async () => (await loadOtpSettings(sql))["otp.max_attempts"],
     });
-    play = { sql, valkey, auth, capFor, sealer: sealing.sealer, otpPepper: config.play.otpPepper, playOrigin: config.play.playOrigin, log: logEvent };
+    play = { sql, valkey, auth, capFor, sealer: sealing.sealer, otpPepper: config.play.otpPepper, playOrigin: config.play.playOrigin, dataDir: config.dataDir, log: logEvent };
   } else {
     logEvent("warn", "play.disabled", { reason: playReason ?? "configuration" });
   }

@@ -1,13 +1,14 @@
 // US-025: the signed ebook download (lib/files.ts) against a real Valkey (ACL user `public`) and a PDF on disk. WAHA fetches the URL the worker
 // signs (10 minutes), the e-mail fallback holds one for 72 hours; nothing else is ever served.
 import { randomBytes, randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { signFileUrl } from "@ebooktrivia/adapters";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createWahaMockApp } from "../../../infra/waha-mock/src/app.ts";
 import { FILE_URL_CAP, type FilesDeps, handleFileDownload, urlKey } from "../src/lib/files.ts";
+import { requireOrSkip } from "./capabilities.ts";
 import { captureLog, DOMAIN, freshIp, newValkey, valkey } from "./support.ts";
 
 /** A different expiry for every URL a test signs (the limit is per signed URL, i.e. per path, expiry and nonce: the nonce alone already separates them): a TTL of 1..599 s on top of the base. */
@@ -100,6 +101,19 @@ describe("the signed ebook download", () => {
     }
     // A signed deliverable that is not on disk: 404.
     expect((await get(d, signed(`/files/deliverables/${randomUUID()}.pdf`))).status).toBe(404);
+  });
+
+  it("answers 404 for a deliverable that is a symbolic link (never following it); skipped only on a machine that cannot make one, never in CI", async (context) => {
+    const linked = randomUUID();
+    let made = true;
+    try {
+      await symlink(join(dataDir, STORAGE), join(dataDir, `deliverables/${linked}.pdf`));
+    } catch {
+      made = false;
+    }
+    requireOrSkip(context, made, "this machine cannot create symbolic links (Windows without the privilege); lib/safe-file.test.ts covers the logic with faked calls");
+    expect((await get(deps(), signed(`/files/deliverables/${linked}.pdf`))).status).toBe(404);
+    expect((await get(deps(), signed())).status).toBe(200);
   });
 
   it("is closed (503) without the key", async () => {

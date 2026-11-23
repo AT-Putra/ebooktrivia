@@ -9,6 +9,7 @@ const set = (position: number, attempt: PageSet["attempt"] = null): PageSet => (
   id: `set-${String(position)}`,
   position: position * 10,
   title: `Set ${String(position)}`,
+  thumbnailUrl: null,
   questionCount: 2,
   maxScore: 20,
   attempt,

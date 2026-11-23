@@ -11,16 +11,16 @@
 //     downloads from one address for every delivery of a burst, and a per-IP limit there would stop deliveries. It also caps a leaked link.
 //     Counted only for a valid signature (a flood of forged URLs costs one HMAC each). With Valkey down, a short-lived URL (WAHA's, 10 minutes
 //     or less) is served anyway: the HMAC already authenticates it and it expires on its own; a long one (the 72 h e-mail link) fails closed.
-//   - The file is streamed from /srv/data/deliverables (mounted read-only here); `nosniff`, `Content-Disposition: attachment` and a CSP
+//   - The file is streamed from /srv/data/deliverables (mounted read-only here), opened without following a link and read from the open
+//     handle (a link at its name is as good as no file: 404, lib/safe-file.ts); `nosniff`, `Content-Disposition: attachment` and a CSP
 //     `sandbox` are always sent (the file is never rendered on our origin), and nothing is cached.
 // The URL is a bearer credential: the query is never logged (Caddy redacts /files/ URIs, infra/caddy/Caddyfile), only an outcome code.
-import { createReadStream } from "node:fs";
-import { stat } from "node:fs/promises";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { verifyFileUrl } from "@ebooktrivia/adapters";
 import { createHash } from "node:crypto";
 import type { Logger } from "./log.ts";
+import { openRegularFile } from "./safe-file.ts";
 import { hitRateLimits, type Valkey, ValkeyUnavailable } from "./valkey.ts";
 
 /** Downloads of one signed URL (WAHA may retry a fetch; a leaked link is worth this many). */
@@ -94,19 +94,15 @@ export async function handleFileDownload(deps: FilesDeps, request: Request): Pro
     // A short-lived URL (WAHA's) is authenticated by its signature and expires on its own: not a reason to stop a delivery.
     log("warn", "files.degraded", { reason: "valkey_unavailable_short_url" }, error);
   }
-  const file = join(deps.dataDir, storagePath);
-  let size: number;
-  try {
-    const info = await stat(file);
-    if (!info.isFile()) return plain(404);
-    size = info.size;
-  } catch {
+  // Opened without following a link (a link at the file's name is as good as no file) and streamed from the open handle (lib/safe-file.ts).
+  const opened = await openRegularFile(join(deps.dataDir, storagePath)).catch(() => null);
+  if (opened === null) {
     log("warn", "files.refused", { reason: "missing_file" });
     return plain(404);
   }
-  log("info", "files.served", { outcome: "ok", count: size });
-  return new Response(Readable.toWeb(createReadStream(file)) as ReadableStream, {
+  log("info", "files.served", { outcome: "ok", count: opened.size });
+  return new Response(Readable.toWeb(opened.handle.createReadStream()) as ReadableStream, {
     status: 200,
-    headers: { ...HEADERS, "content-type": "application/pdf", "content-length": String(size), "content-disposition": 'attachment; filename="ebook.pdf"' },
+    headers: { ...HEADERS, "content-type": "application/pdf", "content-length": String(opened.size), "content-disposition": 'attachment; filename="ebook.pdf"' },
   });
 }

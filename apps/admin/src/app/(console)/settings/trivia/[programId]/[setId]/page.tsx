@@ -178,7 +178,7 @@ export default async function TriviaQuestionsPage({ params }: { params: Promise<
                   <UploadFile
                     id={`q-image-${question.id}`}
                     url={`/uploads/image/trivia?program=${programId}&set=${setId}&question=${question.id}`}
-                    label={question.imageUploadId === null ? "Image (optional; JPEG, PNG or WebP, up to 2 MB)" : "Replace the image"}
+                    label={question.imageUploadId === null ? "Image (optional; JPEG, PNG or WebP, up to 2 MB; not shown to players yet)" : "Replace the image (not shown to players yet)"}
                     accept="image/jpeg,image/png,image/webp"
                     mode="image"
                   />

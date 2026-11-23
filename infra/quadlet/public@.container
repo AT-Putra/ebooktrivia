@@ -3,8 +3,9 @@
 # listen on, nothing else) and health check are in public@{a,b}.container.d/: every instance
 # drop-in must set HealthCmd (Notify=healthy below waits for it; quadlets.test.ts). The edge listener
 # (packages/edge) serves /livez and drains on SIGTERM; StopTimeout covers EDGE_DRAIN_MS +
-# EDGE_CLOSE_TIMEOUT_MS. Ebook files are read-only here (/srv/data/deliverables); the rest of
-# /srv/data (imports, proofs) is admin's only.
+# EDGE_CLOSE_TIMEOUT_MS. Ebook files (/srv/data/deliverables) and the set thumbnails and prize images the Owner uploads (/srv/data/images,
+# which the play origin shows to players: apps/public lib/play/images.ts; NOT question-images/, never mounted here) are read-only here; the rest of /srv/data (imports,
+# proofs) is admin's only.
 [Unit]
 Description=ebooktrivia public app (instance %i)
 Wants=postgres.service valkey.service
@@ -22,6 +23,7 @@ Environment=NODE_OPTIONS=--max-old-space-size=448
 # The image's node user (uid 1000) is the app user on the host.
 UserNS=keep-id:uid=1000,gid=1000
 Volume=/srv/data/deliverables:/srv/data/deliverables:ro,z
+Volume=/srv/data/images:/srv/data/images:ro,z
 Tmpfs=/app/apps/public/.next/cache:rw,size=64m,mode=1777
 HealthInterval=2s
 HealthTimeout=2s

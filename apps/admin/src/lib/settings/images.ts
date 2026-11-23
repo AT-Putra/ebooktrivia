@@ -11,17 +11,23 @@
 // costs no re-encode and no disk write; lib/settings/image-link.ts links the stored file (it loads
 // no sharp, so pages and actions never do).
 //
-// Storage follows the ebook PDFs (lib/settings/uploads.ts): <ADMIN_DATA_DIR>/images/<upload id>.webp,
-// written exclusively ("wx") before the transaction that inserts its uploads row and links it, and
-// removed again if that transaction fails. The admin app never serves the file. Serving images to
-// players (api / play origin with nosniff) is M9; until then they are stored only. A replaced or
-// removed image keeps its file and uploads row (a cloned program may still use it); cleaning up
-// unreferenced images is a follow-up.
+// Storage follows the ebook PDFs (lib/settings/uploads.ts), in the directory of the image's purpose
+// (@ebooktrivia/core content-images.ts): a set's thumbnail or a prize tier's image is stored as
+// <ADMIN_DATA_DIR>/images/<upload id>.webp together with its DISPLAY COPY images/<upload id>.display.webp (a
+// smaller WebP: thumbnails fit 480 x 600, prize images 256 x 256), which is what the play pages load; a
+// QUESTION's image is stored as question-images/<upload id>.webp and nothing else. Written exclusively ("wx")
+// before the transaction that inserts the uploads row and links it, and removed again if that transaction
+// fails. The admin app never serves a file: the public app serves the two shown kinds to players on the play
+// origin (apps/public lib/play/images.ts, through the row that owns the image, with nosniff), from a read-only
+// mount of <data dir>/images; question-images/ is not mounted there, so a question's picture is not readable
+// by the public app at all (question images await an encrypted, database-gated design before players see them).
+// A replaced or removed image keeps its file and uploads row (a cloned program may still use it); cleaning up
+// unreferenced images is a follow-up. src/cli/images.ts backfills display copies and moves older question images.
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { isSafeFileName } from "@ebooktrivia/core";
-import { checkUpload, DEFAULT_UPLOAD_LIMITS, UploadRejected } from "@ebooktrivia/uploads";
+import { CONTENT_IMAGE_DIR, type ContentImagePurpose, contentImagePath, DISPLAY_BOXES, displayImagePath, isSafeFileName, QUESTION_IMAGE_DIR } from "@ebooktrivia/core";
+import { checkUpload, DEFAULT_UPLOAD_LIMITS, displayCopy, UploadRejected } from "@ebooktrivia/uploads";
 import type { SettingsConfig } from "./env.ts";
 import { InvalidInput, singleLine } from "./fields.ts";
 import type { ImageFile, StoredImage } from "./image-link.ts";
@@ -60,9 +66,13 @@ export function parseFilename(raw: string | null): string {
   return name;
 }
 
-/** Checks and re-encodes the image, then writes it under the data directory (no database yet). */
-export async function storeImage(settings: SettingsConfig, file: ImageFile): Promise<StoredImage> {
+/**
+ * Checks and re-encodes the image, then writes it under the data directory (no database yet): where, and whether with a
+ * display copy, depends on what it is for. The files are removed again by `discard` (also when writing the display copy fails).
+ */
+export async function storeImage(settings: SettingsConfig, file: ImageFile, purpose: ContentImagePurpose): Promise<StoredImage> {
   if (settings.dataDir === null) throw new InvalidInput("Uploads are not configured on the server (ADMIN_DATA_DIR).");
+  const dataDir = settings.dataDir;
   let encoded: Buffer;
   try {
     const accepted = await checkUpload({ kind: "image", bytes: file.bytes, filename: file.filename, mimeType: file.mimeType }, IMAGE_LIMITS);
@@ -72,16 +82,31 @@ export async function storeImage(settings: SettingsConfig, file: ImageFile): Pro
     throw new InvalidInput(REJECTIONS[error.code] ?? "This file is not a JPEG, PNG or WebP image.");
   }
   const uploadId = randomUUID();
-  const storagePath = `images/${uploadId}.webp`;
-  const path = join(settings.dataDir, storagePath);
-  await mkdir(join(settings.dataDir, "images"), { recursive: true });
-  await writeFile(path, encoded, { flag: "wx", mode: 0o640 });
+  const storagePath = contentImagePath(purpose, uploadId);
+  const written: string[] = [];
+  const discard = async (): Promise<void> => {
+    await Promise.all(written.map((path) => rm(path, { force: true })));
+  };
+  const write = async (relativePath: string, bytes: Uint8Array): Promise<void> => {
+    const path = join(dataDir, relativePath);
+    await writeFile(path, bytes, { flag: "wx", mode: 0o640 });
+    written.push(path);
+  };
+  try {
+    await mkdir(join(dataDir, purpose === "question" ? QUESTION_IMAGE_DIR : CONTENT_IMAGE_DIR), { recursive: true });
+    await write(storagePath, encoded);
+    if (purpose !== "question") await write(displayImagePath(uploadId), await displayCopy(encoded, DISPLAY_BOXES[purpose]));
+  } catch (error) {
+    await discard();
+    if (error instanceof UploadRejected) throw new InvalidInput(REJECTIONS[error.code] ?? "The image cannot be resized. Save it again as JPEG, PNG or WebP and retry.");
+    throw error;
+  }
   return {
     uploadId,
     storagePath,
     sizeBytes: encoded.length,
     sha256: createHash("sha256").update(encoded).digest(),
     filename: file.filename,
-    discard: () => rm(path, { force: true }),
+    discard,
   };
 }

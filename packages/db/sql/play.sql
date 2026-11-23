@@ -18,6 +18,12 @@
 -- and takes the program's SHARED contest lock for every write (the play side of the US-027 lock contract; the
 -- functions here never take it themselves).
 --
+-- Question images are NOT shown to players yet. public_rw cannot read questions.image_upload_id, the files are stored in
+-- question-images/ (which the public app's container does not mount) and no function here reveals one: a picture is a part
+-- of the question, so it may not be readable before the question is served. Showing them awaits a design that keeps the file
+-- encrypted at rest and releases it, gated by this database, only to the player whose attempt has served the question.
+-- (Set thumbnails and prize images are not secret: the public app serves them, apps/public lib/play/images.ts.)
+--
 -- NOTHING SECRET COMES OUT OF A TRANSACTION THAT PLAYED (security review HIGH-1, the rollback probe, and its
 -- residual side channel): a caller that could learn a question's text, a pick's correctness or a score inside
 -- the transaction that served the question or recorded the pick, by reading it OR by measuring what the

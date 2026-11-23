@@ -4,7 +4,7 @@ import { crc32, deflateSync } from "node:zlib";
 import sharp from "sharp";
 import { describe, expect, it, vi } from "vitest";
 import { makeZip, xlsx } from "../test/zip-fixture.ts";
-import { checkUpload, DEFAULT_UPLOAD_LIMITS, sniff, type UploadInput, UploadRejected, type UploadRejectCode } from "./policy.ts";
+import { checkUpload, DEFAULT_UPLOAD_LIMITS, displayCopy, sniff, type UploadInput, UploadRejected, type UploadRejectCode } from "./policy.ts";
 
 const MiB = 1024 * 1024;
 const PDF = Buffer.from("%PDF-1.7\n1 0 obj << /Type /Catalog >> endobj\ntrailer << /Root 1 0 R >>\n%%EOF\n");
@@ -383,5 +383,32 @@ describe("image decode limits", () => {
     } finally {
       spy.mockRestore();
     }
+  });
+});
+
+describe("displayCopy (the smaller copy of a content image the play pages load)", () => {
+  it("scales a large WebP down to fit the box, keeping the aspect ratio, as a metadata-free WebP", async () => {
+    const big = await solid(2000, 1000).webp().toBuffer();
+    const copy = await displayCopy(big, { width: 480, height: 600 });
+    expect(sniff(copy)).toBe("webp");
+    const meta = await sharp(copy).metadata();
+    expect({ width: meta.width, height: meta.height }).toEqual({ width: 480, height: 240 });
+    expect(meta.exif).toBeUndefined();
+    expect(copy.length).toBeLessThan(big.length);
+    // A tall image fits the height instead.
+    const tall = await displayCopy(await solid(1000, 2000).webp().toBuffer(), { width: 480, height: 600 });
+    expect(await sharp(tall).metadata()).toMatchObject({ width: 300, height: 600 });
+    // A prize image: at most 256 px each way.
+    const prize = await displayCopy(await solid(1024, 768).webp().toBuffer(), { width: 256, height: 256 });
+    expect(await sharp(prize).metadata()).toMatchObject({ width: 256, height: 192 });
+  });
+
+  it("never enlarges a small image", async () => {
+    const copy = await displayCopy(await solid(100, 80).webp().toBuffer(), { width: 480, height: 600 });
+    expect(await sharp(copy).metadata()).toMatchObject({ width: 100, height: 80 });
+  });
+
+  it("refuses bytes that are not an image, as UploadRejected", async () => {
+    await expect(displayCopy(Buffer.from("not an image"), { width: 480, height: 600 })).rejects.toMatchObject({ code: "invalid_image" });
   });
 });

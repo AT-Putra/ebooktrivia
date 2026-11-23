@@ -11,6 +11,7 @@ import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { solidPng, webpSize } from "./image-fixtures.ts";
 import { asAdmin, createTestAdmin, newRuntime, root, suffix } from "./support.ts";
 import { questionImport, triviaImage } from "../src/lib/next/content-routes.ts";
 import type { RouteContext } from "../src/lib/next/route.ts";
@@ -18,11 +19,11 @@ import { NO_SETTINGS, type SettingsConfig } from "../src/lib/settings/env.ts";
 import { InvalidInput, NotAllowed } from "../src/lib/settings/fields.ts";
 import { listLegalVersions, publishLegalPage, saveLegalDraft } from "../src/lib/settings/legal.ts";
 import { getLimits, LIMITS, saveLimits } from "../src/lib/settings/limits.ts";
-import { createPrizeTier, deletePrizeTier, updatePrizeTier } from "../src/lib/settings/prizes.ts";
+import { createPrizeTier, deletePrizeTier, setPrizeImage, updatePrizeTier } from "../src/lib/settings/prizes.ts";
 import { GRACE_OVER, overrideQuestion } from "../src/lib/settings/rescore.ts";
 import { importQuestionFile } from "../src/lib/settings/trivia-import.ts";
 import { storeImage } from "../src/lib/settings/images.ts";
-import { type Actor, createQuestion, createSet, deleteQuestion, deleteSet, getSet, LABEL_SWAP, moveSet, renameSet, setQuestionImage, STAFF_LOCKED, updateQuestion } from "../src/lib/settings/trivia.ts";
+import { type Actor, createQuestion, createSet, deleteQuestion, deleteSet, getSet, LABEL_SWAP, moveSet, renameSet, setQuestionImage, setSetThumbnail, STAFF_LOCKED, updateQuestion } from "../src/lib/settings/trivia.ts";
 
 type Id = { id: string };
 let dataDir = "";
@@ -344,34 +345,73 @@ const PNG = Buffer.concat([
   Buffer.from("<script>alert(1)</script>"),
 ]);
 
+const listing = (dir: string): Promise<string[]> => readdir(join(dataDir, dir)).catch(() => []);
+const filesOf = async (uploadId: string): Promise<string[]> => [...(await listing("images")), ...(await listing("question-images"))].filter((name) => name.includes(uploadId)).sort();
+
 describe("content images", () => {
-  it("re-encodes a question image to WebP under images/, links it, and never stores the original bytes", async () => {
+  it("re-encodes a question image to WebP under question-images/ (NOT images/, which the public app mounts), links it, never stores the original bytes, and makes no display copy", async () => {
     const { programId, setId } = await program();
     const qid = await as(owner, () => createQuestion(rt.sql, owner, programId, setId, draft("Gambar?")));
-    await as(owner, async () => setQuestionImage(rt.sql, owner, { programId, setId, questionId: qid }, await storeImage(settings, { bytes: PNG, filename: "soal.png", mimeType: "image/png" })));
-    const row = await one(root<{ path: string; type: string; kind: string }[]>`
-      SELECT u.storage_path AS path, u.content_type AS type, u.kind FROM questions q JOIN uploads u ON u.id = q.image_upload_id WHERE q.id = ${qid}`);
+    await as(owner, async () => setQuestionImage(rt.sql, owner, { programId, setId, questionId: qid }, await storeImage(settings, { bytes: PNG, filename: "soal.png", mimeType: "image/png" }, "question")));
+    const row = await one(root<{ id: string; path: string; type: string; kind: string }[]>`
+      SELECT u.id, u.storage_path AS path, u.content_type AS type, u.kind FROM questions q JOIN uploads u ON u.id = q.image_upload_id WHERE q.id = ${qid}`);
     expect(row).toMatchObject({ type: "image/webp", kind: "image" });
-    expect(row.path).toMatch(/^images\/[0-9a-f-]{36}\.webp$/);
+    expect(row.path).toBe(`question-images/${row.id}.webp`);
     const stored = await readFile(join(dataDir, row.path));
     expect(stored.subarray(0, 4).toString("latin1")).toBe("RIFF");
     expect(stored.subarray(8, 12).toString("latin1")).toBe("WEBP");
     expect(stored.includes(Buffer.from("<script>"))).toBe(false);
+    // Nothing of it in the directory the public app can read, and no display copy.
+    expect((await listing("images")).filter((name) => name.includes(row.id))).toEqual([]);
+    expect(await filesOf(row.id)).toEqual([`${row.id}.webp`]);
+  });
+
+  it("stores a set thumbnail and a prize image under images/ with a display copy that fits 480 x 600 and 256 x 256 (never enlarged), the original kept at its re-encoded size", async () => {
+    const { programId, setId } = await program();
+    await as(owner, async () => setSetThumbnail(rt.sql, owner, programId, setId, await storeImage(settings, { bytes: solidPng(1200, 800), filename: "set.png", mimeType: "image/png" }, "thumbnail")));
+    const thumb = await one(root<{ id: string; path: string }[]>`SELECT u.id, u.storage_path AS path FROM trivia_sets s JOIN uploads u ON u.id = s.thumbnail_upload_id WHERE s.id = ${setId}`);
+    expect(thumb.path).toBe(`images/${thumb.id}.webp`);
+    const original = await readFile(join(dataDir, thumb.path));
+    expect(webpSize(original)).toEqual({ width: 1200, height: 800 });
+    const display = await readFile(join(dataDir, `images/${thumb.id}.display.webp`));
+    expect(webpSize(display)).toEqual({ width: 480, height: 320 });
+    expect(display.length).toBeLessThan(original.length);
+    expect(await filesOf(thumb.id)).toEqual([`${thumb.id}.display.webp`, `${thumb.id}.webp`]);
+    // A small one is not enlarged.
+    await as(owner, async () => setSetThumbnail(rt.sql, owner, programId, setId, await storeImage(settings, { bytes: solidPng(100, 50), filename: "kecil.png", mimeType: "image/png" }, "thumbnail")));
+    const small = await one(root<{ id: string }[]>`SELECT thumbnail_upload_id AS id FROM trivia_sets WHERE id = ${setId}`);
+    expect(webpSize(await readFile(join(dataDir, `images/${small.id}.display.webp`)))).toEqual({ width: 100, height: 50 });
+
+    const tier = await as(owner, () => createPrizeTier(rt.sql, programId, { rankFrom: 1, rankTo: 1, name: "Juara 1", description: null, valueIdr: 1_000_000 }));
+    await as(owner, async () => setPrizeImage(rt.sql, owner.userId, programId, tier, await storeImage(settings, { bytes: solidPng(1000, 600), filename: "hadiah.png", mimeType: "image/png" }, "prize")));
+    const prize = await one(root<{ id: string; path: string }[]>`SELECT u.id, u.storage_path AS path FROM prize_tiers t JOIN uploads u ON u.id = t.image_upload_id WHERE t.id = ${tier}`);
+    expect(prize.path).toBe(`images/${prize.id}.webp`);
+    expect(webpSize(await readFile(join(dataDir, `images/${prize.id}.display.webp`)))).toEqual({ width: 256, height: 154 });
+  });
+
+  it("removes every file of an image that was stored but not linked (discard), the display copy too", async () => {
+    const stored = await storeImage(settings, { bytes: solidPng(600, 400), filename: "x.png", mimeType: "image/png" }, "thumbnail");
+    expect(await filesOf(stored.uploadId)).toHaveLength(2);
+    await stored.discard();
+    expect(await filesOf(stored.uploadId)).toEqual([]);
   });
 
   it("refuses Staff on a locked set and SVG anywhere, leaving no file behind", async () => {
     const { programId, setId } = await program();
     const qid = await as(owner, () => createQuestion(rt.sql, owner, programId, setId, draft("Terkunci?")));
     await answered(programId, setId, qid, 1, 3, phone());
-    const before = (await readdir(join(dataDir, "images")).catch(() => [])).length;
+    const count = async (): Promise<number> => (await listing("images")).length + (await listing("question-images")).length;
+    const before = await count();
     const ctx: RouteContext = { rt, req: { headers: new Headers(), ip: null }, admin: { userId: staff.userId, sessionId: "s", role: "staff", displayName: "x" } };
     const response = await as(staff, () =>
       triviaImage(ctx, new Request(`http://admin.test/uploads/image/trivia?program=${programId}&set=${setId}&question=${qid}`, { method: "POST", headers: { "content-type": "image/png", "x-file-name": "soal.png" }, body: PNG })),
     );
     expect(response.status).toBe(403);
     const svg = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>');
-    expect(await refused(storeImage(settings, { bytes: svg, filename: "x.svg", mimeType: "image/svg+xml" }))).toMatch(/SVG/);
-    expect((await readdir(join(dataDir, "images"))).length).toBe(before);
+    for (const purpose of ["thumbnail", "prize", "question"] as const) {
+      expect(await refused(storeImage(settings, { bytes: svg, filename: "x.svg", mimeType: "image/svg+xml" }, purpose))).toMatch(/SVG/);
+    }
+    expect(await count()).toBe(before);
   });
 });
 

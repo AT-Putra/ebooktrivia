@@ -484,6 +484,10 @@ step_config_files() {
   # Inside the app user's directories the app user creates the rest.
   app_ensure_dir /srv/lp/hosts 750
   app_ensure_dir /srv/data/deliverables 750
+  # The set thumbnails and prize images the admin app writes (images/<upload id>.webp and .display.webp); public mounts the directory read-only, so it must exist before the unit starts.
+  app_ensure_dir /srv/data/images 750
+  # Question images (question-images/<upload id>.webp, written by the admin app): NOT mounted into the public app, which is the point.
+  app_ensure_dir /srv/data/question-images 750
 
   step "env files (0640 root:$APP, secrets generated here)"
   # The superuser password lives in a file the postgres image reads at first start

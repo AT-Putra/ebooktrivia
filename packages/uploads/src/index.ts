@@ -3,6 +3,8 @@ export {
   type AcceptedUpload,
   checkUpload,
   DEFAULT_UPLOAD_LIMITS,
+  type DisplayBox,
+  displayCopy,
   type FileType,
   sniff,
   type UploadContext,
