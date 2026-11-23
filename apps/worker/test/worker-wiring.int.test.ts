@@ -15,7 +15,7 @@ import type { TestSender } from "../src/template-test-send.ts";
 import { runWorker, startWorker, type WorkerPorts } from "../src/worker.ts";
 import { loadWorkerConfig } from "../src/worker-config.ts";
 import { first, sql, suffix, waitFor } from "./support/db.ts";
-import { retireSessions } from "./support/delivery.ts";
+import { retireDeliveries, retireSessions } from "./support/delivery.ts";
 import { captureLogger } from "./support/log.ts";
 import { workerEnv } from "./support/processes.ts";
 import { uniquePrefix } from "./support/valkey.ts";
@@ -212,8 +212,10 @@ describe("runWorker (the production entry, in process)", () => {
   it("with the keys of worker.env (and a DOMAIN) wires the test-send, OTP, login-link, password-check, alert and delivery ports from them", async () => {
     await sql`DELETE FROM public.alert_recipients`;
     await retireSessions();
-    // This worker has the REAL password-check lookup (api.pwnedpasswords.com), the real senders and the delivery runtime: no job another file left may reach them.
+    // This worker has the REAL password-check lookup (api.pwnedpasswords.com), the real senders and the delivery runtime: no job or
+    // pending delivery another file left may reach them.
     await retireLeftoverJobs(WIRED_TOPICS);
+    await retireDeliveries();
     const env = workerEnv(uniquePrefix(), {
       SECRETS_MESSAGING_PRIVATE_KEY: base64(),
       SECRETS_PAYMENT_PRIVATE_KEY: base64(),
