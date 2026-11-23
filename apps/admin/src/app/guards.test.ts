@@ -87,6 +87,8 @@ const GUARDS: Readonly<Record<string, string>> = {
   "(console)/settings/waha/actions.ts#clearWahaApiKeyAction": "permission:waha.edit",
   "(console)/settings/waha/actions.ts#createWahaSessionAction": "permission:waha.edit",
   "(console)/settings/waha/actions.ts#updateWahaSessionAction": "permission:waha.edit",
+  "(console)/settings/waha/actions.ts#deleteWahaSessionAction": "permission:waha.edit",
+  "(console)/settings/waha/actions.ts#deleteWahaServerAction": "permission:waha.edit",
   "(console)/settings/smtp/actions.ts#saveSmtpAction": "permission:smtp.edit",
   "(console)/settings/smtp/actions.ts#setSmtpPasswordAction": "permission:smtp.edit",
   "(console)/settings/smtp/actions.ts#clearSmtpPasswordAction": "permission:smtp.edit",

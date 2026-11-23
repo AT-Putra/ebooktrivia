@@ -1,10 +1,11 @@
 "use server";
-// Owner only (waha.edit: WAHA servers, their API keys and the private-IP allowlist, AC-A1).
+// Owner only (waha.edit: WAHA servers, their API keys and the private-IP allowlist, AC-A1; also deleting a never-used server or session).
+import { redirect } from "next/navigation";
 import type { SaveState } from "../../../../lib/form-state.ts";
 import { adminAction } from "../../../../lib/next/actions.ts";
 import { saveResult } from "../../../../lib/next/settings-result.ts";
-import { checkbox, formValue, uuid } from "../../../../lib/settings/fields.ts";
-import { clearWahaApiKey, createWahaServer, createWahaSession, parseWahaServer, parseWahaSession, setWahaApiKey, updateWahaServer, updateWahaSession } from "../../../../lib/settings/waha.ts";
+import { checkbox, formValue, onlyFields, uuid } from "../../../../lib/settings/fields.ts";
+import { clearWahaApiKey, createWahaServer, createWahaSession, deleteWahaServer, deleteWahaSession, parseWahaServer, parseWahaSession, setWahaApiKey, updateWahaServer, updateWahaSession } from "../../../../lib/settings/waha.ts";
 
 const PATH = "/settings/waha";
 
@@ -59,3 +60,25 @@ export const updateWahaSessionAction = adminAction({ permission: "waha.edit" }, 
     return "Session saved.";
   }),
 );
+
+// A delete removes the card that holds its own form, so the form cannot show "Server deleted.": on success the action sends
+// the browser to the page with ?deleted=<what>, which shows the fixed text once (DeletedNotice). A refusal stays a form message.
+export const deleteWahaSessionAction = adminAction({ permission: "waha.edit" }, async ({ rt }, _previous: SaveState, form: FormData): Promise<SaveState> => {
+  const result = await saveResult(PATH, async () => {
+    onlyFields(form, ["sessionId"]);
+    await deleteWahaSession(rt.sql, uuid(formValue(form, "sessionId")));
+    return "Session deleted.";
+  });
+  if (result.status === "saved") redirect(`${PATH}?deleted=session`);
+  return result;
+});
+
+export const deleteWahaServerAction = adminAction({ permission: "waha.edit" }, async ({ rt }, _previous: SaveState, form: FormData): Promise<SaveState> => {
+  const result = await saveResult(PATH, async () => {
+    onlyFields(form, ["serverId"]);
+    await deleteWahaServer(rt.sql, uuid(formValue(form, "serverId")));
+    return "Server deleted.";
+  });
+  if (result.status === "saved") redirect(`${PATH}?deleted=server`);
+  return result;
+});

@@ -361,3 +361,181 @@ test("US-023: the Owner publishes a landing-page ZIP, sees why a bad one is refu
   const actions = await admin.sql<{ action: string }[]>`SELECT action FROM audit_log WHERE entity_id = ${lp.id} AND action LIKE 'lp_version.%' ORDER BY id`;
   expect(actions.map((a) => a.action)).toEqual(["lp_version.reject", "lp_version.publish", "lp_version.publish", "lp_version.activate"]);
 });
+
+test("WAHA: the Owner deletes a never-used server and session after a two-step confirmation; used ones show a hint and no button; 390 px holds", async () => {
+  const serverName = `Hapus ${stamp}`;
+  const host = `waha-del-${stamp}.example.test`;
+  const apiKey = `e2e-waha-key-${stamp}-0123456789`;
+  const keyName = (id: string): string => `waha.${id.replaceAll("-", "")}.api_key`;
+  await owner.goto("/settings/waha");
+  const create = owner.getByTestId("waha-create");
+  await create.getByLabel("Name").fill(serverName);
+  await create.getByLabel("Base URL (https)").fill(`https://${host}/`);
+  await create.getByRole("button", { name: "Add server" }).click();
+  await expect(create.getByRole("status")).toContainText("Server added");
+  const server = await one(admin.sql<{ id: string }[]>`SELECT id FROM waha_servers WHERE name = ${serverName}`);
+  const card = owner.getByTestId(`waha-${server.id}`);
+
+  // Its API key, then a session that is still active: nothing can be deleted yet, and the page says why.
+  await card.getByLabel("API key (write-only)").fill(apiKey);
+  await card.getByRole("button", { name: "Save API key" }).click();
+  await expect(card.getByRole("status").filter({ hasText: "API key saved" })).toBeVisible();
+  expect(await admin.sql`SELECT 1 FROM settings_secrets WHERE name = ${keyName(server.id)}`).toHaveLength(1);
+  const addForm = card.locator("form").filter({ has: owner.getByRole("button", { name: "Add session" }) });
+  await addForm.getByLabel("Session name").fill("tmp1");
+  await addForm.getByRole("button", { name: "Add session" }).click();
+  await expect.poll(async () => (await admin.sql`SELECT 1 FROM waha_sessions WHERE server_id = ${server.id} AND session_name = 'tmp1'`).length).toBe(1);
+  const tmp1 = await one(admin.sql<{ id: string }[]>`SELECT id FROM waha_sessions WHERE server_id = ${server.id} AND session_name = 'tmp1'`);
+  const tmp1Row = card.getByTestId(`waha-session-${tmp1.id}`);
+  await expect(tmp1Row.getByTestId("waha-session-delete-hint")).toHaveText("Untick Active and save before deleting.");
+  await expect(card.getByTestId("waha-server-delete-hint")).toHaveText("Untick Active on its sessions and save before deleting.");
+  await expect(card.getByRole("button", { name: "Delete session" })).toHaveCount(0);
+  await expect(card.getByRole("button", { name: "Delete server" })).toHaveCount(0);
+
+  // Untick Active and save: both buttons appear.
+  await tmp1Row.getByLabel("Active").uncheck();
+  await tmp1Row.getByRole("button", { name: "Save session" }).click();
+  await expect(tmp1Row.getByRole("button", { name: "Delete session" })).toBeVisible();
+  await expect(card.getByRole("button", { name: "Delete server" })).toBeVisible();
+
+  // A used server (one inactive and one active session, both with a send): the hints, no button.
+  const usedServer = await one(
+    admin.sql<{ id: string }[]>`INSERT INTO waha_servers (name, base_url, base_url_host, active) VALUES (${`Dipakai ${stamp}`}, ${`https://waha-used-${stamp}.example.test/`}, ${`waha-used-${stamp}.example.test`}, true) RETURNING id`,
+  );
+  const usedOff = await one(admin.sql<{ id: string }[]>`INSERT INTO waha_sessions (server_id, session_name, active) VALUES (${usedServer.id}, 'used-off', false) RETURNING id`);
+  const usedOn = await one(admin.sql<{ id: string }[]>`INSERT INTO waha_sessions (server_id, session_name, active) VALUES (${usedServer.id}, 'used-on', true) RETURNING id`);
+  await admin.sql`INSERT INTO waha_sends (session_id, kind) VALUES (${usedOff.id}, 'otp'), (${usedOn.id}, 'otp')`;
+  await owner.reload();
+  const usedCard = owner.getByTestId(`waha-${usedServer.id}`);
+  await expect(usedCard.getByTestId(`waha-session-${usedOff.id}`).getByTestId("waha-session-delete-hint")).toHaveText("Has message history, so it cannot be deleted.");
+  await expect(usedCard.getByTestId(`waha-session-${usedOn.id}`).getByTestId("waha-session-delete-hint")).toHaveText("Has message history: untick Active to stop using it.");
+  await expect(usedCard.getByTestId("waha-server-delete-hint")).toHaveText("Has message history: untick Active to stop using it.");
+  await expect(usedCard.getByRole("button", { name: /^Delete/ })).toHaveCount(0);
+
+  // Two steps: the first click only asks (the warning replaces the button, focus goes to Cancel); Cancel, and Escape, put the button back and give it the focus; nothing is deleted.
+  await tmp1Row.getByRole("button", { name: "Delete session" }).click();
+  const sessionAsk = tmp1Row.getByRole("group", { name: `Delete session tmp1? This cannot be undone.` });
+  await expect(sessionAsk).toBeVisible();
+  await expect(sessionAsk.getByRole("button", { name: "Cancel" })).toBeFocused();
+  await expect(tmp1Row.getByRole("button", { name: "Delete session" })).toHaveCount(0);
+  await sessionAsk.getByRole("button", { name: "Cancel" }).click();
+  await expect(tmp1Row.getByRole("button", { name: "Delete session" })).toBeFocused();
+  await tmp1Row.getByRole("button", { name: "Delete session" }).click();
+  await owner.keyboard.press("Escape");
+  await expect(tmp1Row.getByRole("button", { name: "Delete session" })).toBeFocused();
+  expect(await admin.sql`SELECT 1 FROM waha_sessions WHERE id = ${tmp1.id}`).toHaveLength(1);
+
+  // "Yes, delete" submits: the session goes, the server stays, and the page says so once (the card that held the form is gone).
+  const sessionRequest = owner.waitForRequest((r) => r.method() === "POST" && r.headers()["next-action"] !== undefined);
+  await tmp1Row.getByRole("button", { name: "Delete session" }).click();
+  await tmp1Row.getByRole("button", { name: "Yes, delete" }).click();
+  const deleteRequest = await sessionRequest;
+  await expect(owner.getByTestId("deleted-notice")).toHaveText("Session deleted.");
+  await expect(card.getByTestId(`waha-session-${tmp1.id}`)).toHaveCount(0);
+  expect(await admin.sql`SELECT 1 FROM waha_sessions WHERE id = ${tmp1.id}`).toHaveLength(0);
+  expect(await admin.sql`SELECT 1 FROM waha_servers WHERE id = ${server.id}`).toHaveLength(1);
+  // The query is dropped from the address once the line is shown, so a reload does not show it again.
+  await expect(owner).toHaveURL(/\/settings\/waha$/);
+  await owner.reload();
+  await expect(owner.getByTestId("deleted-notice")).toHaveCount(0);
+  // Only the two fixed texts exist: any other value shows nothing, and nothing of the query is echoed.
+  for (const asked of ["constructor", "__proto__", "%3Cb%3Ehi%3C%2Fb%3E", "Server"]) {
+    await owner.goto(`/settings/waha?deleted=${asked}`);
+    await expect(owner.getByRole("heading", { name: "WhatsApp (WAHA)" })).toBeVisible();
+    await expect(owner.getByTestId("deleted-notice")).toHaveCount(0);
+  }
+  await owner.goto("/settings/waha");
+
+  // The same action replayed by hand on the used session is refused by the server and deletes nothing.
+  const cookie = (await ownerContext.cookies(URL_)).map((c) => `${c.name}=${c.value}`).join("; ");
+  const api = await request.newContext({ baseURL: URL_ });
+  const replay = await api.post("/settings/waha", {
+    headers: { cookie, origin: URL_, "next-action": deleteRequest.headers()["next-action"] ?? "", "content-type": deleteRequest.headers()["content-type"] ?? "", "x-forwarded-for": "203.0.113.40" },
+    data: Buffer.from((deleteRequest.postDataBuffer() ?? Buffer.alloc(0)).toString("utf8").replace(tmp1.id, usedOff.id)),
+    maxRedirects: 0,
+  });
+  expect(await replay.text()).toContain("has message history");
+  await api.dispose();
+  expect(await admin.sql`SELECT 1 FROM waha_sessions WHERE id = ${usedOff.id}`).toHaveLength(1);
+
+  // Two deletes of the same kind in a row, the second with no other page render in between: the address is clean after each, and a reload shows no line.
+  for (const name of ["tmp2", "tmp3"]) {
+    await addForm.getByLabel("Session name").fill(name);
+    await addForm.getByLabel("Active").uncheck();
+    await addForm.getByRole("button", { name: "Add session" }).click();
+  }
+  await expect(card.getByRole("button", { name: "Delete session" })).toHaveCount(2);
+  for (const nth of [0, 1]) {
+    await card.getByRole("button", { name: "Delete session" }).first().click();
+    await card.getByRole("button", { name: "Yes, delete" }).click();
+    await expect(card.getByRole("button", { name: "Delete session" })).toHaveCount(1 - nth);
+    await expect(owner.getByTestId("deleted-notice")).toHaveText("Session deleted.");
+    await expect(owner).toHaveURL(/\/settings\/waha$/);
+  }
+  await owner.reload();
+  await expect(owner.getByTestId("deleted-notice")).toHaveCount(0);
+
+  // The server goes with its remaining session and its key.
+  await addForm.getByLabel("Session name").fill("tmp4");
+  await addForm.getByLabel("Active").uncheck();
+  await addForm.getByRole("button", { name: "Add session" }).click();
+  await expect(card.getByRole("button", { name: "Delete session" })).toBeVisible();
+  // Cancel keeps the server; "Yes, delete" removes it, and the page says so.
+  await card.getByRole("button", { name: "Delete server" }).click();
+  const serverAsk = card.getByRole("group", { name: `Delete server ${serverName}? Its unused sessions and saved API key are removed. This cannot be undone.` });
+  await expect(serverAsk).toBeVisible();
+  await expect(serverAsk.getByRole("button", { name: "Cancel" })).toBeFocused();
+  await serverAsk.getByRole("button", { name: "Cancel" }).click();
+  await expect(card.getByRole("button", { name: "Delete server" })).toBeFocused();
+  expect(await admin.sql`SELECT 1 FROM waha_servers WHERE id = ${server.id}`).toHaveLength(1);
+  expect(await admin.sql`SELECT 1 FROM settings_secrets WHERE name = ${keyName(server.id)}`).toHaveLength(1);
+  await card.getByRole("button", { name: "Delete server" }).click();
+  await card.getByRole("button", { name: "Yes, delete" }).click();
+  await expect(owner.getByTestId("deleted-notice")).toHaveText("Server deleted.");
+  await expect(owner.getByTestId(`waha-${server.id}`)).toHaveCount(0);
+  expect(await admin.sql`SELECT 1 FROM waha_servers WHERE id = ${server.id}`).toHaveLength(0);
+  expect(await admin.sql`SELECT 1 FROM waha_sessions WHERE server_id = ${server.id}`).toHaveLength(0);
+  expect(await admin.sql`SELECT 1 FROM settings_secrets WHERE name = ${keyName(server.id)}`).toHaveLength(0);
+  expect(await admin.sql`SELECT 1 FROM waha_servers WHERE id = ${usedServer.id}`).toHaveLength(1);
+
+  // The audit log page shows both deletes by name, with no host, URL or key in those rows (the create row of the server does carry its address, as before).
+  await owner.goto("/audit");
+  const auditTable = owner.getByRole("table", { name: "Audit entries" });
+  const serverDelete = auditTable.getByRole("row").filter({ hasText: "waha_server.delete" });
+  const sessionDelete = auditTable.getByRole("row").filter({ hasText: "waha_session.delete" });
+  await expect(serverDelete).toHaveCount(1);
+  await expect(serverDelete).toContainText(serverName);
+  // tmp1, tmp2 and tmp3 one by one, tmp4 with the server.
+  await expect(sessionDelete).toHaveCount(4);
+  await expect(sessionDelete.filter({ hasText: "tmp1" })).toHaveCount(1);
+  for (const row of [...(await serverDelete.all()), ...(await sessionDelete.all())]) {
+    await expect(row).not.toContainText(host);
+    await expect(row).not.toContainText("https://");
+    await expect(row).not.toContainText(apiKey);
+  }
+
+  // 390 px: no sideways scroll, with hints on the page and with a delete warning open.
+  const spare = await one(
+    admin.sql<{ id: string }[]>`INSERT INTO waha_servers (name, base_url, base_url_host, active) VALUES (${`Cadangan ${stamp}`}, ${`https://waha-spare-${stamp}.example.test/`}, ${`waha-spare-${stamp}.example.test`}, false) RETURNING id`,
+  );
+  await owner.setViewportSize({ width: 390, height: 844 });
+  await owner.goto("/settings/waha");
+  await expect(owner.getByTestId(`waha-${usedServer.id}`).getByTestId("waha-server-delete-hint")).toBeVisible();
+  expect(await owner.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+  const spareCard = owner.getByTestId(`waha-${spare.id}`);
+  await spareCard.getByRole("button", { name: "Delete server" }).click();
+  await expect(spareCard.getByRole("button", { name: "Yes, delete" })).toBeVisible();
+  await expect(spareCard.getByRole("button", { name: "Cancel" })).toBeVisible();
+  expect(await owner.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+  // A refusal: the server gets a session with history behind the page's back, then "Yes, delete" is pressed. The refusal is shown as an alert, nothing is
+  // deleted, and the keyboard is still on the (re-enabled) trigger instead of on the page's top.
+  const lateSession = await one(admin.sql<{ id: string }[]>`INSERT INTO waha_sessions (server_id, session_name, active) VALUES (${spare.id}, 'late', false) RETURNING id`);
+  await admin.sql`INSERT INTO waha_sends (session_id, kind) VALUES (${lateSession.id}, 'otp')`;
+  await spareCard.getByRole("button", { name: "Yes, delete" }).click();
+  await expect(spareCard.getByRole("alert")).toContainText("has message history");
+  await expect(spareCard.getByRole("button", { name: "Delete server" })).toBeFocused();
+  await expect(spareCard.getByRole("button", { name: "Delete server" })).not.toHaveAttribute("aria-disabled", "true");
+  expect(await admin.sql`SELECT 1 FROM waha_servers WHERE id = ${spare.id}`).toHaveLength(1);
+  expect(await owner.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+  await owner.setViewportSize({ width: 1280, height: 720 });
+});

@@ -2,14 +2,18 @@ import type { Metadata } from "next";
 import { Badge } from "@ebooktrivia/ui/components/badge";
 import { Card, CardDescription, CardTitle } from "@ebooktrivia/ui/components/card";
 import { ActionForm } from "../../../../components/settings/action-form.tsx";
+import { DeletedNotice } from "../../../../components/settings/deleted-notice.tsx";
 import { CheckboxField, PageHeading, SecretBadge, TextField } from "../../../../components/settings/fields.tsx";
 import { requireAdmin } from "../../../../lib/next/require-admin.ts";
 import { getRuntime } from "../../../../lib/next/runtime.ts";
+import { param, type Query } from "../../../../lib/reports/common.ts";
 import { listWahaServers } from "../../../../lib/settings/waha.ts";
 import {
   clearWahaApiKeyAction,
   createWahaServerAction,
   createWahaSessionAction,
+  deleteWahaServerAction,
+  deleteWahaSessionAction,
   setWahaApiKeyAction,
   updateWahaServerAction,
   updateWahaSessionAction,
@@ -31,15 +35,36 @@ function SessionFields({ prefix, session }: { prefix: string; session?: { sessio
   );
 }
 
+/** Why a delete button is not shown: used ones keep only the Active switch; an unused one must be inactive first. */
+function DeleteHint({ used, active, what }: { used: boolean; active: boolean; what: "server" | "session" }) {
+  const text = used
+    ? active
+      ? "Has message history: untick Active to stop using it."
+      : "Has message history, so it cannot be deleted."
+    : what === "server"
+      ? "Untick Active on its sessions and save before deleting."
+      : "Untick Active and save before deleting.";
+  return (
+    <p className="text-xs text-muted-foreground" data-testid={`waha-${what}-delete-hint`}>
+      {text}
+    </p>
+  );
+}
+
+/** What `?deleted=` may say: two fixed texts, nothing of the query is ever echoed. */
+const deletedText = (asked: string): string | undefined => (asked === "server" ? "Server deleted." : asked === "session" ? "Session deleted." : undefined);
+
 /** Owner only: WAHA servers (https base URL, API key, private-IP allowlist) and their sessions. */
-export default async function WahaPage() {
+export default async function WahaPage({ searchParams }: { searchParams: Promise<Query> }) {
   await requireAdmin({ permission: "waha.edit" });
   const rt = await getRuntime();
   const servers = await listWahaServers(rt.sql);
   const sealing = rt.settings.sealer?.scopes.includes("messaging") === true;
+  const deleted = deletedText(param(await searchParams, "deleted"));
   return (
     <>
       <PageHeading title="WhatsApp (WAHA)" description="Sending numbers for ebook delivery and login codes: weighted round robin with a daily cap per number." />
+      {deleted === undefined ? null : <DeletedNotice text={deleted} />}
       <Card>
         <CardTitle className="text-base">New WAHA server</CardTitle>
         <ActionForm action={createWahaServerAction} submitLabel="Add server" testId="waha-create" className="grid gap-3 sm:grid-cols-2">
@@ -79,18 +104,60 @@ export default async function WahaPage() {
           ) : null}
           <div className="flex flex-col gap-3 border-t pt-4">
             <span className="text-sm font-medium">Sessions</span>
+            {server.sessions.length === 0 ? <CardDescription>No session yet.</CardDescription> : null}
             {server.sessions.map((session) => (
-              <ActionForm key={session.id} action={updateWahaSessionAction} submitLabel="Save session" variant="outline">
-                <input type="hidden" name="serverId" value={server.id} />
-                <input type="hidden" name="sessionId" value={session.id} />
-                <SessionFields prefix={`sess-${session.id}`} session={session} />
-                <span className="text-xs text-muted-foreground">Last status: {session.status ?? "unknown"}</span>
-              </ActionForm>
+              <div
+                key={session.id}
+                role="group"
+                aria-label={`Session ${session.sessionName}`}
+                className="flex flex-col gap-3 rounded-lg border p-3"
+                data-testid={`waha-session-${session.id}`}
+              >
+                <ActionForm action={updateWahaSessionAction} submitLabel="Save session" variant="outline">
+                  <input type="hidden" name="serverId" value={server.id} />
+                  <input type="hidden" name="sessionId" value={session.id} />
+                  <SessionFields prefix={`sess-${session.id}`} session={session} />
+                  <span className="text-xs text-muted-foreground">Last status: {session.status ?? "unknown"}</span>
+                </ActionForm>
+                {session.used || session.active ? (
+                  <DeleteHint used={session.used} active={session.active} what="session" />
+                ) : (
+                  <ActionForm
+                    action={deleteWahaSessionAction}
+                    submitLabel="Delete session"
+                    variant="destructive"
+                    testId="waha-session-delete"
+                    confirm={{ warning: `Delete session ${session.sessionName}? This cannot be undone.` }}
+                  >
+                    <input type="hidden" name="sessionId" value={session.id} />
+                  </ActionForm>
+                )}
+              </div>
             ))}
-            <ActionForm action={createWahaSessionAction} submitLabel="Add session" variant="secondary">
-              <input type="hidden" name="serverId" value={server.id} />
-              <SessionFields prefix={`new-sess-${server.id}`} />
-            </ActionForm>
+            <div role="group" aria-labelledby={`new-sess-${server.id}-title`} className="flex flex-col gap-2 pt-1">
+              <span id={`new-sess-${server.id}-title`} className="text-sm font-medium">
+                New session
+              </span>
+              <ActionForm action={createWahaSessionAction} submitLabel="Add session" variant="secondary">
+                <input type="hidden" name="serverId" value={server.id} />
+                <SessionFields prefix={`new-sess-${server.id}`} />
+              </ActionForm>
+            </div>
+          </div>
+          <div className="flex flex-col gap-2 border-t pt-4">
+            {server.used || server.sessions.some((s) => s.active) ? (
+              <DeleteHint used={server.used} active={server.sessions.some((s) => s.active)} what="server" />
+            ) : (
+              <ActionForm
+                action={deleteWahaServerAction}
+                submitLabel="Delete server"
+                variant="destructive"
+                testId="waha-server-delete"
+                confirm={{ warning: `Delete server ${server.name}? Its unused sessions and saved API key are removed. This cannot be undone.` }}
+              >
+                <input type="hidden" name="serverId" value={server.id} />
+              </ActionForm>
+            )}
           </div>
         </Card>
       ))}

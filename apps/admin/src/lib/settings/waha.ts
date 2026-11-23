@@ -8,10 +8,13 @@
 //     base_url_host (ET062 otherwise); changing the base URL's host deletes it
 //     (waha_servers_clear_bound_secrets), so the key is never sent to a new host unasked;
 //   - sessions: name (the WAHA session), pool number (E.164, Indonesian mobile), weight (round robin)
-//     and daily cap. The pool number is shown to buyers (wa.me) but audited as a reference only.
+//     and daily cap. The pool number is shown to buyers (wa.me) but audited as a reference only;
+//   - delete: only what was never used (no message history anywhere, see usedSessionIds) and, for a
+//     session, only while it is inactive; a server goes with its sessions and its sealed API key in
+//     one transaction. Used ones keep only the Active switch. Audited by id and name only.
 import { normalizeIdMobile } from "@ebooktrivia/core";
 import { SECRET_NAMES } from "@ebooktrivia/db";
-import { type FieldKind, withAudit } from "../audit.ts";
+import { type FieldKind, type Tx, withAudit } from "../audit.ts";
 import { auditedChange, CONCURRENT_SAVE } from "./audited.ts";
 import type { Sql } from "../db.ts";
 import { checkWahaBaseUrl, ENDPOINT_MESSAGES } from "./endpoints.ts";
@@ -146,6 +149,81 @@ export function updateWahaSession(sql: Sql, id: string, input: Omit<WahaSessionI
   }, MESSAGES);
 }
 
+export const SESSION_IN_USE = "This session has message history, so it cannot be deleted. Untick Active to stop using it.";
+export const SESSION_STILL_ACTIVE = "Untick Active and save before deleting.";
+export const SERVER_IN_USE = "This server has message history, so it cannot be deleted. Untick Active on its sessions to stop using it.";
+export const SERVER_STILL_ACTIVE = "Untick Active on its sessions and save before deleting.";
+
+/**
+ * The sessions among `ids` that have ever been used: ANY row anywhere that names the session (deliveries and openers, as the
+ * current number or in the failover history; the send ledger; inbound messages; template test sends), or a send slot that was
+ * ever reserved on it (waha_sends is pruned after 31 days, the slot stays). Conservative on purpose: when in doubt it is used.
+ * Inbound messages are matched by session NAME too: the webhook stores only the name (waha_inbound.session_id is never written),
+ * so a same-named session on another server counts as used as well.
+ */
+async function usedSessionIds(sql: Sql | Tx, ids: readonly string[]): Promise<Set<string>> {
+  if (ids.length === 0) return new Set();
+  const rows = await sql<{ id: string }[]>`
+    SELECT s.id FROM public.waha_sessions s
+     WHERE s.id = ANY (${[...ids]}::uuid[])
+       AND (s.next_send_at IS NOT NULL
+         OR EXISTS (SELECT 1 FROM public.deliveries d WHERE d.session_id = s.id OR s.id = ANY (d.tried_session_ids))
+         OR EXISTS (SELECT 1 FROM public.delivery_openers o WHERE o.session_id = s.id OR s.id = ANY (o.tried_session_ids))
+         OR EXISTS (SELECT 1 FROM public.waha_sends x WHERE x.session_id = s.id)
+         OR EXISTS (SELECT 1 FROM public.waha_inbound i WHERE i.session_id = s.id OR i.session_name = s.session_name)
+         OR EXISTS (SELECT 1 FROM public.template_test_sends t WHERE t.waha_session_id = s.id))`;
+  return new Set(rows.map((r) => r.id));
+}
+
+/**
+ * Deletes a session that was never used and is inactive (so the worker cannot be picking it). The row is locked first and the rules are
+ * checked again under the lock: anything that references the session holds a KEY SHARE lock on it until it commits, so a reference in flight
+ * is seen here, and a later one waits for this transaction. The RESTRICT foreign keys are the last line: a refused delete answers "in use".
+ */
+export function deleteWahaSession(sql: Sql, id: string): Promise<void> {
+  return auditedChange(
+    sql,
+    async (tx, audit) => {
+      const [session] = await tx<{ session_name: string; server_id: string; active: boolean }[]>`
+        SELECT session_name, server_id, active FROM public.waha_sessions WHERE id = ${id} FOR UPDATE`;
+      if (session === undefined) throw new InvalidInput("This session no longer exists.");
+      if ((await usedSessionIds(tx, [id])).size > 0) throw new InvalidInput(SESSION_IN_USE);
+      if (session.active) throw new InvalidInput(SESSION_STILL_ACTIVE);
+      await tx`DELETE FROM public.waha_sessions WHERE id = ${id}`;
+      audit({ action: "waha_session.delete", entityType: "waha_session", entityId: id, fields: { session_name: "value" }, before: { session_name: session.session_name }, facts: { server_id: session.server_id } });
+    },
+    // 23001 is what ON DELETE RESTRICT raises (23503 is NO ACTION): either way a reference we did not see is "in use", never a 500.
+    { "23001": SESSION_IN_USE, "23503": SESSION_IN_USE },
+  );
+}
+
+/**
+ * Deletes a server whose sessions were all never used and are all inactive (a server with no session at all, active or not), with those
+ * sessions and its sealed API key, in one transaction. Locks the server, then its sessions in id order, and checks again under the locks;
+ * a session added meanwhile waits on the server lock and then finds no server. The audit rows carry ids and names, never the URL, host or key.
+ */
+export function deleteWahaServer(sql: Sql, id: string): Promise<void> {
+  return auditedChange(
+    sql,
+    async (tx, audit) => {
+      const [server] = await tx<{ name: string }[]>`SELECT name FROM public.waha_servers WHERE id = ${id} FOR UPDATE`;
+      if (server === undefined) throw new InvalidInput("This server no longer exists.");
+      const sessions = await tx<{ id: string; session_name: string; active: boolean }[]>`
+        SELECT id, session_name, active FROM public.waha_sessions WHERE server_id = ${id} ORDER BY id FOR UPDATE`;
+      if ((await usedSessionIds(tx, sessions.map((s) => s.id))).size > 0) throw new InvalidInput(SERVER_IN_USE);
+      if (sessions.some((s) => s.active)) throw new InvalidInput(SERVER_STILL_ACTIVE);
+      await tx`DELETE FROM public.waha_sessions WHERE server_id = ${id}`;
+      for (const s of sessions) {
+        audit({ action: "waha_session.delete", entityType: "waha_session", entityId: s.id, fields: { session_name: "value" }, before: { session_name: s.session_name }, facts: { server_id: id } });
+      }
+      const keyDeleted = await clearSecret(tx, audit, { scope: "messaging", name: SECRET_NAMES.wahaApiKey(id), adnetId: null });
+      await tx`DELETE FROM public.waha_servers WHERE id = ${id}`;
+      audit({ action: "waha_server.delete", entityType: "waha_server", entityId: id, fields: { name: "value" }, before: { name: server.name }, facts: { sessions_deleted: sessions.length, api_key_deleted: keyDeleted } });
+    },
+    { "23001": SERVER_IN_USE, "23503": SERVER_IN_USE },
+  );
+}
+
 export interface WahaServerRow {
   readonly id: string;
   readonly name: string;
@@ -153,6 +231,8 @@ export interface WahaServerRow {
   readonly allowPrivateIp: boolean;
   readonly active: boolean;
   readonly apiKey: SecretStatus;
+  /** Any of its sessions was ever used: the server (and those sessions) can only be switched off, never deleted. */
+  readonly used: boolean;
   readonly sessions: readonly {
     readonly id: string;
     readonly sessionName: string;
@@ -161,6 +241,8 @@ export interface WahaServerRow {
     readonly dailyCap: number;
     readonly active: boolean;
     readonly status: string | null;
+    /** Ever used (see usedSessionIds): it can only be switched off, never deleted. */
+    readonly used: boolean;
   }[];
 }
 
@@ -170,17 +252,20 @@ export async function listWahaServers(sql: Sql): Promise<WahaServerRow[]> {
   const sessions = await sql<{ id: string; server_id: string; session_name: string; phone: string | null; weight: number; daily_cap: number; active: boolean; status: string | null }[]>`
     SELECT id, server_id, session_name, phone, weight, daily_cap, active, status FROM public.waha_sessions ORDER BY session_name`;
   const keys = await secretStatuses(sql, servers.map((s) => ({ scope: "messaging", name: SECRET_NAMES.wahaApiKey(s.id), adnetId: null })));
-  return servers.map((s, i) => ({
-    id: s.id,
-    name: s.name,
-    baseUrl: s.base_url,
-    allowPrivateIp: s.allow_private_ip,
-    active: s.active,
-    apiKey: keys[i] ?? { set: false, last4: "", updatedAt: null },
-    sessions: sessions
-      .filter((x) => x.server_id === s.id)
-      .map((x) => ({ id: x.id, sessionName: x.session_name, phone: x.phone, weight: x.weight, dailyCap: x.daily_cap, active: x.active, status: x.status })),
-  }));
+  const used = await usedSessionIds(sql, sessions.map((x) => x.id));
+  return servers.map((s, i) => {
+    const own = sessions.filter((x) => x.server_id === s.id);
+    return {
+      id: s.id,
+      name: s.name,
+      baseUrl: s.base_url,
+      allowPrivateIp: s.allow_private_ip,
+      active: s.active,
+      apiKey: keys[i] ?? { set: false, last4: "", updatedAt: null },
+      used: own.some((x) => used.has(x.id)),
+      sessions: own.map((x) => ({ id: x.id, sessionName: x.session_name, phone: x.phone, weight: x.weight, dailyCap: x.daily_cap, active: x.active, status: x.status, used: used.has(x.id) })),
+    };
+  });
 }
 
 /** Active sessions on active servers (the test-send sender choice). */
