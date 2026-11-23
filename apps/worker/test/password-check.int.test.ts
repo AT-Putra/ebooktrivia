@@ -13,7 +13,7 @@ import { afterAll, describe, expect, inject, it } from "vitest";
 import { inertFailpoint } from "../src/failpoint.ts";
 import { createLogger } from "../src/log.ts";
 import { createOutboxProcessor } from "../src/outbox-consumer.ts";
-import { createPasswordCheckConsumer, PASSWORD_CHECK_MAX_ATTEMPTS, PASSWORD_CHECK_TOPIC } from "../src/password-check.ts";
+import { createPasswordCheckConsumer, PASSWORD_CHECK_MAX_ATTEMPTS, PASSWORD_CHECK_TOPIC, passwordCheckFromEnv } from "../src/password-check.ts";
 import { sweepExpiredOtps } from "../src/sweepers.ts";
 import { first, sql, suffix } from "./support/db.ts";
 
@@ -150,6 +150,46 @@ describe("admin.password_hibp_check (US-031, ASVS V6.2.12; the range API is a fa
     expect(lookup.asked).toEqual([]);
     expect(lines.join("\n")).toContain("unreadable_hash");
     expect(await state(who)).toMatchObject({ breached: false, row: { processed: true, sealed: null } });
+  });
+
+  it("drops a row whose payload is not an admin id and a check id, or that carries no sealed hash: no lookup, one warning with the reason, the row ends processed", async () => {
+    const row = async (payload: Record<string, string | number>, sealed: Buffer | null): Promise<string> => {
+      const id = randomUUID();
+      await sql`
+        INSERT INTO outbox (id, topic, dedupe_key, payload, sealed)
+        VALUES (${id}, ${PASSWORD_CHECK_TOPIC}, ${`${PASSWORD_CHECK_TOPIC}:${id}`}, ${sql.json(payload)}, ${sealed})`;
+      return id;
+    };
+    const who = await adminWithPassword("staff");
+    const sealed = sealer.sealPasswordCheck({ checkId: who.checkId, adminUserId: who.userId, password: who.password });
+    const cases: [string, string][] = [
+      [await row({ admin_user_id: who.userId, check_id: "not-a-uuid" }, sealed), "bad_payload"],
+      [await row({ admin_user_id: "an admin id with spaces", check_id: who.checkId }, sealed), "bad_payload"],
+      [await row({ admin_user_id: 42, check_id: who.checkId }, sealed), "bad_payload"],
+      [await row({}, sealed), "bad_payload"],
+      [await row({ admin_user_id: who.userId, check_id: who.checkId }, null), "no_sealed_hash"],
+    ];
+    const lookup = fakeLookup({ status: "breached", count: 9 });
+    for (const [id, reason] of cases) {
+      const { lines, log } = capturedLog();
+      expect(await run(lookup, log)({ id }), reason).toBe("processed");
+      expect(lines.join("\n"), reason).toContain(`"reason":"${reason}"`);
+      expect(lines.join("\n"), reason).toContain("password check dropped");
+      expect(first(await sql<{ processed: boolean; sealed: Buffer | null }[]>`SELECT processed_at IS NOT NULL AS processed, sealed FROM outbox WHERE id = ${id}`)).toEqual({ processed: true, sealed: null });
+    }
+    expect(lookup.asked).toEqual([]);
+    expect((await state(who)).breached).toBe(false);
+  });
+
+  it("is wired from worker.env only with the messaging private key; its opener opens what the console sealed to the matching public key", () => {
+    expect(passwordCheckFromEnv({})).toBeUndefined();
+    const port = passwordCheckFromEnv({ SECRETS_MESSAGING_PRIVATE_KEY: keys.privateKey.toString("base64url") });
+    expect(typeof port?.lookup).toBe("function");
+    const checkId = randomUUID();
+    const sealed = sealer.sealPasswordCheck({ checkId, adminUserId: "admin-1", password: "correct horse battery staple" });
+    expect(port?.opener.openPasswordCheck({ checkId, adminUserId: "admin-1", sealed })).toBe(sha1Of("correct horse battery staple"));
+    // Bound to the ids it was sealed for.
+    expect(() => port?.opener.openPasswordCheck({ checkId, adminUserId: "admin-2", sealed })).toThrow();
   });
 
   it("loses its sealed hash to the minute sweep when it never ends: past the attempt cap, or 24 h old; a live job keeps it (delta review LOW)", async () => {

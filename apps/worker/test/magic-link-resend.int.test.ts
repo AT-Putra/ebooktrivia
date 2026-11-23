@@ -12,12 +12,14 @@ import postgres from "postgres";
 import { setTimeout as delay } from "node:timers/promises";
 import { Worker } from "bullmq";
 import { afterAll, beforeAll, beforeEach, describe, expect, inject, it } from "vitest";
-import { MailAccessError } from "../src/delivery/ports.ts";
+import { SmtpError } from "@ebooktrivia/adapters";
+import { MailAccessError, WahaAccessError, type WahaAccess } from "../src/delivery/ports.ts";
 import { inertFailpoint } from "../src/failpoint.ts";
 import { createLogger } from "../src/log.ts";
 import {
   createMagicLinkResendConsumer,
   createMagicLinkSender,
+  MAGIC_LINK_RESEND_MAX_DEFERRALS,
   MAGIC_LINK_RESEND_TOPIC,
   MagicLinkSendError,
   type MagicLinkMessage,
@@ -331,6 +333,130 @@ describe("magic_link.resend: a send that may have gone out, and a contact at its
   });
 });
 
+describe("magic_link.resend: the other ways a job ends", () => {
+  /** An outbox job as apps/public's enqueue writes it, but with any payload (the breaker and the 3 a day do not apply). */
+  const job = async (payload: Record<string, string | string[]>): Promise<string> =>
+    first(await sql<{ id: string }[]>`INSERT INTO outbox (topic, dedupe_key, payload) VALUES (${MAGIC_LINK_RESEND_TOPIC}, ${`edge:${suffix()}`}, ${sql.json(payload)}) RETURNING id`).id;
+  const outboxRow = async (id: string) =>
+    first(await sql<{ processed: boolean; attempts: number; deferrals: number; last_error: string | null; payload: Record<string, unknown> }[]>`
+      SELECT processed_at IS NOT NULL AS processed, attempts, deferrals, last_error, payload FROM outbox WHERE id = ${id}`);
+  /** A sender that answers each channel with its own function (an Error it throws, or nothing: sent) and records what it took. */
+  const senderOf = (answers: Partial<Record<MagicLinkChannel, () => Promise<void>>>): MagicLinkSender & { readonly sent: MagicLinkMessage[] } => {
+    const sent: MagicLinkMessage[] = [];
+    return {
+      sent,
+      send: async (message) => {
+        await answers[message.channel]?.();
+        sent.push(message);
+      },
+    };
+  };
+
+  it("drops a job whose payload has no player id (nothing is sent, the job ends processed)", async () => {
+    for (const payload of [{ player_id: "not-a-uuid" }, {}, { player_id: ["x"] }]) {
+      const sender = recordingSender();
+      const captured = capturedLog();
+      const id = await job(payload);
+      expect(await processorFor(sender, captured.log)({ id })).toBe("processed");
+      expect(sender.sent).toEqual([]);
+      expect(captured.lines.join("")).toContain('"reason":"bad_payload"');
+      expect((await outboxRow(id)).processed).toBe(true);
+    }
+  });
+
+  it("finishes as `no_channel` for a player with neither an Indonesian mobile number nor an e-mail address to write to", async () => {
+    const p = await player({ email: null });
+    // A foreign number is a valid phone for the player table, but the WhatsApp pool only writes to Indonesian mobiles.
+    await sql`UPDATE players SET phone = '+14155550123' WHERE id = ${p.id}`;
+    const sender = recordingSender();
+    const captured = capturedLog();
+    const id = await job({ player_id: p.id });
+    expect(await processorFor(sender, captured.log)({ id })).toBe("processed");
+    expect(sender.sent).toEqual([]);
+    expect(captured.lines.join("")).toContain('"outcome":"no_channel"');
+    expect(await sql`SELECT 1 FROM magic_links WHERE player_id = ${p.id}`).toHaveLength(0);
+  });
+
+  it("counts an error that is no MagicLinkSendError as `send_failed`: the other channel still goes, the failed channel's link is kept and nothing of the error is logged", async () => {
+    const p = await player();
+    const before = issueMagicLink({ channel: "whatsapp" });
+    await sql`SELECT issue_magic_link(${p.id}, 'whatsapp', ${before.tokenHash})`;
+    const boom = (): Promise<void> => Promise.reject(new TypeError(`boom for ${p.phone}`));
+    const sender = senderOf({ whatsapp: boom });
+    const captured = capturedLog();
+    expect(await processorFor(sender, captured.log)({ id: await job({ player_id: p.id }) })).toBe("processed");
+    expect(sender.sent.map((m) => m.channel)).toEqual(["email"]);
+    expect(await wouldLogIn(before.token, "whatsapp")).not.toBeNull();
+    expect(captured.lines.join("")).toContain('"code":"send_failed"');
+    expect(captured.lines.join("")).not.toContain("boom");
+    expect(captured.lines.join("")).not.toContain(p.phone.slice(1));
+
+    // Every channel failing that way fails the job with the same code, for the outbox to retry.
+    const q = await player();
+    const id = await job({ player_id: q.id });
+    await expect(processorFor(senderOf({ whatsapp: boom, email: boom }))({ id })).rejects.toMatchObject({ code: "send_failed" });
+    expect(await outboxRow(id)).toMatchObject({ processed: false, attempts: 1, last_error: "magic link send failed: send_failed" });
+  });
+
+  it("a contact that is still at its limit after the job waited the most it may is a failure like any other: the other channel goes, nothing more waits", async () => {
+    const p = await player();
+    const id = await job({ player_id: p.id });
+    await sql`UPDATE outbox SET deferrals = ${MAGIC_LINK_RESEND_MAX_DEFERRALS} WHERE id = ${id}`;
+    const limited = (): Promise<void> => Promise.reject(new MagicLinkSendError("contact_limit", { retryAt: new Date(Date.now() + 45_000) }));
+    const sender = senderOf({ whatsapp: limited });
+    const captured = capturedLog();
+    expect(await processorFor(sender, captured.log)({ id })).toBe("processed");
+    expect(sender.sent.map((m) => m.channel)).toEqual(["email"]);
+    expect(captured.lines.join("")).toContain('"code":"contact_limit"');
+    expect(await outboxRow(id)).toMatchObject({ processed: true, deferrals: MAGIC_LINK_RESEND_MAX_DEFERRALS });
+  });
+
+  it("when nothing went out, a job waiting for one contact comes back for the channel that failed too", async () => {
+    const p = await player();
+    const id = await job({ player_id: p.id });
+    const sender = senderOf({
+      whatsapp: () => Promise.reject(new MagicLinkSendError("contact_limit", { retryAt: new Date(Date.now() + 40_000) })),
+      email: () => Promise.reject(new MagicLinkSendError("smtp_failed")),
+    });
+    expect(await processorFor(sender)({ id })).toBe("deferred");
+    expect(sender.sent).toEqual([]);
+    expect(await outboxRow(id)).toMatchObject({ processed: false, deferrals: 1, payload: { player_id: p.id, channels: ["whatsapp", "email"] } });
+    expect(await sql`SELECT 1 FROM magic_links WHERE player_id = ${p.id}`).toHaveLength(0);
+  });
+
+  it("drops the job (logged, nothing more sent) when the player may no longer log in by the time the link just sent is registered", async () => {
+    const p = await player();
+    const id = await job({ player_id: p.id });
+    // The refund lands while the WhatsApp message is on its way: issue_magic_link refuses (ET121), so the link just sent never works.
+    const sender = senderOf({
+      whatsapp: async () => {
+        await sql`UPDATE player_programs SET eligible = false, first_paid_at = NULL WHERE player_id = ${p.id}`;
+      },
+    });
+    const captured = capturedLog();
+    expect(await processorFor(sender, captured.log)({ id })).toBe("processed");
+    expect(sender.sent.map((m) => m.channel)).toEqual(["whatsapp"]);
+    expect(captured.lines.join("")).toContain('"reason":"may_not_log_in"');
+    expect(await sql`SELECT 1 FROM magic_links WHERE player_id = ${p.id}`).toHaveLength(0);
+    expect(await outboxRow(id)).toMatchObject({ processed: true });
+  });
+
+  it("fails the job (its retry sends another link) when the registration fails for any other reason", async () => {
+    const p = await player();
+    const id = await job({ player_id: p.id });
+    const unreachable = new Proxy(workerSql, {
+      apply: (target, thisArg: unknown, args: unknown[]) =>
+        Array.isArray(args[0]) && (args[0] as string[]).join("").includes("issue_magic_link")
+          ? Promise.reject(new Error("connection reset"))
+          : (Reflect.apply(target, thisArg, args) as Promise<unknown>),
+    });
+    const log = capturedLog().log;
+    const processor = createOutboxProcessor(createMagicLinkResendConsumer({ sql: unreachable, playOrigin: PLAY_ORIGIN, sender: recordingSender(), log }), { sql: workerSql, failpoint: inertFailpoint, log });
+    await expect(processor({ id })).rejects.toThrow("connection reset");
+    expect(await outboxRow(id)).toMatchObject({ processed: false, attempts: 1, last_error: "connection reset" });
+  });
+});
+
 // The production sender (US-025's paths): WhatsApp out of the pool, e-mail through the SMTP sender.
 describe("the production magic link sender", () => {
   beforeEach(retireSessions);
@@ -393,5 +519,63 @@ describe("the production magic link sender", () => {
       .catch((error: unknown) => error);
     expect(failure).toMatchObject({ maybeSent: true });
     expect(r.waha.sent).toHaveLength(1);
+  });
+
+  it("refuses a WhatsApp recipient that is not an Indonesian mobile number before the pool is asked, and an empty text as `send_failed`", async () => {
+    const r = rig();
+    await createSession();
+    const message = magicLinkMessage(`${PLAY_ORIGIN}/masuk#c=whatsapp&t=x`);
+    expect(await codeOf(r.sender.send({ channel: "whatsapp", to: "+14155550123", ...message }, new AbortController().signal))).toBe("invalid_recipient");
+    // The pool refuses an empty text before it claims a number (a NotSentError, no pool error): a code all the same, nothing sent.
+    const p = await player();
+    expect(await codeOf(r.sender.send({ channel: "whatsapp", to: p.phone, ...message, text: "  " }, new AbortController().signal))).toBe("send_failed");
+    expect(r.waha.sent).toEqual([]);
+  });
+
+  it("names what the pool's last refusal was: WAHA's answer, the access to the number, or nothing it can name", async () => {
+    // One number in the pool, and the WAHA access `access(sessionName)` makes for it.
+    const send = async (access: (sessionName: string) => WahaAccess, signal = new AbortController().signal): Promise<unknown> => {
+      await retireSessions();
+      const number = await createSession();
+      const p = await player();
+      const sender = createMagicLinkSender({ sql: workerSql, log: silentLog, waha: access(number.name), mail: recordingMail(), random: () => 0, humanRandom: () => 0, sleep: (_ms, s) => (s?.aborted === true ? Promise.reject(new Error("aborted")) : Promise.resolve()) });
+      return sender.send({ channel: "whatsapp", to: p.phone, ...magicLinkMessage(`${PLAY_ORIGIN}/masuk#c=whatsapp&t=x`) }, signal).then(
+        () => "sent",
+        (error: unknown) => error,
+      );
+    };
+    // WAHA refused the send for sure (a 401): its code, and since nothing was sent the link is not kept.
+    const refusing = (sessionName: string): WahaAccess => {
+      const fake = createWahaFake();
+      fake.fault(sessionName, "unauthorized");
+      return fake.access;
+    };
+    expect(await send(refusing)).toMatchObject({ code: "waha_unauthorized", maybeSent: false });
+    // The worker may not use the number (no key stored): the access code.
+    expect(await send(() => ({ withSession: () => Promise.reject(new WahaAccessError("key_missing")) }))).toMatchObject({ code: "waha_key_missing", maybeSent: false });
+    // Something that is neither WAHA's nor the access's, after the request may have left: it MAY have gone out, so the link is kept.
+    expect(await send(() => ({ withSession: () => Promise.reject(new Error("socket hang up")) }))).toMatchObject({ code: "waha_maybe_sent", maybeSent: true });
+    // An aborted wait for the number's slot: nothing was sent and no number refused anything.
+    const aborted = new AbortController();
+    aborted.abort();
+    const never: WahaAccess = { withSession: () => Promise.reject(new Error("never asked")) };
+    expect(await send(() => never, aborted.signal)).toMatchObject({ code: "send_failed", maybeSent: false });
+  });
+
+  it("names the code of an SMTP failure: `smtp_<code>` (an unconfirmed send MAY have gone out), the access code, or smtp_failed", async () => {
+    const r = rig();
+    const message = magicLinkMessage(`${PLAY_ORIGIN}/masuk#c=email&t=x`);
+    const failure = async (error: Error): Promise<unknown> => {
+      r.mail.failures.push(error);
+      return r.sender.send({ channel: "email", to: "p@example.test", ...message }, new AbortController().signal).then(
+        () => "sent",
+        (caught: unknown) => caught,
+      );
+    };
+    expect(await failure(new SmtpError("maybe_sent", "the server hung up after DATA"))).toMatchObject({ code: "smtp_maybe_sent", maybeSent: true });
+    expect(await failure(new SmtpError("rejected", "550 no such mailbox"))).toMatchObject({ code: "smtp_rejected", maybeSent: false });
+    expect(await failure(new Error("ECONNRESET"))).toMatchObject({ code: "smtp_failed", maybeSent: false });
+    expect(await failure(new MailAccessError("binding_mismatch"))).toMatchObject({ code: "binding_mismatch", maybeSent: false });
+    expect(r.mail.sent).toEqual([]);
   });
 });

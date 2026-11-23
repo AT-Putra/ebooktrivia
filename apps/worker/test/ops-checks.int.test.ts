@@ -3,11 +3,14 @@
 import { PG_CONNECTION_OPTIONS } from "@ebooktrivia/db/connection";
 import postgres from "postgres";
 import { afterAll, beforeEach, describe, expect, inject, it } from "vitest";
-import { BACKUP_MAX_AGE_HOURS, checkBackups, checkValkeyMemory, checkWalArchive, OPS_CHECK_MAX_AGE_HOURS, parseMemory } from "../src/ops-checks.ts";
+import { BACKUP_MAX_AGE_HOURS, checkBackups, checkValkeyMemory, checkWalArchive, OPS_CHECK_MAX_AGE_HOURS, parseMemory, WAL_LAG_MINUTES } from "../src/ops-checks.ts";
 import { sql } from "./support/db.ts";
 
 const workerSql = postgres(inject("workerDbUrl"), { ...PG_CONNECTION_OPTIONS, max: 2, onnotice: () => undefined });
 afterAll(async () => {
+  // The alerts these tests raise are critical and unsent: no later file should find them.
+  await sql`DELETE FROM public.alerts WHERE kind IN ('backup_base_stale', 'backup_restic_stale', 'ops_check_stale', 'wal_archive_lag', 'valkey_memory_high')`;
+  await sql`DELETE FROM public.heartbeats WHERE component IN ('backup_base', 'backup_restic', 'ops_check')`;
   await workerSql.end({ timeout: 5 });
 });
 
@@ -58,10 +61,53 @@ describe("checkBackups", () => {
   });
 });
 
+/**
+ * The worker's pool, except that the one statement reading PostgreSQL's archiver view answers `rows`: archive_mode cannot be turned on in
+ * the test server (it needs a restart), so a lagging archiver is told to the check. The alert it raises is written for real.
+ */
+const withArchiver = (rows: { mode: string; since_archived_s: number | null; failing: boolean; up_s: number }[]): postgres.Sql =>
+  new Proxy(workerSql, {
+    apply: (target, thisArg: unknown, args: unknown[]) => {
+      const text = Array.isArray(args[0]) ? (args[0] as string[]).join("") : "";
+      return text.includes("pg_stat_archiver") ? Promise.resolve(rows) : (Reflect.apply(target, thisArg, args) as Promise<unknown>);
+    },
+  });
+const MINUTE = 60;
+
 describe("checkWalArchive", () => {
   it("stays silent where archive_mode is off (the test server) and runs its query as worker_rw", async () => {
     expect(await checkWalArchive(workerSql)).toBe(false);
     expect(await unresolved("wal_archive_lag")).toEqual([]);
+  });
+
+  it("stays silent when the archiver view has no row, when archive_mode is off, when PostgreSQL has been up under 15 minutes, and while the last archive is recent", async () => {
+    for (const rows of [
+      [],
+      [{ mode: "off", since_archived_s: null, failing: false, up_s: 99 * 3600 }],
+      [{ mode: "on", since_archived_s: null, failing: false, up_s: WAL_LAG_MINUTES * MINUTE }],
+      [{ mode: "on", since_archived_s: WAL_LAG_MINUTES * MINUTE, failing: true, up_s: 99 * 3600 }],
+    ]) {
+      expect(await checkWalArchive(withArchiver(rows))).toBe(false);
+    }
+    expect(await unresolved("wal_archive_lag")).toEqual([]);
+  });
+
+  it("raises ONE critical alert when nothing was archived for 15 minutes, and says when the archive command is failing", async () => {
+    const lagging = { mode: "on", since_archived_s: WAL_LAG_MINUTES * MINUTE + 1, failing: false, up_s: 99 * 3600 };
+    expect(await checkWalArchive(withArchiver([lagging]))).toBe(true);
+    // The alert's own dedupe: still lagging a minute later, still one open alert.
+    expect(await checkWalArchive(withArchiver([{ ...lagging, failing: true }]))).toBe(false);
+    const alerts = await sql<{ severity: string; message: string; payload: unknown }[]>`SELECT severity, message, payload FROM public.alerts WHERE kind = 'wal_archive_lag' AND resolved_at IS NULL`;
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]).toMatchObject({ severity: "critical", payload: { failing: false } });
+    expect(alerts[0]?.message).toContain("has archived no WAL for 15 minutes:");
+    expect(alerts[0]?.message).not.toContain("failing");
+
+    // Never archived at all (no last_archived_time) and the command failing: the alert names it.
+    await sql`DELETE FROM public.alerts WHERE kind = 'wal_archive_lag'`;
+    expect(await checkWalArchive(withArchiver([{ mode: "on", since_archived_s: null, failing: true, up_s: 99 * 3600 }]))).toBe(true);
+    const [failing] = await unresolved("wal_archive_lag");
+    expect(failing?.message).toContain("minutes and the archive command is failing:");
   });
 });
 

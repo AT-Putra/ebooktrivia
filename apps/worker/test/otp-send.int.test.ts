@@ -19,6 +19,7 @@ import { createWahaOtpSender, otpFromEnv } from "../src/otp-senders.ts";
 import { createOutboxProcessor } from "../src/outbox-consumer.ts";
 import { sweepExpiredOtps } from "../src/sweepers.ts";
 import { first, sql, suffix } from "./support/db.ts";
+import { WahaAccessError, type WahaAccess } from "../src/delivery/ports.ts";
 import { createSession, createWahaFake } from "./support/delivery.ts";
 
 const workerSql = postgres(inject("workerDbUrl"), { ...PG_CONNECTION_OPTIONS, max: 4, onnotice: () => undefined });
@@ -288,6 +289,57 @@ describe("the OTP sender on the delivery pool (US-025): the audited WAHA access,
       expect(wahaFake.sent.slice(before)).toEqual([expect.objectContaining({ session: refusing.name })]);
       expect(wahaFake.sent.filter((s) => s.session === other.name)).toHaveLength(1);
       expect((await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM waha_sends WHERE session_id = ${other.id}`)[0]?.n).toBe(1);
+    });
+  });
+
+  // The sender's error codes are all the consumer and the console ever see of a failed send: a code, never a number or a text.
+  it("says a phone that is not on WhatsApp is `no_whatsapp`, sends nothing and does not penalise the number", async () => {
+    await withOnlyTheseSessions(async () => {
+      const wahaFake = createWahaFake();
+      const number = await createSession();
+      const sender = createWahaOtpSender({ sql: workerSql, log: capturedLog().log, opener, dev: { allowHttp: false, allowLoopback: false, allowPlaintextSmtp: false }, waha: wahaFake.access, random: () => 0 });
+      const phone = phoneFor();
+      await wahaFake.contact(phone, { numberExists: false });
+      await expect(sender.send({ phone, text: "kode 123456" }, AbortSignal.timeout(10_000))).rejects.toMatchObject({ code: "no_whatsapp" });
+      expect(wahaFake.sent).toEqual([]);
+      expect(first(await sql<{ fail_streak: number }[]>`SELECT fail_streak FROM waha_sessions WHERE id = ${number.id}`).fail_streak).toBe(0);
+      // The ledger row of the claim was given back: it is no send of the number's day.
+      expect(await sql`SELECT 1 FROM waha_sends WHERE session_id = ${number.id} AND outcome <> 'failed'`).toEqual([]);
+    });
+  });
+
+  it("says `contact_limit` for a second code to the same phone inside its 30 to 60 s gap: not sent, to be retried by the outbox", async () => {
+    await withOnlyTheseSessions(async () => {
+      const wahaFake = createWahaFake();
+      await createSession();
+      const sender = createWahaOtpSender({ sql: workerSql, log: capturedLog().log, opener, dev: { allowHttp: false, allowLoopback: false, allowPlaintextSmtp: false }, waha: wahaFake.access, random: () => 0 });
+      const phone = phoneFor();
+      await sender.send({ phone, text: "kode pertama" }, AbortSignal.timeout(10_000));
+      await expect(sender.send({ phone, text: "kode kedua" }, AbortSignal.timeout(10_000))).rejects.toMatchObject({ code: "contact_limit" });
+      expect(wahaFake.sent.map((s) => s.text)).toEqual(["kode pertama"]);
+    });
+  });
+
+  it("maps a session the worker may not use to its access code, a number that refuses to `waha_<code>`, and anything it cannot name to `send_failed` / `waha_maybe_sent`", async () => {
+    await withOnlyTheseSessions(async () => {
+      const dev = { allowHttp: false, allowLoopback: false, allowPlaintextSmtp: false };
+      const sendWith = (waha: WahaAccess, message: OtpMessage, signal = AbortSignal.timeout(10_000)) =>
+        createWahaOtpSender({ sql: workerSql, log: capturedLog().log, opener, dev, waha, random: () => 0 }).send(message, signal);
+      // The access to the number is refused (no key stored, a key bound to another host, session switched off): the access code.
+      await createSession();
+      const refused: WahaAccess = { withSession: () => Promise.reject(new WahaAccessError("binding_mismatch")) };
+      await expect(sendWith(refused, { phone: phoneFor(), text: "x" })).rejects.toMatchObject({ code: "binding_mismatch" });
+      // Not something of WAHA's or the access's: it may have gone out already, so the retry must not hide it.
+      await sql`UPDATE waha_sessions SET cooldown_until = NULL, fail_streak = 0, next_send_at = NULL`;
+      const broken: WahaAccess = { withSession: () => Promise.reject(new Error("socket hang up")) };
+      await expect(sendWith(broken, { phone: phoneFor(), text: "x" })).rejects.toMatchObject({ code: "waha_maybe_sent" });
+      // An aborted wait for the number's slot: nothing was sent, and no number refused anything.
+      await sql`UPDATE waha_sessions SET cooldown_until = NULL, fail_streak = 0, next_send_at = NULL`;
+      const aborted = new AbortController();
+      aborted.abort();
+      await expect(sendWith(createWahaFake().access, { phone: phoneFor(), text: "x" }, aborted.signal)).rejects.toMatchObject({ code: "send_failed" });
+      // Something that is no pool error at all (an empty text is refused before a number is claimed).
+      await expect(sendWith(createWahaFake().access, { phone: phoneFor(), text: "   " })).rejects.toMatchObject({ code: "send_failed" });
     });
   });
 
