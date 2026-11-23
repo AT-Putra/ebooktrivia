@@ -42,6 +42,7 @@ snippet() { awk -v start="($1) {" '$0 == start { on = 1 } on { print } on && /^}
   snippet referrer_forced
   snippet order_access_log
   snippet blocked_paths
+  snippet blocked_healthz
   # The site: its first line becomes :80 (no TLS here), `import https` goes (it binds the TLS socket), and its
   # `handle { ... }` block (the reverse proxy) becomes a fixed answer that also tries to set a cookie.
   awk -v id="$id" '
@@ -72,10 +73,17 @@ grep -q 'header Referrer-Policy "unsafe-url"' "$work/Caddyfile" || { printf 'the
 docker rm -f "$NAME" >/dev/null 2>&1 || true
 docker run -d --name "$NAME" -p "127.0.0.1:$PORT:80" -v "$(host_path "$work")/Caddyfile:/etc/caddy/Caddyfile:ro" \
   "$IMAGE" caddy run --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null
+up=0
 for _ in $(seq 1 40); do
-  [[ $(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/" || true) == 200 ]] && break
+  [[ $(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/" || true) == 200 ]] && { up=1; break; }
   sleep 0.5
 done
+if ((up == 0)); then
+  # Usually a snippet the order site imports that this script does not cut out: Caddy says which.
+  printf 'Caddy did not answer on 127.0.0.1:%s; its log:\n' "$PORT" >&2
+  docker logs "$NAME" 2>&1 | tail -n 20 >&2
+  exit 1
+fi
 
 fail=0
 pass() { printf 'PASS  %s\n' "$1"; }
@@ -108,6 +116,7 @@ check_not "no x-nextjs-rewritten-path / -query" "x-nextjs-rewritten" "$h"
 # it is the LOG that must not hold it (below).
 check_not "the public id is in no other response header" "$id" "$(grep -v '^location:' <<<"$h")"
 check_not "no Server header" "server:" "$h"
+check "the deep /healthz is not served here (blocked_healthz)" 404 "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/healthz")"
 
 # The access log: the id in a path, the id in the Midtrans query, a Referer from another page.
 curl -s -o /dev/null -H 'Cookie: sid=secret' -H "Referer: https://lp.example.test/thanks?order=$id" "http://127.0.0.1:$PORT/$id?order_id=$id-1&status_code=200"

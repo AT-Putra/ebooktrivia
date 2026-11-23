@@ -299,7 +299,8 @@ test("prize tiers refuse overlaps; a legal page preview shows markup as text; li
   const limits = owner.getByTestId("limits-form");
   await limits.getByLabel("OTP code validity").fill("30");
   await limits.getByRole("button", { name: "Save limits" }).click();
-  await expect(limits.getByTestId("form-error")).toContainText("60 to 900");
+  // otp.code_ttl_seconds is 60..600 (10 minutes at most, ASVS V6.5.5; apps/admin/src/lib/settings/limits.ts).
+  await expect(limits.getByTestId("form-error")).toContainText("60 to 600");
   await limits.getByLabel("OTP code validity").fill("240");
   await limits.getByRole("button", { name: "Save limits" }).click();
   await expect(limits.getByRole("status")).toContainText("1 limit saved");
