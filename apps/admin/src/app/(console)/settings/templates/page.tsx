@@ -74,7 +74,7 @@ export default async function TemplatesPage({ searchParams }: { searchParams: Pr
                 </CardDescription>
                 {openers.length < OPENER_MAX_WORDINGS ? (
                   <ActionForm action={addOpenerWordingAction} submitLabel="Add wording" variant="secondary" testId="opener-add" resetOnSuccess>
-                    <TextArea id="new-opener-body" name="body" label="New wording" rows={3} hint="Checked like an edit. It is added as the next delivery_opener_N." />
+                    <TextArea id="new-opener-body" name="body" label="New wording" rows={3} hint="Checked like an edit, then added at the end of the list as the next wording number." />
                   </ActionForm>
                 ) : (
                   <CardDescription>That is the most there can be: remove one before adding another.</CardDescription>

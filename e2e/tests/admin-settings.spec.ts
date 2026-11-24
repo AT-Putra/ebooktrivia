@@ -671,20 +671,20 @@ test("WhatsApp numbers: the panel says where the warm-up is, a new session warms
   const small = await one(admin.sql<{ id: string }[]>`INSERT INTO waha_sessions (server_id, session_name, active, warmup_started_at, new_contact_cap) VALUES (${server.id}, 'kecil', false, now(), 3) RETURNING id`);
   await owner.goto("/settings/waha");
   const line = (id: string) => card.getByTestId(`waha-session-${id}`).getByTestId("waha-warmup");
-  await expect(line(baru.id)).toHaveText("Warm-up: day 1 of 21 - today's new-people limit 5");
-  await expect(line(mid.id)).toHaveText("Warm-up: day 10 of 21 - today's new-people limit 10");
-  await expect(line(late.id)).toHaveText("Warm-up: day 16 of 21 - today's new-people limit 12");
-  await expect(line(done.id)).toHaveText("Warm-up finished - today's new-people limit 25");
-  await expect(line(small.id)).toHaveText("Warm-up: day 1 of 21 - today's new-people limit 3");
+  await expect(line(baru.id)).toHaveText("Warm-up: day 1 of 21 · today's new-people limit 5");
+  await expect(line(mid.id)).toHaveText("Warm-up: day 10 of 21 · today's new-people limit 10");
+  await expect(line(late.id)).toHaveText("Warm-up: day 16 of 21 · today's new-people limit 12");
+  await expect(line(done.id)).toHaveText("Warm-up finished · today's new-people limit 25");
+  await expect(line(small.id)).toHaveText("Warm-up: day 1 of 21 · today's new-people limit 3");
   // The box says what it means to a screen reader, too.
   await expect(card.getByTestId(`waha-session-${baru.id}`).getByLabel("Established number (skip warm-up)")).toHaveAccessibleDescription(/Tick only for a number that has already been writing/);
   // With a WhatsApp warning on the number the line shows the smaller, effective limit (first warning: half of 5, rounded down) and says why.
   await admin.sql`UPDATE waha_sessions SET warning_level = 'first' WHERE id = ${baru.id}`;
   await owner.reload();
-  await expect(line(baru.id)).toHaveText("Warm-up: day 1 of 21 - today's new-people limit 2 (after WhatsApp's first warning, at the usual share)");
+  await expect(line(baru.id)).toHaveText("Warm-up: day 1 of 21 · today's new-people limit 2 (after WhatsApp's first warning, at the usual share)");
   await admin.sql`UPDATE waha_sessions SET warning_level = 'none' WHERE id = ${baru.id}`;
   await owner.reload();
-  await expect(line(baru.id)).toHaveText("Warm-up: day 1 of 21 - today's new-people limit 5");
+  await expect(line(baru.id)).toHaveText("Warm-up: day 1 of 21 · today's new-people limit 5");
   await expect(line(lama.id)).toHaveText("Established number");
   await expect(card.getByTestId(`waha-session-${lama.id}`).getByLabel("Established number (skip warm-up)")).toBeChecked();
   await expect(card.getByTestId(`waha-session-${baru.id}`).getByLabel("Established number (skip warm-up)")).not.toBeChecked();
@@ -700,7 +700,7 @@ test("WhatsApp numbers: the panel says where the warm-up is, a new session warms
   expect(ended.changes.warmup_started_at.after).toBeNull();
   await row.getByLabel("Established number (skip warm-up)").uncheck();
   await row.getByRole("button", { name: "Save session" }).click();
-  await expect(line(mid.id)).toHaveText("Warm-up: day 1 of 21 - today's new-people limit 5");
+  await expect(line(mid.id)).toHaveText("Warm-up: day 1 of 21 · today's new-people limit 5");
   expect((await sessionOf("minggu2")).warmup).toBe(true);
   // Saving another field of a warming number leaves its day count alone.
   const before = await one(admin.sql<{ w: Date }[]>`SELECT warmup_started_at AS w FROM waha_sessions WHERE id = ${late.id}`);
@@ -708,7 +708,7 @@ test("WhatsApp numbers: the panel says where the warm-up is, a new session warms
   await lateRow.getByLabel("Weight").fill("2");
   await lateRow.getByRole("button", { name: "Save session" }).click();
   await expect(lateRow.getByRole("status")).toContainText("Session saved");
-  await expect(line(late.id)).toHaveText("Warm-up: day 16 of 21 - today's new-people limit 12");
+  await expect(line(late.id)).toHaveText("Warm-up: day 16 of 21 · today's new-people limit 12");
   const after = await one(admin.sql<{ w: Date }[]>`SELECT warmup_started_at AS w FROM waha_sessions WHERE id = ${late.id}`);
   expect(after.w.getTime()).toBe(before.w.getTime());
 

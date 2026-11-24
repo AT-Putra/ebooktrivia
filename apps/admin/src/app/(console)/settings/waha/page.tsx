@@ -42,7 +42,7 @@ function SessionFields({ prefix, session }: { prefix: string; session?: { sessio
 }
 
 /**
- * "Warm-up: day 3 of 21 - today's new-people limit 5", or that the number is established / has finished its warm-up. The limit is the worker's own rule (core
+ * "Warm-up: day 3 of 21 · today's new-people limit 5", or that the number is established / has finished its warm-up. The limit is the worker's own rule (core
  * effectiveNewContactCap: the lower of the number's cap and the warm-up's, then WhatsApp's warning): with a warning on the number it is the smaller, effective one,
  * and the line says so, at the usual share of the warning (the worker's WORKER_WA_WARNING_FACTORS may be set differently).
  */
@@ -51,8 +51,8 @@ function warmupLine(session: { newContactCap: number; warmupStartedAt: Date | nu
   const day = warmupDay(session.warmupStartedAt, now);
   const limit = effectiveNewContactCap(session, now);
   const warned = session.warning === "none" ? "" : ` (after WhatsApp's ${session.warning} warning, at the usual share)`;
-  if (day >= WARMUP_DAYS) return `Warm-up finished - today's new-people limit ${String(limit)}${warned}`;
-  return `Warm-up: day ${String(day + 1)} of ${String(WARMUP_DAYS)} - today's new-people limit ${String(limit)}${warned}`;
+  if (day >= WARMUP_DAYS) return `Warm-up finished · today's new-people limit ${String(limit)}${warned}`;
+  return `Warm-up: day ${String(day + 1)} of ${String(WARMUP_DAYS)} · today's new-people limit ${String(limit)}${warned}`;
 }
 
 /** Why a delete button is not shown: used ones keep only the Active switch; an unused one must be inactive first. */
