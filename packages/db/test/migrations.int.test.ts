@@ -6,7 +6,7 @@
 //   - US-013: 0003 adds the lp_domains NOTIFY trigger to a database deployed at 0002.
 //   - US-018: 0009 truncates sub-millisecond answer / finish timestamps before its CHECKs.
 //   - US-020: 0012 backfills orders.buyer_key on existing orders before making it NOT NULL.
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -270,6 +270,28 @@ describe("upgrading a database from before the opener variety and the warm-up (0
         // The numbers that existed are NEW numbers (Owner): their warm-up starts at the upgrade.
         const sessions = await check<{ recent: boolean }[]>`SELECT warmup_started_at > now() - interval '5 minutes' AS recent FROM waha_sessions`;
         expect(sessions).toEqual([{ recent: true }, { recent: true }]);
+        // All of them got the moment of the migration (one value, not a time that moves on each read).
+        expect(await check`SELECT 1 FROM waha_sessions GROUP BY warmup_started_at`).toHaveLength(1);
+        // The column's default is now(): a row inserted without a word about it is a new number and warms up; the NULL the console writes for an established number
+        // is explicit, and stays.
+        await check`INSERT INTO waha_sessions (server_id, session_name) SELECT server_id, 'three' FROM waha_sessions LIMIT 1`;
+        await check`INSERT INTO waha_sessions (server_id, session_name, warmup_started_at) SELECT server_id, 'four', NULL FROM waha_sessions LIMIT 1`;
+        expect(await check`SELECT session_name FROM waha_sessions WHERE session_name = 'three' AND warmup_started_at > now() - interval '5 minutes'`).toHaveLength(1);
+        expect(await check`SELECT session_name FROM waha_sessions WHERE session_name = 'four' AND warmup_started_at IS NULL`).toHaveLength(1);
+        await check`DELETE FROM waha_sessions WHERE session_name IN ('three', 'four')`;
+        // The worker's "this number's last openers, newest first" is served by the partial index, read backwards, with no sort (the plan with the sequential scan
+        // ruled out: the tables here are empty, so this shows the index fits the question, not that the planner prefers it on a table of this size).
+        const plan = await check.begin(async (tx) => {
+          await tx`SET LOCAL enable_seqscan = off`;
+          const lines = await tx<{ "QUERY PLAN": string }[]>`
+            EXPLAIN SELECT variant_key FROM delivery_openers
+             WHERE session_id = ${randomUUID()} AND variant_key IS NOT NULL AND (sent_at IS NOT NULL OR status IN ('sending', 'unknown'))
+             ORDER BY coalesce(sent_at, updated_at) DESC, delivery_id DESC LIMIT 3`;
+          return lines.map((l) => l["QUERY PLAN"]).join("\n");
+        });
+        expect(plan).toContain("delivery_openers_variant_idx");
+        expect(plan).toContain("Index Scan Backward");
+        expect(plan).not.toContain("Sort");
         const rows = await wordings(check);
         expect(rows.map((r) => r.key)).toEqual(Array.from({ length: 10 }, (_, i) => `delivery_opener_${String(i + 1)}`));
         // 1 to 3 are untouched (an Owner's edit above all), 4 to 10 are the approved text.

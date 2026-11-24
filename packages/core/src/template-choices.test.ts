@@ -1,7 +1,9 @@
+import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import {
   CHOICE_MAX_OPTIONS,
   CHOICE_MIN_OPTIONS,
+  choiceSkeleton,
   expandChoices,
   longestChoiceExpansion,
   parseChoices,
@@ -115,5 +117,86 @@ describe("[[a|b]] choices (WhatsApp)", () => {
     expect(renderPostbackUrl("https://track.example/p?x=[[a|b]]&c={clickid}&t={txid}&p={payout}&s={status}", { clickid: "c", txid: "t", payout: "1", status: "ok" }, { adnetId: "a", host: "track.example" }, resolve)).toBe(
       "https://track.example/p?x=[[a|b]]&c=c&t=t&p=1&s=ok",
     );
+  });
+});
+
+
+describe("a choice in the braces of a variable cannot change which variable it is (the skeleton is checked, strictly, before the draw)", () => {
+  it("refuses '{[[nama|link_trivia]]}' and '{na[[ma|me]]}' at render, whichever option would have been drawn", () => {
+    for (const template of ["{[[nama|link_trivia]]}", "{na[[ma|me]]}", "{nama[[|x]]}", "{[[a|b]]nama}", "Halo {[[nama|kode_otp]]}!"]) {
+      for (const draw of [0, 0.5, 0.99]) {
+        const link = { ...values, link_trivia: "https://play.example.test/x" };
+        expect(codeOf(() => renderMessage(template, "whatsapp", link, { linkOrigin: "https://play.example.test", random: () => draw })), `${template} @ ${String(draw)}`).toMatch(/^(malformed_token|invalid_choice)$/);
+        expect(codeOf(() => renderMessageRedacted(template, "whatsapp", values, { random: () => draw })), `${template} (redacted) @ ${String(draw)}`).toMatch(/^(malformed_token|invalid_choice)$/);
+      }
+    }
+    expect(codeOf(() => renderMessage("{[[nama|link_trivia]]}", "whatsapp", values))).toBe("malformed_token");
+    expect(codeOf(() => renderMessage("{na[[ma|me]]}", "whatsapp", values))).toBe("malformed_token");
+  });
+
+  it("builds a skeleton in which every choice is one character that no variable name holds, and keeps valid choices working next to variables", () => {
+    expect(choiceSkeleton("Halo [[a|b]] {nama}, [[x|y|z]]!")).toBe("Halo \u0000 {nama}, \u0000!");
+    expect(choiceSkeleton("tanpa pilihan {nama}")).toBe("tanpa pilihan {nama}");
+    expect(() => choiceSkeleton("[[a|b")).toThrow(TemplateError);
+    expect(renderMessage("[[Halo|Hai]] {nama}, [[cukup|tinggal]] {judul_ebook}[[.|!]]", "whatsapp", values, { random: () => 0 })).toBe("Halo Budi Santoso, cukup Belajar Node\u{2024}js.");
+    expect(renderMessage("{nama}[[-|, ]]{order_id}", "whatsapp", values, { random: () => 0.99 })).toBe("Budi Santoso, K7M2Q9XR");
+  });
+
+  it("property: a template that renders at all uses, for every possible draw, exactly the variables its text shows (an option never adds, removes or changes one)", () => {
+    const atoms = [
+      "{nama}",
+      "{judul_ebook}",
+      "{link_trivia}",
+      "{kode_otp}",
+      "{order_id}",
+      "{x}",
+      "{",
+      "}",
+      "{na",
+      "ma}",
+      " ",
+      "kata",
+      "[[a|b]]",
+      "[[nama|link_trivia]]",
+      "[[na|ma]]",
+      "[[ { | } ]]",
+      "[[x|y|z]]",
+      "[[kode_otp|order_id|judul_ebook]]",
+      "[[a]]",
+      "[[",
+      "]]",
+    ];
+    // Markers that tell which variable was rendered; a redacted render shows the two login variables as [name].
+    const marked = { nama: "NAMAVAL", judul_ebook: "JUDULVAL", order_id: "ORD1", kode_otp: "042917", link_trivia: "https://play.example.test/x" };
+    const counted = (text: string, needle: string): number => text.split(needle).length - 1;
+    const shows: readonly (readonly [string, string])[] = [
+      ["{nama}", "NAMAVAL"],
+      ["{judul_ebook}", "JUDULVAL"],
+      ["{order_id}", "ORD1"],
+      ["{kode_otp}", "[kode_otp]"],
+      ["{link_trivia}", "[link_trivia]"],
+    ];
+    let rendered = 0;
+    fc.assert(
+      fc.property(fc.array(fc.constantFrom(...atoms), { minLength: 1, maxLength: 7 }), fc.array(fc.double({ min: 0, max: 0.999999, noNaN: true }), { minLength: 1, maxLength: 4 }), (parts, draws) => {
+        const template = parts.join("");
+        let i = 0;
+        const random = (): number => draws[i++ % draws.length] ?? 0;
+        let out: string;
+        try {
+          out = renderMessageRedacted(template, "whatsapp", marked, { random });
+        } catch (error) {
+          if (error instanceof TemplateError) return;
+          throw error;
+        }
+        rendered++;
+        // Every token of the text appears in the output exactly as often as the text has it: nothing came from an option.
+        for (const [token, marker] of shows) expect(counted(out, marker), `${template} -> ${out}`).toBe(counted(template, token));
+        // And the verdict does not depend on the draw.
+        for (const fixed of [0, 0.5, 0.999999]) expect(() => renderMessageRedacted(template, "whatsapp", marked, { random: () => fixed }), `${template} @ ${String(fixed)}`).not.toThrow();
+      }),
+      { numRuns: 600 },
+    );
+    expect(rendered).toBeGreaterThan(50);
   });
 });

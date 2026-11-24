@@ -50,11 +50,13 @@
 // their shape. An empty string is a valid value (nothing is set: the variable renders empty); a missing value is still an error.
 //
 // Choices (WhatsApp only): `[[Halo|Hai]]` is replaced at render time by ONE of its options, drawn with `options.random` (default:
-// the operating system's CSPRNG), before anything else is parsed, so an option can never add a variable or a brace. A choice has 2
-// to 5 options of plain text (no `{`, `}` or nested `[[`), `[[` and `]]` must balance, and the template's length limit applies to
-// the expansion with the LONGEST option (longestChoiceExpansion). E-mail (subject and HTML) refuses `[[` and `]]` altogether: an
-// option is free text, and in HTML it could close an attribute or a tag, which no single scan of the template could rule out for
-// every combination of options.
+// the operating system's CSPRNG). A choice has 2 to 5 options of plain text (no `{`, `}` or nested `[[`), `[[` and `]]` must
+// balance, and the template's length limit applies to the expansion with the LONGEST option (longestChoiceExpansion). The
+// variables are checked on the SKELETON (choiceSkeleton: every choice replaced by a character no variable name contains), strictly,
+// before the draw: a choice in the braces of a variable (`{[[nama|link_trivia]]}`, `{na[[ma|me]]}`) leaves stray braces there and
+// is refused, and since an option has no brace the draw cannot add, remove or change a variable. E-mail (subject and HTML) refuses
+// `[[` and `]]` altogether: an option is free text, and in HTML it could close an attribute or a tag, which no single scan of the
+// template could rule out for every combination of options.
 import { randomInt } from "node:crypto";
 import { CS_LOCAL_PHONE, isCsEmail } from "./cs-contact.ts";
 import { SAPAAN_VALUES } from "./greeting.ts";
@@ -493,6 +495,19 @@ export function expandChoices(template: string, random: () => number = csprng): 
     .join("");
 }
 
+/** What stands for a choice in the skeleton: not a character a variable name can hold (see TOKEN), so a choice inside `{...}` breaks the token. */
+const CHOICE_PLACEHOLDER = "\u0000";
+
+/**
+ * The template with each choice replaced by CHOICE_PLACEHOLDER: its variables and braces are exactly those of every possible draw (an option has no brace),
+ * so checking the skeleton checks them all. A choice inside a variable's braces leaves a stray brace in it.
+ */
+export function choiceSkeleton(template: string): string {
+  return parseChoices(template)
+    .map((part) => (part.kind === "text" ? part.text : CHOICE_PLACEHOLDER))
+    .join("");
+}
+
 /** The template with each choice replaced by its longest option: the text a length limit is checked on. */
 export function longestChoiceExpansion(template: string): string {
   const length = (text: string): number => Array.from(text).length;
@@ -573,8 +588,11 @@ function renderMessageTokens(
   redact: boolean,
 ): string {
   let source = template;
-  if (channel === "whatsapp") source = expandChoices(template, options.random);
-  else if (hasChoiceMarker(template)) throw new TemplateError("invalid_choice", "[[...]] choices are only for WhatsApp templates, not e-mail");
+  if (channel === "whatsapp") {
+    // The variables are judged on the skeleton, before the draw (a choice in a variable's braces is a stray brace there).
+    parse(choiceSkeleton(template), MESSAGE_VARIABLES, false, "strict");
+    source = expandChoices(template, options.random);
+  } else if (hasChoiceMarker(template)) throw new TemplateError("invalid_choice", "[[...]] choices are only for WhatsApp templates, not e-mail");
   const tokens = channel === "email_html" ? scanEmailHtml(source) : parse(source, MESSAGE_VARIABLES, false, "strict");
   let out = "";
   for (const token of tokens) {

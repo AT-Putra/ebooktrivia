@@ -178,6 +178,19 @@ export const contactCacheFresh = (entry: { readonly numberExists: boolean; reado
 /** Is the opener too old to send (counted from the delivery's not_before)? */
 export const openerTooOld = (now: Date, notBefore: Date): boolean => now.getTime() - notBefore.getTime() > OPENER_MAX_AGE_MS;
 
+/**
+ * The key of an opener wording in message_templates: `delivery_opener_N`, N a whole number from 1 (no leading zero). One pattern for the worker and the console,
+ * as a PostgreSQL regular expression (`key ~ ...`, no `\d`, no lookaround) that is also a valid JavaScript one.
+ */
+export const OPENER_KEY_PREFIX = "delivery_opener_";
+export const OPENER_KEY_PATTERN = "^delivery_opener_[1-9][0-9]*$";
+const OPENER_KEY = new RegExp(OPENER_KEY_PATTERN);
+
+export const isOpenerKey = (key: string): boolean => OPENER_KEY.test(key);
+
+/** The N of `delivery_opener_N`, or undefined for any other text (a variant_key may name a wording that is gone). */
+export const openerKeyNumber = (key: string): number | undefined => (isOpenerKey(key) ? Number(key.slice(OPENER_KEY_PREFIX.length)) : undefined);
+
 /** A number does not repeat a wording it used for one of its last this many openers. */
 export const OPENER_NO_REPEAT = 3;
 

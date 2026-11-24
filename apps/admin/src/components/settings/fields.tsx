@@ -145,10 +145,14 @@ export function SelectField({
 export function CheckboxField({ id, name, label, defaultChecked, hint }: { id: string; name: string; label: string; defaultChecked?: boolean | undefined; hint?: ReactNode }) {
   return (
     <div className="flex items-start gap-2">
-      <input id={id} name={name} type="checkbox" defaultChecked={defaultChecked} className="mt-1 size-4 accent-primary" />
+      <input id={id} name={name} type="checkbox" defaultChecked={defaultChecked} className="mt-1 size-4 accent-primary" aria-describedby={hint === undefined ? undefined : `${id}-hint`} />
       <div className="flex flex-col">
         <Label htmlFor={id}>{label}</Label>
-        {hint === undefined ? null : <span className="text-xs text-muted-foreground">{hint}</span>}
+        {hint === undefined ? null : (
+          <span id={`${id}-hint`} className="text-xs text-muted-foreground">
+            {hint}
+          </span>
+        )}
       </div>
     </div>
   );

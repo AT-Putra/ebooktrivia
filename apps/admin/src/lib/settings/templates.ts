@@ -26,9 +26,14 @@
 //     parallel requests cannot exceed a cap. The recipient is PII: the audit log gets a reference.
 import { randomUUID } from "node:crypto";
 import {
+  choiceSkeleton,
+  isOpenerKey,
   longestChoiceExpansion,
   type MessageVariable,
   normalizeIdMobile,
+  OPENER_KEY_PATTERN,
+  OPENER_KEY_PREFIX,
+  openerKeyNumber,
   renderMessageRedacted,
   TEST_SEND_SAMPLE_VALUES,
   TEST_SEND_TOPIC,
@@ -63,19 +68,17 @@ const FIXED_CATALOG: Readonly<Record<string, CatalogEntry>> = {
 // {link_trivia}, and no {cs_whatsapp} / {cs_email}: an opener stays short and link-free); {nama} is the buyer's FIRST name; {sapaan} a greeting for the time of day; it asks the buyer to reply, and the ebook follows the reply. The worker
 // picks one wording at random for each opener (never one the number used for its last 3).
 const OPENER_VARIABLES: readonly MessageVariable[] = ["nama", "judul_ebook", "order_id", "sapaan"];
-const OPENER_KEY = /^delivery_opener_([1-9][0-9]*)$/;
-const OPENER_PREFIX = "delivery_opener_";
 export const OPENER_MIN_WORDINGS = 3;
 export const OPENER_MAX_WORDINGS = 20;
 
 /** The template keys the console knows: the fixed ones and any `delivery_opener_N`. Undefined for anything else. */
 export function templateEntry(key: string): CatalogEntry | undefined {
-  const opener = OPENER_KEY.exec(key);
-  if (opener !== null) return { label: `WhatsApp opener, wording ${opener[1] ?? ""} (short, asks the buyer to reply; no file, no link)`, variables: OPENER_VARIABLES, required: [] };
+  const opener = openerKeyNumber(key);
+  if (opener !== undefined) return { label: `WhatsApp opener, wording ${String(opener)} (short, asks the buyer to reply; no file, no link)`, variables: OPENER_VARIABLES, required: [] };
   return FIXED_CATALOG[key];
 }
 
-export const isOpenerKey = (key: string): boolean => OPENER_KEY.test(key);
+export { isOpenerKey };
 
 /** Sample values for previews and test-sends (core, shared with the worker); the buyer name may come from the preview form. */
 export const SAMPLE_VALUES = TEST_SEND_SAMPLE_VALUES;
@@ -132,12 +135,15 @@ export function parseTemplate(key: string, channel: TemplateChannel, raw: { read
   if (channel === "whatsapp" && Array.from(longestChoiceExpansion(body)).length > BODY_MAX.whatsapp) throw new InvalidInput(SIZE_MESSAGE.whatsapp);
   // The redacted render does not need values for {kode_otp} / {link_trivia}, so check every
   // variable against the key's list explicitly (a login link must not reach the no-link template).
-  for (const text of [subject ?? "", body]) {
+  // A WhatsApp text is checked as its SKELETON (each [[a|b]] choice one placeholder): an option has no brace, so no draw adds, removes or changes a variable, and a
+  // choice inside a variable's braces was refused by the render above.
+  const checked = channel === "whatsapp" ? choiceSkeleton(body) : body;
+  for (const text of [subject ?? "", checked]) {
     for (const [, name] of text.matchAll(/\{([A-Za-z0-9_.:-]+)\}/g)) {
       if (!(entry.variables as readonly string[]).includes(name ?? "")) throw new InvalidInput(`The text ${ERROR_MESSAGES.missing_value ?? ""}: {${name ?? ""}}.`);
     }
   }
-  for (const name of entry.required) if (!body.includes(`{${name}}`)) throw new InvalidInput(`This template must contain {${name}}.`);
+  for (const name of entry.required) if (!checked.includes(`{${name}}`)) throw new InvalidInput(`This template must contain {${name}}.`);
   return { subject, body };
 }
 
@@ -184,19 +190,24 @@ const OPENER_FIELDS: Readonly<Record<string, FieldKind>> = { key: "value", body:
 const OPENER_LOCK = "opener_wordings";
 
 /**
- * Adds an opener wording as the next `delivery_opener_N` (one more than the highest N there is), checked like an edit. At most OPENER_MAX_WORDINGS: the count is
- * taken under a lock that remove also takes, so parallel requests cannot pass the limit. Returns the new key.
+ * Adds an opener wording as the next `delivery_opener_N`, checked like an edit. At most OPENER_MAX_WORDINGS: the count is taken under a lock that remove also takes,
+ * so parallel requests cannot pass the limit. N is one more than the highest number any wording has, or any opener row has used (delivery_openers.variant_key),
+ * so the number of a removed wording is never given to a new one: an old opener row keeps naming the wording it really used. A text identical to a wording that
+ * exists is refused (a double click, or the same text pasted twice). Returns the new key.
  */
 export function addOpenerWording(sql: Sql, rawBody: string): Promise<string> {
   return auditedChange(
     sql,
     async (tx, audit) => {
       await tx`SELECT pg_advisory_xact_lock(hashtextextended(${OPENER_LOCK}, 0))`;
-      const keys = await tx<{ key: string }[]>`SELECT key FROM public.message_templates WHERE key ~ '^delivery_opener_[1-9][0-9]*$' AND channel = 'whatsapp' AND locale = 'id'`;
-      if (keys.length >= OPENER_MAX_WORDINGS) throw new InvalidInput(`There are already ${String(OPENER_MAX_WORDINGS)} opener wordings, the most there can be. Remove one first.`);
-      const next = Math.max(0, ...keys.map((k) => Number(k.key.slice(OPENER_PREFIX.length)))) + 1;
-      const key = `${OPENER_PREFIX}${String(next)}`;
+      const wordings = await tx<{ key: string; body: string }[]>`SELECT key, body FROM public.message_templates WHERE key ~ ${OPENER_KEY_PATTERN} AND channel = 'whatsapp' AND locale = 'id'`;
+      if (wordings.length >= OPENER_MAX_WORDINGS) throw new InvalidInput(`There are already ${String(OPENER_MAX_WORDINGS)} opener wordings, the most there can be. Remove one first.`);
+      const [used] = await tx<{ n: number | null }[]>`SELECT max(substring(variant_key from '[0-9]+$')::int) AS n FROM public.delivery_openers WHERE variant_key ~ ${OPENER_KEY_PATTERN}`;
+      const next = Math.max(used?.n ?? 0, ...wordings.map((w) => openerKeyNumber(w.key) ?? 0)) + 1;
+      const key = `${OPENER_KEY_PREFIX}${String(next)}`;
       const text = parseTemplate(key, "whatsapp", { subject: "", body: rawBody });
+      const same = wordings.find((w) => w.body.trim() === text.body.trim());
+      if (same !== undefined) throw new InvalidInput(`This wording already exists (${same.key}). Write a different one.`);
       const [row] = await tx<{ id: string }[]>`
         INSERT INTO public.message_templates (key, channel, locale, subject, body) VALUES (${key}, 'whatsapp', 'id', NULL, ${text.body}) RETURNING id`;
       audit({ action: "message_template.create", entityType: "message_template", entityId: row?.id ?? null, fields: OPENER_FIELDS, after: { key, body: text.body } });
@@ -216,7 +227,7 @@ export function removeOpenerWording(sql: Sql, id: string): Promise<void> {
     const [row] = await tx<{ key: string; body: string }[]>`SELECT key, body FROM public.message_templates WHERE id = ${id} FOR UPDATE`;
     if (row === undefined) throw new InvalidInput("This wording no longer exists.");
     if (!isOpenerKey(row.key)) throw new InvalidInput("Only opener wordings can be removed.");
-    const [count] = await tx<{ n: number }[]>`SELECT count(*)::int AS n FROM public.message_templates WHERE key ~ '^delivery_opener_[1-9][0-9]*$' AND channel = 'whatsapp' AND locale = 'id'`;
+    const [count] = await tx<{ n: number }[]>`SELECT count(*)::int AS n FROM public.message_templates WHERE key ~ ${OPENER_KEY_PATTERN} AND channel = 'whatsapp' AND locale = 'id'`;
     if ((count?.n ?? 0) <= OPENER_MIN_WORDINGS) throw new InvalidInput(`Keep at least ${String(OPENER_MIN_WORDINGS)} opener wordings: add another before removing this one.`);
     await tx`DELETE FROM public.message_templates WHERE id = ${id}`;
     audit({ action: "message_template.delete", entityType: "message_template", entityId: id, fields: OPENER_FIELDS, before: { key: row.key, body: row.body }, after: null });

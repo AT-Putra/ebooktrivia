@@ -1,5 +1,21 @@
 import { describe, expect, it } from "vitest";
-import { OPENER_NO_REPEAT, pickOpenerWording } from "./delivery-opener.ts";
+import { isOpenerKey, OPENER_KEY_PATTERN, OPENER_KEY_PREFIX, OPENER_NO_REPEAT, openerKeyNumber, pickOpenerWording } from "./delivery-opener.ts";
+
+describe("the key of an opener wording: one pattern for the worker and the console", () => {
+  it("is delivery_opener_N with N a whole number from 1, no leading zero, nothing around it", () => {
+    for (const [key, n] of [["delivery_opener_1", 1], ["delivery_opener_9", 9], ["delivery_opener_10", 10], ["delivery_opener_20", 20], ["delivery_opener_123", 123]] as const) {
+      expect(isOpenerKey(key), key).toBe(true);
+      expect(openerKeyNumber(key), key).toBe(n);
+    }
+    for (const key of ["delivery_opener_", "delivery_opener_0", "delivery_opener_01", "delivery_opener_1x", "delivery_opener_-1", "delivery_opener_1.5", "xdelivery_opener_1", "delivery_opener_1\n", "delivery_opener_1 ", "Delivery_opener_1", "delivery_openers_1", "delivery", "otp", ""]) {
+      expect(isOpenerKey(key), JSON.stringify(key)).toBe(false);
+      expect(openerKeyNumber(key), JSON.stringify(key)).toBeUndefined();
+    }
+    expect(OPENER_KEY_PREFIX).toBe("delivery_opener_");
+    // The same text goes to PostgreSQL (key ~ pattern): anchors, a range and a class only, no JavaScript-only syntax.
+    expect(OPENER_KEY_PATTERN).toBe("^delivery_opener_[1-9][0-9]*$");
+  });
+});
 
 describe("pickOpenerWording: no repeat of the last 3 wordings of a number (Owner decision 2026-11-24)", () => {
   const keys = ["delivery_opener_1", "delivery_opener_2", "delivery_opener_3", "delivery_opener_4", "delivery_opener_5"];

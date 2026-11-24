@@ -304,6 +304,24 @@ describe("message templates", () => {
     expect(refused(() => parseTemplate("delivery_opener_1", "whatsapp", { subject: "", body }))).toMatch(message);
   });
 
+  it("a choice inside a variable's braces is refused, whichever option would be drawn, and nothing about a variable depends on the draw", () => {
+    for (const body of ["{[[nama|link_trivia]]}", "{na[[ma|me]]}", "Halo {[[nama|kode_otp]]}", "{[[a|b]]nama}"]) {
+      expect(refused(() => parseTemplate("delivery_opener_1", "whatsapp", { subject: "", body })), body).toMatch(/\{ or \}/);
+      expect(refused(() => parseTemplate("delivery", "whatsapp", { subject: "", body })), body).toMatch(/\{ or \}/);
+      expect(() => preview("delivery_opener_1", "whatsapp", { subject: null, body }, "Budi"), body).toThrow(InvalidInput);
+    }
+    // The login code and link stay out of an opener, with or without a choice next to them.
+    expect(refused(() => parseTemplate("delivery_opener_1", "whatsapp", { subject: "", body: "[[Halo|Hai]] {kode_otp}" }))).toMatch(/cannot have/);
+    expect(refused(() => parseTemplate("delivery_opener_1", "whatsapp", { subject: "", body: "{link_trivia} [[Halo|Hai]]" }))).toMatch(/cannot have/);
+    // The OTP template must still contain its code as a variable of its own text, not as something a choice could supply.
+    expect(refused(() => parseTemplate("otp", "whatsapp", { subject: "", body: "Kode [[anda|Anda]]" }))).toMatch(/must contain \{kode_otp\}/);
+    expect(parseTemplate("otp", "whatsapp", { subject: "", body: "Kode [[anda|Anda]]: {kode_otp}" }).body).toBe("Kode [[anda|Anda]]: {kode_otp}");
+    // Every expansion of an accepted text is accepted as plain text: nothing the draw can do changes what was checked.
+    const body = "[[Halo|Hai]] {nama}, [[cukup|tinggal]] balas {judul_ebook}.";
+    expect(parseTemplate("delivery_opener_1", "whatsapp", { subject: "", body }).body).toBe(body);
+    for (const a of ["Halo", "Hai"]) for (const b of ["cukup", "tinggal"]) expect(parseTemplate("delivery_opener_1", "whatsapp", { subject: "", body: `${a} {nama}, ${b} balas {judul_ebook}.` }).body).toContain("{nama}");
+  });
+
   it("refuses [[ ]] in an e-mail (subject and body), where an option could break out of a tag", () => {
     expect(refused(() => parseTemplate("delivery", "email", { subject: "Ebook", body: "<p>[[Halo|Hai]] {nama}</p>" }))).toMatch(/only for WhatsApp/);
     expect(refused(() => parseTemplate("delivery", "email", { subject: "[[a|b]] ebook", body: "<p>{nama}</p>" }))).toMatch(/only for WhatsApp/);

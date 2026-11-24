@@ -73,10 +73,10 @@ export const wahaSessions = pgTable(
     newContactCap: integer("new_contact_cap").notNull().default(30),
     /**
      * When this number's warm-up started (core delivery-pool WARMUP_DAYS): its daily budget of NEW contacts is held down for the first 21 WIB days. NULL = an
-     * established number, no warm-up. Set by the console (a new session, or an established number switched back to warming up); migration 0026 started it for
-     * the numbers that existed then.
+     * established number, no warm-up: only the console writes that, on purpose. The default is now(), so a row inserted any other way warms up too; migration
+     * 0026 started it for the numbers that existed then. A console session switched back to warming up gets now() again.
      */
-    warmupStartedAt: tstz("warmup_started_at"),
+    warmupStartedAt: tstz("warmup_started_at").defaultNow(),
     /**
      * US-025: WhatsApp's limits on this number as WAHA reports them (docs, Sessions: Reachout timelock, Message capping), persisted from the health poll, the
      * session.status webhook and every 463 / 475. The shapes are RECORDED (US-005, WAHA 2026.10.1: an unrestricted account); 463 / 475 are documented only. `capping_status` is an open set (NONE, FIRST_WARNING, SECOND_WARNING, CAPPED).
@@ -249,6 +249,10 @@ export const deliveryOpeners = pgTable(
     nonNegative("delivery_openers_attempts_check", t.attempts),
     // The reply finds the opener its sender is answering: the number that sent it, while it awaits the reply.
     index("delivery_openers_awaiting_idx").on(t.sessionId, t.status),
+    // The worker's pick of a wording asks for a number's last openers, newest first (apps/worker delivery/messages.ts pickOpenerVariant); no scan of the whole table.
+    index("delivery_openers_variant_idx")
+      .on(t.sessionId, sql`coalesce(${t.sentAt}, ${t.updatedAt})`, t.deliveryId)
+      .where(sql`${t.variantKey} IS NOT NULL`),
   ],
 );
 

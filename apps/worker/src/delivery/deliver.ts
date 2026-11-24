@@ -45,6 +45,7 @@ import {
   type DeliveryStatus,
   deliveryFilename,
   EFFECT_CANCELLED,
+  effectiveNewContactCap,
   expireOpener,
   failOpener,
   firstName,
@@ -62,6 +63,9 @@ import {
   TemplateError,
   toWaChatId,
   WA_MAX_SESSIONS,
+  WARMUP_DAYS,
+  type WarningLevel,
+  warmupDay,
 } from "@ebooktrivia/core";
 import { performance } from "node:perf_hooks";
 import { setTimeout as delay } from "node:timers/promises";
@@ -113,6 +117,8 @@ export interface DeliveryDeps {
   readonly sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
   /** Monotonic milliseconds; default performance.now. Injectable for tests. */
   readonly clock?: () => number;
+  /** The wall clock (the opener's {sapaan} is the greeting of the moment it is sent); default `new Date()`. Injectable for tests. */
+  readonly now?: () => Date;
 }
 
 export interface ClaimRow {
@@ -302,6 +308,7 @@ export function createDelivery(deps: DeliveryDeps): Delivery {
   // The opener's wording, its {sapaan} and its [[a|b]] choices: the human-like random source (a test passes its own).
   const wordingRandom = deps.humanRandom ?? cryptoRandom;
   const clock = deps.clock ?? (() => performance.now());
+  const wallClock = deps.now ?? (() => new Date());
   const sleep = deps.sleep ?? ((ms: number, signal: AbortSignal) => delay(ms, undefined, { signal }));
 
   // --- 1. claim ------------------------------------------------------------------------------------------------------
@@ -529,9 +536,14 @@ export function createDelivery(deps: DeliveryDeps): Delivery {
   async function sendOpener(context: OpenerContext, signal: AbortSignal): Promise<OpenerSent> {
     const target = context.whatsapp;
     let text: string;
+    let textAt: (at: Date) => string;
     try {
       const wording = openerWording(await loadOpenerTemplates(sql), context.variantKey, wordingRandom);
-      text = openerMessage(wording, { firstName: firstName(context.buyer.name), title: context.product.title, code: context.code }, new Date(), wordingRandom);
+      const buyer = { firstName: firstName(context.buyer.name), title: context.product.title, code: context.code };
+      textAt = (at) => openerMessage(wording, buyer, at, wordingRandom);
+      // This first text only tells whether there is anything to send and how long it takes to type (its {sapaan} is the greeting of the slot's start); the text that
+      // goes out is rendered again at the moment of the send, below: the slot wait and the typing can carry a message across the hour a greeting changes at.
+      text = textAt(new Date(Math.max(wallClock().getTime(), target.startAt.getTime())));
     } catch (error) {
       return { outcome: preparationFailure(error), counts: false };
     }
@@ -564,7 +576,8 @@ export function createDelivery(deps: DeliveryDeps): Delivery {
           kind: "message",
           signal,
           beforeSend: () => leaseLeft(context, HUMAN_PRESENCE_TIMEOUT_MS),
-          send: () => client.sendText(sessionName, contact.chatId, text),
+          // The same wording and buyer as the text above, so this cannot fail where that did not; only {sapaan} and the draws of the choices can differ.
+          send: () => client.sendText(sessionName, contact.chatId, textAt(wallClock())),
         });
       });
       // The phone is not on WhatsApp: final and quiet (no failover, no penalty for any number, no alert). The e-mail has the ebook.
@@ -817,7 +830,7 @@ export function createDelivery(deps: DeliveryDeps): Delivery {
       const claimed = await claim(id);
       if (claimed.kind === "skipped") return "skipped";
       if (claimed.kind === "deferred") {
-        await raisePoolAlert(sql, claimed.reason, log);
+        await raisePoolAlert(sql, claimed.reason, log, config.warningCapFactors);
         return "deferred";
       }
       return claimed.kind === "opener" ? performOpener(claimed.context) : perform(claimed.context);
@@ -846,12 +859,24 @@ export async function holdBack(tx: postgres.TransactionSql, sessionId: string, b
   });
 }
 
+/** The active numbers still in their warm-up (core WARMUP_DAYS): which day of it, and today's limit of new contacts (the warm-up, the own cap and the warning's share). */
+async function warmingNumbers(sql: postgres.Sql, warningCapFactors?: readonly [number, number]): Promise<{ session_name: string; day: number; limit: number }[]> {
+  const rows = await sql<{ session_name: string; warmup_started_at: Date; new_contact_cap: number; warning_level: WarningLevel; now: Date }[]>`
+    SELECT s.session_name, s.warmup_started_at, s.new_contact_cap, s.warning_level, clock_timestamp() AS now
+      FROM public.waha_sessions s JOIN public.waha_servers w ON w.id = s.server_id
+     WHERE s.active AND w.active AND s.warmup_started_at IS NOT NULL
+     ORDER BY s.session_name`;
+  return rows
+    .map((r) => ({ session_name: r.session_name, day: warmupDay(r.warmup_started_at, r.now) + 1, limit: effectiveNewContactCap({ newContactCap: r.new_contact_cap, warning: r.warning_level, warmupStartedAt: r.warmup_started_at }, r.now, warningCapFactors) }))
+    .filter((w) => w.day <= WARMUP_DAYS);
+}
+
 /**
  * The pool alerts of a WhatsApp delivery that found no number to send from (persisted, one per kind per hour): the pool is empty
  * (no number WORKING, or none configured) or every number is at its daily cap or resting. A pool that is only busy is the normal
  * flow control of a burst (the delivery waits for the next sweep) and raises nothing.
  */
-export async function raisePoolAlert(sql: postgres.Sql, reason: string, log: Logger): Promise<void> {
+export async function raisePoolAlert(sql: postgres.Sql, reason: string, log: Logger, warningCapFactors?: readonly [number, number]): Promise<void> {
   // A contact that is not written to yet (the gap, the hour's four) is no pool problem either.
   if (reason === "all_busy" || reason === "same_number_backoff" || reason === "contact_capped" || reason === "contact_wait") return;
   const empty = reason === "no_session_configured" || reason === "no_working_session";
@@ -859,12 +884,16 @@ export async function raisePoolAlert(sql: postgres.Sql, reason: string, log: Log
     if (reason === "all_new_contact_capped") {
       // Every number has spent today's budget of NEW contacts (replies are not counted against it): openers wait for the budget to come back, pending with
       // their backoff, and the e-mail covers the buyers meanwhile.
+      // A number in its warm-up has a small budget on purpose: the alert says which numbers are warming up, on which day and with which limit (session names
+      // and numbers only, no contact).
+      const warming = await warmingNumbers(sql, warningCapFactors);
+      const note = warming.length === 0 ? "" : `; warm-up: ${warming.map((w) => `${w.session_name} is on day ${String(w.day)} of ${String(WARMUP_DAYS)}, limit ${String(w.limit)}`).join(", ")}`;
       await raiseAlert(sql, {
         kind: "wa_new_contact_budget_spent",
         severity: "warning",
         dedupeKey: "wa_new_contact_budget_spent",
-        message: "every WhatsApp number has spent today's budget of new contacts: WhatsApp openers wait until tomorrow (or until the budget is raised); e-mail is unaffected",
-        payload: { reason },
+        message: `every WhatsApp number has spent today's budget of new contacts: WhatsApp openers wait until tomorrow (or until the budget is raised); e-mail is unaffected${note}`,
+        payload: { reason, warming },
       });
       return;
     }

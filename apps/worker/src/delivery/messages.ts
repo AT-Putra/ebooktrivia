@@ -10,7 +10,7 @@
 //   e-mail     key `delivery`: subject and HTML body, and a plain-text alternative made from the SAME template (so an Owner's edit reaches
 //              both parts). When the PDF is not attached (too large, or refused for its size) a notice and a download link are added
 //              to both parts.
-import { type CsContact, csLine, escapeHtml, isCsEmail, isCsHours, isIdMobileE164, type MessageValues, NO_CS_CONTACT, OPENER_NO_REPEAT, pickOpenerWording, renderMessage, sapaan } from "@ebooktrivia/core";
+import { type CsContact, csLine, escapeHtml, isCsEmail, isCsHours, isIdMobileE164, type MessageValues, NO_CS_CONTACT, OPENER_KEY_PATTERN, OPENER_NO_REPEAT, pickOpenerWording, renderMessage, sapaan } from "@ebooktrivia/core";
 import { messages } from "@ebooktrivia/i18n";
 import type postgres from "postgres";
 import type { Logger } from "../log.ts";
@@ -111,7 +111,7 @@ export interface OpenerWording extends StoredTemplate {
 export async function loadOpenerTemplates(db: postgres.Sql | postgres.TransactionSql): Promise<OpenerWording[]> {
   const rows = await db<OpenerWording[]>`
     SELECT key, subject, body FROM public.message_templates
-     WHERE key ~ '^delivery_opener_[0-9]+$' AND channel = 'whatsapp' AND locale = 'id' ORDER BY substring(key from '[0-9]+$')::int`;
+     WHERE key ~ ${OPENER_KEY_PATTERN} AND channel = 'whatsapp' AND locale = 'id' ORDER BY substring(key from '[0-9]+$')::int`;
   if (rows.length === 0) throw new TemplateMissing("delivery_opener", "whatsapp");
   return rows;
 }
@@ -120,16 +120,16 @@ export async function loadOpenerTemplates(db: postgres.Sql | postgres.Transactio
  * The wording the next opener of this number uses: random among the wordings it did not use for its last 3 openers (core pickOpenerWording), or null when there is
  * no wording at all (the send then fails as a missing template). Call it after the pool's lock is taken (claimSession), in the claim's transaction: a claim that
  * starts later for the same number waits for the lock, and then sees this one's recorded wording. What counts as "used": the opener went out, may have (unknown), or
- * is in flight; a claim that never sent (back to pending) used nothing.
+ * is in flight; a claim that never sent (back to pending) used nothing. Served by delivery_openers_variant_idx (session, time, delivery), read backwards.
  */
 export async function pickOpenerVariant(db: postgres.Sql | postgres.TransactionSql, sessionId: string, random: () => number): Promise<string | null> {
   const keys = await db<{ key: string }[]>`
     SELECT key FROM public.message_templates
-     WHERE key ~ '^delivery_opener_[0-9]+$' AND channel = 'whatsapp' AND locale = 'id' ORDER BY substring(key from '[0-9]+$')::int`;
+     WHERE key ~ ${OPENER_KEY_PATTERN} AND channel = 'whatsapp' AND locale = 'id' ORDER BY substring(key from '[0-9]+$')::int`;
   const recent = await db<{ variant_key: string }[]>`
     SELECT variant_key FROM public.delivery_openers
      WHERE session_id = ${sessionId} AND variant_key IS NOT NULL AND (sent_at IS NOT NULL OR status IN ('sending', 'unknown'))
-     ORDER BY coalesce(sent_at, updated_at) DESC, delivery_id
+     ORDER BY coalesce(sent_at, updated_at) DESC, delivery_id DESC
      LIMIT ${OPENER_NO_REPEAT}`;
   return pickOpenerWording(keys.map((r) => r.key), recent.map((r) => r.variant_key), random) ?? null;
 }

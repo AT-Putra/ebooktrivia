@@ -179,6 +179,63 @@ describe("the wording of an opener (variety)", () => {
   });
 });
 
+describe("the wording is picked under the pool's lock, and {sapaan} is the greeting of the moment of the send", () => {
+  it("openers claimed at the same moment for one number get different wordings: each pick sees the wordings the others took", async () => {
+    const r = build({ humanRandom: () => 0 });
+    await createSession({ dailyCap: 1000 });
+    await sql`UPDATE waha_sessions SET new_contact_cap = 1000`;
+    const orders = await Promise.all([paidOrder(shop), paidOrder(shop), paidOrder(shop)]);
+    const results = await Promise.all(orders.map((o) => r.delivery.process({ id: o.deliveries.whatsapp })));
+    expect(results).toEqual(["opened", "opened", "opened"]);
+    const keys = await Promise.all(orders.map(async (o) => (await openerRowOf(o.deliveries.whatsapp)).variant_key));
+    // humanRandom 0 takes the first allowed wording: the first claim gets 1, the next one (1 excluded) 2, the third (1 and 2 excluded) 3, in whatever order they won the lock.
+    expect([...keys].sort()).toEqual(["delivery_opener_1", "delivery_opener_2", "delivery_opener_3"]);
+  });
+
+  it("renders {sapaan} when the message is sent, not when it was prepared: a send carried across an hour of change greets with the new one", async () => {
+    await withEveryWording("{sapaan} {nama}.", async () => {
+      await createSession({ dailyCap: 1000 });
+      await sql`UPDATE waha_sessions SET new_contact_cap = 1000`;
+      // Far in the future, so the slot's start (now) never decides: 10:59:59 WIB when the text is prepared, 11:00:01 WIB when it is sent.
+      const wall = [new Date("2099-06-01T10:59:59+07:00"), new Date("2099-06-01T11:00:01+07:00")];
+      let calls = 0;
+      const r = build({ humanRandom: () => 0.9, now: () => wall[Math.min(calls++, 1)] ?? new Date() });
+      await openOne(r);
+      expect(r.waha.sent.at(-1)?.text).toBe("Selamat siang Budi.");
+      expect(calls).toBe(2);
+      // And the other way round: the greeting of the send, whatever the first text said (the casual greeting is drawn per render, and 0.9 is never casual).
+      const earlier = [new Date("2099-06-01T14:59:59+07:00"), new Date("2099-06-01T15:00:01+07:00")];
+      let n = 0;
+      const r2 = build({ humanRandom: () => 0.9, now: () => earlier[Math.min(n++, 1)] ?? new Date() });
+      await openOne(r2);
+      expect(r2.waha.sent.at(-1)?.text).toBe("Selamat sore Budi.");
+    });
+  });
+});
+
+describe("a session inserted without a warm-up setting warms up (the column's default is now())", () => {
+  it("a row that nobody marked established is a new number: five new contacts on its first day", async () => {
+    const r = build();
+    const session = await createSession();
+    await sql`UPDATE waha_sessions SET warmup_started_at = DEFAULT WHERE id = ${session.id}`;
+    const [row] = await sql<{ recent: boolean }[]>`SELECT warmup_started_at > now() - interval '1 minute' AS recent FROM waha_sessions WHERE id = ${session.id}`;
+    expect(row?.recent).toBe(true);
+    expect(await openUntilDeferred(r, 8)).toBe(5);
+  });
+});
+
+/** Opens buyers one after the other until the pool defers; returns how many went out. */
+async function openUntilDeferred(r: ReturnType<typeof build>, limit: number): Promise<number> {
+  let opened = 0;
+  for (let i = 0; i < limit; i++) {
+    const { result } = await openOne(r);
+    if (result === "deferred") break;
+    expect(result).toBe("opened");
+    opened++;
+  }
+  return opened;
+}
+
 describe("the warm-up of a new number", () => {
   /** A number whose warm-up started `days` WIB days ago (null: an established number). */
   async function warmingSession(days: number | null, newContactCap: number) {
@@ -192,24 +249,18 @@ describe("the warm-up of a new number", () => {
     return session;
   }
 
-  /** Opens buyers one after the other until the pool defers; returns how many went out. */
-  async function openUntilDeferred(r: ReturnType<typeof build>, limit: number): Promise<number> {
-    let opened = 0;
-    for (let i = 0; i < limit; i++) {
-      const { result } = await openOne(r);
-      if (result === "deferred") break;
-      expect(result).toBe("opened");
-      opened++;
-    }
-    return opened;
-  }
-
   it("day 0 to 6: five new contacts a day, then the pool defers the rest with the budget alert", async () => {
+    await sql`UPDATE alerts SET resolved_at = now() WHERE dedupe_key = 'wa_new_contact_budget_spent' AND resolved_at IS NULL`;
     const r = build();
     const session = await warmingSession(0, 30);
     expect(await openUntilDeferred(r, 12)).toBe(5);
     expect(await newContactsOf(session.id)).toBe(5);
-    expect(await sql`SELECT 1 FROM alerts WHERE dedupe_key = 'wa_new_contact_budget_spent' AND resolved_at IS NULL`).toHaveLength(1);
+    // The alert says why the budget is so small: which number is warming up, on which day, with which limit (a session name and numbers, no contact).
+    const alerts = await sql<{ message: string; payload: { reason: string; warming: { session_name: string; day: number; limit: number }[] } }[]>`
+      SELECT message, payload FROM alerts WHERE dedupe_key = 'wa_new_contact_budget_spent' AND resolved_at IS NULL`;
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]?.message).toContain(`warm-up: ${session.name} is on day 1 of 21, limit 5`);
+    expect(alerts[0]?.payload).toEqual({ reason: "all_new_contact_capped", warming: [{ session_name: session.name, day: 1, limit: 5 }] });
     // The last day of the first step is still five.
     await sql`UPDATE waha_sessions SET warmup_started_at = (date_trunc('day', clock_timestamp() AT TIME ZONE 'Asia/Jakarta') - interval '6 days' + interval '1 hour') AT TIME ZONE 'Asia/Jakarta' WHERE id = ${session.id}`;
     expect((await openOne(r)).result).toBe("deferred");
@@ -243,9 +294,14 @@ describe("the warm-up of a new number", () => {
 
   it("an established number keeps its own cap: no warm-up", async () => {
     const r = build();
+    await sql`UPDATE alerts SET resolved_at = now() WHERE dedupe_key = 'wa_new_contact_budget_spent' AND resolved_at IS NULL`;
     const session = await warmingSession(null, 8);
     expect(await openUntilDeferred(r, 12)).toBe(8);
     expect(await newContactsOf(session.id)).toBe(8);
+    // Nothing to say about a warm-up for an established number.
+    const [alert] = await sql<{ message: string; payload: { warming: unknown[] } }[]>`SELECT message, payload FROM alerts WHERE dedupe_key = 'wa_new_contact_budget_spent' AND resolved_at IS NULL`;
+    expect(alert?.message).not.toContain("warm-up");
+    expect(alert?.payload.warming).toEqual([]);
   });
 
   it("replies to a buyer who wrote first, and to a contact the number already knows, are never limited by the warm-up", async () => {

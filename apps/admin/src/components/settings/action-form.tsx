@@ -8,6 +8,9 @@
 // warning, "Yes, delete" (the real submit) and "Cancel". Focus moves to Cancel when the warning opens and back to the
 // button on Cancel or Escape, and stays there when "Yes, delete" is pressed (the button, aria-disabled while the action runs, is
 // still focusable), so the keyboard never loses its place and a refusal is read from where it already is. No native dialog.
+//
+// `resetOnSuccess` empties the fields after a saved result (a form that adds something: a second press must not add the same thing again); `describedBy` is
+// the id of what the button is about (a list of the same button for many items: the name of the item).
 import { type KeyboardEvent as ReactKeyboardEvent, type SubmitEvent as ReactSubmitEvent, type ReactNode, startTransition, useActionState, useEffect, useId, useRef, useState } from "react";
 import { Button } from "@ebooktrivia/ui/components/button";
 import { INITIAL_SAVE, type SaveState } from "../../lib/form-state.ts";
@@ -21,6 +24,8 @@ export function ActionForm({
   variant = "cta",
   testId,
   confirm,
+  resetOnSuccess,
+  describedBy,
 }: {
   action: (previous: SaveState, form: FormData) => Promise<SaveState>;
   submitLabel: string;
@@ -30,6 +35,8 @@ export function ActionForm({
   testId?: string | undefined;
   /** The warning shown before the action runs (and the label of the real submit button, "Yes, delete" by default). */
   confirm?: { readonly warning: string; readonly yesLabel?: string } | undefined;
+  resetOnSuccess?: boolean | undefined;
+  describedBy?: string | undefined;
 }) {
   const [state, dispatch, pending] = useActionState(action, INITIAL_SAVE);
   const [confirming, setConfirming] = useState(false);
@@ -37,6 +44,7 @@ export function ActionForm({
   const trigger = useRef<HTMLButtonElement>(null);
   const cancel = useRef<HTMLButtonElement>(null);
   const returnFocus = useRef(false);
+  const formRef = useRef<HTMLFormElement>(null);
   const asking = confirm !== undefined && confirming;
   useEffect(() => {
     if (confirming) cancel.current?.focus();
@@ -45,6 +53,9 @@ export function ActionForm({
       trigger.current?.focus();
     }
   }, [confirming]);
+  useEffect(() => {
+    if (resetOnSuccess === true && state.status === "saved") formRef.current?.reset();
+  }, [state, resetOnSuccess]);
   const close = () => {
     returnFocus.current = true;
     setConfirming(false);
@@ -67,7 +78,7 @@ export function ActionForm({
     });
   };
   return (
-    <form onSubmit={onSubmit} className={className ?? "flex flex-col gap-3"} data-testid={testId}>
+    <form ref={formRef} onSubmit={onSubmit} className={className ?? "flex flex-col gap-3"} data-testid={testId}>
       {children}
       {asking ? (
         <p id={warningId} className="text-sm">
@@ -92,6 +103,7 @@ export function ActionForm({
             // A two-step trigger stays focusable while the action runs (aria-disabled, and the click is ignored): a disabled button would drop the focus.
             disabled={confirm === undefined ? pending : undefined}
             aria-disabled={confirm !== undefined && pending ? true : undefined}
+            aria-describedby={describedBy}
             ref={trigger}
             onClick={
               confirm === undefined

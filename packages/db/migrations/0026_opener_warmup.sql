@@ -1,14 +1,16 @@
--- Opener variety and warm-up for new WhatsApp numbers (Owner decision 2026-11-24). Additive: two nullable columns and seven more opener wordings.
+-- Opener variety and warm-up for new WhatsApp numbers (Owner decision 2026-11-24). Additive: two nullable columns, an index and seven more opener wordings.
 --   - delivery_openers.variant_key: the key of the wording (message_templates.key) an opener was claimed with, so a number does not repeat the wordings of its last 3
 --     openers. Text without a foreign key: the Owner may remove a wording, and old rows keep saying which one they used. NULL on the rows that exist now.
+--     delivery_openers_variant_idx serves the worker's "this number's last openers, newest first" without a scan of the table.
 --   - waha_sessions.warmup_started_at: when a number's warm-up began (its daily budget of NEW contacts is held down for 21 WIB days, core delivery-pool). NULL = an
---     established number. The numbers that exist now are NEW numbers (Owner), so their warm-up starts now, at go-live.
+--     established number (only the console writes that, on purpose); the DEFAULT is now(), so a row inserted any other way warms up too. The numbers that exist now
+--     are NEW numbers (Owner): ADD COLUMN ... DEFAULT now() gives each of them the time of this migration, i.e. their warm-up starts now, at go-live.
 --   - delivery_opener_4 .. delivery_opener_10: seven more wordings (Owner-approved text), added only where wordings already exist (a database that is only now being
 --     seeded gets all ten from sql/seed.sql) and never over a wording that is there: 1 .. 3 and every edit of the Owner are untouched. A wording the Owner removes
 --     later is not put back (sql/seed.sql seeds only while there is no wording at all).
 ALTER TABLE "delivery_openers" ADD COLUMN "variant_key" text;--> statement-breakpoint
-ALTER TABLE "waha_sessions" ADD COLUMN "warmup_started_at" timestamp with time zone;--> statement-breakpoint
-UPDATE "waha_sessions" SET "warmup_started_at" = now();--> statement-breakpoint
+ALTER TABLE "waha_sessions" ADD COLUMN "warmup_started_at" timestamp with time zone DEFAULT now();--> statement-breakpoint
+CREATE INDEX "delivery_openers_variant_idx" ON "delivery_openers" USING btree ("session_id",coalesce("sent_at", "updated_at"),"delivery_id") WHERE "delivery_openers"."variant_key" IS NOT NULL;--> statement-breakpoint
 INSERT INTO "message_templates" ("key", "channel", "locale", "subject", "body")
 SELECT v."key", 'whatsapp', 'id', NULL, v."body"
   FROM (VALUES

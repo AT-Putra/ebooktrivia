@@ -17,7 +17,7 @@
 //   - delete: only what was never used (no message history anywhere, see usedSessionIds) and, for a
 //     session, only while it is inactive; a server goes with its sessions and its sealed API key in
 //     one transaction. Used ones keep only the Active switch. Audited by id and name only.
-import { normalizeIdMobile } from "@ebooktrivia/core";
+import { normalizeIdMobile, type WarningLevel } from "@ebooktrivia/core";
 import { SECRET_NAMES } from "@ebooktrivia/db";
 import { type FieldKind, type Tx, withAudit } from "../audit.ts";
 import { auditedChange, CONCURRENT_SAVE } from "./audited.ts";
@@ -258,6 +258,8 @@ export interface WahaServerRow {
     /** The number's own budget of new contacts a day, and when its warm-up started (null: an established number). */
     readonly newContactCap: number;
     readonly warmupStartedAt: Date | null;
+    /** WhatsApp's capping warning on the number (core WarningLevel): it shrinks the budget of new contacts. */
+    readonly warning: WarningLevel;
     /** Ever used (see usedSessionIds): it can only be switched off, never deleted. */
     readonly used: boolean;
   }[];
@@ -266,8 +268,8 @@ export interface WahaServerRow {
 export async function listWahaServers(sql: Sql): Promise<WahaServerRow[]> {
   const servers = await sql<{ id: string; name: string; base_url: string; allow_private_ip: boolean; active: boolean }[]>`
     SELECT id, name, base_url, allow_private_ip, active FROM public.waha_servers ORDER BY name`;
-  const sessions = await sql<{ id: string; server_id: string; session_name: string; phone: string | null; weight: number; daily_cap: number; active: boolean; status: string | null; new_contact_cap: number; warmup_started_at: Date | null }[]>`
-    SELECT id, server_id, session_name, phone, weight, daily_cap, active, status, new_contact_cap, warmup_started_at FROM public.waha_sessions ORDER BY session_name`;
+  const sessions = await sql<{ id: string; server_id: string; session_name: string; phone: string | null; weight: number; daily_cap: number; active: boolean; status: string | null; new_contact_cap: number; warmup_started_at: Date | null; warning_level: WarningLevel }[]>`
+    SELECT id, server_id, session_name, phone, weight, daily_cap, active, status, new_contact_cap, warmup_started_at, warning_level FROM public.waha_sessions ORDER BY session_name`;
   const keys = await secretStatuses(sql, servers.map((s) => ({ scope: "messaging", name: SECRET_NAMES.wahaApiKey(s.id), adnetId: null })));
   const used = await usedSessionIds(sql, sessions.map((x) => x.id));
   return servers.map((s, i) => {
@@ -290,6 +292,7 @@ export async function listWahaServers(sql: Sql): Promise<WahaServerRow[]> {
         status: x.status,
         newContactCap: x.new_contact_cap,
         warmupStartedAt: x.warmup_started_at,
+        warning: x.warning_level,
         used: used.has(x.id),
       })),
     };

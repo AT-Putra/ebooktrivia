@@ -564,6 +564,13 @@ test("Opener wordings: Add wording creates the next one, Remove asks twice, the 
   await add.getByLabel("New wording").fill(body);
   await add.getByRole("button", { name: "Add wording" }).click();
   await expect(add.getByRole("status")).toContainText("Wording added as delivery_opener_11.");
+  // The form is empty again: a second press (a double click) cannot add the same text twice. The same text typed again is refused, naming the wording.
+  await expect(add.getByLabel("New wording")).toHaveValue("");
+  await add.getByLabel("New wording").fill(body);
+  await add.getByRole("button", { name: "Add wording" }).click();
+  await expect(add.getByRole("alert")).toContainText("already exists (delivery_opener_11)");
+  expect(await wordings()).toHaveLength(11);
+  await add.getByLabel("New wording").fill("");
   const card = owner.getByTestId("template-delivery_opener_11-whatsapp");
   await expect(card).toBeVisible();
   await expect(panel).toContainText("11 of at most 20");
@@ -581,6 +588,8 @@ test("Opener wordings: Add wording creates the next one, Remove asks twice, the 
 
   // Remove asks twice: Cancel keeps it, "Yes, remove" deletes it, and the page says so once.
   const remove = card.getByTestId("opener-remove");
+  // With up to 20 identical buttons, each one says which wording it is about.
+  await expect(remove.getByRole("button", { name: "Remove wording" })).toHaveAccessibleDescription(/WhatsApp opener, wording 11/);
   await remove.getByRole("button", { name: "Remove wording" }).click();
   await expect(remove.getByRole("group", { name: /Remove this wording \(delivery_opener_11\)\?/ })).toBeVisible();
   await remove.getByRole("button", { name: "Cancel" }).click();
@@ -667,6 +676,15 @@ test("WhatsApp numbers: the panel says where the warm-up is, a new session warms
   await expect(line(late.id)).toHaveText("Warm-up: day 16 of 21 - today's new-people limit 12");
   await expect(line(done.id)).toHaveText("Warm-up finished - today's new-people limit 25");
   await expect(line(small.id)).toHaveText("Warm-up: day 1 of 21 - today's new-people limit 3");
+  // The box says what it means to a screen reader, too.
+  await expect(card.getByTestId(`waha-session-${baru.id}`).getByLabel("Established number (skip warm-up)")).toHaveAccessibleDescription(/Tick only for a number that has already been writing/);
+  // With a WhatsApp warning on the number the line shows the smaller, effective limit (first warning: half of 5, rounded down) and says why.
+  await admin.sql`UPDATE waha_sessions SET warning_level = 'first' WHERE id = ${baru.id}`;
+  await owner.reload();
+  await expect(line(baru.id)).toHaveText("Warm-up: day 1 of 21 - today's new-people limit 2 (after WhatsApp's first warning, at the usual share)");
+  await admin.sql`UPDATE waha_sessions SET warning_level = 'none' WHERE id = ${baru.id}`;
+  await owner.reload();
+  await expect(line(baru.id)).toHaveText("Warm-up: day 1 of 21 - today's new-people limit 5");
   await expect(line(lama.id)).toHaveText("Established number");
   await expect(card.getByTestId(`waha-session-${lama.id}`).getByLabel("Established number (skip warm-up)")).toBeChecked();
   await expect(card.getByTestId(`waha-session-${baru.id}`).getByLabel("Established number (skip warm-up)")).not.toBeChecked();

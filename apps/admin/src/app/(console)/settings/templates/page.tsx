@@ -73,7 +73,7 @@ export default async function TemplatesPage({ searchParams }: { searchParams: Pr
                   {openers.length} of at most {OPENER_MAX_WORDINGS} (at least {OPENER_MIN_WORDINGS}). Each opener to a new buyer uses one wording at random, and a number never repeats one of its last 3. Use {"{sapaan}"} for a greeting and [[a|b]] for a random choice.
                 </CardDescription>
                 {openers.length < OPENER_MAX_WORDINGS ? (
-                  <ActionForm action={addOpenerWordingAction} submitLabel="Add wording" variant="secondary" testId="opener-add">
+                  <ActionForm action={addOpenerWordingAction} submitLabel="Add wording" variant="secondary" testId="opener-add" resetOnSuccess>
                     <TextArea id="new-opener-body" name="body" label="New wording" rows={3} hint="Checked like an edit. It is added as the next delivery_opener_N." />
                   </ActionForm>
                 ) : (
@@ -83,7 +83,9 @@ export default async function TemplatesPage({ searchParams }: { searchParams: Pr
             ) : null}
             <Card data-testid={`template-${template.key}-${template.channel}`}>
               <div className="flex flex-wrap items-center gap-2">
-                <CardTitle className="text-base">{entry?.label ?? template.key}</CardTitle>
+                <CardTitle id={`template-title-${template.id}`} className="text-base">
+                  {entry?.label ?? template.key}
+                </CardTitle>
                 <Badge variant="secondary">{template.channel === "email" ? "E-mail" : "WhatsApp"}</Badge>
               </div>
               <CardDescription>Allowed: {entry?.variables.map((v) => `{${v}}`).join(" ")}</CardDescription>
@@ -96,6 +98,7 @@ export default async function TemplatesPage({ searchParams }: { searchParams: Pr
                       submitLabel="Remove wording"
                       variant="destructive"
                       testId="opener-remove"
+                      describedBy={`template-title-${template.id}`}
                       confirm={{ warning: `Remove this wording (${template.key})? It is no longer used for new openers. This cannot be undone.`, yesLabel: "Yes, remove" }}
                     >
                       <input type="hidden" name="templateId" value={template.id} />

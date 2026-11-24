@@ -115,16 +115,21 @@ export interface TestSession {
   readonly serverId: string;
 }
 
-/** An active WAHA server with one session, polled just now (status WORKING unless said otherwise). */
-export async function createSession(options: { readonly weight?: number; readonly dailyCap?: number; readonly status?: string | null; readonly name?: string; readonly sentToday?: number } = {}): Promise<TestSession> {
+/**
+ * An active WAHA server with one session, polled just now (status WORKING unless said otherwise). An ESTABLISHED number (no warm-up: warmup_started_at NULL) unless
+ * `warmupStartedAt` says when its warm-up began: the column's own default (a number that is warming up since now) would hold every test's openers to five a day.
+ */
+export async function createSession(
+  options: { readonly weight?: number; readonly dailyCap?: number; readonly status?: string | null; readonly name?: string; readonly sentToday?: number; readonly warmupStartedAt?: Date } = {},
+): Promise<TestSession> {
   const tag = `${suffix()}${suffix()}`;
   const name = options.name ?? `s${tag}`;
   const server = first(await sql<{ id: string }[]>`INSERT INTO waha_servers (name, base_url, base_url_host) VALUES (${`W ${tag}`}, ${`https://waha-${tag}.invalid/`}, ${`waha-${tag}.invalid`}) RETURNING id`);
   const status = options.status === undefined ? "WORKING" : options.status;
   const session = first(
     await sql<{ id: string }[]>`
-      INSERT INTO waha_sessions (server_id, session_name, weight, daily_cap, status, status_at)
-      VALUES (${server.id}, ${name}, ${options.weight ?? 1}, ${options.dailyCap ?? 200}, ${status}, ${status === null ? null : new Date()}) RETURNING id`,
+      INSERT INTO waha_sessions (server_id, session_name, weight, daily_cap, status, status_at, warmup_started_at)
+      VALUES (${server.id}, ${name}, ${options.weight ?? 1}, ${options.dailyCap ?? 200}, ${status}, ${status === null ? null : new Date()}, ${options.warmupStartedAt ?? null}) RETURNING id`,
   );
   if (options.sentToday !== undefined && options.sentToday > 0) {
     await sql`INSERT INTO waha_sends (session_id, kind) SELECT ${session.id}, 'otp' FROM generate_series(1, ${options.sentToday}::int)`;

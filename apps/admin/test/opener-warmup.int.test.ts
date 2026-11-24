@@ -4,7 +4,8 @@
 //   - Settings, WhatsApp: a new session's warm-up starts now unless "Established number" is ticked; ticking it ends the warm-up, unticking it restarts it from today, a save
 //     that leaves the box alone keeps the start; every change is audited.
 import { randomUUID } from "node:crypto";
-import { beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { pickOpenerWording } from "@ebooktrivia/core";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { InvalidInput } from "../src/lib/settings/fields.ts";
 import { addOpenerWording, listTemplates, OPENER_MAX_WORDINGS, OPENER_MIN_WORDINGS, parseTemplate, removeOpenerWording } from "../src/lib/settings/templates.ts";
 import { createWahaServer, createWahaSession, listWahaServers, parseWahaServer, parseWahaSession, updateWahaSession } from "../src/lib/settings/waha.ts";
@@ -13,13 +14,51 @@ import { asAdmin, auditRows, createTestAdmin, newRuntime, root, suffix } from ".
 const rt = newRuntime();
 let ownerId = "";
 let staffId = "";
+let shop: { productId: string; programId: string; landingPageId: string; sessionId: string };
 const as = <T>(fn: () => Promise<T>): Promise<T> => asAdmin(ownerId, fn);
 const asStaff = <T>(fn: () => Promise<T>): Promise<T> => asAdmin(staffId, fn);
 
 beforeAll(async () => {
   ownerId = (await createTestAdmin(rt, "owner")).userId;
   staffId = (await createTestAdmin(rt, "staff")).userId;
+  const [product] = await root<{ id: string }[]>`INSERT INTO products (title, price_idr) VALUES (${`Ebook ${suffix()}`}, 49000) RETURNING id`;
+  const [program] = await root<{ id: string }[]>`
+    INSERT INTO programs (product_id, slug, name, status, sales_start_at, sales_end_at, grace_days)
+    VALUES (${product?.id ?? ""}, ${`ow-${suffix()}`}, 'Program', 'published', now() - interval '1 day', now() + interval '30 days', 30) RETURNING id`;
+  const [lp] = await root<{ id: string }[]>`INSERT INTO landing_pages (lp_key, name, program_id) VALUES (${`lp_${suffix()}${suffix()}`}, 'LP', ${program?.id ?? ""}) RETURNING id`;
+  const host = `waha-${suffix()}.example.test`;
+  const [server] = await root<{ id: string }[]>`INSERT INTO waha_servers (name, base_url, base_url_host) VALUES (${`S ${suffix()}`}, ${`https://${host}/`}, ${host}) RETURNING id`;
+  // active = false: never part of a pool, only the owner of the opener rows below.
+  const [session] = await root<{ id: string }[]>`INSERT INTO waha_sessions (server_id, session_name, active) VALUES (${server?.id ?? ""}, 'uji', false) RETURNING id`;
+  shop = { productId: product?.id ?? "", programId: program?.id ?? "", landingPageId: lp?.id ?? "", sessionId: session?.id ?? "" };
 });
+
+const createdOpeners: string[] = [];
+/** A real paid order with its WhatsApp delivery and the opener a number sent for it, which used the wording `variantKey`. */
+async function sentOpener(variantKey: string): Promise<{ deliveryId: string; sessionId: string }> {
+  const [order] = await root<{ id: string }[]>`
+    INSERT INTO orders (public_id, order_code, landing_page_id, program_id, product_id, buyer_name, buyer_phone, buyer_email, buyer_key, amount_idr, expires_at)
+    VALUES (${`${suffix()}${suffix()}${suffix()}`}, ${`${suffix()}${suffix()}`.toUpperCase()}, ${shop.landingPageId}, ${shop.programId}, ${shop.productId}, 'Pembeli', '+6281234567890', 'buyer@example.invalid',
+            sha256(convert_to(gen_random_uuid()::text, 'UTF8')), 49000, now() + interval '1 day') RETURNING id`;
+  await root`UPDATE orders SET status = 'paid', paid_at = now() WHERE id = ${order?.id ?? ""}`;
+  const [delivery] = await root<{ id: string }[]>`INSERT INTO deliveries (order_id, channel) VALUES (${order?.id ?? ""}, 'whatsapp') RETURNING id`;
+  const deliveryId = delivery?.id ?? "";
+  await root`
+    INSERT INTO delivery_openers (delivery_id, status, attempts, session_id, tried_session_ids, variant_key, sent_at, wa_message_id)
+    VALUES (${deliveryId}, 'sent', 1, ${shop.sessionId}, ${[shop.sessionId]}::uuid[], ${variantKey}, now(), ${`true_${suffix()}`})`;
+  createdOpeners.push(deliveryId);
+  return { deliveryId, sessionId: shop.sessionId };
+}
+const openerState = async (deliveryId: string) =>
+  (await root<{ status: string; variant_key: string | null; session_id: string | null; attempts: number; sent_at: Date | null; updated_at: Date }[]>`
+    SELECT status, variant_key, session_id, attempts, sent_at, updated_at FROM delivery_openers WHERE delivery_id = ${deliveryId}`)[0];
+/** What the tests leave: no opener row (the next number of a wording reads them) and no delivery waiting to be sent. */
+async function cleanOpeners(): Promise<void> {
+  if (createdOpeners.length > 0) await root`DELETE FROM delivery_openers WHERE delivery_id = ANY (${createdOpeners.splice(0)}::uuid[])`;
+  await root`UPDATE deliveries SET status = 'cancelled' WHERE status = 'pending' AND order_id IN (SELECT id FROM orders WHERE landing_page_id = ${shop.landingPageId})`;
+}
+afterEach(cleanOpeners);
+afterAll(cleanOpeners);
 
 const openerRows = () =>
   root<{ id: string; key: string; body: string }[]>`
@@ -105,7 +144,7 @@ describe("opener wordings: the seeded ten, add and remove", () => {
     expect(await creates()).toBe(createsBefore);
   });
 
-  it("holds at most 20 wordings: the 21st is refused, and 21 requests at once leave exactly 20", async () => {
+  it("holds at most 20 wordings: the 21st is refused, and five adds at once at 19 leave exactly 20", async () => {
     for (let i = 0; i < OPENER_MAX_WORDINGS - 10; i++) await as(() => addOpenerWording(rt.sql, `Halo {nama}, wording ${String(i)}.`));
     expect(await keysNow()).toHaveLength(OPENER_MAX_WORDINGS);
     expect(await messageOf(() => as(() => addOpenerWording(rt.sql, "Satu lagi")))).toMatch(/already 20 opener wordings/);
@@ -169,15 +208,83 @@ describe("opener wordings: the seeded ten, add and remove", () => {
     ]);
   });
 
-  it("an opener row that names a removed wording keeps working: the key is plain text on the row", async () => {
-    const [product] = await root<{ id: string }[]>`INSERT INTO products (title, price_idr) VALUES (${`Ebook ${suffix()}`}, 49000) RETURNING id`;
-    expect(product?.id).toBeDefined();
-    await root`
-      INSERT INTO delivery_openers (delivery_id, status, variant_key)
-      SELECT d.id, 'pending', 'delivery_opener_10' FROM deliveries d LIMIT 0`;
+  it("an opener row that names a removed wording keeps working: the key is plain text on the row, it is not touched, and the next pick of the number goes on without it", async () => {
+    const used = await sentOpener("delivery_opener_10");
+    // The column is plain text: no foreign key to a wording, so removing one never touches or blocks on an opener row.
+    expect(
+      await root`
+        SELECT 1 FROM pg_constraint c JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = ANY (c.conkey)
+         WHERE c.conrelid = 'public.delivery_openers'::regclass AND c.contype = 'f' AND a.attname = 'variant_key'`,
+    ).toHaveLength(0);
+    const before = await openerState(used.deliveryId);
+    expect(before).toMatchObject({ status: "sent", variant_key: "delivery_opener_10", session_id: used.sessionId });
+
     const tenth = (await openerRows()).find((r) => r.key === "delivery_opener_10");
     await as(() => removeOpenerWording(rt.sql, tenth?.id ?? ""));
     expect(await keysNow()).not.toContain("delivery_opener_10");
+
+    // The row is exactly as it was (same key, same status, same timestamps).
+    expect(await openerState(used.deliveryId)).toEqual(before);
+    // What the worker's next pick reads: the wordings that exist and the number's last openers (core's pick, with the rows as the worker queries them). The removed
+    // wording is in the history but cannot be picked; one that exists is.
+    const recent = (await root<{ variant_key: string }[]>`SELECT variant_key FROM delivery_openers WHERE session_id = ${used.sessionId} AND variant_key IS NOT NULL ORDER BY sent_at DESC`).map((r) => r.variant_key);
+    expect(recent).toEqual(["delivery_opener_10"]);
+    const keys = await keysNow();
+    for (const draw of [0, 0.5, 0.999]) expect(keys).toContain(pickOpenerWording(keys, recent, () => draw));
+  });
+
+  it("a removed wording's number is never given to a new one: the next number is one more than any wording has, or any opener row has used", async () => {
+    // The Owner removes the highest wording (10), which an opener used: the next wording is 11, not 10 again.
+    await sentOpener("delivery_opener_10");
+    const tenth = (await openerRows()).find((r) => r.key === "delivery_opener_10");
+    await as(() => removeOpenerWording(rt.sql, tenth?.id ?? ""));
+    expect(await as(() => addOpenerWording(rt.sql, "Halo {nama}, sesudah yang dihapus."))).toBe("delivery_opener_11");
+    // An opener that used a wording long gone (15) holds its number too: the next is 16.
+    await sentOpener("delivery_opener_15");
+    expect(await as(() => addOpenerWording(rt.sql, "Halo {nama}, sesudah lima belas."))).toBe("delivery_opener_16");
+    // A key that is not a wording's (an old or odd value) is no number at all.
+    await sentOpener("delivery_opener_007x");
+    await sentOpener("whatever");
+    expect(await as(() => addOpenerWording(rt.sql, "Halo {nama}, sesudah yang aneh."))).toBe("delivery_opener_17");
+  });
+
+  it("with no opener row to say otherwise, the number of the removed highest wording may come back (nothing refers to it)", async () => {
+    const tenth = (await openerRows()).find((r) => r.key === "delivery_opener_10");
+    await as(() => removeOpenerWording(rt.sql, tenth?.id ?? ""));
+    expect(await as(() => addOpenerWording(rt.sql, "Halo {nama}, pengganti."))).toBe("delivery_opener_10");
+  });
+
+  it("refuses a text identical to a wording that exists (a double click, or the same text twice), naming it; the same text from two requests at once adds one", async () => {
+    const body = "Halo {nama}, ulangi ini.";
+    expect(await as(() => addOpenerWording(rt.sql, body))).toBe("delivery_opener_11");
+    expect(await messageOf(() => as(() => addOpenerWording(rt.sql, body)))).toMatch(/already exists \(delivery_opener_11\)/);
+    // Spaces around it and a different line ending do not make it another wording; a change in the text does.
+    expect(await messageOf(() => as(() => addOpenerWording(rt.sql, `  ${body}\r\n`)))).toMatch(/already exists \(delivery_opener_11\)/);
+    // One of the seeded ones, too.
+    const second = (await openerRows())[1];
+    expect(await messageOf(() => as(() => addOpenerWording(rt.sql, second?.body ?? "")))).toMatch(/already exists \(delivery_opener_2\)/);
+    expect(await as(() => addOpenerWording(rt.sql, "Halo {nama}, ulangi ini lagi."))).toBe("delivery_opener_12");
+    // Two identical requests racing: one wins under the lock, the other sees it.
+    const racing = await Promise.allSettled([as(() => addOpenerWording(rt.sql, "Halo {nama}, balapan sama.")), as(() => addOpenerWording(rt.sql, "Halo {nama}, balapan sama."))]);
+    expect(racing.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    expect(await keysNow()).toHaveLength(13);
+  });
+
+  it("a choice cannot hide a variable: both ways round are refused at save, and every expansion of a text that is accepted passes the same checks", async () => {
+    for (const body of ["{[[nama|link_trivia]]}", "{na[[ma|me]]}", "Halo {[[nama|kode_otp]]}", "{nama[[|x]]}"]) {
+      expect(await messageOf(() => as(() => addOpenerWording(rt.sql, body))), body).toMatch(/\{ or \}|never closed|empty|2 to 5/);
+    }
+    expect(await messageOf(() => as(() => addOpenerWording(rt.sql, "{[[nama|link_trivia]]}")))).toMatch(/has a \{ or \} that is not part of a variable/);
+    expect(await messageOf(() => as(() => addOpenerWording(rt.sql, "{na[[ma|me]]}")))).toMatch(/has a \{ or \} that is not part of a variable/);
+    // Edits go through the same check (the editor's Save and Preview).
+    expect(() => parseTemplate("delivery_opener_1", "whatsapp", { subject: "", body: "{[[nama|link_trivia]]}" })).toThrow(InvalidInput);
+    expect(await keysNow()).toEqual(tenKeys);
+    // A text with choices that is accepted: each of its expansions, taken as a text without choices, is accepted too.
+    const body = "[[Halo|Hai|Hei]] {nama}, [[cukup|tinggal]] balas {judul_ebook}[[.|!]] {sapaan}";
+    expect(await as(() => addOpenerWording(rt.sql, body))).toBe("delivery_opener_11");
+    for (const a of ["Halo", "Hai", "Hei"]) for (const b of ["cukup", "tinggal"]) for (const c of [".", "!"]) {
+      expect(() => parseTemplate("delivery_opener_11", "whatsapp", { subject: "", body: `${a} {nama}, ${b} balas {judul_ebook}${c} {sapaan}` })).not.toThrow();
+    }
   });
 });
 
