@@ -54,12 +54,13 @@ test.describe("trivia page structure", () => {
   const trivia = ROUTES.find((r) => r.slug === "trivia");
   if (trivia === undefined) throw new Error("trivia route missing");
 
-  test("the 4 cards are in the DOM in reading order: banner, leaderboard, profile, grid", async ({ page }) => {
+  test("the 4 cards and then the help block are in the DOM in reading order: banner, leaderboard, profile, grid, help", async ({ page }) => {
     await page.goto(urlFor(trivia));
     const order = await page.evaluate(() =>
       [...document.querySelectorAll("main section[aria-labelledby]")].map((s) => s.getAttribute("aria-labelledby")),
     );
-    expect(order).toEqual(["banner-title", "leaderboard-title", "profile-title", "grid-title"]);
+    // The customer-service help block ("Butuh bantuan?") is always the last section of a buyer page (Consistent Help).
+    expect(order).toEqual(["banner-title", "leaderboard-title", "profile-title", "grid-title", "help-title"]);
   });
 
   test("desktop placement never reorders: visual order is row-major 1-2-3-4", async ({ page }) => {
@@ -80,9 +81,10 @@ test.describe("trivia page structure", () => {
     expect(grid.top).toBeGreaterThan(Math.max(leaderboard.top, profile.top));
   });
 
-  test("exactly 4 cards", async ({ page }) => {
+  test("exactly 4 cards plus the help block", async ({ page }) => {
     await page.goto(urlFor(trivia));
-    await expect(page.locator("main section[aria-labelledby]")).toHaveCount(4);
+    await expect(page.locator("main section[aria-labelledby]")).toHaveCount(5);
+    await expect(page.locator('main section[aria-labelledby]:not([aria-labelledby="help-title"])')).toHaveCount(4);
   });
 });
 
