@@ -5,11 +5,9 @@
 //   1. re-fetch   the message is read again from WAHA by its id, on the session (and server) it arrived on (adapters getMessage).
 //                 A message WAHA does not know is a forged or stale row: nothing is sent. The sender, the chat and the text below are
 //                 the re-fetched ones, never the webhook's.
-//      read     a confirmed personal message (not ours, a phone or @lid chat: never a group, a status, a channel or anything else) is marked as read: the WHOLE chat,
-//                 on the number it arrived on, after a random reading pause, BEFORE the decision below and whatever it is (a stranger, no code, a rate-limited
-//                 sender, a buyer): WhatsApp finds a number that answers some chats and leaves the others unread suspicious (Owner rule, 2026-11-24; WAHA "How to
-//                 avoid blocking": send seen before processing the message). Best effort: a failed mark is only logged as a code and never fails or retries the job.
-//                 A reply's own send marks the chat again (human.ts): one extra, cheap call, accepted rather than a flag that skips it.
+//                 This job does NOT mark anything as read, and never sleeps for it: every incoming personal message, stored or dropped by the webhook, is marked
+//                 by the separate read path (read-marks.ts: the webhook hands it over through Valkey, a delayed job re-fetches the message and marks the whole
+//                 chat). A reply's own send marks the chat once more (human.ts), as every send does.
 //   2. match      the order code (>= 40 bits) is found in the text (core extractOrderCodes) and looked up. No code, or a code of no order:
 //                 nothing is sent (a stranger gets no oracle and no chatter).
 //   3. who        the sender decides, never the code alone (core senderVerdict): a phone chat must be the order's phone; an @lid chat is
@@ -46,12 +44,9 @@ import {
   DELIVERY_GAP_MS,
   deliveryFilename,
   extractOrderCodes,
-  HUMAN_PRESENCE_TIMEOUT_MS,
-  HUMAN_TIMING,
   type InboundSender,
   isIdMobileE164,
   isUuid,
-  sampleLogNormal,
   senderVerdict,
   toWaChatId,
 } from "@ebooktrivia/core";
@@ -71,13 +66,12 @@ import { cryptoRandom, sendLikeAHuman } from "./human.ts";
 import { pdfOnlyCaption, type ReplyKind, replyText } from "./messages.ts";
 import { claimSession, discardSend, recordSessionOutcome, settleSend } from "./pool.ts";
 import { type EbookFiles, type FilePreflight, type WahaAccess, WahaAccessError } from "./ports.ts";
+import { type Fetched, refetchMessage } from "./refetch.ts";
 
 export const INBOUND_TOPIC = "waha.inbound";
 /** A WAHA lookup (the message, an @lid) is a quick read; a text reply is one small send; the PDF for an unresolved sender is a file send. */
 const LOOKUP_TIMEOUT_MS = 10_000;
 const TEXT_TIMEOUT_MS = 30_000;
-/** The longest the read mark of a message takes before the decision: the reading pause at its top, and the mark's two calls (sendSeen and its fallback) running out their timeouts. */
-const READ_MARK_MAX_MS = HUMAN_TIMING.reading[1] + 2 * HUMAN_PRESENCE_TIMEOUT_MS;
 /** The extra replies (texts, the PDF for an unresolved sender) stop at this share of a number's daily cap. */
 export const REPLY_CAP_SHARE = 0.8;
 /** The phone-side match of an @lid sender asks WhatsApp about at most this many phones per message. */
@@ -93,8 +87,8 @@ export const PHONE_SIDE_BUDGET_MS = 15_000;
  * connection's 2 s command timeout; a few are made before the first question).
  */
 export const PHONE_SIDE_MAX_MS = PHONE_SIDE_BUDGET_MS + LOOKUP_TIMEOUT_MS + 5000;
-/** What the job's lease has on top of the delivery lease (config.leaseMs): the re-fetch, the lid lookup and the records (30 s), the read mark, and the phone-side match. */
-export const INBOUND_EXTRA_LEASE_MS = 30_000 + READ_MARK_MAX_MS + PHONE_SIDE_MAX_MS;
+/** What the job's lease has on top of the delivery lease (config.leaseMs): the re-fetch, the lid lookup and the records (30 s), and the phone-side match. (The read mark is not this job's: read-marks.ts.) */
+export const INBOUND_EXTRA_LEASE_MS = 30_000 + PHONE_SIDE_MAX_MS;
 
 /** The two limits of the phone-side match, kept in Valkey (lidGateFromValkey). A failure of either (Valkey down) is thrown: the job is retried, never answered as unresolved. */
 export interface LidGate {
@@ -152,15 +146,6 @@ interface InboundRow {
   processed_at: Date | null;
 }
 
-interface Fetched {
-  readonly sessionId: string;
-  readonly sessionName: string;
-  readonly messageId: string;
-  readonly fromMe: boolean;
-  readonly body: string;
-  readonly chat: { readonly kind: "phone"; readonly chatId: string; readonly phone: string } | { readonly kind: "lid"; readonly chatId: string; readonly lid: string } | { readonly kind: "other"; readonly chatId: string };
-}
-
 /** Rolls a transaction back and carries the answer out (the right to reply is only spent when the reply can go out). */
 class Abandon<T> extends Error {
   readonly value: T;
@@ -214,32 +199,8 @@ export function createInboundConsumer(deps: InboundDeps): OutboxConsumer {
     await settleSend(sql, sendId, end).catch(() => undefined);
   }
 
-  /** Re-reads the message from WAHA on the session it arrived on (a name may exist on two servers: the one that knows the id wins). */
-  async function refetch(inbound: InboundRow): Promise<Fetched | "unverified"> {
-    const candidates = await sql<{ id: string }[]>`
-      SELECT s.id FROM public.waha_sessions s JOIN public.waha_servers w ON w.id = s.server_id
-       WHERE s.session_name = ${inbound.session_name} AND s.active AND w.active ORDER BY s.id`;
-    let failed = false;
-    for (const { id } of candidates) {
-      try {
-        const found = await deps.waha.withSession(id, async ({ sessionName, client }) => ({ sessionName, message: await client.getMessage(sessionName, inbound.message_id) }), { timeoutMs: LOOKUP_TIMEOUT_MS });
-        if (found.message === null) continue;
-        const { message } = found;
-        return { sessionId: id, sessionName: found.sessionName, messageId: message.messageId, fromMe: message.fromMe, body: message.body, chat: message.chat };
-      } catch (error) {
-        // A message id that is not even shaped like WAHA's is a forgery, not an outage.
-        if (error instanceof RangeError) return "unverified";
-        if (error instanceof WahaError || error instanceof WahaAccessError) {
-          failed = true;
-          continue;
-        }
-        throw error;
-      }
-    }
-    // WAHA could not be asked (or not on every candidate): try again later instead of calling the message forged.
-    if (failed) throw new Error("WAHA could not be asked about an inbound message");
-    return "unverified";
-  }
+  /** Re-reads the message from WAHA on the session it arrived on (refetch.ts). */
+  const refetch = (inbound: InboundRow): Promise<Fetched | "unverified"> => refetchMessage({ sql, waha: deps.waha }, inbound.session_name, inbound.message_id, LOOKUP_TIMEOUT_MS);
 
   /**
    * The phone behind an @lid sender, or none (unresolved). In this order, the first answer wins:
@@ -558,25 +519,10 @@ export function createInboundConsumer(deps: InboundDeps): OutboxConsumer {
     return found;
   }
 
-  /**
-   * Marks the sender's whole chat as read on the number it wrote to (sendSeen without message ids), after a random reading pause (log-normal, from the human-like random
-   * source). The pause ends early with the job's signal, and that abort is NOT swallowed: the job ends before anything is decided. The mark itself is best effort: whatever
-   * goes wrong (the session cannot be opened, WAHA refuses or times out) is logged as a code and the message is handled as if it had worked.
-   */
-  async function markRead(inbound: InboundRow, fetched: Fetched, signal: AbortSignal): Promise<void> {
-    await sleep(sampleLogNormal(humanDeps.random ?? cryptoRandom, HUMAN_TIMING.reading), signal);
-    try {
-      await deps.waha.withSession(fetched.sessionId, ({ sessionName, client }) => client.sendSeen(sessionName, fetched.chat.chatId), { timeoutMs: HUMAN_PRESENCE_TIMEOUT_MS });
-    } catch (error) {
-      log.debug({ inboundId: inbound.id, step: "seen", code: error instanceof WahaError || error instanceof WahaAccessError ? error.code : "failed" }, "the inbound message could not be marked as read; it is handled anyway");
-    }
-  }
-
   async function handle(inbound: InboundRow, signal: AbortSignal): Promise<string> {
     const fetched = await refetch(inbound);
     if (fetched === "unverified") return "unverified";
     if (fetched.fromMe || fetched.chat.kind === "other") return "ignored";
-    await markRead(inbound, fetched, signal);
     const codes = extractOrderCodes(fetched.body);
     const sender: InboundSender = fetched.chat.kind === "phone" ? { kind: "phone", phone: fetched.chat.phone } : { kind: "lid" };
     const orders =

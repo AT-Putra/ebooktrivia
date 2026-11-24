@@ -196,8 +196,17 @@ staging: no database (the pages that need one answer their fail-closed 503), no 
 
 The public app's ACL user may `FCALL` but never `EVAL`, `EVALSHA`, `SCRIPT` or `FUNCTION` (US-031): a compromised public
 process can call only the loaded library, never its own Lua, and the commands inside still run under its own ACL (keys
-`rl:*` only). The library (`ebt_public`, one function `ebt_rate_limit_v1`) lives in
-`packages/adapters/src/valkey-functions.ts`.
+`rl:*` and `cache:public:*` only). The library (`ebt_public`: `ebt_rate_limit_v1`, the rate limits, and `ebt_wa_read_v1`, the hand-over of an incoming
+WhatsApp message to the worker to be marked as read) lives in `packages/adapters/src/valkey-functions.ts`.
+
+- **`ebt_wa_read_v1`** (Owner rule 2026-11-24, `apps/worker/src/delivery/read-marks.ts`): the webhook calls it once per message of a person's chat. It runs under public's ACL with
+  the commands public already has (`SET`, `INCR`, `PEXPIRE`) on keys under `cache:public:wa-read:*`: a per-chat pending mark (`SET NX EX 60`), a sequence counter and a **ring of 2000
+  slots** (an item lives ten minutes; a lap overwrites the oldest), so the structure is capped by construction and public needs **no new command and no new key pattern**. Only the
+  worker reads the ring: its production ACL line has `~cache:public:wa-read:*` in addition to `~ebt:* ~cache:worker:*` (the narrowest pattern: not `~cache:public:*`, not `~rl:*`). An item
+  holds the session name, the message id (which embeds the chat id, hence the ten minutes) and a keyed digest of the chat; no text. `host-check.sh` asserts the worker's access.
+- **Deploy order for it:** the worker first (it loads the library with both functions and gets the new ACL line), then the public instances. A public instance that calls it before the worker
+  has loaded it gets `Function not found`: the webhook logs `public.valkey_function_missing` (kind `ebt_wa_read_v1`) and `webhook.waha.read_not_handed`, answers as usual, and the
+  message is simply not marked (the next one is). The ACL file change (`provision.sh` renders it) needs the Valkey restart the provisioning already asks for.
 
 - **The worker loads it**, with `FUNCTION LOAD REPLACE`: at start-up, on every reconnect of its health connection, and from
   its heartbeat when the function is missing. Valkey's AOF keeps the library across restarts.

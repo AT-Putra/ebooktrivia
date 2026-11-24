@@ -314,7 +314,7 @@ describe("the unknown-send lookup", () => {
     r.waha.fault(flaky.name, "timeout_after_send");
     // A PDF reply to a buyer who wrote first, whose answer is lost: the delivery row is unknown (an opener never is a delivery's unknown state).
     const order = await paidOrder(shop, { waNotBefore: new Date(Date.now() + 180_000) });
-    const consumer = createInboundConsumer({ sql: workerSql, log: silentLog, config: r.config, waha: r.waha.access, delivery: r.delivery, files: testFiles(r.config), random: () => 0 });
+    const consumer = createInboundConsumer({ sql: workerSql, log: silentLog, config: r.config, waha: r.waha.access, delivery: r.delivery, files: testFiles(r.config), random: () => 0, sleep: () => Promise.resolve() });
     const heard = await storeInbound({ sessionName: flaky.name, messageId: await r.waha.inbound({ session: flaky.name, chatId: order.chatId, body: `kode ${order.code}` }), fromJid: order.chatId });
     await createOutboxProcessor(consumer, { sql: workerSql, failpoint: inertFailpoint, log: silentLog })({ id: heard.outboxId });
     expect((await deliveryOf(order.deliveries.whatsapp)).status).toBe("unknown");

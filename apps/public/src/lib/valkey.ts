@@ -16,6 +16,8 @@
 //     (packages/adapters captcha.ts): a redeemed token verifies once across both apps/public
 //     instances. Cap challenges and redeems store nothing at all (Owner decision, US-020), so this is
 //     the only Cap memory, gated by a solved proof of work and the checkout's per-IP limit.
+//   - WhatsApp read marks: one FCALL of the worker-loaded ebt_wa_read_v1 per incoming personal message hands {session, message id}
+//     to the worker through a capped ring under cache:public:wa-read:* (enqueueWaRead; best effort at its caller, the webhook).
 //
 // FAILURE POLICY: fail CLOSED. The client never queues commands while Valkey is unreachable
 // (enableOfflineQueue false) and every command is bounded (commandTimeout), so a Valkey outage turns
@@ -23,7 +25,7 @@
 // Valkey neither the rate limits nor the single use of a Cap token can be enforced.
 import { createHash } from "node:crypto";
 import type { ReplayStore } from "@ebooktrivia/adapters";
-import { isFunctionMissing, RATE_LIMIT_FUNCTION } from "@ebooktrivia/adapters/valkey-functions";
+import { isFunctionMissing, RATE_LIMIT_FUNCTION, WA_READ_FUNCTION, WA_READ_NAMESPACE, type WaReadItem, waReadCall } from "@ebooktrivia/adapters/valkey-functions";
 import { Redis } from "ioredis";
 import type { ValkeyConfig } from "./config.ts";
 import { logEvent } from "./log.ts";
@@ -68,12 +70,12 @@ export function createValkey(config: ValkeyConfig, onError: (error: unknown) => 
   return valkey;
 }
 
-async function guarded<T>(call: () => Promise<T>): Promise<T> {
+async function guarded<T>(call: () => Promise<T>, fn: string = RATE_LIMIT_FUNCTION): Promise<T> {
   try {
     return await call();
   } catch (error) {
     // Its own line (docs/runbooks/security-scans.md): the worker has not loaded the library, not an outage.
-    if (isFunctionMissing(error)) logEvent("error", "public.valkey_function_missing", { kind: RATE_LIMIT_FUNCTION });
+    if (isFunctionMissing(error)) logEvent("error", "public.valkey_function_missing", { kind: fn });
     throw new ValkeyUnavailable(error);
   }
 }
@@ -115,6 +117,24 @@ export async function hitRateLimits(valkey: Valkey, limits: readonly RateLimit[]
  * apart (the checkout's, the player login's "otp-phone/v1"), so one key part never names a phone in two places.
  */
 export const phoneKey = (e164: string, label = "checkout-phone/v1"): string => sha256Hex(`ebooktrivia/${label}|${e164}`).slice(0, 32);
+
+// ---------------------------------------------------------------------------------------------
+// Incoming WhatsApp messages to be marked as read (the worker does it: apps/worker/src/delivery/read-marks.ts)
+
+/**
+ * Hands one incoming personal message to the worker: ONE FCALL of ebt_wa_read_v1, which keeps a single pending read per chat (the chat's mark, 60 s at most) and puts
+ * {session, message id, chat digest} in a capped ring under cache:public:wa-read:* (no text; the message id carries the chat id, so items live 10 minutes at most).
+ * "queued" for a new read, "pending" when the chat already has one coming. Throws ValkeyUnavailable like every call here; the webhook treats it as best effort.
+ * An item that is not well formed (an odd session name, a message id WAHA could not have made) is "refused" and nothing is called.
+ */
+export async function enqueueWaRead(valkey: Valkey, item: WaReadItem, namespace: string = WA_READ_NAMESPACE): Promise<"queued" | "pending" | "refused"> {
+  const call = waReadCall(namespace, item);
+  if (call === null) return "refused";
+  const reply = await guarded(() => valkey.fcall(WA_READ_FUNCTION, call.keys.length, ...call.keys, ...call.args), WA_READ_FUNCTION);
+  const n = Number(reply);
+  if (!Number.isSafeInteger(n) || n < 0) throw new ValkeyUnavailable(new Error("unexpected wa-read reply"));
+  return n === 0 ? "pending" : "queued";
+}
 
 // ---------------------------------------------------------------------------------------------
 // The single-use marks of redeemed Cap tokens (captcha.ts ReplayStore)

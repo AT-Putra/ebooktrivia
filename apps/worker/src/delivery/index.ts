@@ -6,6 +6,7 @@
 //                  due deliveries (the e-mail, at once) are put on the queue now instead of at the next minute sweep. Job ids are
 //                  deterministic and the claim is in PostgreSQL, so a repeat or a lost job costs nothing.
 //   loops          the pool's status poll (health.ts).
+//   readMarks      the read marks of every incoming personal message (read-marks.ts), stored by the webhook or dropped: its ring poll (a loop of worker.ts) and its delayed job.
 //   sweeps         the unknown-send lookup (resolve-unknown.ts), run with the minute sweepers.
 // `deliveriesFromEnv` is the production wiring: real WAHA, SMTP and file access with the messaging private key; without it nothing
 // is delivered (worker.ts logs that), exactly like the template test-sends. createDeliveryPort takes the ports, for the tests.
@@ -25,10 +26,11 @@ import { createSessionPoller } from "./health.ts";
 import { createInboundConsumer, INBOUND_TOPIC, lidGateFromValkey } from "./inbound.ts";
 import { expireOpenerLeases } from "./opener-sweep.ts";
 import type { EbookFiles, MagicLinks, MagicLinksFactory, MailSender, WahaAccess } from "./ports.ts";
+import { createReadMarks, READ_QUEUE, type ReadMarks, type ReadMarkValkey } from "./read-marks.ts";
 import { resolveUnknownDeliveries } from "./resolve-unknown.ts";
 
 export { DELIVERY_QUEUE, DELIVERY_WA_QUEUE, type DeliveryJob } from "./deliver.ts";
-export { INBOUND_TOPIC };
+export { INBOUND_TOPIC, READ_QUEUE };
 
 export interface DeliveryLoop {
   readonly name: string;
@@ -42,6 +44,8 @@ export interface DeliveryRuntime {
   readonly nudge: OrderPaidNudge;
   readonly loops: readonly DeliveryLoop[];
   readonly sweeps: Readonly<Record<string, () => Promise<unknown>>>;
+  /** The read marks of every incoming personal message (read-marks.ts): worker.ts runs its poll as a loop and its job as the READ_QUEUE consumer. Absent without Valkey. */
+  readonly readMarks?: ReadMarks;
 }
 
 export interface DeliveryPort {
@@ -51,8 +55,8 @@ export interface DeliveryPort {
     readonly sql: postgres.Sql;
     readonly log: Logger;
     readonly enqueue: (jobs: readonly DeliveryJob[]) => Promise<void>;
-    /** The worker's Valkey and its key prefix: the per-lid budget of the inbound phone-side match lives there. Absent: that match is off. */
-    readonly valkey?: { readonly client: Pick<Redis, "get" | "set" | "incr" | "expire">; readonly prefix: string };
+    /** The worker's Valkey and its key prefix: the limits of the inbound phone-side match and the read marks' cursor and budget live there. Absent: that match and the read marks are off. */
+    readonly valkey?: { readonly client: Pick<Redis, "get" | "set" | "incr" | "expire"> & ReadMarkValkey; readonly prefix: string };
   }): DeliveryRuntime;
 }
 
@@ -67,6 +71,8 @@ export interface DeliveryPorts {
   readonly humanRandom?: () => number;
   readonly sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
   readonly clock?: () => number;
+  /** Where public's read-mark ring lives in Valkey (default: the production namespace); a test passes one of its own. */
+  readonly readNamespace?: string;
 }
 
 export function createDeliveryPort(ports: DeliveryPorts): DeliveryPort {
@@ -117,6 +123,19 @@ export function createDeliveryPort(ports: DeliveryPorts): DeliveryPort {
           resolve_unknown: () => resolveUnknownDeliveries({ sql, log, waha: ports.waha, config: ports.config }),
           opener_lease: () => expireOpenerLeases(sql),
         },
+        ...(valkey === undefined
+          ? {}
+          : {
+              readMarks: createReadMarks({
+                sql,
+                log,
+                waha: ports.waha,
+                valkey: valkey.client,
+                prefix: valkey.prefix,
+                ...(ports.readNamespace === undefined ? {} : { namespace: ports.readNamespace }),
+                ...(ports.humanRandom === undefined ? {} : { random: ports.humanRandom }),
+              }),
+            }),
       };
     },
   };

@@ -22,6 +22,8 @@
 //   deliveries       deliveries over WhatsApp and e-mail (US-025, delivery/index.ts): the delivery.send and delivery.send.wa
 //                    consumers, the waha.inbound consumer (buyer-first), the delivery nudge, the pool's status poll and the
 //                    unknown-send lookup. runWorker builds it from SECRETS_MESSAGING_PRIVATE_KEY and `magicLinks`.
+//                    The read marks of every incoming personal message ride on it too (delivery/read-marks.ts): a poll loop over the ring the public
+//                    webhook fills, and the delayed jobs of the `wa.read` queue.
 //   deliverDelivery  a bare delivery.send processor (tests). Without `deliveries` or it no delivery.send queue exists
 //                    and the deliveries sweeper does not run.
 //   magicLinkResend  the magic_link.resend consumer (US-027, magic-link-resend.ts): a fresh login link per channel
@@ -160,7 +162,7 @@ export async function startWorker(config: WorkerConfig, ports: WorkerPorts, log:
   // One connection per job that can run at once (each BullMQ Worker runs `concurrency` jobs, and a
   // job holds at most one connection at a time), plus the relay, sweeper and heartbeat loops and
   // one spare.
-  const jobQueues = topics.length + (ports.fireConversion === undefined && ports.conversions === undefined ? 0 : 1) + (ports.deliverDelivery === undefined && ports.deliveries === undefined ? 0 : 1) + (ports.deliveries === undefined ? 0 : 1);
+  const jobQueues = topics.length + (ports.fireConversion === undefined && ports.conversions === undefined ? 0 : 1) + (ports.deliverDelivery === undefined && ports.deliveries === undefined ? 0 : 1) + (ports.deliveries === undefined ? 0 : 2);
   const sql = postgres(config.databaseUrl, {
     ...PG_CONNECTION_OPTIONS,
     connection: { ...PG_CONNECTION_OPTIONS.connection, application_name: "ebt-worker" },
@@ -292,6 +294,9 @@ export async function startWorker(config: WorkerConfig, ports: WorkerPorts, log:
   deliveryQueues.email = deliveryQueue;
   const deliveryWaQueue = delivery === undefined ? undefined : consume(DELIVERY_WA_QUEUE, delivery.process);
   deliveryQueues.whatsapp = deliveryWaQueue;
+  // The read marks of every incoming personal message (read-marks.ts): their delayed jobs have a queue of their own, fed by a poll of the ring public fills.
+  const readMarks = delivery?.readMarks;
+  const readQueue = readMarks === undefined ? undefined : consume(readMarks.queue, readMarks.process);
 
   // US-015: the alert relay (every sweep, once a minute at most), and the backup, WAL and Valkey-memory alerts where they exist.
   const alertRelay = ports.alertRelay === undefined ? undefined : createAlertRelay({ sql, log, senders: ports.alertRelay.senders(sql, log) });
@@ -345,6 +350,7 @@ export async function startWorker(config: WorkerConfig, ports: WorkerPorts, log:
     }),
   ];
   for (const { name, intervalMs, tick } of delivery?.loops ?? []) loops.push(startLoop({ name, intervalMs, log }, tick));
+  if (readMarks !== undefined && readQueue !== undefined) loops.push(startLoop({ name: "wa-read", intervalMs: readMarks.intervalMs, log }, () => readMarks.poll(readQueue)));
   if (payments !== undefined) {
     // Nightly, once per WIB day across all workers (the run's claim is a row); checked every interval.
     loops.push(

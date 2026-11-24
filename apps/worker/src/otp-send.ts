@@ -28,8 +28,12 @@ export const OTP_TOPIC = "otp.send";
  * life, so an undeliverable code always ends as a drop (processed, sealed wiped) before this cap.
  */
 export const OTP_MAX_ATTEMPTS = 6;
-/** Covers the worst case of the human-like sequence (typing, a short pause, three best-effort presence calls) on up to three numbers (US-025). */
-const OTP_LEASE_MS = 90_000;
+/**
+ * Covers the worst case of the human-like sequence of one code (human.ts) on up to three numbers (US-025): the chat marked as read (its call and the fallback of it), typing,
+ * paused and the offline call (five best-effort calls of up to 3 s each), typing at most 3 s and a pause of at most 0.9 s (no reading pause for a code), and the send with its
+ * request timeout (otp-senders.ts OTP_WAHA_TIMEOUT_MS, 7 s). test/otp-send.int.test.ts pins it against those constants.
+ */
+export const OTP_LEASE_MS = 90_000;
 const CODE = /^[0-9]{6}$/;
 
 export interface OtpMessage {

@@ -13,7 +13,7 @@ import { promisify } from "node:util";
 import { Queue, QueueEvents, Worker } from "bullmq";
 import { Redis } from "ioredis";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { PUBLIC_VALKEY_LIBRARY, PUBLIC_VALKEY_LIBRARY_CODE, RATE_LIMIT_FUNCTION } from "@ebooktrivia/adapters/valkey-functions";
+import { loadPublicValkeyFunctions, parseWaReadItem, PUBLIC_VALKEY_LIBRARY, PUBLIC_VALKEY_LIBRARY_CODE, RATE_LIMIT_FUNCTION, WA_READ_FUNCTION, WA_READ_NAMESPACE, waReadCall, waReadKeys } from "@ebooktrivia/adapters/valkey-functions";
 import { createLogger } from "../src/log.ts";
 import { startValkeyFunctionLoader } from "../src/valkey-functions.ts";
 import { VALKEY_IMAGE } from "./support/docker.ts";
@@ -243,6 +243,34 @@ describe("production Valkey ACL", () => {
     } finally {
       loader.stop();
     }
+  });
+
+  it("the read-mark ring: public hands a message over with ONE FCALL of the worker-loaded function and nothing else; the worker alone takes it, and reaches no other key of public", async () => {
+    const worker = client("worker");
+    const pub = client("public");
+    await Promise.all([worker.connect(), pub.connect()]);
+    await loadPublicValkeyFunctions(worker);
+    // The production namespace itself (the worker's ACL names exactly cache:public:wa-read:*); the container is a throwaway.
+    const namespace = WA_READ_NAMESPACE;
+    const keys = waReadKeys(namespace);
+    const item = { session: "acl", messageId: "false_628123456789@c.us_3EB0ACL0001", digest: "0123456789abcdef0123456789abcdef" };
+    const call = waReadCall(namespace, item);
+    if (call === null) throw new Error("the item is well formed");
+    const fcall = () => reply(pub.call("FCALL", WA_READ_FUNCTION, call.keys.length, ...call.keys, ...call.args));
+    // Public, with the commands it already had (SET, INCR, PEXPIRE) on its own cache:public:* keys: a new read answers its number, a second one for the chat is a no-op.
+    expect(await fcall()).toBe("1");
+    expect(await fcall()).toBe("0");
+    // It cannot read the ring back, delete anything or reach a key outside its prefixes through the function.
+    expect(await reply(pub.get(keys.item(1)))).toMatch(/NOPERM/);
+    expect(await reply(pub.del(keys.pending(item.digest)))).toMatch(/NOPERM/);
+    expect(await reply(pub.call("FCALL", WA_READ_FUNCTION, 2, "ebt:acl-pending", "ebt:acl-seq", "60", "2000", "600", "1000", "ebt:acl-i:", "x"))).toMatch(/NOPERM/);
+    // The worker takes the item (its production ACL reaches exactly this pattern of public's keys) and lets the chat's mark go.
+    expect(parseWaReadItem(await worker.get(keys.item(1)))).toEqual({ n: 1, ...item });
+    expect(await reply(worker.del(keys.pending(item.digest)))).toBe("1");
+    expect(await fcall()).toBe("2");
+    expect(await reply(worker.get("cache:public:acl-other"))).toMatch(/NOPERM/);
+    expect(await reply(worker.get("rl:acl"))).toMatch(/NOPERM/);
+    await worker.del(keys.pending(item.digest), keys.seq, keys.item(1), keys.item(2));
   });
 
   it("runs with noeviction and AOF", async () => {

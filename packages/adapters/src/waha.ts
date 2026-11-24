@@ -429,6 +429,11 @@ export function phoneOfChat(value: string): IdMobileE164 | null {
   return result.ok ? result.e164 : null;
 }
 
+/** A person's chat: a phone number of ANY country (`<digits>@c.us`) or an `@lid`. Never a group, a status, a broadcast or a channel (parseChatId calls the foreign numbers "other" too). */
+export function isPersonalChatId(chatId: string): boolean {
+  return CHAT_ID.test(chatId);
+}
+
 /** Classifies a WhatsApp chat id. Groups, broadcasts and non-Indonesian numbers are "other". */
 export function parseChatId(chatId: string): ChatRef {
   if (/^[0-9]{5,20}@lid$/.test(chatId)) return { kind: "lid", chatId, lid: chatId };

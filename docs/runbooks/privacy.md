@@ -62,6 +62,10 @@ PostgreSQL is what the erasure clears and what the PII scan test checks. The res
 | `rl:webhook:waha:from:*` | a truncated SHA-256 of the sender's chat id | 10 min |
 | `rl:play:*:player:*` | a hash of the player id | about a minute |
 | `cache:public:*` | the Cap challenge tokens | their TTL (minutes) |
+| `cache:public:wa-read:i:*` | an incoming WhatsApp message waiting to be marked as read: the session name, the message id (it embeds the sender's chat id, so it is personal data) and a keyed digest of the chat; no text | 10 min, in a ring of 2000 slots a lap overwrites (the worker takes them within seconds) |
+| `cache:public:wa-read:c:*` | the chat's "a read is pending" mark: an HMAC of session and chat under the webhook secret (never the number) | 60 s at most, released by the worker as it takes the read |
+| `ebt:wa-read:cursor`, `ebt:wa-read:cap:*` | the ring cursor, and a counter of marks per number (session name, minute) | 24 h, 2 min |
+| BullMQ `wa.read` jobs | session name, message id, chat digest, for the reading pause (0.6 to 4 s) | deleted when done; a failed one 1 h |
 
 **Backups** age out within their retention window, which the privacy policy states:
 - wal-g base backups and WAL: 14 days;

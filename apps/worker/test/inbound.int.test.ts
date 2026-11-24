@@ -70,7 +70,22 @@ function rig(options: { random?: () => number; clock?: () => number } = {}) {
     sleep: () => Promise.resolve(),
     ...clock,
   });
-  const consumer = createInboundConsumer({ sql: workerSql, log: silentLog, config, waha: waha.access, delivery, files: testFiles(config), random: options.random ?? (() => 0.5), sleep: () => Promise.resolve(), ...clock });
+  /** Every wait the consumer asked for (they are not waited out). */
+  const slept: number[] = [];
+  const consumer = createInboundConsumer({
+    sql: workerSql,
+    log: silentLog,
+    config,
+    waha: waha.access,
+    delivery,
+    files: testFiles(config),
+    random: options.random ?? (() => 0.5),
+    sleep: (ms) => {
+      slept.push(ms);
+      return Promise.resolve();
+    },
+    ...clock,
+  });
   const process = createOutboxProcessor(consumer, { sql: workerSql, failpoint: inertFailpoint, log: silentLog });
   /** A buyer's message: registered in WAHA, stored as the webhook route would, and handled by the consumer. */
   async function hear(input: { session: string; chatId: string; body: string; orderCode?: string }) {
@@ -80,7 +95,7 @@ function rig(options: { random?: () => number; clock?: () => number } = {}) {
   }
   const files = () => waha.sent.filter((s) => s.kind === "file");
   const texts = () => waha.sent.filter((s) => s.kind === "text");
-  return { waha, mail, magic, delivery, consumer, process, hear, files, texts, config };
+  return { waha, mail, magic, delivery, consumer, process, hear, files, texts, config, slept };
 }
 
 /** The pool number that sent the order's opener (the buyer replies to that one). */
@@ -345,16 +360,26 @@ describe("buyer-first: the webhook is not trusted (criterion 3, 5)", () => {
     const r = rig();
     const session = await createSession();
     const order = await paidOrder(shop, { waNotBefore: proactiveLater() });
+    await r.waha.clearCallLog();
     const noCode = await r.hear({ session: session.name, chatId: order.chatId, body: "halo, ebooknya mana?" });
     await noCode.run();
     expect(await inboundOf(noCode.inboundId)).toMatchObject({ outcome: "no_code" });
     const unknownCode = await r.hear({ session: session.name, chatId: order.chatId, body: "kode saya 7K3M9XQ2PA" });
     await unknownCode.run();
     expect(await inboundOf(unknownCode.inboundId)).toMatchObject({ outcome: "unknown_code" });
-    const ours = await storeInbound({ sessionName: session.name, messageId: `true_${order.chatId}_OWNMSG0001`, fromJid: order.chatId });
+    // The id of a message the mock REALLY sent in this phone chat: after the re-fetch it is fromMe, so it is ignored (a made-up `true_` id would only be "unverified").
+    const sentId = (await r.waha.access.withSession(session.id, ({ sessionName, client }) => client.sendText(sessionName, order.chatId, "halo kak"))).id;
+    const ours = await storeInbound({ sessionName: session.name, messageId: sentId, fromJid: order.chatId });
     await r.process({ id: ours.outboxId });
-    expect(await inboundOf(ours.inboundId)).toMatchObject({ outcome: "unverified" });
-    expect(r.waha.sent).toEqual([]);
+    expect(await inboundOf(ours.inboundId)).toMatchObject({ outcome: "ignored" });
+    // Not ours and not made up: a forged id is `unverified`.
+    const made = await storeInbound({ sessionName: session.name, messageId: `true_${order.chatId}_OWNMSG0001`, fromJid: order.chatId });
+    await r.process({ id: made.outboxId });
+    expect(await inboundOf(made.inboundId)).toMatchObject({ outcome: "unverified" });
+    // Nothing was sent but the one message above, and this job marks nothing as read and waits for nothing: the read path does that (read-marks.ts, the webhook hands over every message).
+    expect(r.waha.sent).toEqual([expect.objectContaining({ id: sentId, kind: "text" })]);
+    expect((await r.waha.callLog()).filter((c) => c.path === "/api/sendSeen" || c.path.endsWith("/presence"))).toEqual([]);
+    expect(r.slept).toEqual([]);
     expect((await deliveryOf(order.deliveries.whatsapp)).status).toBe("pending");
   });
 
@@ -572,21 +597,17 @@ describe("the buyer's reply to the opener (Owner decision D7): the PDF and the l
     expect(r.files()).toEqual([expect.objectContaining({ session: number.name, chatId: order.chatId })]);
     expect(r.files()[0]?.text).toContain("https://play.example.test/masuk#c=whatsapp&t=");
     expect(await deliveryOf(order.deliveries.whatsapp)).toMatchObject({ status: "sent", attempts: 1, session_id: number.id });
-    // The human-like order of a REPLY: the buyer's chat is marked as read when the message is processed (the whole chat, no message ids), and again by the reply's own
-    // sequence (one extra cheap call, accepted), then typing, paused, the file, offline.
+    // The human-like order of a REPLY: the whole chat is marked as read first (no message ids: every send does), then typing, paused, the file, offline. The inbound job itself
+    // marks nothing and sleeps for nothing (the read path of read-marks.ts marks every incoming message): this is the reply's own sequence, once.
     const calls = await r.waha.callLog();
     expect(calls.map((c) => `${c.path.replace(/^\/api\/[^/]+\/presence$/, "/presence")}${typeof c.body["presence"] === "string" ? `:${c.body["presence"]}` : ""}`)).toEqual([
-      "/api/sendSeen",
       "/api/sendSeen",
       "/presence:typing",
       "/presence:paused",
       "/api/sendFile",
       "/presence:offline",
     ]);
-    expect(calls.slice(0, 2).map((c) => c.body)).toEqual([
-      { session: number.name, chatId: order.chatId },
-      { session: number.name, chatId: order.chatId },
-    ]);
+    expect(calls[0]?.body).toEqual({ session: number.name, chatId: order.chatId });
     // The same delivery is never claimed twice: another "ok" is told it is on its way, not sent again.
     await sql`UPDATE waha_sessions SET next_send_at = NULL`;
     await sql`UPDATE waha_inbound SET replied_at = NULL`;

@@ -11,7 +11,12 @@
 //      messages, a session status without limits, other shapes) is acknowledged and dropped     200
 //   5. the replay window of the event's own timestamp (60 minutes back, 5 forward); older or
 //      undated events are dropped (the message_id dedupe below is the other half)                200
-//   6. kind `message`: only a person's chat (@c.us or @lid); then a Valkey rate limit per sender and one
+//   6. kind `message`: FIRST, every message of a person's chat (a phone of ANY country, or an @lid; never a group, a status, a broadcast or a
+//      channel, and never our own, which parseWebhookEvent already drops) is handed to the worker to be MARKED AS READ, whatever becomes
+//      of it below (kept, rate-limited, chatter, a foreign number): Owner rule 2026-11-24, one Valkey function call per message (enqueueWaRead:
+//      one pending read per chat, a capped ring, no database), BEST EFFORT: it never changes the answer. The worker re-fetches the message
+//      by id before it marks anything (apps/worker/src/delivery/read-marks.ts).
+//        Then only a person's chat (@c.us or @lid); then a Valkey rate limit per sender and one
 //      global, FAIL CLOSED (Valkey down: 503, WAHA retries), over the limit: dropped 200, BEFORE any database
 //      query (a flood of chatter from one sender costs Valkey, never PostgreSQL); then only a message whose
 //      text holds something shaped like an order code is kept (a stranger chatting with a pool number
@@ -29,13 +34,13 @@
 //        extends a block; the worker's poll raises the alert on the state it finds               200
 //      any database error                                                                             500 (WAHA retries)
 // No phone, message text, signature or secret is logged: ids, kinds and outcome codes only.
-import { createHash, randomUUID } from "node:crypto";
-import { parseWebhookEvent, verifyWebhookHmac } from "@ebooktrivia/adapters";
+import { createHash, createHmac, randomUUID } from "node:crypto";
+import { type InboundMessage, isPersonalChatId, parseWebhookEvent, verifyWebhookHmac } from "@ebooktrivia/adapters";
 import { extractOrderCodes } from "@ebooktrivia/core";
 import type { Sql } from "../db.ts";
 import { json, readRawBody } from "../http.ts";
 import type { Logger } from "../log.ts";
-import { hitRateLimits, type RateLimit, type Valkey, ValkeyUnavailable } from "../valkey.ts";
+import { enqueueWaRead, hitRateLimits, type RateLimit, type Valkey, ValkeyUnavailable } from "../valkey.ts";
 
 export const WAHA_BODY_MAX_BYTES = 64 * 1024;
 /** Messages kept per sender (a chat id) per window: a buyer asks once or twice; more is noise or abuse. */
@@ -55,6 +60,8 @@ export interface WahaWebhookDeps {
   readonly log: Logger;
   /** Default Date.now; injectable for the replay window. */
   readonly now?: () => number;
+  /** Where the read hand-off lives in Valkey (default WA_READ_NAMESPACE, under cache:public:); a test passes a namespace of its own. */
+  readonly readNamespace?: string;
 }
 
 type Answer = "ok" | "ignored" | "invalid" | "too_large" | "signature" | "unavailable" | "internal";
@@ -62,6 +69,25 @@ const STATUS: Readonly<Record<Answer, number>> = { ok: 200, ignored: 200, invali
 const answer = (kind: Answer): Response => json(STATUS[kind], kind === "ok" || kind === "ignored" ? { v: 1, ok: true } : { v: 1, error: kind }, null);
 
 const digest = (value: string): string => createHash("sha256").update(`ebooktrivia/waha-sender/v1|${value}`).digest("hex").slice(0, 32);
+
+/**
+ * The chat's key in Valkey: an HMAC of session and chat under the webhook secret (this process holds no other), never the phone or the chat id, and not a hash anyone can
+ * rebuild from a list of numbers. Hex, 32 characters.
+ */
+const readDigest = (secret: string, session: string, chatId: string): string => createHmac("sha256", secret).update(`ebooktrivia/waha-read/v1|${session}|${chatId}`).digest("hex").slice(0, 32);
+
+/**
+ * Hands the message to the worker to be marked as read (enqueueWaRead): one pending read per chat, the worker re-fetches the message by id before it does anything. BEST
+ * EFFORT: a Valkey that is down, slow or without the function never changes the webhook's answer (it is logged as a code); what the webhook answers is decided below.
+ */
+async function handToReader(deps: WahaWebhookDeps, secret: string, event: InboundMessage, log: Logger): Promise<void> {
+  try {
+    const outcome = await enqueueWaRead(deps.valkey, { session: event.session, messageId: event.messageId, digest: readDigest(secret, event.session, event.chat.chatId) }, deps.readNamespace);
+    log("info", "webhook.waha.read_handed", { outcome });
+  } catch (error) {
+    log("warn", "webhook.waha.read_not_handed", { code: error instanceof ValkeyUnavailable ? "valkey_unavailable" : "failed" });
+  }
+}
 
 export async function handleWahaWebhook(deps: WahaWebhookDeps, request: Request): Promise<Response> {
   const requestId = randomUUID();
@@ -128,6 +154,9 @@ export async function handleWahaWebhook(deps: WahaWebhookDeps, request: Request)
       return answer("ok");
     }
 
+    // Every authenticated message of a person's chat is handed to the worker to be marked as read, whatever becomes of it below: kept, rate-limited,
+    // chatter, a foreign number (Owner rule, 2026-11-24). Best effort, before any limit or query.
+    if (isPersonalChatId(event.chat.chatId)) await handToReader(deps, deps.hmacSecret, event, log);
     // A message: only a person's chat, and only one that mentions something shaped like an order code (the worker decides on the
     // re-fetched text; this only keeps chatter out of the database).
     if (event.chat.kind === "other") {

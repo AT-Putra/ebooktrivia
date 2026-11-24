@@ -106,11 +106,25 @@ twice in a row). The pacing is drawn from that source too: the random gap betwee
 
 A login code (OTP) stays quick: it marks the chat as read too, but with no reading pause (one quick best-effort call), then typing at most 3 s and a pause of at most 0.9 s, under 4 s of pauses in all.
 
-**Incoming messages are marked as read too.** Every personal message the worker processes (`waha.inbound`, after the re-fetch confirmed it: not ours, a phone or `@lid` chat, never a
-group, a status or a channel) has its whole chat marked as read on the number it arrived on, after a random reading pause (0.6 to 4 s), **before** the worker decides what to do with it, whether
-it gets a reply or not (no order code, an unknown code, a stranger, a rate-limited sender, a buyer). A reply's own send marks the chat once more (one extra cheap call, accepted instead
-of a flag to skip it). Like the others it is best effort: a failure is only logged as a code and never fails or retries the job or holds back the reply. The job's lease allows for it
-(`READ_MARK_MAX_MS` in `inbound.ts`: the longest pause plus the two calls' timeouts).
+**Incoming messages are marked as read too** (Owner rule, 2026-11-24: a number that answers some chats and leaves older messages unread looks like a bot). EVERY message that reaches the
+webhook from a person's chat gets its whole chat marked as read on the number it arrived on: a phone number of any country or an `@lid`, whether the webhook stores it for the buyer-first
+consumer or drops it (no order code, a sender over the per-sender limit, a foreign number); never a group, a status, a broadcast or a channel, and never our own messages. It is a
+read path of its own, with no database write and no worker slot held asleep (`apps/worker/src/delivery/read-marks.ts`):
+
+1. **Public** (`apps/public/src/lib/webhooks/waha.ts`), after the signature and the replay window and before any limit or query, calls the worker-loaded Valkey function
+   `ebt_wa_read_v1` once per message: one **pending read per chat** (the chat's mark, an HMAC of session and chat under the webhook secret, `cache:public:wa-read:c:*`, 60 s at
+   most), and a **capped ring** of 2000 items (`cache:public:wa-read:i:*`: session, message id, chat digest; ten minutes each; a lap overwrites the oldest). Best effort: a Valkey
+   that is down, slow or without the function never changes the webhook's answer (the log says `webhook.waha.read_not_handed` with a code). No new ACL command or key pattern for public.
+2. **The worker's poll** (every second) takes the ring's new items in order (a cursor in `<prefix>:wa-read:cursor`), spends the number's budget (**60 marks per number per minute**,
+   `<prefix>:wa-read:cap:<session>:<minute>`; over it the mark is skipped and the chat's pending mark released) and schedules a **delayed BullMQ job** on the `wa.read` queue: the delay
+   is the reading pause (0.6 to 4 s, cryptographic random, log-normal).
+3. **The job** releases the chat's pending mark, **re-fetches the message by id** on that number (a forged webhook drives nothing; our own messages and anything that is not a person's
+   chat are skipped), sends `sendSeen` for the whole chat (no message ids) and puts the number offline again (like every send). Completed jobs are not kept.
+
+A reply's own send marks the chat once more (every send does: one extra cheap call, accepted instead of a flag to skip it). The inbound job itself marks nothing and waits for nothing. Like
+every presence call it is best effort: a failure is a code in the debug log per event and **one warning a minute** with the counts (`read marks are failing or skipped`), so a `sendSeen`
+that is broken everywhere is seen; it never fails a delivery or an inbound job. The worker's production Valkey ACL reaches `~cache:public:wa-read:*` for this (and nothing else of public's);
+see `docs/runbooks/security-scans.md` section 4.
 
 Per contact (a phone, whichever number writes): a **second message waits a random 30 to 60 s** after the previous one, and **at most 4 messages an hour**. A code that
 would have to wait longer than 10 s for that gap is not sent late: the outbox retries it (the code lives 5 minutes).

@@ -733,10 +733,11 @@ describe("the limits of the phone side", () => {
     expect(await inboundOf(heard.inboundId)).toMatchObject({ processed: false, outcome: null });
   });
 
-  it("L6: the job's lease covers the delivery lease, the re-fetch and lookups, the read mark and the whole phone-side round", () => {
+  it("L6: the job's lease covers the delivery lease, the re-fetch and lookups, and the whole phone-side round (the read mark is not this job's: it waits for nothing here)", () => {
     const r = rig();
     expect(r.consumer.leaseMs).toBe(r.config.leaseMs + INBOUND_EXTRA_LEASE_MS);
-    expect(INBOUND_EXTRA_LEASE_MS).toBeGreaterThanOrEqual(30_000 + PHONE_SIDE_MAX_MS);
+    // Pinned exactly: the 30 s of the re-fetch, the lid lookup and the records, plus the phone-side round. A reading pause or a seen call would have to be added here.
+    expect(INBOUND_EXTRA_LEASE_MS).toBe(30_000 + PHONE_SIDE_MAX_MS);
     // The budget, the one request (10 s) in flight when it ends, and the Valkey calls around it.
     expect(PHONE_SIDE_MAX_MS).toBeGreaterThanOrEqual(PHONE_SIDE_BUDGET_MS + 10_000);
     // The signal handed to perform is 90 % of the lease: still more than the delivery lease alone.

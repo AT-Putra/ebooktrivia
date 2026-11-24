@@ -3,6 +3,7 @@
 // an invalid HMAC is a 401 before anything is parsed, a duplicate message is stored and queued once, the text is never stored, the
 // sender is rate-limited (fail closed), and a verified ack only moves a delivery's ack forward.
 import { randomBytes, randomUUID } from "node:crypto";
+import { parseWaReadItem, WA_READ_FUNCTION, waReadKeys } from "@ebooktrivia/adapters/valkey-functions";
 import { describe, expect, it } from "vitest";
 import { webhookHmacSha512 } from "../../../infra/waha-mock/src/hmac.ts";
 import { createWahaMockApp } from "../../../infra/waha-mock/src/app.ts";
@@ -14,9 +15,13 @@ const SECRET = "waha-webhook-secret-for-tests-0123456789";
 const URL_ = "https://api.ebooktrivia.example.test/api/v1/webhooks/waha";
 const CODE = "7K3M9XQ2PA";
 
+/** The read hand-off of THIS file in Valkey (a namespace of its own under cache:public:, so no other run's ring is touched). */
+const NAMESPACE = `cache:public:wa-read-t${suffix()}`;
+const ring = waReadKeys(NAMESPACE);
+
 function deps(overrides: Partial<WahaWebhookDeps> = {}): WahaWebhookDeps & { readonly lines: string[] } {
   const logs = captureLog();
-  return { sql: publicSql, valkey, hmacSecret: SECRET, log: logs.log, lines: logs.lines, ...overrides };
+  return { sql: publicSql, valkey, hmacSecret: SECRET, log: logs.log, lines: logs.lines, readNamespace: NAMESPACE, ...overrides };
 }
 
 
@@ -358,5 +363,153 @@ describe("WhatsApp's limits on a number, and replies to our opener (US-025: firs
     for (let i = 0; i < 5; i++) expect((await emit("message", "default", message(jid, { body: "halo lagi" }))).status).toBe(200);
     expect(queries).toBe(before);
     expect(d.lines.filter((l) => l.includes('"reason":"rate_limited_sender"'))).toHaveLength(5);
+  });
+});
+
+// Owner rule (2026-11-24): every incoming personal message is marked as read, the ones the webhook drops included. The webhook only HANDS them to the worker (one Valkey
+// function call, no database): the ring is read here as the worker reads it (the dev ACL's `worker` user), the marking itself is the worker's (worker/test/read-marks.int.test.ts).
+describe("every message of a person's chat is handed to the worker to be marked as read, stored or dropped", () => {
+  /** The ring's items so far, in order (this file's namespace only). */
+  async function handed(): Promise<{ n: number; session: string; messageId: string; digest: string }[]> {
+    const reader = await newValkey(undefined, true);
+    const seq = Number((await reader.get(ring.seq)) ?? 0);
+    const items: { n: number; session: string; messageId: string; digest: string }[] = [];
+    for (let n = 1; n <= seq; n++) {
+      const item = parseWaReadItem(await reader.get(ring.item(n)));
+      if (item !== undefined) items.push(item);
+    }
+    return items;
+  }
+  /** What the worker does when it takes a chat's read: lets the chat's pending mark go. */
+  const released = async (digest: string): Promise<void> => {
+    await (await newValkey(undefined, true)).del(ring.pending(digest));
+  };
+  const ofMessage = async (id: string) => (await handed()).filter((i) => i.messageId === id);
+
+  it("chatter with no order code, which is not stored, is handed over: session and message id and a digest of the chat, never a phone or a text", async () => {
+    const d = deps();
+    const emit = emitter(d);
+    const before = await count();
+    const jid = chat();
+    const m = message(jid, { body: "halo, ebooknya mana? 081234567890" });
+    expect((await emit("message", "default", m)).status).toBe(200);
+    expect(await count()).toBe(before);
+    expect(d.lines.some((l) => l.includes('"reason":"no_order_code"'))).toBe(true);
+    const [item, ...others] = await ofMessage(m.id);
+    expect(others).toEqual([]);
+    expect(item).toMatchObject({ session: "default", messageId: m.id });
+    expect(item?.digest).toMatch(/^[0-9a-f]{32}$/);
+    // The chat's key is a keyed digest, not the number (the message id itself carries it: items live ten minutes at most).
+    const reader = await newValkey(undefined, true);
+    expect(await reader.exists(ring.pending(item?.digest ?? ""))).toBe(1);
+    expect(await reader.ttl(ring.pending(item?.digest ?? ""))).toBeGreaterThan(0);
+    expect(await reader.ttl(ring.item(item?.n ?? 0))).toBeGreaterThan(0);
+    expect(ring.pending(item?.digest ?? "")).not.toContain(jid.split("@")[0]);
+    expect(d.lines.join("\n")).not.toContain(jid.split("@")[0] ?? "x");
+    expect(d.lines.some((l) => l.includes('"event":"webhook.waha.read_handed"') && l.includes('"outcome":"queued"'))).toBe(true);
+  });
+
+  it("a kept message is handed over too (one mechanism), once per pending read: a second message of the chat waits for the worker, and a third after it has taken the read starts another", async () => {
+    const d = deps();
+    const emit = emitter(d);
+    const jid = chat();
+    const first = message(jid);
+    expect((await emit("message", "default", first)).status).toBe(200);
+    expect((await root`SELECT 1 FROM waha_inbound WHERE message_id = ${first.id}`).length).toBe(1);
+    const [item] = await ofMessage(first.id);
+    expect(item).toBeDefined();
+    const second = message(jid, { body: "ada kak?" });
+    expect((await emit("message", "default", second)).status).toBe(200);
+    expect(await ofMessage(second.id)).toEqual([]);
+    expect(d.lines.some((l) => l.includes('"outcome":"pending"'))).toBe(true);
+    await released(item?.digest ?? "");
+    const third = message(jid, { body: "halo?" });
+    expect((await emit("message", "default", third)).status).toBe(200);
+    expect(await ofMessage(third.id)).toHaveLength(1);
+    // Another chat is not held back by this one.
+    const other = message(chat());
+    expect((await emit("message", "default", other)).status).toBe(200);
+    expect(await ofMessage(other.id)).toHaveLength(1);
+  });
+
+  it("a sender over the per-sender limit is dropped (200) and still handed over: the limit is on what is kept, not on what is read", async () => {
+    const d = deps();
+    const emit = emitter(d);
+    const spammer = chat();
+    const ids: string[] = [];
+    for (let i = 0; i < WAHA_SENDER_CAP + 3; i++) {
+      const m = message(spammer);
+      ids.push(m.id);
+      expect((await emit("message", "default", m)).status).toBe(200);
+      const [item] = await ofMessage(m.id);
+      expect(item, `message ${String(i)}`).toBeDefined();
+      await released(item?.digest ?? "");
+    }
+    expect((await root`SELECT 1 FROM waha_inbound WHERE from_jid = ${spammer}`).length).toBe(WAHA_SENDER_CAP);
+    expect(d.lines.filter((l) => l.includes('"reason":"rate_limited_sender"'))).toHaveLength(3);
+  });
+
+  it("a personal number of ANOTHER country is handed over although it is never stored (it is 'not a person' for the buyer path only)", async () => {
+    const d = deps();
+    const emit = emitter(d);
+    const before = await count();
+    const foreign = `1415555${String(Math.floor(1000 + Math.random() * 8999))}@c.us`;
+    const m = message(foreign);
+    expect((await emit("message", "default", m)).status).toBe(200);
+    expect(await count()).toBe(before);
+    expect(d.lines.some((l) => l.includes('"reason":"not_a_person"'))).toBe(true);
+    expect(await ofMessage(m.id)).toHaveLength(1);
+    // An @lid too.
+    const lid = `${String(Math.floor(10_000_000_000 + Math.random() * 8_999_999_999))}@lid`;
+    const l = message(lid, { body: "halo" });
+    expect((await emit("message", "default", l)).status).toBe(200);
+    expect(await ofMessage(l.id)).toHaveLength(1);
+  });
+
+  it("never a group, a status, a broadcast or a channel, our own message, a session status, an ack, a stale or undated event, a forged signature or an odd session name", async () => {
+    const d = deps();
+    const emit = emitter(d);
+    const seqBefore = (await handed()).length;
+    const jid = chat();
+    const group = "120363025246125486@g.us";
+    expect((await emit("message", "default", message(group, { id: `false_${group}_AAAA1111` }))).status).toBe(200);
+    for (const other of ["status@broadcast", "120363098765432101@newsletter", "120363098765432101@broadcast"]) expect((await emit("message", "default", message(other, { id: `false_${other}_AAAA1111` }))).status).toBe(200);
+    expect((await emit("message", "default", message(jid, { fromMe: true }))).status).toBe(200);
+    expect((await emit("session.status", "default", { name: "default", status: "FAILED" })).status).toBe(200);
+    expect((await emit("message.ack", "default", { id: messageId(jid), ack: 3 })).status).toBe(200);
+    expect((await post(d, eventBody("message", "default", message(jid), Date.now() - 2 * 3_600_000))).status).toBe(200);
+    expect((await post(d, eventBody("message", "default", message(jid), Date.now() + 3_600_000))).status).toBe(200);
+    expect((await post(d, JSON.stringify({ event: "message", session: "default", payload: message(jid) }))).status).toBe(200);
+    // A forged or missing signature is a 401 before anything is parsed.
+    const body = eventBody("message", "default", message(jid));
+    expect((await post(d, body, {}, false)).status).toBe(401);
+    expect((await post(d, body, { "x-webhook-hmac": webhookHmacSha512(body, "another-secret-0123456789"), "x-webhook-hmac-algorithm": "sha512" }, false)).status).toBe(401);
+    // A session name WAHA could not have: nothing is handed over (and the webhook still answers as before).
+    expect((await post(d, eventBody("message", "bad session!", message(jid)))).status).toBe(200);
+    expect((await post(d, eventBody("message", "x".repeat(65), message(jid)))).status).toBe(200);
+    expect((await handed()).length).toBe(seqBefore);
+    // The two odd session names were refused before any call; every other event above never reached the hand-over.
+    expect(d.lines.filter((l) => l.includes("read_handed") && !l.includes('"outcome":"refused"'))).toEqual([]);
+    expect(d.lines.filter((l) => l.includes('"outcome":"refused"'))).toHaveLength(2);
+  });
+
+  it("a Valkey that cannot take the hand-over never changes the answer: the message is still kept, and the failure is a code in the log", async () => {
+    for (const failure of [new Error("ERR Function not found"), new Error("connection lost")]) {
+      const flaky = new Proxy(valkey, {
+        get(target, prop) {
+          if (prop === "fcall") return (name: string, ...rest: never[]) => (name === WA_READ_FUNCTION ? Promise.reject(failure) : (target.fcall as (n: string, ...r: never[]) => Promise<unknown>)(name, ...rest));
+          const value: unknown = Reflect.get(target, prop);
+          return typeof value === "function" ? (value as (...a: unknown[]) => unknown).bind(target) : value;
+        },
+      });
+      const d = deps({ valkey: flaky });
+      const before = await count();
+      const m = message(chat());
+      expect((await post(d, eventBody("message", "default", m))).status).toBe(200);
+      expect(await count()).toBe(before + 1);
+      expect(d.lines.some((l) => l.includes('"event":"webhook.waha.read_not_handed"') && l.includes('"code":"valkey_unavailable"'))).toBe(true);
+      expect(d.lines.join("\n")).not.toContain("webhook.waha.failed");
+      expect(await ofMessage(m.id)).toEqual([]);
+    }
   });
 });

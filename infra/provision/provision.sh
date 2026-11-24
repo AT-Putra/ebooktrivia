@@ -543,7 +543,8 @@ aws_secret_access_key = __SET_ME__}")
   # users.acl.template: default off; public ~rl:* ~cache:public:* with an explicit command
   # allowlist (-@all +ping +fcall +incr +pttl +pexpire +set: the worker-loaded rate-limit function, US-031, and the single-use
   # marks of Cap tokens; Cap itself is stateless; no INFO, no reads, no deletes; US-020); admin ~cache:admin:*;
-  # worker ~ebt:* (BullMQ prefix) ~cache:worker:* plus +info (BullMQ and ioredis run INFO on
+  # worker ~ebt:* (BullMQ prefix) ~cache:worker:* plus ~cache:public:wa-read:* (the ring of incoming WhatsApp messages the public
+  # webhook fills through the worker-loaded ebt_wa_read_v1 and the worker marks as read) plus +info (BullMQ and ioredis run INFO on
   # connect); admin and worker +@all -@dangerous -@admin; no pub/sub channels for any of them;
   # admin also no SCAN, RANDOMKEY, SCRIPT FLUSH or FUNCTION; ops +ping only (health check). Passwords are stored as
   # SHA-256 hashes; the plaintext is only in the clients' env files.

@@ -6,7 +6,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { Writable } from "node:stream";
 import { createWahaClient, type HttpFetch } from "@ebooktrivia/adapters";
-import { type IdMobileE164, issueOtp, toWaChatId } from "@ebooktrivia/core";
+import { HUMAN_PRESENCE_TIMEOUT_MS, HUMAN_TIMING, type IdMobileE164, issueOtp, toWaChatId, WA_MAX_SESSIONS } from "@ebooktrivia/core";
 import { createSecretOpener, createSecretSealer, generateScopeKeyPair } from "@ebooktrivia/crypto";
 import { SECRET_NAMES } from "@ebooktrivia/db";
 import { PG_CONNECTION_OPTIONS } from "@ebooktrivia/db/connection";
@@ -14,8 +14,8 @@ import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, inject, it } from "vitest";
 import { inertFailpoint } from "../src/failpoint.ts";
 import { createLogger } from "../src/log.ts";
-import { createOtpSendConsumer, OTP_MAX_ATTEMPTS, OTP_TOPIC, OtpSendError, type OtpMessage, type OtpSender } from "../src/otp-send.ts";
-import { createWahaOtpSender, otpFromEnv } from "../src/otp-senders.ts";
+import { createOtpSendConsumer, OTP_LEASE_MS, OTP_MAX_ATTEMPTS, OTP_TOPIC, OtpSendError, type OtpMessage, type OtpSender } from "../src/otp-send.ts";
+import { createWahaOtpSender, OTP_WAHA_TIMEOUT_MS, otpFromEnv } from "../src/otp-senders.ts";
 import { createOutboxProcessor } from "../src/outbox-consumer.ts";
 import { sweepExpiredOtps } from "../src/sweepers.ts";
 import { first, sql, suffix } from "./support/db.ts";
@@ -179,6 +179,15 @@ describe("otp.send consumer", () => {
     } finally {
       await sql`UPDATE message_templates SET locale = 'id', body = ${template?.body ?? ""} WHERE id = ${template?.id ?? ""}`;
     }
+  });
+});
+
+describe("the OTP lease", () => {
+  it("covers the worst case of one code on up to three numbers: the chat marked as read (and its fallback), typing, paused and offline at their 3 s budgets, the longest typing and pause of a code, and the send's request timeout", () => {
+    const perNumber = 5 * HUMAN_PRESENCE_TIMEOUT_MS + HUMAN_TIMING.otpTyping[1] + HUMAN_TIMING.otpPaused[1] + OTP_WAHA_TIMEOUT_MS;
+    expect(perNumber).toBe(5 * 3000 + 3000 + 900 + 7000);
+    expect(OTP_LEASE_MS).toBeGreaterThanOrEqual(WA_MAX_SESSIONS * perNumber);
+    expect(createOtpSendConsumer({ sql: workerSql, opener, sender: { send: () => Promise.resolve() }, log: capturedLog().log }).leaseMs).toBe(OTP_LEASE_MS);
   });
 });
 

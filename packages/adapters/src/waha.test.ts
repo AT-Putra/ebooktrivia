@@ -8,7 +8,7 @@ import messageFixtures from "../../../infra/waha-mock/fixtures/message.json" wit
 import sessionFixture from "../../../infra/waha-mock/fixtures/session-status.json" with { type: "json" };
 import type { HttpFetch, HttpResponse } from "./http.ts";
 import { SafeFetchError } from "./safe-fetch.ts";
-import { createWahaClient, mapAck, NotSentError, parseChatId, parseWebhookEvent, RECENT_MAX_PAGES, verifyWebhookHmac, WahaError } from "./waha.ts";
+import { createWahaClient, isPersonalChatId, mapAck, NotSentError, parseChatId, parseWebhookEvent, RECENT_MAX_PAGES, verifyWebhookHmac, WahaError } from "./waha.ts";
 
 const API_KEY = "waha-test-api-key";
 const SECRET = "waha-webhook-hmac-secret";
@@ -613,6 +613,21 @@ describe("chat ids", () => {
     ["status@broadcast", { kind: "other" }],
   ])("parses %s", (chatId, expected) => {
     expect(parseChatId(chatId)).toMatchObject(expected);
+  });
+
+  it.each([
+    ["628123456789@c.us", true],
+    ["98765432101234@lid", true],
+    ["14155550100@c.us", true], // another country's number is a person too (parseChatId calls it "other")
+    ["120363012345678901@g.us", false],
+    ["status@broadcast", false],
+    ["120363098765432101@newsletter", false],
+    ["120363098765432101@broadcast", false],
+    ["1234@c.us", false],
+    ["628123456789@c.us ", false],
+    ["", false],
+  ])("is %s a person's chat: %s", (chatId, expected) => {
+    expect(isPersonalChatId(chatId)).toBe(expected);
   });
 });
 

@@ -50,6 +50,7 @@ export {
   type FetchedMessage,
   type FileToSend,
   type InboundMessage,
+  isPersonalChatId,
   mapAck,
   NotSentError,
   type OutgoingMessage,

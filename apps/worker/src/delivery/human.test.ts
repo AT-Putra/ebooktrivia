@@ -78,7 +78,7 @@ describe("the order of every WhatsApp send", () => {
     expect(events).toEqual(["wait:seen", "wait:typing", "wait:paused"]);
   });
 
-  it("the whole chat is marked as read, with no message id, before typing starts, for every kind of send (an opener, a reply, a text, a file, a test-send)", async () => {
+  it("the whole chat is marked as read, with no message id, before typing starts, for a message of any length (there is no caller-side switch: openers, replies, files and test-sends all go through here)", async () => {
     for (const textLength of [0, 12, 90, 400]) {
       const recorded: Recorded = recording();
       await run(recorded, { textLength });
