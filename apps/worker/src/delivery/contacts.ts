@@ -114,10 +114,22 @@ export async function knownLid(sql: Db, lid: string): Promise<{ readonly phone: 
   return row === undefined ? null : { phone: row.phone, checkedAt: row.lid_checked_at ?? new Date(0) };
 }
 
-/** The lid a phone is known by, while that link was confirmed less than LID_LINK_FRESH_MS ago; null when the phone has none or it is older. */
-export async function freshLidOf(sql: Db, phone: string): Promise<string | null> {
-  const [row] = await sql<{ lid: string | null; lid_checked_at: Date | null }[]>`SELECT lid, lid_checked_at FROM public.wa_contacts WHERE phone = ${phone} AND number_exists`;
-  return row?.lid != null && row.lid_checked_at !== null && Date.now() - row.lid_checked_at.getTime() < LID_LINK_FRESH_MS ? row.lid : null;
+/**
+ * What the cache already says about the lid of `phone`, so WhatsApp is only asked when the cache cannot answer (inbound.ts, the phone-side match):
+ *   - `{ lid }` a link confirmed within LID_LINK_FRESH_MS and not older than the last answer, so the last answer is the one that carried it (rememberLid also confirms a
+ *     link without a new answer: lid_checked_at is then the later one);
+ *   - `{ lid: null }` the phone's last answer came within LID_LINK_FRESH_MS and has no lid: it is not on WhatsApp, or it lives at a plain `<phone>@c.us` chat (a link
+ *     that is older than that answer, or never confirmed, does not count): asking again within the day would only repeat it;
+ *   - null the cache cannot say (no row, or only an answer older than a day): ask.
+ */
+export async function lidCacheOf(sql: Db, phone: string, now: Date = new Date()): Promise<{ readonly lid: string | null } | null> {
+  const [row] = await sql<{ number_exists: boolean; lid: string | null; lid_checked_at: Date | null; checked_at: Date }[]>`
+    SELECT number_exists, lid, lid_checked_at, checked_at FROM public.wa_contacts WHERE phone = ${phone}`;
+  if (row === undefined) return null;
+  const fresh = (at: Date): boolean => now.getTime() - at.getTime() < LID_LINK_FRESH_MS;
+  if (row.number_exists && row.lid !== null && row.lid_checked_at !== null && row.lid_checked_at >= row.checked_at && fresh(row.lid_checked_at)) return { lid: row.lid };
+  if (fresh(row.checked_at)) return { lid: null };
+  return null;
 }
 
 /** The phone a `<lid>@lid` chat belongs to, whatever the age of the link; null when unknown. */

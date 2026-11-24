@@ -84,6 +84,8 @@ Every text, varchar, jsonb, inet and bytea column of every table, classified, an
   while answering a message that matched nothing.
 - **Rule.** It is deleted once it has not been confirmed for 7 days: `public.prune_stranger_wa_contacts`, run every minute by the
   worker sweeper `wa_contacts_retention`, at most 500 rows a run.
+- **Template test-sends.** The recipient of a template test-send (the Owner's own test numbers) is looked up with check-exists like any contact, so it lands in
+  `wa_contacts`; it is no buyer's phone, so the same 7-day retention removes it.
 - **Buyers' rows** live as long as the buyer's data does.
 
 ## Outside PostgreSQL

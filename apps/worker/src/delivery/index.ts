@@ -22,7 +22,7 @@ import { createEbookFiles, createMailSender, createWahaAccess } from "./access.t
 import { type DeliveryConfig, loadDeliveryConfig } from "./config.ts";
 import { createDelivery, type DeliveryJob } from "./deliver.ts";
 import { createSessionPoller } from "./health.ts";
-import { createInboundConsumer, INBOUND_TOPIC, lidRoundFromValkey } from "./inbound.ts";
+import { createInboundConsumer, INBOUND_TOPIC, lidGateFromValkey } from "./inbound.ts";
 import { expireOpenerLeases } from "./opener-sweep.ts";
 import type { EbookFiles, MagicLinks, MagicLinksFactory, MailSender, WahaAccess } from "./ports.ts";
 import { resolveUnknownDeliveries } from "./resolve-unknown.ts";
@@ -52,7 +52,7 @@ export interface DeliveryPort {
     readonly log: Logger;
     readonly enqueue: (jobs: readonly DeliveryJob[]) => Promise<void>;
     /** The worker's Valkey and its key prefix: the per-lid budget of the inbound phone-side match lives there. Absent: that match is off. */
-    readonly valkey?: { readonly client: Pick<Redis, "get" | "set">; readonly prefix: string };
+    readonly valkey?: { readonly client: Pick<Redis, "get" | "set" | "incr" | "expire">; readonly prefix: string };
   }): DeliveryRuntime;
 }
 
@@ -92,7 +92,7 @@ export function createDeliveryPort(ports: DeliveryPorts): DeliveryPort {
             delivery,
             files: ports.files,
             ...(ports.clock === undefined ? {} : { clock: ports.clock }),
-            ...(valkey === undefined ? {} : { lidRound: lidRoundFromValkey(valkey.client, valkey.prefix) }),
+            ...(valkey === undefined ? {} : { lidGate: lidGateFromValkey(valkey.client, valkey.prefix, ports.config.fileUrlKey) }),
           }),
         ],
         nudge: async (orderId) => {

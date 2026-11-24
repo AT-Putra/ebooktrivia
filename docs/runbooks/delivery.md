@@ -199,9 +199,12 @@ opener to answer, or a code of no order: no reply at all.
 
 **A `@lid` sender** is matched to a phone through `wa_contacts` (the lid a check-exists answer taught us), then WAHA's lid lookup, then **from the phone side**. WAHA's lid store is local to a
 session (measured on the Owner's WAHA 2026.10.1: a lid never looked up on that session has `pn: null`), while check-exists is a WhatsApp server query that answers for any phone. So when the first two
-give no number, the worker asks check-exists, on the receiving session, about up to **5** of our buyers' phones (the orders whose codes the message carries, the phone of a stale link, the openers this number sent
-in the last 7 days whose delivery still awaits the reply, newest first) and the phone whose lid equals the sender's is the sender. A sender lid gets **one** such round an hour (a Valkey key `<prefix>:lid-round:<sha256 of the lid>`
-with a one-hour TTL; the retry of the same message may take it again), and nothing is sent or stored for a stranger. A lid belongs to **one** phone (the column is unique; writing a
+give no number, the worker asks check-exists, on the receiving session, about up to **5** of our buyers' phones (the **paid** orders whose codes the message carries, the phone of a stale link when a paid order has it, the openers
+this number sent in the last 7 days whose delivery still awaits the reply, newest first) and the phone whose lid equals the sender's is the sender. The cache answers first, a negative answer too, so a phone is
+asked about at most once a day. Limits, all in Valkey under the worker's key prefix: **one** such round per sender lid an hour (`<prefix>:lid-round:<HMAC of the lid>`, one-hour TTL; the retry of the same message may take it again;
+the key holds an HMAC under a key derived from the worker's file-URL key, never the lid) and **30** questions per number an hour (`<prefix>:lid-checks:<session id>`); when either is spent the sender stays unresolved. The whole round has 15 s. A candidate
+that fails does not stop the others; if none matches and one failed (or the time ran out), the job is retried, and a Valkey failure retries it too: it is never answered as unresolved. Nothing is sent or stored for a stranger. If WhatsApp gives the **order's own phone** another lid than the
+sender's, the sender is a stranger (`text_mismatch`: the neutral text, no PDF, no link, nothing claimed); the PDF-only reply stays for an order whose phone has no known lid. A link we already held is not renewed by a message from its sender. A lid belongs to **one** phone (the column is unique; writing a
 lid takes it from the phone that held it), a link older than a **day** is not trusted on its own (WAHA is asked again before a login link can go to that sender), and a phone WAHA names for a lid
 is stored only once a message from it matched an order or an opener: a stranger's phone is never kept. If the buyer's reply (the PDF) went to a `@lid` chat, the delivery remembers that chat
 (`reply_chat_id`) and the unknown-send lookup asks there as well as in the order's own chat.
