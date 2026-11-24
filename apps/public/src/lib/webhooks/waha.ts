@@ -41,7 +41,7 @@ import type { WaReadSealer } from "@ebooktrivia/crypto";
 import type { Sql } from "../db.ts";
 import { json, readRawBody } from "../http.ts";
 import type { Logger } from "../log.ts";
-import { enqueueWaRead, hitRateLimits, type RateLimit, type Valkey, ValkeyUnavailable } from "../valkey.ts";
+import { enqueueWaRead, hitRateLimits, isValkeyUnavailable, type RateLimit, type Valkey } from "../valkey.ts";
 
 export const WAHA_BODY_MAX_BYTES = 64 * 1024;
 /** Messages kept per sender (a chat id) per window: a buyer asks once or twice; more is noise or abuse. */
@@ -96,7 +96,7 @@ async function handToReader(deps: WahaWebhookDeps, secret: string, event: Inboun
     const outcome = await enqueueWaRead(deps.valkey, readSealer, { session: event.session, messageId: event.messageId, digest: readDigest(secret, event.session, event.chat.chatId) }, deps.readNamespace);
     log("info", "webhook.waha.read_handed", { outcome });
   } catch (error) {
-    log("warn", "webhook.waha.read_not_handed", { code: error instanceof ValkeyUnavailable ? "valkey_unavailable" : "failed" });
+    log("warn", "webhook.waha.read_not_handed", { code: isValkeyUnavailable(error) ? "valkey_unavailable" : "failed" });
   }
 }
 
@@ -215,7 +215,7 @@ export async function handleWahaWebhook(deps: WahaWebhookDeps, request: Request)
     log("info", "webhook.waha.stored", { outcome, kind: "message" });
     return answer("ok");
   } catch (error) {
-    if (error instanceof ValkeyUnavailable) {
+    if (isValkeyUnavailable(error)) {
       log("error", "webhook.waha.failed", { reason: "valkey_unavailable" }, error);
       return answer("unavailable");
     }

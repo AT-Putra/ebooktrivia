@@ -15,7 +15,7 @@ import { clientIp, throttleBucket } from "@ebooktrivia/edge";
 import type { Sql } from "../db.ts";
 import { json, readJsonBody } from "../http.ts";
 import type { Logger } from "../log.ts";
-import { hitRateLimits, type Valkey, ValkeyUnavailable } from "../valkey.ts";
+import { hitRateLimits, isValkeyUnavailable, type Valkey } from "../valkey.ts";
 import type { OrderClaimBody, OrderErrorBody, OrderErrorCode, OrderStatusBody } from "./contract.ts";
 import { claimBrowserMt, getOrderStatus, isPublicId } from "./data.ts";
 import { pageState } from "./view.ts";
@@ -67,7 +67,7 @@ export async function orderRateLimit(deps: Pick<OrderDeps, "valkey" | "log">, he
     deps.log("warn", "order.refused", { route, reason: "rate_limited_ip" });
     return failure("rate_limited", { "retry-after": String(decision.retryAfterSeconds) });
   } catch (error) {
-    deps.log("error", "order.failed", { route, reason: error instanceof ValkeyUnavailable ? "valkey_unavailable" : "internal" }, error);
+    deps.log("error", "order.failed", { route, reason: isValkeyUnavailable(error) ? "valkey_unavailable" : "internal" }, error);
     return failure("unavailable");
   }
 }
@@ -112,7 +112,7 @@ export async function handleOrderApi(deps: OrderDeps, route: OrderRoute, request
     const won: OrderClaimBody = { v: 1, fire: true, event_id: claim.eventId, transaction_id: claim.transactionId, value_idr: claim.valueIdr, pixels: claim.pixels };
     return json(200, won, null);
   } catch (error) {
-    deps.log("error", "order.failed", { ...fields, reason: error instanceof ValkeyUnavailable ? "valkey_unavailable" : "internal" }, error);
+    deps.log("error", "order.failed", { ...fields, reason: isValkeyUnavailable(error) ? "valkey_unavailable" : "internal" }, error);
     return failure("unavailable");
   }
 }

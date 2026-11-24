@@ -18,7 +18,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { type IdMobileE164, normalizeIdMobile } from "@ebooktrivia/core";
 import { type HttpFetch, type HttpResponse, isRecord, stringField } from "./http.ts";
-import { SafeFetchError } from "./safe-fetch.ts";
+import { isSafeFetchError } from "./safe-fetch.ts";
 
 export type WahaErrorCode =
   | "unauthorized"
@@ -213,7 +213,7 @@ export function createWahaClient(config: WahaClientConfig): WahaClient {
       });
     } catch (error) {
       if (error instanceof WahaError) throw error;
-      const certain = error instanceof SafeFetchError && NOT_SENT.has(error.code);
+      const certain = isSafeFetchError(error) && NOT_SENT.has(error.code);
       throw new WahaError(sending && !certain ? "maybe_sent" : "failed", "WAHA request failed", { cause: error });
     }
     if (sending && response.status >= 400) {

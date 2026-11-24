@@ -50,6 +50,9 @@ export class PublicConfigError extends Error {
   }
 }
 
+/** By name: the runtime's start-up promise is shared process-wide, so a waiting request may get another bundle's copy of the class. */
+export const isPublicConfigError = (error: unknown): error is PublicConfigError => error instanceof Error && error.name === "PublicConfigError";
+
 export interface ValkeyConfig {
   readonly host: string;
   readonly port: number;
@@ -242,7 +245,7 @@ export function loadPublicConfig(env: Env): PublicConfig {
   try {
     play = { playOrigin: origin, playerAuthSecrets: parsePlayerAuthSecrets(value(env, "PLAYER_AUTH_SECRETS")), otpPepper: hexKey(env, "PLAYER_OTP_PEPPER") };
   } catch (error) {
-    if (!(error instanceof PublicConfigError)) throw error;
+    if (!(isPublicConfigError(error))) throw error;
     playUnavailable = error.message;
   }
   return {

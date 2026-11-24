@@ -97,6 +97,9 @@ export class SettingsUnavailable extends Error {
   }
 }
 
+/** By name: the settings and key caches are built with the process-wide runtime, so the class may be another bundle's copy. */
+export const isSettingsUnavailable = (error: unknown): error is SettingsUnavailable => error instanceof Error && error.name === "SettingsUnavailable";
+
 const CHECKOUT_KEYS = [
   "orders.expiry_seconds",
   "orders.sales_close_buffer_minutes",
@@ -211,6 +214,9 @@ export class ServerKeyUnavailable extends Error {
     this.name = "ServerKeyUnavailable";
   }
 }
+
+/** By name: the server-key cache is built with the process-wide runtime, so the class may be another bundle's copy. */
+export const isServerKeyUnavailable = (error: unknown): error is ServerKeyUnavailable => error instanceof Error && error.name === "ServerKeyUnavailable";
 
 interface PaymentSecretRow {
   id: string;

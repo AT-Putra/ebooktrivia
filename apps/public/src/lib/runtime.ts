@@ -6,7 +6,7 @@ import { fileUrlKeyFromEnv, openerFromEnv, sealerFromEnv, type SecretSealer, typ
 import { capProviders, type CapRouteDeps } from "./cap-routes.ts";
 import { createMidtransKeyCache } from "./checkout/data.ts";
 import { type CheckoutDeps, SNAP_TIMEOUT_MS } from "./checkout/handler.ts";
-import { type Env, loadPublicConfig, PublicConfigError } from "./config.ts";
+import { type Env, isPublicConfigError, loadPublicConfig, PublicConfigError } from "./config.ts";
 import { assertPublicLogin, createPublicSql } from "./db.ts";
 import { logEvent } from "./log.ts";
 import type { OrderDeps } from "./order/handler.ts";
@@ -148,7 +148,7 @@ export async function runtimeOrUnavailable(route: string): Promise<PublicRuntime
     return await getRuntime();
   } catch (error) {
     // A configuration message names the variable, never its value.
-    logEvent("error", "runtime.unavailable", { route, ...(error instanceof PublicConfigError ? { reason: error.message } : {}) }, error);
+    logEvent("error", "runtime.unavailable", { route, ...(isPublicConfigError(error) ? { reason: error.message } : {}) }, error);
     return new Response(JSON.stringify({ v: 1, error: "unavailable" }), {
       status: 503,
       headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", vary: "Origin" },

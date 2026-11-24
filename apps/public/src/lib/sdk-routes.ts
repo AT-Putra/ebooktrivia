@@ -25,13 +25,13 @@
 import { salesState } from "@ebooktrivia/core";
 import { SDK_PATTERNS, type SdkLpConfig, type SdkVisitResponse } from "@ebooktrivia/core/sdk-contract";
 import { clientIp, throttleBucket } from "@ebooktrivia/edge";
-import { allowedAdnets, landingPageHosts, loadCheckoutSettings, loadLandingPage, publishedLegal, sdkPageDetails, SettingsUnavailable } from "./checkout/data.ts";
+import { allowedAdnets, isSettingsUnavailable, landingPageHosts, loadCheckoutSettings, loadLandingPage, publishedLegal, sdkPageDetails } from "./checkout/data.ts";
 import { uaHash } from "./checkout/orders.ts";
 import { sanitizeAttribution } from "./checkout/request.ts";
 import type { Sql } from "./db.ts";
 import { allowedOrigin, errorResponse, json, originRefused, originsOf, readJsonBody } from "./http.ts";
 import type { Logger } from "./log.ts";
-import { hitRateLimits, type Valkey, ValkeyUnavailable } from "./valkey.ts";
+import { hitRateLimits, isValkeyUnavailable, type Valkey } from "./valkey.ts";
 
 const LP_KEY = new RegExp(SDK_PATTERNS.lpKey);
 const PIXEL_FORMAT = { meta: new RegExp(SDK_PATTERNS.metaPixel), tiktok: new RegExp(SDK_PATTERNS.tiktokPixel), gtag: new RegExp(SDK_PATTERNS.googleAds) } as const;
@@ -179,7 +179,7 @@ export async function handleConfig(deps: SdkRouteDeps, request: Request, lpKey: 
     // Public and cacheable for a minute: the ACAO above depends on the Origin, which Vary: Origin (json()) says.
     return json(200, data.config, origin, { "cache-control": "public, max-age=60" });
   } catch (error) {
-    deps.log("error", "sdk.failed", { ...fields, reason: error instanceof SettingsUnavailable ? "settings_unavailable" : "internal" }, error);
+    deps.log("error", "sdk.failed", { ...fields, reason: isSettingsUnavailable(error) ? "settings_unavailable" : "internal" }, error);
     return unavailable(null);
   }
 }
@@ -240,7 +240,7 @@ export async function handleVisit(deps: SdkRouteDeps, request: Request, lpKey: s
     const response: SdkVisitResponse = { v: 1, visit_id: row.id };
     return json(200, response, origin);
   } catch (error) {
-    const down = error instanceof ValkeyUnavailable || (error instanceof Error && error.cause instanceof ValkeyUnavailable);
+    const down = isValkeyUnavailable(error);
     deps.log("error", "sdk.failed", { ...fields, reason: down ? "valkey_unavailable" : "internal" }, error);
     return unavailable(origin);
   }

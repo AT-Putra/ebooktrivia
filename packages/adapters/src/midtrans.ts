@@ -14,7 +14,7 @@
 
 import { createHash, timingSafeEqual } from "node:crypto";
 import { type HttpFetch, type HttpResponse, isRecord, stringField } from "./http.ts";
-import { SafeFetchError } from "./safe-fetch.ts";
+import { isSafeFetchError } from "./safe-fetch.ts";
 
 export type MidtransErrorCode = "rejected" | "unauthorized" | "unavailable" | "bad_response" | "bad_signature";
 
@@ -227,7 +227,7 @@ async function send(cfg: MidtransConfig, url: string, init: { method: string; bo
 
 /** The body could not be read (timeout, abort, reset): transient, unlike a body that is not JSON. */
 function isTransientReadError(error: unknown): boolean {
-  if (error instanceof SafeFetchError) return error.code === "timeout" || error.code === "request_failed";
+  if (isSafeFetchError(error)) return error.code === "timeout" || error.code === "request_failed";
   if (error instanceof DOMException) return error.name === "TimeoutError" || error.name === "AbortError";
   return error instanceof TypeError;
 }

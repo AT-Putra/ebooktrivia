@@ -21,7 +21,7 @@ import { verifyFileUrl } from "@ebooktrivia/adapters";
 import { createHash } from "node:crypto";
 import type { Logger } from "./log.ts";
 import { openRegularFile } from "./safe-file.ts";
-import { hitRateLimits, type Valkey, ValkeyUnavailable } from "./valkey.ts";
+import { hitRateLimits, isValkeyUnavailable, type Valkey } from "./valkey.ts";
 
 /** Downloads of one signed URL (WAHA may retry a fetch; a leaked link is worth this many). */
 export const FILE_URL_CAP = 10;
@@ -86,7 +86,7 @@ export async function handleFileDownload(deps: FilesDeps, request: Request): Pro
       return plain(429, { "retry-after": String(limited.retryAfterSeconds) });
     }
   } catch (error) {
-    if (!(error instanceof ValkeyUnavailable)) throw error;
+    if (!isValkeyUnavailable(error)) throw error;
     if (secondsLeft > SHORT_URL_SECONDS) {
       log("error", "files.failed", { reason: "valkey_unavailable" }, error);
       return plain(503, { "retry-after": "5" });

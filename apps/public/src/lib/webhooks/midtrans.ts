@@ -30,11 +30,11 @@ import { randomUUID } from "node:crypto";
 import { isMidtransOrderId, isSignatureShape, parseNotification, verifySignature } from "@ebooktrivia/adapters";
 import type { SecretOpener } from "@ebooktrivia/crypto";
 import { clientIp, throttleBucket, throttleBucket48 } from "@ebooktrivia/edge";
-import { type MidtransKeyCache, ServerKeyUnavailable, SettingsUnavailable } from "../checkout/data.ts";
+import { isServerKeyUnavailable, isSettingsUnavailable, type MidtransKeyCache } from "../checkout/data.ts";
 import type { Sql } from "../db.ts";
 import { json, readJsonBody } from "../http.ts";
 import type { Logger } from "../log.ts";
-import { hitRateLimits, type RateLimit, type Valkey, ValkeyUnavailable } from "../valkey.ts";
+import { hitRateLimits, isValkeyUnavailable, type RateLimit, type Valkey } from "../valkey.ts";
 
 /** Notifications per client IP per window. Midtrans sends from a few addresses; bursts follow settlement batches. */
 export const WEBHOOK_IP_CAP = 600;
@@ -119,8 +119,8 @@ export async function handleMidtransNotification(deps: MidtransWebhookDeps, requ
     log("info", "webhook.midtrans.stored", { outcome, status: notification.transactionStatus });
     return answer("ok");
   } catch (error) {
-    if (error instanceof ValkeyUnavailable || error instanceof SettingsUnavailable || error instanceof ServerKeyUnavailable) {
-      log("error", "webhook.midtrans.failed", { reason: error instanceof ValkeyUnavailable ? "valkey_unavailable" : "midtrans_key_unavailable" }, error);
+    if (isValkeyUnavailable(error) || isSettingsUnavailable(error) || isServerKeyUnavailable(error)) {
+      log("error", "webhook.midtrans.failed", { reason: isValkeyUnavailable(error) ? "valkey_unavailable" : "midtrans_key_unavailable" }, error);
       return answer("unavailable");
     }
     // A real database error (or anything unexpected): 503, so Midtrans delivers the notification again, four times (a 500 only once).

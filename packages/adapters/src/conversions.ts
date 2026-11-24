@@ -32,7 +32,7 @@ import {
   type SecretResolver,
 } from "@ebooktrivia/core";
 import type { HttpFetch } from "./http.ts";
-import { SafeFetchError } from "./safe-fetch.ts";
+import { isSafeFetchError } from "./safe-fetch.ts";
 
 export interface PreparedRequest {
   readonly method: "GET" | "POST";
@@ -230,11 +230,11 @@ export async function sendConversion(fetch: HttpFetch, request: PreparedRequest,
     const text = await (response.textPrefix === undefined ? response.text() : response.textPrefix(SNIPPET_BYTES)).catch(() => "");
     return { outcome: conversionOutcomeFromHttp(response.status), latencyMs: now() - started, responseSnippet: text.slice(0, SNIPPET_BYTES) };
   } catch (error) {
-    if (error instanceof SafeFetchError && error.code === "redirect_refused" && error.httpStatus !== undefined) {
+    if (isSafeFetchError(error) && error.code === "redirect_refused" && error.httpStatus !== undefined) {
       return { outcome: { kind: "maybe_sent", error: `HTTP ${String(error.httpStatus)} (redirect not followed)` }, latencyMs: now() - started, responseSnippet: "" };
     }
     const message = error instanceof Error ? error.message : "request failed";
-    const certain = error instanceof SafeFetchError && NOT_SENT.has(error.code);
+    const certain = isSafeFetchError(error) && NOT_SENT.has(error.code);
     const outcome: ConversionOutcome = certain ? { kind: "failed", httpStatus: null, error: message } : { kind: "maybe_sent", error: message };
     return { outcome, latencyMs: now() - started, responseSnippet: "" };
   }

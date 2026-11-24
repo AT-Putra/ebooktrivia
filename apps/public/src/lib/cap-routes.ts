@@ -17,7 +17,7 @@ import { landingPageHosts, loadCaptchaSettings } from "./checkout/data.ts";
 import type { Sql } from "./db.ts";
 import { allowedOrigin, errorResponse, json, originRefused, originsOf, preflight, readJsonBody } from "./http.ts";
 import type { Logger } from "./log.ts";
-import { hitRateLimits, type RateLimit, type Valkey, valkeyCapTokenMarks, ValkeyUnavailable } from "./valkey.ts";
+import { hitRateLimits, isValkeyUnavailable, type RateLimit, type Valkey, valkeyCapTokenMarks } from "./valkey.ts";
 
 export interface CapRouteDeps {
   readonly sql: Sql;
@@ -94,7 +94,7 @@ export async function handleCap(deps: CapRouteDeps, action: CapAction, request: 
     // An unparseable body is a failed redeem, the answer Cap itself gives.
     return json(200, body.ok ? await cap.redeem(body.value) : { success: false }, origin);
   } catch (error) {
-    deps.log("error", "cap.failed", { ...fields, reason: error instanceof ValkeyUnavailable || (error instanceof Error && error.cause instanceof ValkeyUnavailable) ? "valkey_unavailable" : "internal" }, error);
+    deps.log("error", "cap.failed", { ...fields, reason: isValkeyUnavailable(error) ? "valkey_unavailable" : "internal" }, error);
     return errorResponse("unavailable", origin);
   }
 }

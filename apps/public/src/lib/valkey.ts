@@ -43,6 +43,17 @@ export class ValkeyUnavailable extends Error {
   }
 }
 
+const isNamedValkeyUnavailable = (error: unknown): boolean => error instanceof Error && error.name === "ValkeyUnavailable";
+
+/**
+ * True when Valkey did not answer: a ValkeyUnavailable of ANY bundle's copy of this module (by name: the Cap token store is built
+ * with the process-wide runtime, so its class may be another bundle's), itself or as the `cause` of the error that wraps it (the
+ * Cap builder's CaptchaStoreUnavailable).
+ */
+export function isValkeyUnavailable(error: unknown): boolean {
+  return isNamedValkeyUnavailable(error) || (error instanceof Error && isNamedValkeyUnavailable(error.cause));
+}
+
 /** A connection error is reported at most once per this interval (ioredis retries forever, silently). */
 export const VALKEY_ERROR_REPORT_MS = 30_000;
 

@@ -4,7 +4,7 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { gzipSync } from "node:zlib";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { connectLookup, createSafeFetch, isBlockedAddress, type Resolver, SafeFetchError, systemResolver } from "./safe-fetch.ts";
+import { connectLookup, createSafeFetch, isBlockedAddress, isSafeFetchError, type Resolver, SafeFetchError, systemResolver } from "./safe-fetch.ts";
 
 async function failure(p: Promise<unknown>): Promise<string> {
   try {
@@ -336,5 +336,23 @@ describe("A10: close() releases the connection pools", () => {
     await closing;
     expect(await failure(safeFetch(`${base}/size/64`))).toBe("request_failed");
     await expect(safeFetch.close()).resolves.toBeUndefined();
+  });
+});
+
+describe("isSafeFetchError", () => {
+  /** A SafeFetchError as ANOTHER copy of this package throws it (a Next.js app has one copy per bundle): same name and shape. */
+  const otherCopy = (code: string) => Object.assign(new Error("x"), { name: "SafeFetchError", code });
+
+  it("is true for this copy's SafeFetchError and for another copy's (same name, a known code)", () => {
+    expect(isSafeFetchError(new SafeFetchError("timeout", "x"))).toBe(true);
+    expect(isSafeFetchError(otherCopy("timeout"))).toBe(true);
+    expect(isSafeFetchError(otherCopy("blocked_address"))).toBe(true);
+  });
+
+  it("is false for anything else: other errors, an unknown code, a look-alike object that is not an Error", () => {
+    expect(isSafeFetchError(new TypeError("terminated"))).toBe(false);
+    expect(isSafeFetchError(otherCopy("not_a_code"))).toBe(false);
+    expect(isSafeFetchError({ name: "SafeFetchError", code: "timeout" })).toBe(false);
+    expect(isSafeFetchError(undefined)).toBe(false);
   });
 });

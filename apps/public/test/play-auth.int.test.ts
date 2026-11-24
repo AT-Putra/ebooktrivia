@@ -582,16 +582,35 @@ describe("OTP verify", () => {
 describe("an auth instance another bundle built (lib/runtime.ts is one per process, built by a page as often as by a route)", () => {
   /** better-auth's APIError as ANOTHER Next.js bundle's copy of the library throws it: the same name and shape, not this module's class. */
   class OtherCopyAPIError extends Error {
-    readonly status = "BAD_REQUEST";
-    readonly statusCode = 400;
-    constructor(message: string) {
-      super(message);
+    readonly statusCode: number;
+    readonly body: { readonly code: string; readonly message: string };
+    constructor(statusCode = 400, code = "INVALID_OTP") {
+      super("library message text");
       this.name = "APIError";
+      this.statusCode = statusCode;
+      this.body = { code, message: "library message text" };
     }
   }
-  const authThrowing = (endpoint: "verifyPhoneNumber" | "playerMagicLinkLogin"): PlayDeps["auth"] => ({
+  const authThrowing = (endpoint: "verifyPhoneNumber" | "playerMagicLinkLogin", error = new OtherCopyAPIError()): PlayDeps["auth"] => ({
     ...auth,
-    api: { ...auth.api, [endpoint]: () => Promise.reject(new OtherCopyAPIError("refused")) },
+    api: { ...auth.api, [endpoint]: () => Promise.reject(error) },
+  });
+
+  it("the refusal's log line names the library's code and status, never its message; a 5xx behind the generic answer is a warning", async () => {
+    const refused = playDeps({ auth: authThrowing("verifyPhoneNumber") });
+    await handleOtpVerify(refused, await verifyRequest(uniquePhone(), "123456"));
+    const line = refused.logs.lines.find((l) => l.includes('"event":"play.refused"'));
+    expect(line).toMatch(/"level":"info"/);
+    expect(line).toMatch(/"code":"INVALID_OTP"/);
+    expect(line).toMatch(/"status":400/);
+    expect(line).not.toContain("library message text");
+    const failed = playDeps({ auth: authThrowing("playerMagicLinkLogin", new OtherCopyAPIError(500, "FAILED_TO_CREATE_SESSION")) });
+    const response = await handleMagicLink(failed, playRequest("/api/v1/play/auth/magic-link", { channel: "email", token: "x".repeat(43) }));
+    expect(await response.json()).toEqual({ v: 1, error: "invalid_link" });
+    const warned = failed.logs.lines.find((l) => l.includes('"event":"play.refused"'));
+    expect(warned).toMatch(/"level":"warn"/);
+    expect(warned).toMatch(/"code":"FAILED_TO_CREATE_SESSION"/);
+    expect(warned).toMatch(/"status":500/);
   });
 
   it("a wrong code is still invalid_code (400, after the floor), never a 503, when the APIError is another copy's class", async () => {

@@ -29,17 +29,18 @@ import { clientIp, throttleBucket } from "@ebooktrivia/edge";
 import type { Sql } from "../db.ts";
 import { allowedOrigin, errorResponse, json, originRefused, originsOf, preflight, readJsonBody } from "../http.ts";
 import type { Logger } from "../log.ts";
-import { hitRateLimits, phoneKey, type RateDecision, type Valkey, ValkeyUnavailable } from "../valkey.ts";
+import { hitRateLimits, isValkeyUnavailable, phoneKey, type RateDecision, type Valkey } from "../valkey.ts";
 import {
   allowedAdnets,
   type CheckoutSettings,
+  isServerKeyUnavailable,
+  isSettingsUnavailable,
   type LandingPage,
   landingPageHosts,
   loadCheckoutSettings,
   loadLandingPage,
   midtransServerKey,
   publishedLegal,
-  ServerKeyUnavailable,
   SettingsUnavailable,
   visitBelongs,
 } from "./data.ts";
@@ -74,7 +75,7 @@ const rateLimited = (decision: Exclude<RateDecision, { allowed: true }>, origin:
   errorResponse("rate_limited", origin, { headers: { "retry-after": String(decision.retryAfterSeconds) } });
 
 /** A store failure under a wrapper (CaptchaStoreUnavailable, ...) still is a Valkey outage. */
-const isValkeyDown = (error: unknown): boolean => error instanceof ValkeyUnavailable || (error instanceof Error && error.cause instanceof ValkeyUnavailable);
+const isValkeyDown = (error: unknown): boolean => isValkeyUnavailable(error);
 
 export async function checkoutPreflight(deps: Pick<CheckoutDeps, "sql" | "log">, request: Request, lpKey: string): Promise<Response> {
   try {
@@ -200,9 +201,9 @@ export async function handleCheckout(deps: CheckoutDeps, request: Request, lpKey
   } catch (error) {
     const reason = isValkeyDown(error)
       ? "valkey_unavailable"
-      : error instanceof SettingsUnavailable
+      : isSettingsUnavailable(error)
         ? "settings_unavailable"
-        : error instanceof ServerKeyUnavailable
+        : isServerKeyUnavailable(error)
           ? "midtrans_key_unavailable"
           : "internal";
     log("error", "checkout.failed", { reason }, error);

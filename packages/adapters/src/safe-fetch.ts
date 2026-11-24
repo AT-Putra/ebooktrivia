@@ -42,15 +42,19 @@ import { type AddressPolicy, isBlockedAddress } from "./address-policy.ts";
 
 export { type AddressPolicy, isBlockedAddress };
 
-export type SafeFetchErrorCode =
-  | "invalid_url"
-  | "scheme_not_allowed"
-  | "blocked_address"
-  | "dns_failed"
-  | "redirect_refused"
-  | "timeout"
-  | "request_failed"
-  | "response_too_large";
+/** Every SafeFetchError code: the type is derived from this list, so isSafeFetchError's check can never miss one. */
+const SAFE_FETCH_ERROR_CODES = [
+  "invalid_url",
+  "scheme_not_allowed",
+  "blocked_address",
+  "dns_failed",
+  "redirect_refused",
+  "timeout",
+  "request_failed",
+  "response_too_large",
+] as const;
+export type SafeFetchErrorCode = (typeof SAFE_FETCH_ERROR_CODES)[number];
+const KNOWN_CODES: ReadonlySet<string> = new Set<string>(SAFE_FETCH_ERROR_CODES);
 
 export class SafeFetchError extends Error {
   readonly code: SafeFetchErrorCode;
@@ -62,6 +66,18 @@ export class SafeFetchError extends Error {
     this.code = code;
     this.httpStatus = options?.httpStatus;
   }
+}
+
+/**
+ * True for a SafeFetchError of ANY copy of this package. A Next.js app bundles a copy per bundle, and the fetch an adapter is
+ * handed (the process-wide runtime's safe-fetch) may be another bundle's, so `instanceof SafeFetchError` is false for its errors.
+ * The name and a known code decide instead.
+ */
+export function isSafeFetchError(error: unknown): error is SafeFetchError {
+  if (error instanceof SafeFetchError) return true;
+  if (!(error instanceof Error) || error.name !== "SafeFetchError") return false;
+  const code: unknown = (error as { readonly code?: unknown }).code;
+  return typeof code === "string" && KNOWN_CODES.has(code);
 }
 
 export interface ResolvedAddress {

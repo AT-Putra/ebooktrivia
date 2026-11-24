@@ -51,9 +51,9 @@ export default defineConfig(
         "error",
         {
           selector:
-            "BinaryExpression[operator='instanceof'][right.name=/^(APIError|BetterAuthError|PostgresError|CryptoError|SafeFetchError|CaptchaStoreUnavailable|WahaError|NotSentError|SmtpError)$/]",
+            "BinaryExpression[operator='instanceof'][right.name=/^(APIError|BetterAuthError|PostgresError|CryptoError|SafeFetchError|CaptchaStoreUnavailable|WahaError|NotSentError|SmtpError|ValkeyUnavailable|SettingsUnavailable|ServerKeyUnavailable|PublicConfigError)$/]",
           message:
-            "instanceof fails across Next.js bundles for errors of shared clients. Use isAPIError (better-auth/api), sqlState (@ebooktrivia/db/sql-state) or isCryptoError (@ebooktrivia/crypto); for another class, add a check by name and code to its package.",
+            "instanceof fails across Next.js bundles for errors of shared clients. Use isAPIError (better-auth/api), sqlState (@ebooktrivia/db/sql-state), isCryptoError (@ebooktrivia/crypto), isSafeFetchError (@ebooktrivia/adapters), or the public app's isValkeyUnavailable, isSettingsUnavailable, isServerKeyUnavailable, isPublicConfigError; for another class, add a check by name (and code) next to it.",
         },
         {
           selector: "BinaryExpression[operator='instanceof'][right.type='MemberExpression'][right.property.name=/^(APIError|BetterAuthError|PostgresError)$/]",

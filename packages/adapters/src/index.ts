@@ -9,6 +9,7 @@ export {
   type ResolvedAddress,
   type Resolver,
   type SafeFetch,
+  isSafeFetchError,
   SafeFetchError,
   type SafeFetchErrorCode,
   type SafeFetchOptions,

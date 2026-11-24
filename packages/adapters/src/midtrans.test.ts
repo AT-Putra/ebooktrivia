@@ -299,6 +299,8 @@ describe("M5: transient failures stay retryable", () => {
     ["an aborted body (DOMException AbortError)", new DOMException("This operation was aborted", "AbortError")],
     ["a terminated body (TypeError)", new TypeError("terminated")],
     ["a safe-fetch body timeout", new SafeFetchError("timeout", "no complete response")],
+    // The runtime's safe-fetch may be another Next.js bundle's copy: its error is not this module's class (name and code only).
+    ["another copy's safe-fetch body timeout", Object.assign(new Error("no complete response"), { name: "SafeFetchError", code: "timeout" })],
   ])("%s after HTTP 200 is unavailable and retryable", async (_name, error) => {
     expect(await midtransError(getTransactionStatus(config({ fetch: failingBody(200, error) }), "ord-a-1"))).toMatchObject({ code: "unavailable", retryable: true });
   });

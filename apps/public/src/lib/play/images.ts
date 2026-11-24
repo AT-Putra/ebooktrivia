@@ -30,7 +30,7 @@ import { join } from "node:path";
 import { Readable } from "node:stream";
 import type { Sql } from "../db.ts";
 import { openRegularFile } from "../safe-file.ts";
-import { hitRateLimits, ValkeyUnavailable } from "../valkey.ts";
+import { hitRateLimits, isValkeyUnavailable } from "../valkey.ts";
 import type { PlayDeps } from "./handlers.ts";
 import { type ImageCache, imageCache } from "./image-cache.ts";
 import { IMAGE_PATH_PREFIX } from "./image-urls.ts";
@@ -136,7 +136,7 @@ async function missLimit(deps: ImageDeps, request: Request, limits: ImageMissLim
     deps.log("warn", "play.refused", { route: "play.image", reason: "rate_limited" });
     return bare(429, { "retry-after": String(decision.retryAfterSeconds) });
   } catch (error) {
-    if (!(error instanceof ValkeyUnavailable)) throw error;
+    if (!isValkeyUnavailable(error)) throw error;
     deps.log("warn", "play.image", { route: "play.image", reason: "valkey_unavailable" });
     return null;
   }

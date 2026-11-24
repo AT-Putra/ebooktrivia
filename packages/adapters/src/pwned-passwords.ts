@@ -10,7 +10,7 @@
 // the worker and never calls the API itself (it has no egress). Requests go through safe-fetch (connect-time address
 // checks, no redirects, a body cap) to this one fixed origin; tests inject `fetch`.
 import { createHash } from "node:crypto";
-import { createSafeFetch, SafeFetchError } from "./safe-fetch.ts";
+import { createSafeFetch, isSafeFetchError } from "./safe-fetch.ts";
 
 export const PWNED_PASSWORDS_ORIGIN = "https://api.pwnedpasswords.com";
 export const PWNED_PASSWORDS_TIMEOUT_MS = 3000;
@@ -48,7 +48,7 @@ export function createPwnedPasswordsLookup(fetch?: RangeFetch): PwnedLookup {
       if (response.status !== 200) return { status: "unavailable", reason: `http_${String(response.status)}` };
       body = await response.text();
     } catch (error) {
-      return { status: "unavailable", reason: error instanceof SafeFetchError ? error.code : "request_failed" };
+      return { status: "unavailable", reason: isSafeFetchError(error) ? error.code : "request_failed" };
     }
     let lines = 0;
     for (const raw of body.split("\n")) {

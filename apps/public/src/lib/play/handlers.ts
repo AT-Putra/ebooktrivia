@@ -61,7 +61,7 @@ import { intSettings, loadCaptchaSettings } from "../checkout/data.ts";
 import type { Sql } from "../db.ts";
 import { readJsonBody } from "../http.ts";
 import type { Logger } from "../log.ts";
-import { hitRateLimits, phoneKey, type RateDecision, type RateLimit, type Valkey, ValkeyUnavailable } from "../valkey.ts";
+import { hitRateLimits, isValkeyUnavailable, phoneKey, type RateDecision, type RateLimit, type Valkey } from "../valkey.ts";
 import { chainStart, EXPIRED_SESSION_COOKIE, PLAY_SESSION_COOKIE, type PlayAuth, playerForLogin, recordLogin } from "./auth.ts";
 import { PLAY_LIMITS } from "./limits.ts";
 import { issuePlayerOtp } from "./otp.ts";
@@ -196,7 +196,23 @@ function clientLimits(prefix: string, headers: Headers, limit: number, windowMs:
 const limitReason = (limits: readonly RateLimit[], decision: Exclude<RateDecision, { allowed: true }>): string =>
   limits[decision.index]?.key.includes(":ip48:") === true ? "rate_limited_ip48" : "rate_limited_ip";
 
-const isValkeyDown = (error: unknown): boolean => error instanceof ValkeyUnavailable || (error instanceof Error && error.cause instanceof ValkeyUnavailable);
+const isValkeyDown = (error: unknown): boolean => isValkeyUnavailable(error);
+
+/**
+ * An auth-library refusal for the log: the library's fixed code (INVALID_OTP, FAILED_TO_CREATE_SESSION...) and its HTTP status, never
+ * its message. The player gets one generic answer either way; a 5xx is a failure of ours behind it, so it is logged as a warning.
+ */
+function logAuthRefusal(log: Logger, route: string, reason: "invalid_code" | "invalid_link", error: unknown): void {
+  const { statusCode, body } = error as { readonly statusCode?: unknown; readonly body?: { readonly code?: unknown } };
+  const code = body?.code;
+  const status = typeof statusCode === "number" ? statusCode : undefined;
+  log(status !== undefined && status >= 500 ? "warn" : "info", "play.refused", {
+    route,
+    reason,
+    ...(typeof code === "string" && /^[A-Z0-9_]{1,64}$/.test(code) ? { code } : {}),
+    ...(status === undefined ? {} : { status }),
+  });
+}
 
 function failure(log: Logger, route: string, error: unknown): Response {
   log("error", "play.failed", { route, reason: isValkeyDown(error) ? "valkey_unavailable" : "internal" }, error);
@@ -328,7 +344,7 @@ export async function handleOtpVerify(deps: PlayDeps, request: Request): Promise
     } catch (error) {
       // INVALID_OTP, and R13's FAILED_TO_UPDATE_USER (500) / FAILED_TO_CREATE_SESSION: one generic answer.
       if (!isAPIError(error)) throw error;
-      deps.log("info", "play.refused", { route, reason: "invalid_code" });
+      logAuthRefusal(deps.log, route, "invalid_code", error);
       await padTo(started, deps.verifyFloorMs ?? PLAY_LIMITS.verifyFloorMs);
       return playError("invalid_code");
     }
@@ -366,7 +382,7 @@ export async function handleMagicLink(deps: PlayDeps, request: Request): Promise
       login = { authUserId: result.response.authUserId, setCookies: result.headers.getSetCookie() };
     } catch (error) {
       if (!isAPIError(error)) throw error;
-      deps.log("info", "play.refused", { route, reason: "invalid_link" });
+      logAuthRefusal(deps.log, route, "invalid_link", error);
       return playError("invalid_link");
     }
     const label = await loginLabel(deps.sql, login.authUserId);
