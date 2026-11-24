@@ -26,7 +26,7 @@ const CAP_URLS = { script: "/cap/cap.js", wasm: "/cap/cap-wasm.wasm", hashwx: "/
 const CAP_API = "/api/v1/play/cap/";
 
 /** The error a buyer who cannot get in reads; when the page shows the help block, the two errors that may need a human say so ("Hubungi CS di bawah"). */
-function errorText(answer: ApiAnswer, wrongCode: boolean, helpShown: boolean): string {
+export function errorText(answer: ApiAnswer, wrongCode: boolean, helpShown: boolean): string {
   const withPointer = (message: string): string => (helpShown ? `${message} ${t("help.loginPointer")}` : message);
   if (answer.status === 0) return t("login.errors.network");
   if (answer.status === 429) return t("login.errors.rateLimited", { seconds: Math.max(answer.retryAfterSeconds, 1) });

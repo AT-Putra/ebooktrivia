@@ -46,8 +46,9 @@
 // greeting.ts can produce are accepted.
 //
 // {cs_whatsapp} and {cs_email} (cs-contact.ts) are system values too: the Owner's customer-service number in the local format with
-// dashes ("0812-3456-7890") and address, inserted unchanged (a copyable address must keep its dots and underscores) after a check of
-// their shape. An empty string is a valid value (nothing is set: the variable renders empty); a missing value is still an error.
+// dashes ("0812-3456-7890") and address, put in as they are, without the free-text cleaning (a copyable address must keep its dots and
+// underscores), after a check of their shape; the channel's own encoding still applies, so the e-mail's HTML escaping covers them like every
+// other value. An empty string is a valid value (nothing is set: the variable renders empty); a missing value is still an error.
 //
 // Choices (WhatsApp only): `[[Halo|Hai]]` is replaced at render time by ONE of its options, drawn with `options.random` (default:
 // the operating system's CSPRNG). A choice has 2 to 5 options of plain text (no `{`, `}` or nested `[[`), `[[` and `]]` must
@@ -59,6 +60,7 @@
 // template could rule out for every combination of options.
 import { randomInt } from "node:crypto";
 import { CS_LOCAL_PHONE, isCsEmail } from "./cs-contact.ts";
+import { neutralizeDots } from "./link-dots.ts";
 import { SAPAAN_VALUES } from "./greeting.ts";
 
 export const MESSAGE_VARIABLES = ["nama", "judul_ebook", "order_id", "link_trivia", "kode_otp", "sapaan", "cs_whatsapp", "cs_email"] as const;
@@ -207,10 +209,6 @@ function cleanText(value: string): string {
 const WA_MARKUP = /[*_~`]/g;
 /** WhatsApp line-start markup: quote, bullet list, numbered list. */
 const WA_LINE_LEADING = /^(?:>+\s*|[-*]\s+|[0-9]+\.\s+)+/u;
-const LINKABLE_DOT = /(?<=[\p{L}\p{N}])[.\u{FF0E}\u{3002}\u{FF61}](?=[\p{L}\p{N}])/gu;
-
-const neutralizeDots = (value: string): string => value.replace(LINKABLE_DOT, "\u{2024}");
-
 function neutralizeWhatsApp(value: string): string {
   return neutralizeDots(cleanText(value.replace(WA_MARKUP, "")).replace(WA_LINE_LEADING, ""));
 }

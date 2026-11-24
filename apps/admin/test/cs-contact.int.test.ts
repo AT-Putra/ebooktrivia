@@ -1,11 +1,13 @@
 // The customer-service contact (lib/settings/cs-contact.ts) against a real database, as the admin_rw login: validation, the audited save (the number
 // and the address as PII references), "nothing changed", the rule that the CS number is never a sending number in BOTH directions (the save, and
 // adding or editing a WhatsApp session), and who can reach it (policy; the public and worker logins read the three fields only).
+import { isCsEmail, isCsHours, NO_CS_CONTACT } from "@ebooktrivia/core";
+import { schema } from "@ebooktrivia/db";
 import { afterAll, beforeAll, beforeEach, describe, expect, inject, it } from "vitest";
 import postgres from "postgres";
 import { PG_CONNECTION_OPTIONS } from "@ebooktrivia/db/connection";
 import { can, PERMISSIONS } from "../src/lib/policy.ts";
-import { CS_NUMBER_IS_SENDING, csPreview, getCsContact, parseCsContact, saveCsContact, SENDING_NUMBER_IS_CS } from "../src/lib/settings/cs-contact.ts";
+import { CS_NOT_VALID, CS_NUMBER_IS_SENDING, csPreview, getCsContact, parseCsContact, saveCsContact, SENDING_NUMBER_IS_CS } from "../src/lib/settings/cs-contact.ts";
 import { InvalidInput } from "../src/lib/settings/fields.ts";
 import { createWahaServer, createWahaSession, parseWahaServer, parseWahaSession, updateWahaSession } from "../src/lib/settings/waha.ts";
 import { asAdmin, createTestAdmin, newRuntime, root, suffix } from "./support.ts";
@@ -65,6 +67,58 @@ describe("parseCsContact", () => {
   it("accepts hours of exactly 80 characters", () => {
     expect(parseCsContact(form({ hours: "h".repeat(80) })).hours).toBe("h".repeat(80));
   });
+
+  it("refuses invisible and format characters in the hours and a non-ASCII address (the reviewer's probes), without echoing them", () => {
+    for (const values of [
+      { whatsapp: "", email: "", hours: "Senin\u2028Jumat" },
+      { whatsapp: "", email: "", hours: "Senin\u2029Jumat" },
+      { whatsapp: "", email: "", hours: "abc\u202efed" },
+      { whatsapp: "", email: "", hours: "abc\u200bdef" },
+      { whatsapp: "", email: "cs\u202e@x.id", hours: "" },
+      { whatsapp: "", email: "c\u0455@x.id", hours: "" },
+      { whatsapp: "", email: "a<b>@x.id", hours: "" },
+    ]) {
+      try {
+        parseCsContact(form(values));
+        throw new Error(`expected InvalidInput for ${JSON.stringify(values)}`);
+      } catch (error) {
+        expect(error).toBeInstanceOf(InvalidInput);
+        expect((error as Error).message).not.toMatch(/[\u2028\u2029\u202e\u200b\u0455<>]|Senin|abc/);
+      }
+    }
+  });
+});
+
+describe("the table's CHECKs and the form's checks are one rule", () => {
+  it("the hours CHECK is the schema's class, and that class and core isCsHours refuse exactly the same characters over every code point", async () => {
+    const [constraint] = await root<{ def: string }[]>`SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint WHERE conname = 'cs_contact_hours_check'`;
+    expect(constraint?.def).toContain(schema.CS_HOURS_FORBIDDEN);
+    const refusedByDatabase = new Set(
+      (await root<{ g: number }[]>`SELECT g FROM generate_series(1, 1114111) AS g WHERE NOT (g BETWEEN 55296 AND 57343) AND chr(g) ~ ${schema.CS_HOURS_FORBIDDEN}`).map((r) => r.g),
+    );
+    const refusedByCore = new Set<number>();
+    for (let codePoint = 1; codePoint <= 0x10ffff; codePoint++) {
+      if (codePoint >= 0xd800 && codePoint <= 0xdfff) continue;
+      if (!isCsHours(`a${String.fromCodePoint(codePoint)}b`)) refusedByCore.add(codePoint);
+    }
+    expect([...refusedByCore].filter((c) => !refusedByDatabase.has(c)).map((c) => c.toString(16))).toEqual([]);
+    expect([...refusedByDatabase].filter((c) => !refusedByCore.has(c)).map((c) => c.toString(16))).toEqual([]);
+    expect(refusedByCore.size).toBeGreaterThan(200);
+  });
+
+  it("the address CHECK and core isCsEmail agree on the probes, and a value the form refuses never reaches the database as a CHECK error in a normal save", async () => {
+    const probes = ["cs@contoh.id", "CS@Contoh.ID", "a_b%c+d-e.f@sub-domain.contoh.co.id", "cs\u202e@x.id", "cs@x\u202e.id", "c\u0455@x.id", "a<b>@x.id", 'a"b@x.id', "cs@x.id\n", "cs@x", "cs@@x.id", "cs@x..id", `${"a".repeat(250)}@b.id`];
+    for (const probe of probes) {
+      const [row] = await root<{ ok: boolean }[]>`SELECT (char_length(${probe}) <= 254 AND ${probe} ~ '^[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\\.[A-Za-z0-9-]+)+$') AS ok`;
+      expect(row?.ok, JSON.stringify(probe)).toBe(isCsEmail(probe));
+    }
+  });
+
+  it("a value that gets past the form and is refused by a CHECK is a fixed message, not an error page", async () => {
+    await expect(as(() => saveCsContact(rt.sql, ownerId, { whatsapp: null, email: null, hours: "Senin\u2028Jumat" }))).rejects.toMatchObject({ name: "InvalidInput", message: CS_NOT_VALID });
+    await expect(as(() => saveCsContact(rt.sql, ownerId, { whatsapp: null, email: "cs\u202e@x.id", hours: null }))).rejects.toMatchObject({ name: "InvalidInput", message: CS_NOT_VALID });
+    expect(await getCsContact(rt.sql)).toEqual({ whatsapp: null, email: null, hours: null });
+  });
 });
 
 describe("saving", () => {
@@ -81,6 +135,14 @@ describe("saving", () => {
     expect(count?.n).toBe(1);
   });
 
+  it("a first save of an empty form changes nothing: no row is inserted and no audit entry is written", async () => {
+    const entries = async (): Promise<number> => (await root<{ n: number }[]>`SELECT count(*)::int AS n FROM audit_log WHERE action = 'cs_contact.update'`)[0]?.n ?? 0;
+    const before = await entries();
+    await expect(as(() => saveCsContact(rt.sql, ownerId, NO_CS_CONTACT))).rejects.toMatchObject({ name: "InvalidInput", message: "Nothing changed." });
+    expect((await root`SELECT 1 FROM public.cs_contact`).length).toBe(0);
+    expect(await entries()).toBe(before);
+  });
+
   it("can clear every field again (nothing is then shown anywhere), and refuses a save that changes nothing", async () => {
     await as(() => saveCsContact(rt.sql, ownerId, { whatsapp: "+6281234567890", email: null, hours: null }));
     await as(() => saveCsContact(rt.sql, ownerId, { whatsapp: null, email: null, hours: null }));
@@ -90,7 +152,7 @@ describe("saving", () => {
 
   it("previews the line the WhatsApp replies carry and the two template variables", () => {
     expect(csPreview({ whatsapp: "+6281234567890", email: "cs@contoh.id", hours: HOURS })).toEqual({
-      line: `WhatsApp 0812-3456-7890 atau email cs@contoh.id (${HOURS})`,
+      line: "WhatsApp 0812-3456-7890 atau email cs@contoh.id (Senin–Jumat 09\u202400–17\u202400 WIB)",
       csWhatsapp: "0812-3456-7890",
       csEmail: "cs@contoh.id",
     });

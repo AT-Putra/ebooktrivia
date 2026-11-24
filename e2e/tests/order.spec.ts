@@ -3,7 +3,7 @@ import { request as httpRequest } from "node:http";
 import { fileURLToPath } from "node:url";
 import AxeBuilder from "@axe-core/playwright";
 import { newPublicId } from "@ebooktrivia/core";
-import { type BrowserContext, expect, type Page, test } from "@playwright/test";
+import { type Browser, type BrowserContext, expect, type Page, test } from "@playwright/test";
 import { BUYER, ORDER_BROWSER_ARGS, ORDER_ORIGIN, ORDER_PORT, type Order, type OrderEnv, PLAY_ORIGIN, PRICE_IDR, startOrderEnv } from "../support/order.ts";
 
 /**
@@ -594,11 +594,19 @@ test.describe("at 375 px", () => {
 /**
  * The shared "Butuh bantuan?" block (Owner decision 2026-11-24: a buyer with a problem reaches a person). One component, the same place at the end
  * of the main column on every buyer page; nothing at all when no CS contact is set; the order code (only) in its prefilled text and mail subject;
- * the buyer's name, e-mail and phone in no URL. The app keeps what it read of the contact for 30 s (lib/cs/contact.ts), so a change waits that out.
+ * the buyer's name, e-mail and phone in no URL. The app keeps what it read of the contact for 30 s and refreshes it behind a request (lib/cs/contact.ts,
+ * stale-while-revalidate): a change is waited out, one request starts the refresh, and the next request sees it.
  */
 test.describe("the shared help block", () => {
   const CS = { whatsapp: "+6281234567890", email: "cs@contoh.id", hours: "Senin–Jumat 09.00–17.00 WIB" };
   const CACHE_WAIT_MS = 31_500;
+  /** The first request after the 30 s gets the old answer and starts the refresh behind it; once it is done, every request sees the change. */
+  const refreshCsCache = async (browser: Browser): Promise<void> => {
+    const context = await browser.newContext();
+    await (await context.newPage()).goto(`${PLAY_ORIGIN}/login`);
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+    await context.close();
+  };
   const csUrls = async (page: Page): Promise<{ whatsapp: string | null; email: string | null }> => ({
     whatsapp: await page.getByTestId("help-whatsapp").getAttribute("href"),
     email: await page.getByTestId("help-email").getAttribute("href"),
@@ -622,14 +630,20 @@ test.describe("the shared help block", () => {
     await page.goto(`${ORDER_ORIGIN}/${newPublicId()}`);
     await expect(page.getByRole("heading", { level: 1 })).toHaveText("Halaman tidak ditemukan");
     await expect(page.getByTestId("help-block")).toHaveCount(0);
+    // An invalid login link says what is wrong, and does not point to a block that is not there.
+    await page.goto(`${PLAY_ORIGIN}/masuk`);
+    await expect(page.getByRole("heading", { name: "Tautan tidak berlaku" })).toBeVisible();
+    await expect(page.getByTestId("help-block")).toHaveCount(0);
+    expect(await page.locator("body").innerText()).not.toContain("Hubungi CS");
     await context.close();
   });
 
-  test("the Owner sets the contact: buyers see it once the app's 30 s of memory is over", async () => {
+  test("the Owner sets the contact: buyers see it once the app's 30 s of memory is over and one request has refreshed it", async ({ browser }) => {
     test.setTimeout(120_000);
     await env.sql`DELETE FROM cs_contact`;
     await env.sql`INSERT INTO cs_contact (id, whatsapp, email, hours) VALUES (1, ${CS.whatsapp}, ${CS.email}, ${CS.hours})`;
     await new Promise((resolve) => setTimeout(resolve, CACHE_WAIT_MS));
+    await refreshCsCache(browser);
   });
 
   test("a paid order at 390 px: the block closes the page, with its hours and the two links, the order code in the prefilled text only", async ({ browser }) => {
@@ -706,6 +720,7 @@ test.describe("the shared help block", () => {
     test.setTimeout(120_000);
     await env.sql`DELETE FROM cs_contact`;
     await new Promise((resolve) => setTimeout(resolve, CACHE_WAIT_MS));
+    await refreshCsCache(browser);
     const context = await browser.newContext();
     const page = await context.newPage();
     await page.goto(`${PLAY_ORIGIN}/login`);

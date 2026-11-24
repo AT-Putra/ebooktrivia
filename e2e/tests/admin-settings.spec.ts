@@ -757,7 +757,7 @@ test("Customer service: the Owner saves the contact, sees what buyers get, and t
   expect(audit.text).not.toContain("cs@contoh.id");
   await owner.reload();
   await expect(owner.getByLabel("Customer service WhatsApp number")).toHaveValue("0812-3456-7890");
-  await expect(owner.getByTestId("cs-preview-line")).toHaveText("...hubungi CS kami di WhatsApp 0812-3456-7890 atau email cs@contoh.id (Senin–Jumat 09.00–17.00 WIB).");
+  await expect(owner.getByTestId("cs-preview-line")).toHaveText("...hubungi CS kami di WhatsApp 0812-3456-7890 atau email cs@contoh.id (Senin–Jumat 09\u202400–17\u202400 WIB).");
 
   // The CS number is never a sending number, from either side.
   const serverName = `CS ${stamp}`;

@@ -7,7 +7,7 @@ import { loadCsContactOrNone, replyText } from "./messages.ts";
 
 describe("replyText with the customer-service contact", () => {
   const cs = { whatsapp: "+6281234567890", email: "cs@contoh.id", hours: "Senin–Jumat 09.00–17.00 WIB" };
-  const LINE = "WhatsApp 0812-3456-7890 atau email cs@contoh.id (Senin–Jumat 09.00–17.00 WIB)";
+  const LINE = "WhatsApp 0812-3456-7890 atau email cs@contoh.id (Senin–Jumat 09\u202400–17\u202400 WIB)";
 
   it("mismatch and generic keep their old text and add one sentence with the CS line", () => {
     expect(replyText("mismatch", cs)).toBe(`${replyText("mismatch")} Jika Anda pembeli pesanan ini, hubungi CS kami di ${LINE} dengan menyebut kode pesanan.`);
@@ -39,6 +39,12 @@ describe("replyText with the customer-service contact", () => {
       expect(text).not.toMatch(/https?:|wa\.me|mailto:/i);
       expect(text).not.toMatch(/[{}]/);
     }
+  });
+
+  it("makes no link out of the hours in a reply (www.contoh.id), while the address stays copyable", () => {
+    const text = replyText("generic", { whatsapp: null, email: "cs@contoh.id", hours: "Info: www.contoh.id" });
+    expect(text).toContain("email cs@contoh.id (Info: www\u2024contoh\u2024id).");
+    expect(text.replace("cs@contoh.id", "")).not.toMatch(/[A-Za-z0-9]\.[A-Za-z0-9]/);
   });
 
   it("puts a value with replacement patterns in it ($&, $1) in the text as it is", () => {

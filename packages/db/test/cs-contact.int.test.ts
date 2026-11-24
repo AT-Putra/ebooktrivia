@@ -28,13 +28,30 @@ describe("cs_contact table", () => {
     expect(await sqlState(sql`UPDATE cs_contact SET hours = ${"line one\nline two"}`)).toBe("23514");
     await sql`UPDATE cs_contact SET whatsapp = NULL, email = NULL, hours = NULL`;
   });
+
+  it("refuses invisible and format characters in the hours: line and paragraph separators, bidi marks, zero-width, soft hyphen, BOM, C1 controls", async () => {
+    await sql`INSERT INTO cs_contact (id) VALUES (1)`;
+    for (const probe of ["Senin\u2028Jumat", "Senin\u2029Jumat", "abc\u202efed", "abc\u200bdef", "abc\u200edef", "abc\u2066def", "abc\u00addef", "\ufeffabc", "abc\u0085def", "abc\u007fdef", "abc\tdef", "a\u{e0041}b", "a\u{1d173}b", "a\u{110bd}b"]) {
+      expect(await sqlState(sql`UPDATE cs_contact SET hours = ${probe}`), JSON.stringify(probe)).toBe("23514");
+    }
+    // Visible text in other scripts, and no-break and ideographic spaces, is fine.
+    for (const ok of ["Senin–Jumat 09.00–17.00 WIB", "月〜金 9:00–17:00", "Senin\u00a0Jumat", "Senin\u3000Jumat", "é ö ñ", "x".repeat(80)]) await sql`UPDATE cs_contact SET hours = ${ok}`;
+  });
+
+  it("holds an ASCII address only: a bidi override, a lookalike letter, markup or a quote is refused", async () => {
+    await sql`INSERT INTO cs_contact (id) VALUES (1)`;
+    for (const bad of ["cs\u202e@x.id", "cs@x\u202e.id", "c\u0455@x.id", "cs@exämple.id", "a<b>@x.id", 'a"b@x.id', "a'b@x.id", "cs@x.id\n", "cs@x.id ", "cs@@x.id", "cs@x..id", "cs@x", `${"a".repeat(250)}@b.id`]) {
+      expect(await sqlState(sql`UPDATE cs_contact SET email = ${bad}`), JSON.stringify(bad)).toBe("23514");
+    }
+    for (const ok of ["cs@contoh.id", "CS@Contoh.ID", "a_b%c+d-e.f@sub-domain.contoh.co.id"]) await sql`UPDATE cs_contact SET email = ${ok}`;
+  });
 });
 
 describe("who can reach cs_contact", () => {
-  it("admin_rw writes it; public_rw and worker_rw read only whatsapp, email and hours and write nothing", async () => {
+  it("admin_rw writes it; public_rw and worker_rw read only the key, whatsapp, email and hours (WHERE id = 1 works) and write nothing", async () => {
     await asRole("admin_rw", (tx) => tx`INSERT INTO public.cs_contact (id, whatsapp, email, hours, updated_by_admin_user_id) VALUES (1, '+6281234567890', 'cs@contoh.id', 'Setiap hari', 'admin-1')`);
     for (const role of ["public_rw", "worker_rw"] as const) {
-      const [row] = await asRole(role, (tx) => tx<{ whatsapp: string; email: string; hours: string }[]>`SELECT whatsapp, email, hours FROM public.cs_contact`);
+      const [row] = await asRole(role, (tx) => tx<{ whatsapp: string; email: string; hours: string }[]>`SELECT whatsapp, email, hours FROM public.cs_contact WHERE id = 1`);
       expect(row).toEqual({ whatsapp: "+6281234567890", email: "cs@contoh.id", hours: "Setiap hari" });
       // Who edited it, and when, stays with the console (no SELECT * either: the table-level read is not granted).
       expect(await sqlState(asRole(role, (tx) => tx`SELECT updated_by_admin_user_id FROM public.cs_contact`))).toBe("42501");
@@ -85,5 +102,19 @@ describe("the CS number is never a sending number (ET190)", () => {
     })();
     await saveCs;
     expect(await addSession).toBe("ET190");
+  });
+
+  // Under REPEATABLE READ / SERIALIZABLE the check would read the transaction's old snapshot: a session or a CS number committed after it would go unseen
+  // even with the lock held. Like the content-lock and prize-tier guards, both triggers refuse to run there (ET021), whoever writes.
+  it.each(["repeatable read", "serializable"])("is refused outside READ COMMITTED, from both sides (ET021, %s)", async (level) => {
+    const isolation = `isolation level ${level}`;
+    const server = first(await sql<Id[]>`INSERT INTO waha_servers (name, base_url, base_url_host) VALUES (${`W${suffix()}`}, 'https://waha.invalid/', 'waha.invalid') RETURNING id`);
+    const number = phone();
+    expect(await sqlState(asRole("admin_rw", (tx) => tx`INSERT INTO public.cs_contact (id, whatsapp) VALUES (1, ${number})`, isolation))).toBe("ET021");
+    expect(await sqlState(asRole("admin_rw", (tx) => tx`INSERT INTO public.waha_sessions (server_id, session_name, phone) VALUES (${server.id}, ${`s${suffix()}`}, ${number})`, isolation))).toBe("ET021");
+    expect(await sqlState(asRole("migrator", (tx) => tx`INSERT INTO public.cs_contact (id, whatsapp) VALUES (1, ${number})`, isolation))).toBe("ET021");
+    // Nothing was written, and the same writes pass under READ COMMITTED.
+    expect((await sql`SELECT 1 FROM cs_contact`).length).toBe(0);
+    await asRole("admin_rw", (tx) => tx`INSERT INTO public.cs_contact (id, whatsapp) VALUES (1, ${number})`);
   });
 });

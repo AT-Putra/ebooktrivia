@@ -9,6 +9,7 @@
 // {cs} is Bahasa Indonesia, the buyer-facing locale (like core greeting.ts): "WhatsApp 0812-3456-7890 atau email cs@contoh.id", only the
 // parts that are set, and " (<hours>)" after them when hours are set. Hours alone are no contact: with neither a number nor an address
 // there is no line at all.
+import { neutralizeDots } from "./link-dots.ts";
 import { isIdMobileE164 } from "./phone.ts";
 
 export interface CsContact {
@@ -25,17 +26,28 @@ export const NO_CS_CONTACT: CsContact = Object.freeze({ whatsapp: null, email: n
 /** The longest opening-hours text (cs_contact_hours_check). */
 export const CS_HOURS_MAX = 80;
 
-const EMAIL = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+/**
+ * ASCII only (letters, digits and . _ % + - before the @; letters, digits and - in dot-separated labels after it): an address with a bidi
+ * control ("cs<U+202E>@x.id"), a space, a quote or an angle bracket is refused everywhere. The same pattern is in cs_contact_email_check.
+ */
+const EMAIL = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$/;
 /** The local format with dashes the buyer reads (and {cs_whatsapp} holds): a leading 0, then groups of digits. */
 export const CS_LOCAL_PHONE = /^0[0-9]{3}(?:-[0-9]{3,5}){1,2}$/;
 
-/** True for an address the console and the database (cs_contact_email_check) accept. */
+/** True for an address the console and the database (cs_contact_email_check) accept: ASCII, at most 254 characters. */
 export const isCsEmail = (value: string): boolean => value.length <= 254 && EMAIL.test(value);
 
-/** True for hours the database accepts (cs_contact_hours_check): 1 to 80 characters, no control character. */
+/**
+ * Characters hours may not hold: controls (Cc), format characters (Cf: bidi overrides, zero-width, soft hyphen, BOM ...) and the line and
+ * paragraph separators (Zl, Zp), which a reader cannot see and which could reorder or split the text. cs_contact_hours_check lists the same
+ * characters by range (the database has no property classes); the admin integration test compares the two over every code point.
+ */
+const HOURS_FORBIDDEN = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
+
+/** True for hours the database accepts (cs_contact_hours_check): 1 to 80 characters, none of them invisible or a line break. */
 export const isCsHours = (value: string): boolean => {
   const length = Array.from(value).length;
-  return length >= 1 && length <= CS_HOURS_MAX && !/\p{Cc}/u.test(value);
+  return length >= 1 && length <= CS_HOURS_MAX && !HOURS_FORBIDDEN.test(value);
 };
 
 /**
@@ -61,14 +73,19 @@ export function csWaMeDigits(e164: string): string {
 /** True when a buyer has something to reach: a number or an address (hours alone are not). */
 export const hasCsContact = (contact: CsContact): boolean => contact.whatsapp !== null || contact.email !== null;
 
-/** "WhatsApp 0812-3456-7890 atau email cs@contoh.id (Senin–Jumat 09.00–17.00 WIB)": the {cs} of the replies; null when there is no contact. */
+/**
+ * "WhatsApp 0812-3456-7890 atau email cs@contoh.id (Senin–Jumat 09.00–17.00 WIB)": the {cs} of the replies; null when there is no contact.
+ * The hours are free text in a WhatsApp message, so a dot between letters or digits ("www.contoh.id") is replaced by U+2024 (one dot leader, the
+ * same look) like any other free text: it cannot become a link. The address stays exactly as it is (it must be copyable); WhatsApp shows an
+ * e-mail address as a link, which is expected.
+ */
 export function csLine(contact: CsContact): string | null {
   const parts: string[] = [];
   if (contact.whatsapp !== null) parts.push(`WhatsApp ${csLocalPhone(contact.whatsapp)}`);
   if (contact.email !== null) parts.push(`email ${contact.email}`);
   if (parts.length === 0) return null;
   const line = parts.join(" atau ");
-  return contact.hours === null ? line : `${line} (${contact.hours})`;
+  return contact.hours === null ? line : `${line} (${neutralizeDots(contact.hours)})`;
 }
 
 /**

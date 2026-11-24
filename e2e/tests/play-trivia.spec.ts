@@ -240,12 +240,17 @@ test("the internal trivia routes are a 404, and an unknown program is the 404 pa
 });
 
 // Owner decision 2026-11-24: one shared "Butuh bantuan?" block at the end of every buyer page (apps/public components/help). The app keeps what it read of
-// the contact for 30 s (lib/cs/contact.ts), so the first page of this spec, loaded before the contact was set, is not the one that shows it.
+// the contact for 30 s and refreshes it behind a request (lib/cs/contact.ts, stale-while-revalidate): the contact is set, the 30 s are waited out, one
+// request starts the refresh and the next one shows it.
 test("the trivia pages end with the shared help block when a CS contact is set: the program page and a set, without anything personal in its links", async ({ browser }) => {
   test.setTimeout(150_000);
   await play.sql`DELETE FROM cs_contact`;
   await play.sql`INSERT INTO cs_contact (id, whatsapp, email, hours) VALUES (1, '+6281234567890', 'cs@contoh.id', 'Setiap hari 08.00-20.00 WIB')`;
   await new Promise((resolve) => setTimeout(resolve, 31_500));
+  const warm = await browser.newContext({ baseURL: play.url });
+  await (await warm.newPage()).goto("/login");
+  await new Promise((resolve) => setTimeout(resolve, 1_500));
+  await warm.close();
   const { context, page } = await signedInPhone(browser);
   try {
     await page.goto(`/${play.programSlug}`);

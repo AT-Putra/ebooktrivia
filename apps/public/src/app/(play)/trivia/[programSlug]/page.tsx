@@ -76,7 +76,7 @@ export default async function TriviaProgramPage({ params }: PageProps) {
           <LiveGrid slug={page.slug} view={view} />
         </div>
         <div className="xl:col-span-12">
-          <HelpBlock className="xl:mx-auto xl:max-w-[720px]" />
+          <HelpBlock />
         </div>
       </main>
     </div>

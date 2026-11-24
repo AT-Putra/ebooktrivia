@@ -11,7 +11,7 @@
 
 ## Content
 - Heading "Butuh bantuan?" (`h2`, Russo One 18px, Phosphor `Lifebuoy` duotone, `aria-hidden`), one line of context (16px), the hours when set ("Jam layanan: ..."), then the buttons.
-- "Chat CS via WhatsApp" (primary, Phosphor `WhatsappLogo` fill) opens `https://wa.me/<digits>?text=...` in a new tab (`rel="noopener noreferrer"`, "(buka di tab baru)" for screen readers); "Email CS"
+- "Chat CS via WhatsApp" (outline, Phosphor `WhatsappLogo` fill) opens `https://wa.me/<digits>?text=...` in a new tab (`rel="noopener noreferrer"`, "(buka di tab baru)" for screen readers); "Email CS"
   (outline, Phosphor `EnvelopeSimple`) opens `mailto:...?subject=...`. Only the buttons the Owner has a contact for.
 - The prefilled text and the subject carry the order CODE where the page knows it ("Halo CS, saya butuh bantuan untuk pesanan <kode>."), nothing else; never the buyer's name, e-mail or phone, never the
   order's public id. Without an order: "Halo CS, saya butuh bantuan."
@@ -19,6 +19,7 @@
 ## Layout and sizing
 - A card of the column's width (`max-w` of the page's own column: 480px order and not-found, 420px login, the grid's full row on the trivia pages), radius 16px, 1px border, `--shadow-md`, 16px padding
   (24px from 768). Buttons are full width and stacked up to 640px, side by side after; each is at least 48px tall (44px is the floor), the label never wraps at 360px.
+- **Both buttons are secondary (outline).** A screen has one primary action (the page's own: "Masuk ke Trivia", "Coba bayar lagi", "Pesan lagi", "Kirim kode"); help never competes with it. The outline variant's own focus ring and hover.
 - Body text 16px; the hours line `muted-foreground` on `card` (covered by `pnpm check:contrast`). No emoji; Phosphor icons only. Dark mode follows the tokens, no raw hex.
 
 ## Pointers from error states

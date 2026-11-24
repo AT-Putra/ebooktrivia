@@ -38,29 +38,54 @@ describe("reading the CS contact as public_rw", () => {
     await expect(publicSql`DELETE FROM public.cs_contact`).rejects.toMatchObject({ code: "42501" });
   });
 
-  it("is served through the cache: one read for many pages, a change shows when the time to live is over, a failing read gives no block", async () => {
+  it("is served through the cache: one read for many pages, a change shows from the refresh after the time to live, a failing refresh keeps the last answer and a failing first read gives no block", async () => {
     await root`INSERT INTO cs_contact (id, whatsapp, email) VALUES (1, ${CS.whatsapp}, ${CS.email})`;
     let clock = 5_000_000;
     const failures: string[] = [];
-    const read = vi.fn(() => readCsContact(publicSql));
+    const read = vi.fn((signal: AbortSignal) => readCsContact(publicSql, signal));
     const cache = createCsContactCache({ read, onFailure: (code) => failures.push(code), now: () => clock });
     expect(await Promise.all([cache.get(), cache.get(), cache.get()])).toEqual([{ ...CS, hours: null }, { ...CS, hours: null }, { ...CS, hours: null }]);
     expect(read).toHaveBeenCalledTimes(1);
     await root`UPDATE cs_contact SET email = 'baru@contoh.id'`;
     expect((await cache.get()).email).toBe(CS.email);
+    // Past the time to live the request is answered with the last answer at once, and the refresh behind it brings the change for the next one.
     clock += 31_000;
+    expect((await cache.get()).email).toBe(CS.email);
+    await cache.idle();
     expect((await cache.get()).email).toBe("baru@contoh.id");
     // The table cannot be read (what a broken grant or a database fault looks like): the last good answer stays, and the failure is a code.
     await root`REVOKE SELECT (whatsapp, email, hours) ON public.cs_contact FROM public_rw`;
     try {
       clock += 31_000;
       expect((await cache.get()).email).toBe("baru@contoh.id");
+      await cache.idle();
       expect(failures).toEqual(["read_failed"]);
-      const cold = createCsContactCache({ read: () => readCsContact(publicSql), onFailure: (code) => failures.push(code), now: () => clock });
+      expect((await cache.get()).email).toBe("baru@contoh.id");
+      const cold = createCsContactCache({ read: (signal) => readCsContact(publicSql, signal), onFailure: (code) => failures.push(code), now: () => clock });
       expect(await cold.get()).toEqual(NO_CS_CONTACT);
     } finally {
       await root`GRANT SELECT (whatsapp, email, hours) ON public.cs_contact TO public_rw`;
     }
+  });
+
+  it("a read that is cancelled stops on the server and leaves the pool free (a stalled database never holds a connection)", async () => {
+    await root`INSERT INTO cs_contact (id, whatsapp) VALUES (1, ${CS.whatsapp})`;
+    const waiting = (): Promise<{ n: number }[]> => root<{ n: number }[]>`SELECT count(*)::int AS n FROM pg_stat_activity WHERE state = 'active' AND query LIKE '%FROM public.cs_contact WHERE id = 1%' AND pid <> pg_backend_pid()`;
+    // The table is locked: the public read has to wait for the lock.
+    const locked = root.begin(async (tx) => {
+      await tx`LOCK TABLE public.cs_contact IN ACCESS EXCLUSIVE MODE`;
+      await new Promise((resolve) => setTimeout(resolve, 2500));
+    });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const controller = new AbortController();
+    const read = readCsContact(publicSql, controller.signal);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect((await waiting())[0]?.n).toBe(1);
+    controller.abort();
+    await expect(read).rejects.toMatchObject({ code: "57014" });
+    await expect.poll(async () => (await waiting())[0]?.n, { timeout: 2000 }).toBe(0);
+    await locked;
+    expect(await readCsContact(publicSql)).toMatchObject({ whatsapp: CS.whatsapp });
   });
 });
 

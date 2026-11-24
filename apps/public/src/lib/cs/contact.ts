@@ -1,12 +1,16 @@
-// The Owner's customer-service (CS) contact as the buyer site reads it (public_rw may read ONLY the three fields: whatsapp, email, hours;
-// packages/db sql/grants.sql). It feeds the one help block every buyer page shows (components/help/help-block.tsx).
+// The Owner's customer-service (CS) contact as the buyer site reads it (public_rw may read ONLY id, whatsapp, email and hours; packages/db
+// sql/grants.sql). It feeds the one help block every buyer page shows (components/help/help-block.tsx).
 //
-// Cheap and never in the way of a page: the answer is kept in this process for a short time (READ_TTL_MS, so a change the Owner saves is
-// on the site within the minute), one read serves every request that arrives while it runs, a read that takes longer than READ_TIMEOUT_MS
-// or fails is logged with a code (cs_contact.read_failed) and the page renders WITHOUT the block (the last good answer, when there is one,
-// keeps being shown), and a failed read is not tried again for FAILURE_TTL_MS, so a database that is down is not hammered by every page.
+// Cheap and never in the way of a page (stale-while-revalidate): the last good answer is served at once, also after it is older than READ_TTL_MS,
+// and a refresh runs in the background (so a change the Owner saves is on the site within a minute, and a database that stalls never holds the root
+// layout). Only the very first read, when there is no answer yet, is waited for, and only up to READ_TIMEOUT_MS. A read that takes longer or fails is
+// logged with a code (cs_contact.read_failed) and the page renders WITHOUT the block until a later refresh succeeds (the last good answer, when there is
+// one, keeps being shown). A read that times out is CANCELLED (the query is cancelled on the server), so it does not hold a pool connection, and a failed
+// refresh is not tried again for FAILURE_TTL_MS, so a database that is down is not hammered by every page. One request sees one value (getCsContact is
+// wrapped in React's cache()), so the layout's provider and a page's server block never disagree.
 import { type CsContact, isCsEmail, isCsHours, NO_CS_CONTACT } from "@ebooktrivia/core/cs-contact";
 import { isIdMobileE164 } from "@ebooktrivia/core/phone";
+import { cache } from "react";
 import type { Sql } from "../db.ts";
 import { logEvent } from "../log.ts";
 import { getRuntime } from "../runtime.ts";
@@ -31,20 +35,37 @@ export function csContactOf(row: Row | undefined): CsContact {
   };
 }
 
-export async function readCsContact(sql: Sql): Promise<CsContact> {
-  const [row] = await sql<Row[]>`SELECT whatsapp, email, hours FROM public.cs_contact LIMIT 1`;
-  return csContactOf(row);
+/** `signal` aborts the query on the server (a read that timed out must not keep its connection busy). */
+export async function readCsContact(sql: Sql, signal?: AbortSignal): Promise<CsContact> {
+  const query = sql<Row[]>`SELECT whatsapp, email, hours FROM public.cs_contact WHERE id = 1`;
+  const cancel = (): void => {
+    query.cancel().catch(() => undefined);
+  };
+  if (signal?.aborted === true) cancel();
+  signal?.addEventListener("abort", cancel, { once: true });
+  try {
+    const [row] = await query;
+    return csContactOf(row);
+  } finally {
+    signal?.removeEventListener("abort", cancel);
+  }
 }
 
 export interface CsContactCache {
-  /** The contact: from memory while it is fresh, else one shared read. Never rejects: a failed read answers the last good value (or none). */
+  /**
+   * The contact. With an answer in hand it is returned at once (a refresh starts in the background when it is older than the time to live); with
+   * none yet, the first read is waited for (at most the timeout). Never rejects: a failed first read answers no contact.
+   */
   get(): Promise<CsContact>;
+  /** Resolves when no read is running (tests, and a clean stop). */
+  idle(): Promise<void>;
   /** Forgets what is held, so the next get() reads again (tests). */
   clear(): void;
 }
 
 export interface CsContactCacheOptions {
-  readonly read: () => Promise<CsContact>;
+  /** Reads the contact; `signal` aborts when the read ran past the timeout. */
+  readonly read: (signal: AbortSignal) => Promise<CsContact>;
   /** Called with the reason of a failed or timed out read: a code, never a message. */
   readonly onFailure: (code: "read_failed" | "read_timeout", error: unknown) => void;
   readonly now?: () => number;
@@ -70,14 +91,16 @@ export function createCsContactCache(options: CsContactCacheOptions): CsContactC
   let inFlight: Promise<CsContact> | null = null;
 
   async function refresh(): Promise<CsContact> {
+    const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       const timeout = new Promise<never>((_resolve, reject) => {
         timer = setTimeout(() => {
+          controller.abort();
           reject(new ReadTimeout());
         }, timeoutMs);
       });
-      current = await Promise.race([options.read(), timeout]);
+      current = await Promise.race([options.read(controller.signal), timeout]);
       freshUntil = now() + ttlMs;
     } catch (error) {
       options.onFailure(error instanceof ReadTimeout ? "read_timeout" : "read_failed", error);
@@ -90,11 +113,19 @@ export function createCsContactCache(options: CsContactCacheOptions): CsContactC
     return current;
   }
 
+  const start = (): Promise<CsContact> => {
+    inFlight ??= refresh();
+    return inFlight;
+  };
+
   return {
     get() {
-      if (current !== null && now() < freshUntil) return Promise.resolve(current);
-      inFlight ??= refresh();
-      return inFlight;
+      if (current === null) return start();
+      if (now() >= freshUntil) void start();
+      return Promise.resolve(current);
+    },
+    async idle() {
+      await inFlight;
     },
     clear() {
       current = null;
@@ -110,7 +141,7 @@ type Holder = { [KEY]?: CsContactCache | undefined };
 export function csContactCache(): CsContactCache {
   const holder = globalThis as Holder;
   holder[KEY] ??= createCsContactCache({
-    read: async () => readCsContact((await getRuntime()).order.sql),
+    read: async (signal) => readCsContact((await getRuntime()).order.sql, signal),
     onFailure: (code, error) => {
       logEvent("warn", "cs_contact.read_failed", { code }, error);
     },
@@ -118,7 +149,5 @@ export function csContactCache(): CsContactCache {
   return holder[KEY];
 }
 
-/** The CS contact for the page being rendered; `NO_CS_CONTACT` (no block) when it cannot be read. */
-export function getCsContact(): Promise<CsContact> {
-  return csContactCache().get();
-}
+/** The CS contact for the page being rendered (one value per request); `NO_CS_CONTACT` (no block) when it cannot be read. */
+export const getCsContact = cache((): Promise<CsContact> => csContactCache().get());

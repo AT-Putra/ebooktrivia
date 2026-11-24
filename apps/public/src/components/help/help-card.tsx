@@ -6,6 +6,8 @@
 // with a prefilled text), an address gives "Email CS" (mailto: with a subject); the opening hours are shown when set. The order page passes
 // the order code, which is then (and only then) in the prefilled text and the subject; the block never carries the buyer's name, e-mail or
 // phone. A pure component with no hooks: a server page, the order page's client script and the error boundary all render it.
+// Both buttons are SECONDARY (outline): a screen has one primary action (the page's own: "Masuk ke Trivia", "Coba bayar lagi", "Kirim kode" ...), and
+// help never competes with it. 48 px targets (min-h-12), the outline variant's own focus ring.
 import { type CsContact, hasCsContact } from "@ebooktrivia/core/cs-contact";
 import { EnvelopeSimpleIcon, LifebuoyIcon, WhatsappLogoIcon } from "@phosphor-icons/react/ssr";
 import { Button } from "@ebooktrivia/ui/components/button";
@@ -39,7 +41,7 @@ export function HelpCard({ contact, orderCode, className }: HelpCardProps) {
       )}
       <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap">
         {contact.whatsapp === null ? null : (
-          <Button asChild variant="default" size="lg" className="w-full sm:w-auto">
+          <Button asChild variant="outline" size="lg" className="w-full sm:w-auto">
             <a href={csWhatsappHref(contact.whatsapp, orderCode)} target="_blank" rel="noopener noreferrer" data-testid="help-whatsapp">
               <WhatsappLogoIcon aria-hidden="true" size={22} weight="fill" />
               {t("help.whatsapp")}

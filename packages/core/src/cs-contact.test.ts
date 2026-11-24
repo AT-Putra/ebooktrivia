@@ -17,6 +17,8 @@ import {
 
 const NUMBER = "+6281234567890";
 const HOURS = "Senin–Jumat 09.00–17.00 WIB";
+/** The hours as a WhatsApp message carries them: a dot between digits or letters is U+2024 (one dot leader), so nothing in them can become a link. */
+const HOURS_SENT = "Senin–Jumat 09\u202400–17\u202400 WIB";
 
 describe("csLocalPhone: the local format with dashes", () => {
   it("writes +6281234567890 as 0812-3456-7890", () => {
@@ -62,9 +64,15 @@ describe("csLine: the {cs} of the replies", () => {
   });
 
   it("puts the hours in brackets after whatever is set", () => {
-    expect(csLine({ whatsapp: NUMBER, email: "cs@contoh.id", hours: HOURS })).toBe(`WhatsApp 0812-3456-7890 atau email cs@contoh.id (${HOURS})`);
-    expect(csLine({ whatsapp: NUMBER, email: null, hours: HOURS })).toBe(`WhatsApp 0812-3456-7890 (${HOURS})`);
-    expect(csLine({ whatsapp: null, email: "cs@contoh.id", hours: HOURS })).toBe(`email cs@contoh.id (${HOURS})`);
+    expect(csLine({ whatsapp: NUMBER, email: "cs@contoh.id", hours: HOURS })).toBe(`WhatsApp 0812-3456-7890 atau email cs@contoh.id (${HOURS_SENT})`);
+    expect(csLine({ whatsapp: NUMBER, email: null, hours: HOURS })).toBe(`WhatsApp 0812-3456-7890 (${HOURS_SENT})`);
+    expect(csLine({ whatsapp: null, email: "cs@contoh.id", hours: HOURS })).toBe(`email cs@contoh.id (${HOURS_SENT})`);
+  });
+
+  it("makes no link out of the hours: a dot between letters or digits (www.contoh.id) is neutralised, the address stays copyable", () => {
+    const line = csLine({ whatsapp: null, email: "cs@contoh.id", hours: "Info di www.contoh.id, 09.00-17.00" }) ?? "";
+    expect(line).toBe("email cs@contoh.id (Info di www\u2024contoh\u2024id, 09\u202400-17\u202400)");
+    expect(line.replace("cs@contoh.id", "")).not.toMatch(/[A-Za-z0-9]\.[A-Za-z0-9]/);
   });
 
   it("has no line without a number or an address, hours alone included", () => {
@@ -91,6 +99,14 @@ describe("the hours and the address", () => {
     expect(isCsHours("tab\there")).toBe(false);
   });
 
+  it("refuses invisible and format characters: line and paragraph separators, bidi marks and overrides, zero-width, soft hyphen, BOM", () => {
+    for (const probe of ["Senin\u2028Jumat", "Senin\u2029Jumat", "abc\u202efed", "abc\u200bdef", "abc\u200edef", "abc\u2066def", "abc\u00addef", "\ufeffabc", "abc\u0085def", "abc\u007fdef", "a\u{e0041}b", "a\u{1d173}b"]) {
+      expect(isCsHours(probe), JSON.stringify(probe)).toBe(false);
+    }
+    // Plain visible text in other scripts, and a no-break or ideographic space, is fine.
+    for (const text of ["Senin–Jumat 09.00–17.00 WIB", "月〜金 9:00–17:00", "Senin\u00a0Jumat", "Senin\u3000Jumat", "é ö ñ"]) expect(isCsHours(text), text).toBe(true);
+  });
+
   it("counts the hours in characters, not code units", () => {
     expect(isCsHours("😀".repeat(CS_HOURS_MAX))).toBe(true);
     expect(isCsHours("😀".repeat(CS_HOURS_MAX + 1))).toBe(false);
@@ -100,6 +116,13 @@ describe("the hours and the address", () => {
     expect(isCsEmail("cs@contoh.id")).toBe(true);
     expect(isCsEmail("cs.help+toko@sub.contoh.co.id")).toBe(true);
     for (const bad of ["cs", "cs@", "@contoh.id", "cs@contoh", "c s@contoh.id", `${"a".repeat(250)}@b.id`]) expect(isCsEmail(bad), bad).toBe(false);
+  });
+
+  it("is ASCII only: a bidi override, a lookalike letter, a quote or an angle bracket is refused (nothing that could reorder or break out of a text)", () => {
+    for (const bad of ["cs\u202e@x.id", "cs@x\u202e.id", "c\u0455@x.id", "cs@x\u2024id", "cs@exämple.id", "a<b>@x.id", 'a"b@x.id', "a'b@x.id", "cs@x.id\n", "cs@x.id ", " cs@x.id", "cs@@x.id", "cs@x..id", "cs@.x.id"]) {
+      expect(isCsEmail(bad), JSON.stringify(bad)).toBe(false);
+    }
+    for (const ok of ["CS@Contoh.ID", "a_b%c+d-e.f@sub-domain.contoh.co.id"]) expect(isCsEmail(ok), ok).toBe(true);
   });
 });
 
@@ -131,8 +154,10 @@ describe("{cs_whatsapp} and {cs_email} in a template", () => {
     for (const bad of ["+6281234567890", "0812 3456 7890", "08123456789\nx", "<b>0812-3456-7890</b>"]) {
       expect(() => renderMessage("{cs_whatsapp}", "whatsapp", { ...base, cs_whatsapp: bad }), bad).toThrow(TemplateError);
     }
-    for (const bad of ["cs", "cs@contoh.id <x>", "cs@contoh.id\nBcc: x@y.id"]) {
+    for (const bad of ["cs", "cs@contoh.id <x>", "cs@contoh.id\nBcc: x@y.id", "<b>x</b>@contoh.id", 'a"onmouseover="x@contoh.id', "cs\u202e@x.id"]) {
       expect(() => renderMessage("{cs_email}", "whatsapp", { ...base, cs_email: bad }), bad).toThrow(TemplateError);
+      // The e-mail's HTML is no way round it: markup in an address never reaches the page, because the address is refused.
+      expect(() => renderMessage("<p>{cs_email}</p>", "email_html", { ...base, cs_email: bad }), bad).toThrow(TemplateError);
     }
   });
 

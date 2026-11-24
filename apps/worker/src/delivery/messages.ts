@@ -36,11 +36,11 @@ export async function loadTemplate(db: postgres.Sql | postgres.TransactionSql, k
 }
 
 /**
- * The Owner's customer-service contact (public.cs_contact, one row; worker_rw reads whatsapp, email and hours only), as it is NOW: read each time a
+ * The Owner's customer-service contact (public.cs_contact, one row; worker_rw reads the key id and whatsapp, email and hours only), as it is NOW: read each time a
  * message is built, so a change in the console is used by the next message without a restart. A value the table's checks would have refused is dropped.
  */
 export async function loadCsContact(db: postgres.Sql | postgres.TransactionSql): Promise<CsContact> {
-  const [row] = await db<{ whatsapp: string | null; email: string | null; hours: string | null }[]>`SELECT whatsapp, email, hours FROM public.cs_contact LIMIT 1`;
+  const [row] = await db<{ whatsapp: string | null; email: string | null; hours: string | null }[]>`SELECT whatsapp, email, hours FROM public.cs_contact WHERE id = 1`;
   if (row === undefined) return NO_CS_CONTACT;
   return {
     whatsapp: row.whatsapp !== null && isIdMobileE164(row.whatsapp) ? row.whatsapp : null,

@@ -39,7 +39,7 @@
 -- ET179 an anonymized player or order given personal data again, or anonymized outside the erasure.
 -- US-033: ET187 the Owner's decision ledger (order_owner_decisions) changed, or written outside order_review_decide;
 -- ET189 an outbox topic the console (admin_rw) does not enqueue.
--- Customer service: ET190 the CS WhatsApp number (cs_contact.whatsapp) equals a sending number (waha_sessions.phone), from either side.
+-- Customer service: ET190 the CS WhatsApp number (cs_contact.whatsapp) equals a sending number (waha_sessions.phone), from either side (ET021 outside READ COMMITTED).
 
 SELECT pg_catalog.set_config('search_path', 'pg_catalog, pg_temp', false);
 
@@ -1669,6 +1669,11 @@ CREATE OR REPLACE FUNCTION public.cs_contact_not_a_sending_number()
   SET search_path = pg_catalog, pg_temp
 AS $fn$
 BEGIN
+  -- Under REPEATABLE READ / SERIALIZABLE the EXISTS below reads the transaction's old snapshot, so a session committed after the snapshot would go
+  -- unseen even after the lock is held. The check needs READ COMMITTED (like the content-lock and prize-tier guards).
+  IF pg_catalog.current_setting('transaction_isolation') <> 'read committed' THEN
+    RAISE EXCEPTION 'the customer-service number check must run under READ COMMITTED' USING ERRCODE = 'ET021';
+  END IF;
   IF NEW.whatsapp IS NULL THEN
     RETURN NEW;
   END IF;
@@ -1692,6 +1697,9 @@ CREATE OR REPLACE FUNCTION public.waha_sessions_not_the_cs_number()
   SET search_path = pg_catalog, pg_temp
 AS $fn$
 BEGIN
+  IF pg_catalog.current_setting('transaction_isolation') <> 'read committed' THEN
+    RAISE EXCEPTION 'the customer-service number check must run under READ COMMITTED' USING ERRCODE = 'ET021';
+  END IF;
   IF NEW.phone IS NULL THEN
     RETURN NEW;
   END IF;

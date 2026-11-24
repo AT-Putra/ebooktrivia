@@ -59,7 +59,7 @@ export default async function CustomerServicePage() {
               maxLength={80}
               defaultValue={contact.hours ?? undefined}
               placeholder="Senin–Jumat 09.00–17.00 WIB"
-              hint="One line of up to 80 characters, shown to buyers as written."
+              hint="One line of up to 80 characters, shown to buyers as written. No line breaks or invisible characters."
             />
           </div>
         </ActionForm>
@@ -69,7 +69,8 @@ export default async function CustomerServicePage() {
         <CardDescription>
           The help block &ldquo;Butuh bantuan?&rdquo; at the end of every buyer page (order page, order lookup, login, trivia, not-found and error pages). Four fixed WhatsApp replies add a line: when a
           number that is not the buyer&rsquo;s writes to the pool, when the sender cannot be confirmed, when an order cannot be handled by chat, and when the ebook could not be sent by WhatsApp. With
-          nothing set, buyers see no block and the replies stay as they were.
+          nothing set, buyers see no block and the replies stay as they were. In a WhatsApp reply a dot between letters or digits in the hours is shown as a look-alike dot, so it cannot become a link; the
+          e-mail address is left as it is, and WhatsApp shows it as a link.
         </CardDescription>
         <dl className="grid gap-1 text-sm sm:grid-cols-[12rem_1fr]" data-testid="cs-preview">
           <dt className="font-medium">In a WhatsApp reply</dt>

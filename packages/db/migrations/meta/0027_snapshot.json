@@ -1,5 +1,5 @@
 {
-  "id": "edfc01c9-da8d-426f-9bfc-cb8abe1b2023",
+  "id": "8336623a-51b3-43de-8158-b7acdd656104",
   "prevId": "997af367-84fb-456f-a956-cb7d381d9cdb",
   "version": "7",
   "dialect": "postgresql",
@@ -2106,6 +2106,34 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "delivery_openers_variant_idx": {
+          "name": "delivery_openers_variant_idx",
+          "columns": [
+            {
+              "expression": "session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "coalesce(\"sent_at\", \"updated_at\")",
+              "asc": true,
+              "isExpression": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "delivery_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"delivery_openers\".\"variant_key\" IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -2822,7 +2850,8 @@
           "name": "warmup_started_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
-          "notNull": false
+          "notNull": false,
+          "default": "now()"
         },
         "timelock_active": {
           "name": "timelock_active",
@@ -5665,11 +5694,11 @@
         },
         "cs_contact_email_check": {
           "name": "cs_contact_email_check",
-          "value": "\"cs_contact\".\"email\" IS NULL OR (char_length(\"cs_contact\".\"email\") <= 254 AND \"cs_contact\".\"email\" ~ '^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$')"
+          "value": "\"cs_contact\".\"email\" IS NULL OR (char_length(\"cs_contact\".\"email\") <= 254 AND \"cs_contact\".\"email\" ~ '^[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\\.[A-Za-z0-9-]+)+$')"
         },
         "cs_contact_hours_check": {
           "name": "cs_contact_hours_check",
-          "value": "\"cs_contact\".\"hours\" IS NULL OR (char_length(\"cs_contact\".\"hours\") BETWEEN 1 AND 80 AND \"cs_contact\".\"hours\" !~ '[[:cntrl:]]')"
+          "value": "\"cs_contact\".\"hours\" IS NULL OR (char_length(\"cs_contact\".\"hours\") BETWEEN 1 AND 80 AND \"cs_contact\".\"hours\" !~ '[\\u0001-\\u001f\\u007f-\\u009f\\u00ad\\u0600-\\u0605\\u061c\\u06dd\\u070f\\u0890\\u0891\\u08e2\\u180e\\u200b-\\u200f\\u2028-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff\\ufff9-\\ufffb\\U000110bd\\U000110cd\\U00013430-\\U0001343f\\U0001bca0-\\U0001bca3\\U0001d173-\\U0001d17a\\U000e0001\\U000e0020-\\U000e007f]')"
         }
       },
       "isRLSEnabled": false

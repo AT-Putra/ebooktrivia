@@ -36,7 +36,8 @@ let shop: DeliveryShop;
 const shops: DeliveryShop[] = [];
 
 const CS = { whatsapp: "+6281234567890", email: "cs@contoh.id", hours: "Senin–Jumat 09.00–17.00 WIB" };
-const LINE = "WhatsApp 0812-3456-7890 atau email cs@contoh.id (Senin–Jumat 09.00–17.00 WIB)";
+/** The {cs} of the replies: the dots of the hours are U+2024 (look-alike dots), so no part of it can become a link. */
+const LINE = "WhatsApp 0812-3456-7890 atau email cs@contoh.id (Senin–Jumat 09\u202400–17\u202400 WIB)";
 
 const setCs = async (contact: { whatsapp: string | null; email: string | null; hours: string | null }): Promise<void> => {
   await sql`DELETE FROM cs_contact`;

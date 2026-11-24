@@ -535,6 +535,16 @@ export const alertRecipients = pgTable(
 );
 
 /**
+ * What customer-service hours may not contain, as a PostgreSQL regular-expression bracket (the database has no Unicode property classes): the
+ * controls (Cc: the C0 range without NUL, DEL and the C1 range), the format characters (Cf: soft hyphen, Arabic and other format marks, the
+ * Mongolian vowel separator, zero-width and bidi marks and overrides, the invisible operators, the BOM, the interlinear annotation marks, and the
+ * few format characters above the BMP) and the line and paragraph separators (Zl U+2028, Zp U+2029). It is the JavaScript class
+ * [\p{Cc}\p{Cf}\p{Zl}\p{Zp}] of core isCsHours, character for character (apps/admin test/cs-contact.int.test.ts compares them over every code point).
+ */
+export const CS_HOURS_FORBIDDEN =
+  "[\\u0001-\\u001f\\u007f-\\u009f\\u00ad\\u0600-\\u0605\\u061c\\u06dd\\u070f\\u0890\\u0891\\u08e2\\u180e\\u200b-\\u200f\\u2028-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff\\ufff9-\\ufffb\\U000110bd\\U000110cd\\U00013430-\\U0001343f\\U0001bca0-\\U0001bca3\\U0001d173-\\U0001d17a\\U000e0001\\U000e0020-\\U000e007f]";
+
+/**
  * The Owner's customer-service contact (Owner decision 2026-11-24): where a buyer who has a problem reaches a human. One WhatsApp
  * number (an Indonesian mobile number, E.164), one e-mail address and the opening hours as free text; each may be empty, and an
  * empty one is shown nowhere. A singleton row (id = 1). Owner only in the console (cs_contact.edit), audited. public_rw and
@@ -556,9 +566,10 @@ export const csContact = pgTable(
     check("cs_contact_singleton_check", sql`${t.id} = 1`),
     // The Indonesian mobile shape of core normalizeIdMobile (+628, second digit not 4, 9 to 12 digits after +62).
     check("cs_contact_whatsapp_check", sql`${t.whatsapp} IS NULL OR ${t.whatsapp} ~ '^\\+628[1-35-9][0-9]{7,10}$'`),
-    check("cs_contact_email_check", sql`${t.email} IS NULL OR (char_length(${t.email}) <= 254 AND ${t.email} ~ '^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$')`),
-    // Free text for one line: 1 to 80 characters, no control characters (a line break would split a WhatsApp message).
-    check("cs_contact_hours_check", sql`${t.hours} IS NULL OR (char_length(${t.hours}) BETWEEN 1 AND 80 AND ${t.hours} !~ '[[:cntrl:]]')`),
+    // ASCII only (core isCsEmail has the same pattern): no bidi control, space, quote or angle bracket can be in an address a buyer is shown.
+    check("cs_contact_email_check", sql`${t.email} IS NULL OR (char_length(${t.email}) <= 254 AND ${t.email} ~ '^[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\\.[A-Za-z0-9-]+)+$')`),
+    // Free text for one line: 1 to 80 characters, none of them invisible or a line break (core isCsHours has the same rule).
+    check("cs_contact_hours_check", sql`${t.hours} IS NULL OR (char_length(${t.hours}) BETWEEN 1 AND 80 AND ${t.hours} !~ ${sql.raw(`'${CS_HOURS_FORBIDDEN}'`)})`),
   ],
 );
 
