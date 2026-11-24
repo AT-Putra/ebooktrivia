@@ -290,7 +290,7 @@ describe("an @lid sender matched from the phone side", () => {
     expect(r.files()).toEqual([]);
   });
 
-  it("the PDF-only reply stays for an order whose phone has NO known lid: a plain chat, a refusal and a number not on WhatsApp are not a lid that is someone else's", async () => {
+  it("the PDF-only reply stays for an order whose phone has NO lid (a plain chat, not on WhatsApp); a REFUSED question means the lid is unknown: the generic text, no PDF", async () => {
     const r = rig();
     const session = await createSession();
     const plain = await paidOrder(shop, { waNotBefore: proactiveLater() });
@@ -298,7 +298,7 @@ describe("an @lid sender matched from the phone side", () => {
     const absent = await paidOrder(shop, { waNotBefore: proactiveLater() });
     r.faults.set(refused.phone, new WahaError("rejected", "WAHA rejected the request (422)"));
     await r.waha.contact(absent.phone, { numberExists: false });
-    for (const order of [plain, refused, absent]) {
+    for (const order of [plain, absent]) {
       await sql`UPDATE waha_sessions SET next_send_at = NULL`;
       const lid = newLid();
       await r.waha.lid(lid, null);
@@ -307,9 +307,19 @@ describe("an @lid sender matched from the phone side", () => {
       expect(await inboundOf(heard.inboundId), order.phone).toMatchObject({ outcome: "pdf_only_sent" });
       expect(r.files().at(-1)).toMatchObject({ chatId: lid, text: pdfOnlyCaption() });
     }
+    // A refusal (any 4xx WAHA maps to `rejected`, e.g. a 422 session state) can be passing: the phone's lid is unknown, not absent, so a stranger
+    // holding the code cannot be told apart from the buyer (security review of 91cfade): the generic text, no file.
+    const files = r.files().length;
+    await sql`UPDATE waha_sessions SET next_send_at = NULL`;
+    const lid = newLid();
+    await r.waha.lid(lid, null);
+    const heard = await r.hear({ session: session.name, chatId: lid, body: askingFor(refused) });
+    await heard.run();
+    expect(await inboundOf(heard.inboundId)).toMatchObject({ outcome: "text_generic" });
+    expect(r.files()).toHaveLength(files);
+    expect(r.texts()).toHaveLength(1);
     expect(r.magic.issued).toEqual([]);
-    expect(r.texts()).toEqual([]);
-    expect(r.asked()).toEqual([digits(plain.phone), digits(refused.phone), digits(absent.phone)]);
+    expect(r.asked()).toEqual([digits(plain.phone), digits(absent.phone), digits(refused.phone)]);
   });
 
   it("a sender who matches ANOTHER buyer's opener while quoting someone else's code is a mismatch: the neutral text, and nobody's delivery is touched", async () => {
@@ -871,8 +881,8 @@ describe("N1: a spent round or ceiling stops the questions, never the cache", ()
   });
 });
 
-describe("L-a: a refusal of WhatsApp is remembered for the day", () => {
-  it("the phone WhatsApp refuses the question about is not asked again by another lid's round or a retry, still counts as having no lid (PDF-only for its order), and the marker is an HMAC with a day's life", async () => {
+describe("L-a: a refusal of WhatsApp is remembered for an hour", () => {
+  it("the phone WhatsApp refuses the question about is not asked again by another lid's round or a retry, counts as an UNKNOWN lid (the generic text, never the PDF), and the marker is an HMAC with an hour's life", async () => {
     const r = rig();
     const session = await createSession();
     const order = await paidOrder(shop, { waNotBefore: proactiveLater() });
@@ -882,7 +892,8 @@ describe("L-a: a refusal of WhatsApp is remembered for the day", () => {
     await r.waha.lid(first_, null);
     const one = await r.hear({ session: session.name, chatId: first_, body: askingFor(order) });
     await one.run();
-    expect(await inboundOf(one.inboundId)).toMatchObject({ outcome: "pdf_only_sent" });
+    expect(await inboundOf(one.inboundId)).toMatchObject({ outcome: "text_generic" });
+    expect(r.files()).toEqual([]);
     expect(r.asked()).toEqual([digits(order.phone)]);
     const created = (await refusalKeys()).filter((k) => !before.has(k));
     expect(created).toHaveLength(1);
@@ -891,19 +902,21 @@ describe("L-a: a refusal of WhatsApp is remembered for the day", () => {
     expect(marker).not.toContain(digits(order.phone));
     expect(marker).not.toContain(createHash("sha256").update(order.phone).digest("hex"));
     const ttl = await valkey.ttl(marker);
-    expect(ttl).toBeGreaterThan(86_400 - 60);
+    expect(LID_REFUSED_TTL_SECONDS).toBe(3600);
+    expect(ttl).toBeGreaterThan(LID_REFUSED_TTL_SECONDS - 60);
     expect(ttl).toBeLessThanOrEqual(LID_REFUSED_TTL_SECONDS);
     const questions = Number(await valkey.get(`${prefix}:lid-checks:${session.id}`));
-    // Another lid, another round: the phone is not asked again, no question is spent, and it is answered as before (no lid).
+    // Another lid, another round: the phone is not asked again, no question is spent, and it is answered as before (unknown lid: the generic text).
     await sql`UPDATE waha_sessions SET next_send_at = NULL`;
     const second = newLid();
     await r.waha.lid(second, null);
     const two = await r.hear({ session: session.name, chatId: second, body: askingFor(order) });
     await two.run();
-    expect(await inboundOf(two.inboundId)).toMatchObject({ outcome: "pdf_only_sent" });
+    expect(await inboundOf(two.inboundId)).toMatchObject({ outcome: "text_generic" });
+    expect(r.files()).toEqual([]);
     expect(r.asked()).toEqual([digits(order.phone)]);
     expect(Number(await valkey.get(`${prefix}:lid-checks:${session.id}`))).toBe(questions);
-    // The day passed (the marker is gone): it is asked again.
+    // The hour passed (the marker is gone): it is asked again.
     await valkey.del(marker);
     await sql`UPDATE waha_sessions SET next_send_at = NULL`;
     const third = newLid();

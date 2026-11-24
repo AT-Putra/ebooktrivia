@@ -111,12 +111,14 @@ export interface LidGate {
 }
 
 /** How long a refusal of WhatsApp is remembered. */
-export const LID_REFUSED_TTL_SECONDS = 86_400;
+export const LID_REFUSED_TTL_SECONDS = 3600;
+/** WhatsApp refused a phone-side question: the phone's lid is unknown (not "no lid"), so its order gets no PDF-only reply. */
+const REFUSED = Symbol("refused");
 
 /**
  * The limits in Valkey, under the worker's key prefix: `<prefix>:lid-round:<HMAC of the lid>` (SET NX EX 3600, holding the inbound row id),
  * `<prefix>:lid-checks:<session id>` (INCR, and EXPIRE NX 3600 on every call, so a counter whose first EXPIRE never ran still gets its hour),
- * `<prefix>:lid-refused:<HMAC of the phone>` (SET EX 86400: WhatsApp refused the question about that phone, so it is not asked again for the day) and
+ * `<prefix>:lid-refused:<HMAC of the phone>` (SET EX 3600: WhatsApp refused the question about that phone, so it is not asked again for the hour, and its lid counts as unknown) and
  * `<prefix>:lid-ceiling:<session id>` (SET NX EX 3600: the one warning an hour that a number reached its ceiling). The lid and the phone are a sender's and a buyer's
  * identifiers: their keys hold an HMAC-SHA256 under a key derived (HKDF, a purpose of its own each) from `secret` (the worker's file-URL key, already loaded for
  * deliveries: no new env), never the identifier itself, so nobody who can list the keys (or read the AOF) can test a guessed number against them. A session id is a random
@@ -297,7 +299,7 @@ export function createInboundConsumer(deps: InboundDeps): OutboxConsumer {
     const roundOpen = await lidGate.round(lid, inbound.id);
     const deadline = clock() + PHONE_SIDE_BUDGET_MS;
     /** Goes through the candidates: the cache first, then (`ask` given, the round open and the number under its ceiling) WhatsApp. */
-    const scan = async (ask: ((phone: string) => Promise<string | null>) | undefined): Promise<LidResolution> => {
+    const scan = async (ask: ((phone: string) => Promise<string | null | typeof REFUSED>) | undefined): Promise<LidResolution> => {
       let failure: Error | undefined;
       let asking = ask !== undefined;
       for (const phone of candidates) {
@@ -315,8 +317,12 @@ export function createInboundConsumer(deps: InboundDeps): OutboxConsumer {
         }
         let candidateLid: string | null;
         if (cached !== null) candidateLid = cached.lid;
-        else if (await lidGate.refused(phone)) continue; // WhatsApp refused the question within the day: the same answer, no lid
-        else {
+        else if (await lidGate.refused(phone)) {
+          // WhatsApp refused the question within the hour (a 4xx can be passing, e.g. a session state): we do NOT know this phone's lid, so a
+          // sender cannot be told apart from its buyer: no PDF for its order (security review of 91cfade), only the generic text.
+          unasked.add(phone);
+          continue;
+        } else {
           // Only a question that really goes to WhatsApp counts against the number's hour; when it is spent, no more are asked (the cache is still read for the rest).
           if (asking && !(await lidGate.question(fetched.sessionId))) {
             asking = false;
@@ -326,12 +332,18 @@ export function createInboundConsumer(deps: InboundDeps): OutboxConsumer {
             unasked.add(phone);
             continue;
           }
+          let asked: string | null | typeof REFUSED;
           try {
-            candidateLid = await ask(phone);
+            asked = await ask(phone);
           } catch (error) {
             failure ??= error instanceof Error ? error : new Error("a candidate could not be asked");
             continue;
           }
+          if (asked === REFUSED) {
+            unasked.add(phone);
+            continue;
+          }
+          candidateLid = asked;
         }
         if (candidateLid === null) continue;
         lidOf.set(phone, candidateLid);
@@ -346,17 +358,18 @@ export function createInboundConsumer(deps: InboundDeps): OutboxConsumer {
   }
 
   /**
-   * The lid WhatsApp gives `phone` (asked with check-exists, and cached); null when it has none (a plain chat, not on WhatsApp) or WhatsApp refuses the question. A refusal is
-   * not cached with the answers, so the gate remembers it for the day: it is not asked again every round and every retry.
+   * The lid WhatsApp gives `phone` (asked with check-exists, and cached); null when it has none (a plain chat, not on WhatsApp); REFUSED when WhatsApp refuses the
+   * question (then its lid is unknown, not absent). A refusal is not cached with the answers, so the gate remembers it for an hour: it is not asked again every round
+   * and every retry.
    */
-  async function askedLid(sessionName: string, client: WahaClient, phone: string, gate: LidGate): Promise<string | null> {
+  async function askedLid(sessionName: string, client: WahaClient, phone: string, gate: LidGate): Promise<string | null | typeof REFUSED> {
     try {
       const contact = await askContact(sql, client, sessionName, phone);
       return contact.kind === "ok" ? contact.lid : null;
     } catch (error) {
       if (error instanceof WahaError && error.code === "rejected") {
         await gate.refuse(phone);
-        return null;
+        return REFUSED;
       }
       throw error;
     }
