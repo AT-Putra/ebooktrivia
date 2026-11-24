@@ -43,7 +43,9 @@ export default defineConfig(
     // actions, instrumentation), and their process-wide clients (the public runtime, the admin runtime: the auth instance, the
     // PostgreSQL pool, the sealer and opener, safe-fetch, the Cap store) are built by whichever bundle asks first. An error those
     // clients throw is then another copy's class, and `instanceof` is false: a wrong OTP code answered 503 and every trivia
-    // refusal answered 503 on staging (2026-11-24). Check these errors by shape instead.
+    // refusal answered 503 on staging (2026-11-24). Check these errors by shape instead. The shared packages (packages/*) are not
+    // in this rule: their own modules check their own classes (same copy); a check there on an error of an object handed in (a
+    // fetch, a store) must use the package's isX check too, which review has to catch (isSafeFetchError in adapters, 2026-11-24).
     files: ["apps/public/src/**/*.{ts,tsx}", "apps/admin/src/**/*.{ts,tsx}"],
     ignores: ["**/*.test.ts", "**/*.test.tsx"],
     rules: {

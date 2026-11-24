@@ -200,7 +200,9 @@ const isValkeyDown = (error: unknown): boolean => isValkeyUnavailable(error);
 
 /**
  * An auth-library refusal for the log: the library's fixed code (INVALID_OTP, FAILED_TO_CREATE_SESSION...) and its HTTP status, never
- * its message. The player gets one generic answer either way; a 5xx is a failure of ours behind it, so it is logged as a warning.
+ * its message. The player gets one generic answer either way. A 5xx is logged as a warning: it is a failure behind that answer (the
+ * session store), or our session gate refusing a player who may no longer log in (FAILED_TO_CREATE_SESSION; rare: the eligibility
+ * changed between the code and its check).
  */
 function logAuthRefusal(log: Logger, route: string, reason: "invalid_code" | "invalid_link", error: unknown): void {
   const { statusCode, body } = error as { readonly statusCode?: unknown; readonly body?: { readonly code?: unknown } };

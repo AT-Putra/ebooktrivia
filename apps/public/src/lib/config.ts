@@ -245,7 +245,7 @@ export function loadPublicConfig(env: Env): PublicConfig {
   try {
     play = { playOrigin: origin, playerAuthSecrets: parsePlayerAuthSecrets(value(env, "PLAYER_AUTH_SECRETS")), otpPepper: hexKey(env, "PLAYER_OTP_PEPPER") };
   } catch (error) {
-    if (!(isPublicConfigError(error))) throw error;
+    if (!isPublicConfigError(error)) throw error;
     playUnavailable = error.message;
   }
   return {
