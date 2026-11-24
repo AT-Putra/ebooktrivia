@@ -316,7 +316,8 @@ describe("WhatsApp: the proactive message is ONE short opener (Owner decision D7
     expect(sent?.text).not.toContain("Santoso");
     expect(sent?.text).not.toContain("<");
     expect(sent?.text).not.toContain("https://");
-    expect(sent?.text).not.toContain("masuk");
+    // The login path, not the word: an approved opener wording says "sudah masuk" (the payment came in).
+    expect(sent?.text).not.toMatch(/\/masuk\b/);
     expect(sent?.url).toBeNull();
     // No PDF, no link: nothing issued, no file sent, no signed URL.
     expect(r.magic.issued).toEqual([]);

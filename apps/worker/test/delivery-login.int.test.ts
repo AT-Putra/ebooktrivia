@@ -118,7 +118,8 @@ describe("the links the deliveries send are the links US-026 accepts", () => {
     expect(await delivery.process({ id: order.deliveries.email })).toBe("sent");
     // WhatsApp: the opener has no link; the buyer's reply to it is answered with the PDF and the link.
     expect(await delivery.process({ id: order.deliveries.whatsapp })).toBe("opened");
-    expect(waha.sent[0]?.text).not.toContain("masuk");
+    // The login path, not the word: an approved opener wording says "sudah masuk" (the payment came in).
+    expect(waha.sent[0]?.text).not.toMatch(/\/masuk\b/);
     expect(await sql`SELECT 1 FROM magic_links WHERE player_id = ${order.playerId} AND channel = 'whatsapp'`).toHaveLength(0);
     await buyerReplies(delivery, waha, order, session.name);
     expect(await deliveryOf(order.deliveries.whatsapp)).toMatchObject({ status: "sent" });
