@@ -23,7 +23,7 @@
 // fresh on every call; refreshes are rate-limited per player and per client network (Valkey; refused: 429).
 import { createHash } from "node:crypto";
 import { clientIp, throttleBucket } from "@ebooktrivia/edge";
-import postgres from "postgres";
+import { sqlState } from "@ebooktrivia/db/sql-state";
 import { uaHash } from "../checkout/orders.ts";
 import type { Sql } from "../db.ts";
 import { readJsonBody } from "../http.ts";
@@ -57,7 +57,9 @@ const REFUSALS: Readonly<Record<string, PlayErrorCode>> = {
   ET110: "closed",
 };
 
-const isPgCode = (error: unknown, code: string): boolean => error instanceof postgres.PostgresError && error.code === code;
+// By shape (sqlState), never `instanceof postgres.PostgresError`: deps.sql is the process-wide runtime's pool, built by whichever bundle asked first
+// (a page, the proxy or a route), and each bundle has its own copy of postgres.js.
+const isPgCode = (error: unknown, code: string): boolean => sqlState(error) === code;
 
 /** Runs a play WRITE; a deadlock victim (40P01) runs once more. */
 async function retryDeadlockOnce<T>(call: () => Promise<T>): Promise<T> {
@@ -71,10 +73,11 @@ async function retryDeadlockOnce<T>(call: () => Promise<T>): Promise<T> {
 
 /** The refusal's answer, or undefined for an error that is not a play refusal (then: 503, logged). */
 function refusal(deps: Pick<PlayDeps, "log">, route: string, error: unknown): Response | undefined {
-  if (!(error instanceof postgres.PostgresError)) return undefined;
-  const code = REFUSALS[error.code];
+  const state = sqlState(error);
+  if (state === undefined) return undefined;
+  const code = REFUSALS[state];
   if (code === undefined) return undefined;
-  deps.log("info", "play.refused", { route, reason: code, code: error.code });
+  deps.log("info", "play.refused", { route, reason: code, code: state });
   return playError(code);
 }
 

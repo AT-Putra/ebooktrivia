@@ -5,7 +5,7 @@
 // at least 16 characters, its last 4 characters (captured at write time). The audit log records
 // `{"value": {"set": true | false}}`, never the value or last4.
 import { randomUUID } from "node:crypto";
-import { CryptoError, type SecretScope, type SecretSealer } from "@ebooktrivia/crypto/sealer";
+import { isCryptoError, type SecretScope, type SecretSealer } from "@ebooktrivia/crypto/sealer";
 import type { AuditRecorder, Tx } from "../audit.ts";
 import type { Sql } from "../db.ts";
 import type { SettingsConfig } from "./env.ts";
@@ -78,7 +78,7 @@ export async function writeSecret(tx: Tx, audit: AuditRecorder, sealer: SecretSe
   try {
     sealed = sealer.sealSecret({ id: existing?.id ?? randomUUID(), ...target, plaintext });
   } catch (error) {
-    if (error instanceof CryptoError) throw new InvalidInput("The secret could not be sealed: check it has no control characters.");
+    if (isCryptoError(error)) throw new InvalidInput("The secret could not be sealed: check it has no control characters.");
     throw error;
   }
   if (existing === undefined) {

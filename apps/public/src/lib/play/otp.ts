@@ -18,7 +18,7 @@
 import { randomUUID } from "node:crypto";
 import { isIdMobileE164, issueOtp, verifyOtp } from "@ebooktrivia/core";
 import type { SecretSealer } from "@ebooktrivia/crypto";
-import postgres from "postgres";
+import { sqlState } from "@ebooktrivia/db/sql-state";
 import type { Sql } from "../db.ts";
 
 const CODE = /^[0-9]{6}$/;
@@ -51,7 +51,7 @@ export async function issuePlayerOtp(deps: { readonly sql: Sql; readonly sealer:
       return "issued" as const;
     });
   } catch (error) {
-    if (error instanceof postgres.PostgresError && EXPECTED_REFUSALS.has(error.code)) return "refused";
+    if (EXPECTED_REFUSALS.has(sqlState(error) ?? "")) return "refused";
     throw error;
   }
 }

@@ -53,8 +53,8 @@ import { hashMagicLinkToken, isMagicLinkChannel, normalizeIdMobile } from "@eboo
 import { SDK_LIMITS } from "@ebooktrivia/core/sdk-contract";
 import type { SecretSealer } from "@ebooktrivia/crypto";
 import { clientIp, throttleBucket, throttleBucket48 } from "@ebooktrivia/edge";
-// isAPIError, never `instanceof APIError`: the shared runtime (lib/runtime.ts, one per process on globalThis) is built by whichever bundle asks first, a
-// page as often as a route, and each Next.js bundle has its own copy of better-auth, so the auth instance's APIError is often not this module's class.
+// isAPIError, never `instanceof APIError`: the shared runtime (lib/runtime.ts, one per process on globalThis) is built by whichever bundle asks first (a
+// page, the proxy or a route), and each Next.js bundle has its own copy of better-auth, so the auth instance's APIError is often not this module's class.
 // better-auth's own check also accepts the error by its name.
 import { isAPIError } from "better-auth/api";
 import { intSettings, loadCaptchaSettings } from "../checkout/data.ts";

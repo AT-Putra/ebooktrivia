@@ -612,13 +612,17 @@ describe("an auth instance another bundle built (lib/runtime.ts is one per proce
     expect(deps.logs.lines.some((l) => l.includes('"event":"play.failed"'))).toBe(false);
   });
 
-  it("any other error is still a 503 (fail closed): only the auth library's refusals become the generic answer", async () => {
-    const deps = playDeps({
-      auth: { ...auth, api: { ...auth.api, verifyPhoneNumber: async () => Promise.reject(new Error("boom")) } } as unknown as PlayDeps["auth"],
+  it("any other error is still a 503 (fail closed), for the code and for the link: only the auth library's refusals become the generic answer", async () => {
+    const failing = (endpoint: "verifyPhoneNumber" | "playerMagicLinkLogin"): PlayDeps["auth"] => ({
+      ...auth,
+      api: { ...auth.api, [endpoint]: () => Promise.reject(new Error("boom")) },
     });
-    const response = await handleOtpVerify(deps, await verifyRequest(uniquePhone(), "123456"));
-    expect(response.status).toBe(503);
-    expect(await response.json()).toEqual({ v: 1, error: "unavailable" });
+    const code = await handleOtpVerify(playDeps({ auth: failing("verifyPhoneNumber") }), await verifyRequest(uniquePhone(), "123456"));
+    const link = await handleMagicLink(playDeps({ auth: failing("playerMagicLinkLogin") }), playRequest("/api/v1/play/auth/magic-link", { channel: "email", token: "x".repeat(43) }));
+    for (const response of [code, link]) {
+      expect(response.status).toBe(503);
+      expect(await response.json()).toEqual({ v: 1, error: "unavailable" });
+    }
   });
 });
 

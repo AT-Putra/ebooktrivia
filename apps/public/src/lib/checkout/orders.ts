@@ -41,7 +41,7 @@ import {
   type OpenOrder,
   snapExpiry,
 } from "@ebooktrivia/core";
-import postgres from "postgres";
+import { sqlState } from "@ebooktrivia/db/sql-state";
 import type { Sql, Tx } from "../db.ts";
 import { idrOf, type LandingPage, type PublishedLegal } from "./data.ts";
 import type { Attribution, CheckoutInput } from "./request.ts";
@@ -220,7 +220,7 @@ export async function openOrder(sql: Sql, o: OpenOrderInput): Promise<OpenResult
   try {
     return await sql.begin("isolation level read committed", (tx) => openOrderTx(tx, o));
   } catch (error) {
-    if (error instanceof postgres.PostgresError && error.code === "ET043") return { kind: "closed" };
+    if (sqlState(error) === "ET043") return { kind: "closed" };
     throw error;
   }
 }

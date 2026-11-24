@@ -77,3 +77,37 @@ describe("40P01: one retry of a write", () => {
     expect(calls).toEqual(["play_current", "play_current"]);
   });
 });
+
+describe("a refusal from ANOTHER copy of postgres.js (the runtime's pool was built by a page or the proxy, another bundle)", () => {
+  /** What another bundle's postgres.js throws: an Error with the server's fields, not this module's PostgresError class. */
+  const otherCopy = (code: string) => Object.assign(new Error("x"), { severity: "ERROR", code });
+
+  it("is still its refusal (409 already_answered, too_late, closed...), never a 503", async () => {
+    for (const [code, error] of [
+      ["ET144", "already_answered"],
+      ["ET109", "too_late"],
+      ["ET110", "closed"],
+      ["ET142", "locked"],
+      ["ET140", "forbidden"],
+    ] as const) {
+      const { sql } = fakeSql([otherCopy(code)]);
+      const response = await handleStartSet(deps(sql), post({ set_id: OTHER }), ID);
+      expect(await response.json(), code).toEqual({ v: 1, error });
+    }
+  });
+
+  it("a deadlock is still retried once, and an already-answered retry still gets the committed pick's reveal", async () => {
+    const start = fakeSql([otherCopy("40P01"), [{ id: ID }]]);
+    expect((await handleStartSet(deps(start.sql), post({ set_id: OTHER }), ID)).status).toBe(200);
+    expect(start.calls).toEqual(["play_start_set", "play_start_set"]);
+    const recorded = { state: "revealed", option_id: OTHER, correct: false };
+    const retry = fakeSql([otherCopy("ET144"), [{ r: { state: "settled" } }], [{ r: recorded }]]);
+    expect(await (await handleAnswer(deps(retry.sql), post({ answer_id: ID, option_id: ID }), ID)).json()).toEqual({ v: 1, ...recorded, state: "answered" });
+  });
+
+  it("a Node system error (no severity) is still not a refusal: thrown (the route answers 503), never retried", async () => {
+    const { sql, calls } = fakeSql([Object.assign(new Error("write EPIPE"), { code: "EPIPE" }), [{ id: ID }]]);
+    await expect(handleStartSet(deps(sql), post({ set_id: OTHER }), ID)).rejects.toThrow("write EPIPE");
+    expect(calls).toHaveLength(1);
+  });
+});
