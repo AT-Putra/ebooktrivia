@@ -416,6 +416,7 @@ export function createInboundConsumer(deps: InboundDeps): OutboxConsumer {
           sendLikeAHuman(humanDeps, {
             client,
             sessionName,
+            sessionId: fetched.sessionId,
             chatId: fetched.chat.chatId,
             textLength: text.length,
             kind: "message",
@@ -482,6 +483,7 @@ export function createInboundConsumer(deps: InboundDeps): OutboxConsumer {
           const sentResult = await sendLikeAHuman(humanDeps, {
             client,
             sessionName,
+            sessionId,
             chatId: fetched.chat.chatId,
             textLength: caption.length,
             kind: "message",

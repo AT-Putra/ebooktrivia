@@ -87,6 +87,7 @@ export function createTestSenders(deps: {
             {
               client,
               sessionName,
+              sessionId: message.sessionId,
               chatId: contact.chatId,
               textLength: message.text.length,
               kind: "message",

@@ -4,7 +4,7 @@
 import { createWahaClient, type HttpResponse, WahaError, type WahaClient } from "@ebooktrivia/adapters";
 import { HUMAN_TIMING } from "@ebooktrivia/core";
 import { describe, expect, it } from "vitest";
-import { cryptoRandom, type HumanSend, sendLikeAHuman } from "./human.ts";
+import { cryptoRandom, type HumanSend, isSending, sendLikeAHuman } from "./human.ts";
 
 interface Recorded {
   readonly calls: string[];
@@ -34,11 +34,12 @@ function fakeClient(recorded: Recorded, failing: ReadonlySet<string> = new Set()
 
 const quiet = { debug: () => undefined } as never;
 
-function run(recorded: Recorded, over: { failing?: ReadonlySet<string>; random?: () => number; signal?: AbortSignal; sleep?: (ms: number, signal: AbortSignal) => Promise<void>; kind?: "message" | "otp"; textLength?: number; beforeSend?: () => boolean; send?: () => Promise<string> } = {}) {
+function run(recorded: Recorded, over: { failing?: ReadonlySet<string>; random?: () => number; signal?: AbortSignal; sleep?: (ms: number, signal: AbortSignal) => Promise<void>; kind?: "message" | "otp"; sessionId?: string; textLength?: number; beforeSend?: () => boolean; send?: () => Promise<string> } = {}) {
   const client = fakeClient(recorded, over.failing);
   const input: HumanSend<string> = {
     client,
     sessionName: "default",
+    sessionId: over.sessionId ?? "session-1",
     chatId: "628123456789@c.us",
     textLength: over.textLength ?? 90,
     kind: over.kind ?? "message",
@@ -185,7 +186,7 @@ describe("seen, typing, paused and offline are best effort", () => {
     const client = fakeClient(recorded, new Set(["typing"]));
     await sendLikeAHuman(
       { log: { debug: (...args: unknown[]) => lines.push(args) } as never, sleep: () => Promise.resolve() },
-      { client, sessionName: "default", chatId: "628123456789@c.us", textLength: 50, kind: "message", signal: new AbortController().signal, send: () => Promise.resolve("x") },
+      { client, sessionName: "default", sessionId: "session-1", chatId: "628123456789@c.us", textLength: 50, kind: "message", signal: new AbortController().signal, send: () => Promise.resolve("x") },
     );
     expect(JSON.stringify(lines)).toContain('"step":"typing"');
     expect(JSON.stringify(lines)).toContain('"code":"failed"');
@@ -269,6 +270,7 @@ describe("the sequence against the answers WEBJS recorded (US-005 R11)", () => {
       {
         client: webjsClient(wire),
         sessionName: "default",
+        sessionId: "session-1",
         chatId: CHAT,
         textLength: 90,
         kind: "message",
@@ -296,7 +298,7 @@ describe("the sequence against the answers WEBJS recorded (US-005 R11)", () => {
           return Promise.resolve();
         },
       },
-      { client: webjsClient(wire), sessionName: "default", chatId: CHAT, textLength: 60, kind: "otp", signal: new AbortController().signal, send: () => Promise.resolve("sent") },
+      { client: webjsClient(wire), sessionName: "default", sessionId: "session-1", chatId: CHAT, textLength: 60, kind: "otp", signal: new AbortController().signal, send: () => Promise.resolve("sent") },
     );
     expect(wire).toEqual(["/api/sendSeen", "/api/default/presence:typing", "/api/default/presence:paused", "/api/default/presence:offline"]);
     expect(waits).toHaveLength(2);
@@ -304,5 +306,84 @@ describe("the sequence against the answers WEBJS recorded (US-005 R11)", () => {
     await webjsClient(seenOnly).sendSeen("default", CHAT);
     expect(seenOnly).toEqual(["/api/sendSeen"]);
     expect(failures).toEqual([]);
+  });
+});
+
+// Two sends of one number overlap (two chats, two jobs) and so does a read mark: the number goes offline when the LAST of them is over, never while another is still typing.
+// The number is the pool session (its id): a session NAME repeats across servers, and a same-named number elsewhere blocks nothing.
+describe("sends that overlap on one number", () => {
+  /** A send held in its typing wait until `release`; resolves with its recording once it ends. */
+  function held(sessionId: string) {
+    const recorded = recording();
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let reachedTyping: () => void = () => undefined;
+    const typing = new Promise<void>((resolve) => {
+      reachedTyping = resolve;
+    });
+    let wait = 0;
+    const done = run(recorded, {
+      sessionId,
+      sleep: async () => {
+        // The first wait (reading) passes, the second (typing: "typing..." is showing) is held.
+        if (++wait === 2) {
+          reachedTyping();
+          await gate;
+        }
+      },
+    });
+    return { recorded, done, release, typing };
+  }
+
+  it("the first to end does not put the number offline while the second is typing; the last one does, once", async () => {
+    const second = held("number-a");
+    await second.typing;
+    expect(isSending("number-a")).toBe(true);
+    const first = recording();
+    expect(await run(first, { sessionId: "number-a" })).toEqual({ kind: "sent", value: "sent" });
+    // It sent its message and left the number alone: the second one is still typing.
+    expect(first.calls).toEqual(["seen", "typing", "paused", "send"]);
+    expect(isSending("number-a")).toBe(true);
+    second.release();
+    expect(await second.done).toEqual({ kind: "sent", value: "sent" });
+    expect(second.recorded.calls).toEqual(["seen", "typing", "paused", "send", "offline"]);
+    expect(isSending("number-a")).toBe(false);
+    // Alone again, a send ends offline as ever.
+    const alone = recording();
+    await run(alone, { sessionId: "number-a" });
+    expect(alone.calls.at(-1)).toBe("offline");
+  });
+
+  it("a send that fails or is aborted counts as over too: the other one sends the offline", async () => {
+    const second = held("number-b");
+    await second.typing;
+    const controller = new AbortController();
+    controller.abort();
+    const aborted = recording();
+    expect(await run(aborted, { sessionId: "number-b", signal: controller.signal })).toEqual({ kind: "not_sent", reason: "aborted" });
+    expect(aborted.calls).not.toContain("offline");
+    const failed = recording();
+    await expect(run(failed, { sessionId: "number-b", send: () => Promise.reject(new WahaError("failed", "refused")) })).rejects.toBeInstanceOf(WahaError);
+    expect(failed.calls).not.toContain("offline");
+    second.release();
+    await second.done;
+    expect(second.recorded.calls.at(-1)).toBe("offline");
+  });
+
+  it("a number with the same session NAME on another server is another number: it blocks nothing and goes offline at its own end", async () => {
+    const onServerA = held("session-on-server-a");
+    await onServerA.typing;
+    expect(isSending("session-on-server-a")).toBe(true);
+    expect(isSending("session-on-server-b")).toBe(false);
+    // Same sessionName ("default" in run()), another session id: its end puts ITS number offline.
+    const other = recording();
+    await run(other, { sessionId: "session-on-server-b" });
+    expect(other.calls.at(-1)).toBe("offline");
+    expect(isSending("session-on-server-a")).toBe(true);
+    onServerA.release();
+    await onServerA.done;
+    expect(onServerA.recorded.calls.at(-1)).toBe("offline");
   });
 });

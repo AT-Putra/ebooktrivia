@@ -17,6 +17,8 @@ import {
   createReadMarks,
   READ_BATCH,
   READ_DEFER_MINUTES,
+  READ_LOCK_COMMIT_SCRIPT,
+  READ_LOCK_RELEASE_SCRIPT,
   READ_MARK_CAP_PER_CHAT,
   READ_MARK_CAP_PER_MINUTE,
   READ_QUEUE,
@@ -61,6 +63,8 @@ afterAll(async () => {
   redis.disconnect();
 });
 
+/** A worker prefix of its own for keys a test makes by hand (removed after the file with every other prefix). */
+const prefix0 = (): string => uniquePrefix();
 const personalChat = (): string => `${uniquePhone().slice(1)}@c.us`;
 /** A chat's digest: stable for the session and chat (the dedupe key of the chat), as public's keyed digest is. */
 const digestOf = (session: string, chatId: string): string => createHash("sha256").update(`${session}|${chatId}`).digest("hex").slice(0, 32);
@@ -261,11 +265,11 @@ describe("the job marks the whole chat as read, and puts the number offline agai
             }
           },
         },
-        { client, sessionName, chatId: sendChat, textLength: 40, kind: "message", signal: new AbortController().signal, send: () => client.sendText(sessionName, sendChat, "halo kak") },
+        { client, sessionName, sessionId: session.id, chatId: sendChat, textLength: 40, kind: "message", signal: new AbortController().signal, send: () => client.sendText(sessionName, sendChat, "halo kak") },
       ),
     );
     await typingStarted;
-    expect(isSending(session.name)).toBe(true);
+    expect(isSending(session.id)).toBe(true);
     // A read mark of ANOTHER chat of this number while it types: the chat is marked, but the number is not put offline.
     expect(await r.marks.process(arrived.job)).toBe("marked");
     const during = await r.calls();
@@ -274,7 +278,7 @@ describe("the job marks the whole chat as read, and puts the number offline agai
     // The send goes on and ends offline itself, once.
     release();
     expect(await send).toMatchObject({ kind: "sent" });
-    expect(isSending(session.name)).toBe(false);
+    expect(isSending(session.id)).toBe(false);
     expect((await r.calls()).filter((c) => c.path === "/presence").map((c) => c.body["presence"])).toEqual(["typing", "paused", "offline"]);
     // With nothing in flight the read job puts the number offline as before.
     await r.waha.clearCallLog();
@@ -283,38 +287,83 @@ describe("the job marks the whole chat as read, and puts the number offline agai
     expect((await r.calls()).filter((c) => c.path === "/presence").map((c) => c.body["presence"])).toEqual(["offline"]);
   });
 
+  it("a number with the same session NAME on another server is another number: a send there does not hold this number's offline", async () => {
+    const r = rig();
+    const name = `same${randomBytes(3).toString("hex")}`;
+    const both = [await createSession({ name }), await createSession({ name })];
+    // The re-fetch tries the sessions of a name in the order of their ids: the first is the one the read job runs on.
+    const [reading, other] = [...both].sort((a, b) => (a.id < b.id ? -1 : 1));
+    if (reading === undefined || other === undefined) throw new Error("two sessions");
+    const readChat = personalChat();
+    const sendChat = personalChat();
+    const arrived = await r.arrive(name, readChat);
+    await r.waha.clearCallLog();
+    let release: () => void = () => undefined;
+    const holdTyping = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let reachedTyping: () => void = () => undefined;
+    const typingStarted = new Promise<void>((resolve) => {
+      reachedTyping = resolve;
+    });
+    let wait = 0;
+    const send = r.waha.access.withSession(other.id, ({ sessionName, client }) =>
+      sendLikeAHuman(
+        {
+          log: silentLog,
+          random: () => 0.5,
+          sleep: async () => {
+            if (++wait === 2) {
+              reachedTyping();
+              await holdTyping;
+            }
+          },
+        },
+        { client, sessionName, sessionId: other.id, chatId: sendChat, textLength: 40, kind: "message", signal: new AbortController().signal, send: () => client.sendText(sessionName, sendChat, "halo kak") },
+      ),
+    );
+    await typingStarted;
+    expect(isSending(other.id)).toBe(true);
+    expect(isSending(reading.id)).toBe(false);
+    // The read job runs on the OTHER server's number of that name: nothing of this one is sending, so it puts it offline as usual (the mock keys presence by the name).
+    expect(await r.marks.process(arrived.job)).toBe("marked");
+    expect((await r.calls()).filter((c) => c.path === "/presence").map((c) => c.body["presence"])).toEqual(["typing", "offline"]);
+    release();
+    await send;
+  });
+
   it("a send that never settles cannot keep a number 'sending' for ever (a safety expiry), and a send that fails or is aborted ends its mark", async () => {
     const r = rig();
     const session = await createSession();
     const failing = await r.waha.access.withSession(session.id, ({ sessionName, client }) =>
       sendLikeAHuman(
         { log: silentLog, sleep: () => Promise.resolve() },
-        { client, sessionName, chatId: personalChat(), textLength: 10, kind: "message", signal: new AbortController().signal, send: () => Promise.reject(new WahaError("failed", "refused")) },
+        { client, sessionName, sessionId: session.id, chatId: personalChat(), textLength: 10, kind: "message", signal: new AbortController().signal, send: () => Promise.reject(new WahaError("failed", "refused")) },
       ).catch((error: unknown) => error),
     );
     expect(failing).toBeInstanceOf(WahaError);
-    expect(isSending(session.name)).toBe(false);
+    expect(isSending(session.id)).toBe(false);
     const controller = new AbortController();
     controller.abort();
     await r.waha.access.withSession(session.id, ({ sessionName, client }) =>
-      sendLikeAHuman({ log: silentLog, sleep: () => Promise.resolve() }, { client, sessionName, chatId: personalChat(), textLength: 10, kind: "message", signal: controller.signal, send: () => client.sendText(sessionName, "1@c.us", "x") }),
+      sendLikeAHuman({ log: silentLog, sleep: () => Promise.resolve() }, { client, sessionName, sessionId: session.id, chatId: personalChat(), textLength: 10, kind: "message", signal: controller.signal, send: () => client.sendText(sessionName, "1@c.us", "x") }),
     );
-    expect(isSending(session.name)).toBe(false);
+    expect(isSending(session.id)).toBe(false);
     // A send whose promise never settles: its mark expires on its own (HUMAN_MAX_MS and a minute after it began).
     let settle: () => void = () => undefined;
     let waits = 0;
     const hung = r.waha.access.withSession(session.id, ({ sessionName, client }) =>
       sendLikeAHuman(
         { log: silentLog, sleep: () => (++waits === 1 ? new Promise<void>((resolve) => (settle = resolve)) : Promise.resolve()) },
-        { client, sessionName, chatId: personalChat(), textLength: 10, kind: "message", signal: new AbortController().signal, send: () => Promise.resolve("x") },
+        { client, sessionName, sessionId: session.id, chatId: personalChat(), textLength: 10, kind: "message", signal: new AbortController().signal, send: () => Promise.resolve("x") },
       ),
     );
     await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(isSending(session.name)).toBe(true);
-    expect(isSending(session.name, Date.now() + 3_600_000)).toBe(false);
+    expect(isSending(session.id)).toBe(true);
+    expect(isSending(session.id, Date.now() + 3_600_000)).toBe(false);
     settle();
     await hung;
-    expect(isSending(session.name)).toBe(false);
+    expect(isSending(session.id)).toBe(false);
   });
 
   it("logs a failure as a code per event (debug) and as ONE warning a minute with the counts, the last minute's too, never a number, a chat id or a text", async () => {
@@ -508,6 +557,63 @@ describe("the poll takes the ring and schedules one delayed job per message", ()
     expect(r.added.at(-1)?.opts.delay).toBe(55_000 + pause);
   });
 
+  it("a deferred mark holds its chat: the chat's new items are covered by it (they spend nothing) until its job runs, so a chatty chat on a number over budget spends ONE deferred mark, not one every minute", async () => {
+    const minuteStart = Math.floor(Date.UTC(2026, 10, 24, 6, 0, 0) / 60_000) * 60_000;
+    const r = rig({ now: () => minuteStart + 10_000, random: () => 0 });
+    const session = await createSession();
+    const window = minuteStart / 60_000;
+    // This minute's budget is spent.
+    await redis.set(`${r.prefix}:wa-read:cap:${session.name}:${String(window)}`, String(READ_MARK_CAP_PER_MINUTE), "EX", 600);
+    const chatty = personalChat();
+    const first = await r.arrive(session.name, chatty, "pesan 0");
+    await r.marks.poll(r.queue);
+    // Deferred to the next minute (50 s away), and the chat is held until that job has run: the marker outlives the wait by a minute.
+    expect(r.added).toHaveLength(1);
+    expect(r.added[0]?.opts.jobId).toBe(readJobId(first.messageId));
+    expect(r.added[0]?.opts.delay).toBe(50_000 + HUMAN_TIMING.reading[0]);
+    const due = `${r.prefix}:wa-read:due:${first.digest}`;
+    const ttl = await redis.ttl(due);
+    expect(ttl).toBeGreaterThan(50 + 59 - 2);
+    expect(ttl).toBeLessThanOrEqual(50 + 60);
+    // The chat keeps talking (its pending mark is let go each time, as a read job would): nothing more is spent or scheduled.
+    for (let i = 1; i <= 10; i++) {
+      await r.release(first.digest);
+      const more = await r.arrive(session.name, chatty, `pesan ${String(i)}`);
+      expect(more.n, `message ${String(i)}`).toBeGreaterThan(0);
+      await r.marks.poll(r.queue);
+    }
+    expect(r.added).toHaveLength(1);
+    expect(Number(await redis.get(`${r.prefix}:wa-read:cap:${session.name}:${String(window + 1)}`))).toBe(1);
+    expect(Number(await redis.get(`${r.prefix}:wa-read:chat:${first.digest}:${String(window)}`))).toBe(1);
+    // Another chat of the number is not held by it (it is deferred on its own account: the number is over budget).
+    const other = await r.arrive(session.name, personalChat());
+    await r.marks.poll(r.queue);
+    expect(r.added).toHaveLength(2);
+    expect(r.added[1]?.opts.jobId).toBe(readJobId(other.messageId));
+    // The deferred job runs: it marks the whole chat and lets the chat go, so the chat's NEXT message is a mark of its own again.
+    await r.release(first.digest);
+    await r.waha.clearCallLog();
+    expect(await r.marks.process(r.added[0]?.data)).toBe("marked");
+    expect(await redis.exists(due)).toBe(0);
+    const later = await r.arrive(session.name, chatty, "pesan sesudahnya");
+    await r.marks.poll(r.queue);
+    expect(r.added).toHaveLength(3);
+    expect(r.added[2]?.opts.jobId).toBe(readJobId(later.messageId));
+  });
+
+  it("when a deferred mark could not be scheduled (the queue refused), the chat is not held: what it set is taken back and the next tick schedules it", async () => {
+    const minuteStart = Math.floor(Date.UTC(2026, 10, 24, 6, 30, 0) / 60_000) * 60_000;
+    const r = rig({ now: () => minuteStart + 10_000, random: () => 0 });
+    const session = await createSession();
+    await redis.set(`${r.prefix}:wa-read:cap:${session.name}:${String(minuteStart / 60_000)}`, String(READ_MARK_CAP_PER_MINUTE), "EX", 600);
+    const arrived = await r.arrive(session.name, personalChat());
+    const broken = { add: () => Promise.reject(new Error("queue refused")) } as unknown as Pick<Queue, "add">;
+    expect(await r.marks.poll(broken)).toBe(false);
+    expect(await redis.exists(`${r.prefix}:wa-read:due:${arrived.digest}`)).toBe(0);
+    expect(await r.marks.poll(r.queue)).toBe(false);
+    expect(r.added.map((a) => a.opts.jobId)).toEqual([readJobId(arrived.messageId)]);
+  });
+
   it("when every minute within the item's life is spent, the mark is let go: no job, and the chat's pending mark is released so its next message can try again", async () => {
     const minuteStart = Math.floor(Date.UTC(2026, 10, 24, 5, 0, 0) / 60_000) * 60_000;
     const r = rig({ now: () => minuteStart + 1_000, random: () => 0 });
@@ -613,6 +719,28 @@ describe("one poller at a time, and a poll that fails says so once a minute", ()
     await r.marks.poll(r.queue);
     expect(r.added.length + secondAdded.length).toBe(6);
     expect(await redis.exists(`${r.prefix}:wa-read:lock`)).toBe(0);
+  });
+
+  it("the lock's two steps are ONE command each: the cursor moves only for the holder, and only the holder's lock is released", async () => {
+    const lock = `${prefix0()}:lock`;
+    const cursor = `${prefix0()}:cursor`;
+    await redis.set(lock, "holder", "EX", 30);
+    // Someone else's token: nothing moves, nothing is deleted.
+    expect(Number(await redis.eval(READ_LOCK_COMMIT_SCRIPT, 2, lock, cursor, "intruder", "7", "60"))).toBe(0);
+    expect(await redis.exists(cursor)).toBe(0);
+    expect(Number(await redis.eval(READ_LOCK_RELEASE_SCRIPT, 1, lock, "intruder"))).toBe(0);
+    expect(await redis.get(lock)).toBe("holder");
+    // The holder's: the cursor moves with its life, and the lock goes.
+    expect(Number(await redis.eval(READ_LOCK_COMMIT_SCRIPT, 2, lock, cursor, "holder", "7", "60"))).toBe(1);
+    expect(await redis.get(cursor)).toBe("7");
+    expect(await redis.ttl(cursor)).toBeGreaterThan(0);
+    expect(Number(await redis.eval(READ_LOCK_RELEASE_SCRIPT, 1, lock, "holder"))).toBe(1);
+    expect(await redis.exists(lock)).toBe(0);
+    // No lock at all (it expired): neither does anything.
+    expect(Number(await redis.eval(READ_LOCK_COMMIT_SCRIPT, 2, lock, cursor, "holder", "9", "60"))).toBe(0);
+    expect(await redis.get(cursor)).toBe("7");
+    expect(Number(await redis.eval(READ_LOCK_RELEASE_SCRIPT, 1, lock, "holder"))).toBe(0);
+    await redis.del(cursor);
   });
 
   it("a lock held by someone else leaves the tick alone; a tick that lost its lock never moves the cursor, so the same items are taken again", async () => {

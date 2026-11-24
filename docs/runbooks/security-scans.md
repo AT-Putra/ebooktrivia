@@ -210,9 +210,11 @@ WhatsApp message to the worker to be marked as read) lives in `packages/adapters
 - **Deploy order for it:** the worker first (it loads the library with both functions and gets the new ACL line), then the public instances. A public instance that calls it before the worker
   has loaded it gets `Function not found`: the webhook logs `public.valkey_function_missing` (kind `ebt_wa_read_v1`) and `webhook.waha.read_not_handed`, answers as usual, and the
   message is simply not marked (the next one is). The ACL file change (`provision.sh` renders it) needs the Valkey restart the provisioning already asks for.
-- **Rolling back:** roll **public back before the worker**. An older worker loads its older library with `FUNCTION LOAD REPLACE`, which drops `ebt_wa_read_v1` while a newer public still calls it; the worker's heartbeat
-  probe (`FUNCTION LIST LIBRARYNAME ebt_public`: EVERY function of the library must be listed) finds that, reloads the library it has and raises the `valkey_function_missing` alert, but until then the new public
-  hands no message over (it logs the code and answers as usual).
+- **Rolling back:** roll **public back before the worker**. An older worker loads its older library with `FUNCTION LOAD REPLACE`, which drops `ebt_wa_read_v1` while a newer public still calls it, and
+  after a rollback the worker that is RUNNING is the old one with its old probe (an FCALL of the rate-limit function only), which never looks for `ebt_wa_read_v1`: for a rollback to a release before the one that
+  brought the whole-library probe (`FUNCTION LIST LIBRARYNAME ebt_public`, commit 298d8ac) this order is the ONLY guard, and nothing alerts if it is not kept. From that release on the worker's heartbeat probe
+  requires EVERY function of the library to be listed: it finds a library that lost one, reloads the library it has and raises the `valkey_function_missing` alert; until then the newer public hands no message over
+  (it logs the code and answers as usual).
 
 - **The worker loads it**, with `FUNCTION LOAD REPLACE`: at start-up, on every reconnect of its health connection, and from
   its heartbeat when the function is missing. Valkey's AOF keeps the library across restarts.

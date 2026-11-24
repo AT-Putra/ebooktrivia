@@ -13,6 +13,8 @@
 //                is still marked), then reserves a mark of the NUMBER's budget (READ_MARK_CAP_PER_MINUTE a minute; when this minute's is spent it takes the next minute's that
 //                has one, up to the item's ten minutes: deferred, not dropped), and schedules a DELAYED BullMQ job (the reading pause of core HUMAN_TIMING.reading, drawn from
 //                the cryptographic source, after the reserved minute starts): nobody sleeps, and a restart keeps the job in Valkey. The job id comes from the plaintext id.
+//                A mark that had to be DEFERRED (the number's minute was spent) holds its chat: a "due" marker lasts until the job has run, and the chat's new items in the meantime
+//                are covered by that job (it marks the whole chat), so a chatty chat on a number over budget spends one deferred mark, not one for every minute it waits.
 //   3. job       the delayed job re-fetches the message by id on that session (the webhook is untrusted: a forged one drives nothing), skips our own messages and anything
 //                that is not a person's chat, and marks the WHOLE chat as read (sendSeen without message ids), then puts the session offline again like every send of the
 //                worker (human.ts), unless a human-like send of the same number is in flight: its "typing..." must not be cut by an offline, and it ends offline itself.
@@ -58,7 +60,19 @@ const FAILED_KEEP_SECONDS = 3600;
 const WARN_EVERY_MS = 60_000;
 
 /** The Valkey calls the read path makes on the worker's connection. */
-export type ReadMarkValkey = Pick<Redis, "get" | "mget" | "set" | "incr" | "decr" | "del">;
+export type ReadMarkValkey = Pick<Redis, "get" | "mget" | "set" | "incr" | "decr" | "del" | "eval">;
+
+/**
+ * The lock's two steps that read it and then act on it are ONE command each (a worker-owned script on the worker's own keys; BullMQ runs scripts under this ACL too): a tick that
+ * outlived its lock must not move the cursor, and must not release a lock another process took meanwhile, and a GET followed by a SET leaves room for exactly that.
+ * KEYS[1] the lock, KEYS[2] the cursor; ARGV[1] the token, ARGV[2] the cursor's new value, ARGV[3] its life in seconds. 1 when the lock was ours and the cursor moved.
+ */
+export const READ_LOCK_COMMIT_SCRIPT = `if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
+redis.call('SET', KEYS[2], ARGV[2], 'EX', ARGV[3])
+return 1`;
+/** KEYS[1] the lock; ARGV[1] the token. 1 when the lock was ours and is released, 0 when it was another's (or gone): it is never deleted from under its holder. */
+export const READ_LOCK_RELEASE_SCRIPT = `if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) end
+return 0`;
 
 export interface ReadMarkDeps {
   readonly sql: postgres.Sql;
@@ -100,6 +114,8 @@ export function createReadMarks(deps: ReadMarkDeps): ReadMarks {
   const keys = waReadKeys(deps.namespace ?? WA_READ_NAMESPACE);
   const cursorKey = `${prefix}:wa-read:cursor`;
   const lockKey = `${prefix}:wa-read:lock`;
+  /** A chat with a deferred (or trailing) mark scheduled: its job marks the whole chat, so its new items need nothing more until it has run. */
+  const dueKey = (digest: string): string => `${prefix}:wa-read:due:${digest}`;
   const capKey = (session: string, minute: number): string => `${prefix}:wa-read:cap:${session}:${String(minute)}`;
   const chatKey = (digest: string, minute: number): string => `${prefix}:wa-read:chat:${digest}:${String(minute)}`;
   const minuteOf = (ms: number): number => Math.floor(ms / WINDOW_MS);
@@ -145,6 +161,8 @@ export function createReadMarks(deps: ReadMarkDeps): ReadMarks {
   }
 
   async function take(item: WaReadItem, messageId: string, queue: Pick<Queue, "add">): Promise<"scheduled" | "deferred" | "trailing" | "covered" | "over_budget"> {
+    // A mark of this chat is already waiting for a later minute: it marks the whole chat when it runs, this item needs nothing (and spends nothing).
+    if ((await valkey.get(dueKey(item.digest))) !== null) return "covered";
     const window = minuteOf(now());
     // The chat's own cap first: a chatty chat must not spend the number's budget. The message past it is covered by the window's ONE trailing job (the first past the cap
     // schedules it, the rest find it there): it runs when the window is over and marks the whole chat, so the chat's last message is marked too.
@@ -159,7 +177,10 @@ export function createReadMarks(deps: ReadMarkDeps): ReadMarks {
       if (trailing) await valkey.del(chat);
       return "over_budget";
     }
+    const due = dueKey(item.digest);
     try {
+      // A mark that waits for a later minute holds the chat until its job has run (it deletes the marker when it starts); the marker outlives the wait by a minute.
+      if (reserved.wait > 0) await valkey.set(due, "1", "EX", Math.ceil(reserved.wait / 1000) + 60, "NX");
       await queue.add(READ_QUEUE, { session: item.session, sealed: item.sealed, digest: item.digest }, {
         jobId: trailing ? trailingJobId(item.digest, window) : readJobId(messageId),
         delay: reserved.wait + sampleLogNormal(random, HUMAN_TIMING.reading),
@@ -170,7 +191,7 @@ export function createReadMarks(deps: ReadMarkDeps): ReadMarks {
     } catch (error) {
       // Nothing was scheduled and the tick will take this item again: what it spent is given back, or every retry would spend it again (and a chat would turn "covered" by
       // a trailing job that does not exist). Best effort: a Valkey that cannot do this either has failed everything else too.
-      await Promise.all([valkey.decr(chat), valkey.decr(reserved.key)]).catch(() => undefined);
+      await Promise.all([valkey.decr(chat), valkey.decr(reserved.key), valkey.del(due)]).catch(() => undefined);
       throw error;
     }
     return trailing ? "trailing" : reserved.wait > 0 ? "deferred" : "scheduled";
@@ -192,11 +213,7 @@ export function createReadMarks(deps: ReadMarkDeps): ReadMarks {
     const values = await valkey.mget(...slots);
     // The cursor moves only while the lock is still ours (a tick that outlived it must not move the cursor, nor move it back), and after EACH item that was taken: a later item
     // that fails (the queue is down) leaves the earlier ones done, and this tick's retry finds the cursor right behind the one that failed.
-    const commit = async (n: number): Promise<boolean> => {
-      if ((await valkey.get(lockKey)) !== token) return false;
-      await valkey.set(cursorKey, String(n), "EX", CURSOR_TTL_SECONDS);
-      return true;
-    };
+    const commit = async (n: number): Promise<boolean> => Number(await valkey.eval(READ_LOCK_COMMIT_SCRIPT, 2, lockKey, cursorKey, token, String(n), String(CURSOR_TTL_SECONDS))) === 1;
     for (const [i, value] of values.entries()) {
       const n = cursor + 1 + i;
       const item = parseWaReadItem(value);
@@ -228,11 +245,8 @@ export function createReadMarks(deps: ReadMarkDeps): ReadMarks {
         try {
           return await takeRing(queue, token);
         } finally {
-          // Released only while it is still ours; a failure to release is not worth a failed tick (the lock expires).
-          await valkey
-            .get(lockKey)
-            .then((held) => (held === token ? valkey.del(lockKey) : undefined))
-            .catch(() => undefined);
+          // Released only while it is still ours (one command: never from under a process that took it meanwhile); a failure to release is not worth a failed tick (the lock expires).
+          await valkey.eval(READ_LOCK_RELEASE_SCRIPT, 1, lockKey, token).catch(() => undefined);
         }
       } catch (error) {
         // The same failure every second would be a line a second: it is counted and told once a minute, and the next tick tries again from the same cursor.
@@ -255,8 +269,9 @@ export function createReadMarks(deps: ReadMarkDeps): ReadMarks {
       } catch {
         return failed("open", "decrypt_failed");
       }
-      // The chat's pending mark goes first: a message that arrives from now on starts a read of its own, and this call marks everything before it.
-      await valkey.del(keys.pending(digest)).catch(() => undefined);
+      // The chat's pending mark goes first (and its due marker, when this is the deferred mark it was holding the chat for): a message that arrives from now on starts a read
+      // of its own, and this call marks everything before it.
+      await Promise.all([valkey.del(keys.pending(digest)), valkey.del(dueKey(digest))]).catch(() => undefined);
       let fetched: Fetched | "unverified";
       try {
         fetched = await refetchMessage({ sql, waha: deps.waha }, session, messageId, LOOKUP_TIMEOUT_MS);
@@ -278,7 +293,7 @@ export function createReadMarks(deps: ReadMarkDeps): ReadMarks {
             } finally {
               // Like every send of the worker: the session shows offline again (while it shows online the phone gets no notifications), best effort. NOT while a human-like
               // send of this number is in flight: its "typing..." (2 to 14 s) would be cut, and that send puts the number offline itself when it is done.
-              if (!isSending(sessionName)) await client.setOffline(sessionName).catch(() => undefined);
+              if (!isSending(fetched.sessionId)) await client.setOffline(sessionName).catch(() => undefined);
             }
           },
           { timeoutMs: HUMAN_PRESENCE_TIMEOUT_MS },

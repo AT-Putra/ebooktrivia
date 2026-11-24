@@ -28,7 +28,7 @@ import { ContactCacheError, type ContactResolution, knownChatsOf, resolveContact
 import { claimSession, closeSend, discardSend, recordSessionOutcome, settleSend } from "./pool.ts";
 import { type WahaAccess, WahaAccessError } from "./ports.ts";
 
-/** An OTP consumer holds its claim for 90 s (otp-send.ts): a second code to the same contact is not held longer than this for its gap. */
+/** An OTP consumer holds its claim for 120 s (OTP_LEASE_MS in otp-send.ts): a second code to the same contact waits no longer than this for its gap. */
 export const OTP_CONTACT_WAIT_MS = 10_000;
 
 export type PoolSendErrorCode =
@@ -134,7 +134,7 @@ export function createPoolSender(deps: {
             if (contact.kind === "no_whatsapp") return { kind: "no_whatsapp" } as const;
             return sendLikeAHuman(
               { log, random: deps.humanRandom, sleep: (ms, s) => sleep(ms, s) },
-              { client, sessionName, chatId: contact.chatId, textLength: text.length, kind: "otp", signal: abort, send: () => client.sendText(sessionName, contact.chatId, text) },
+              { client, sessionName, sessionId: picked.sessionId, chatId: contact.chatId, textLength: text.length, kind: "otp", signal: abort, send: () => client.sendText(sessionName, contact.chatId, text) },
             );
           });
           // The phone is not on WhatsApp: nothing was sent, no number is penalised, and another number would not change it.

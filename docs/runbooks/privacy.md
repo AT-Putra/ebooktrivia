@@ -66,7 +66,7 @@ PostgreSQL is what the erasure clears and what the PII scan test checks. The res
 | `cache:public:wa-read:c:*` | the chat's "a read is pending" mark: an HMAC of session and chat under the webhook secret (never the number) | 60 s at most, released by the worker as it takes the read |
 | `ebt:lid-round:*`, `ebt:lid-refused:*` | an HMAC of the sender's lid, an HMAC of a buyer's phone (a key derived from the worker's file-URL key; never the number) | 1 h, 1 h |
 | `ebt:lid-checks:*`, `ebt:lid-ceiling:*` | a counter and a marker per number (a session id: a random uuid) | 1 h |
-| `ebt:wa-read:cursor`, `ebt:wa-read:lock`, `ebt:wa-read:cap:*`, `ebt:wa-read:chat:*` | the ring cursor, the poll's lock, a counter of marks per number (session name, minute) and a counter of marks per chat (the chat's digest, minute) | 24 h, 15 s, up to 11 min, 3 min |
+| `ebt:wa-read:cursor`, `ebt:wa-read:lock`, `ebt:wa-read:cap:*`, `ebt:wa-read:chat:*`, `ebt:wa-read:due:*` | the ring cursor, the poll's lock, a counter of marks per number (session name, minute), a counter of marks per chat (the chat's digest, minute) and a marker that a deferred mark holds the chat (the digest) | 24 h, 15 s, up to 11 min, 3 min, up to 11 min |
 | BullMQ `wa.read` jobs | session name, the SEALED message id, chat digest, for the reading pause (0.6 to 4 s), or for a minute that has room (up to 9 minutes ahead); the job id is a digest of the id | deleted when done; a failed one 1 h |
 
 **Backups** age out within their retention window, which the privacy policy states:

@@ -23,32 +23,33 @@ import type { Logger } from "../log.ts";
 /** Uniform in [0, 1) from the operating system's CSPRNG (47 bits: exact in a double). */
 export const cryptoRandom = (): number => randomInt(2 ** 47) / 2 ** 47;
 
-// The numbers (session names) with a human-like send in flight, from its first call to its last. A read mark of the same number (read-marks.ts) puts the number offline after
-// its sendSeen, and that would cut this send's "typing..." (2 to 14 s): it asks isSending first and leaves the presence to the send, which ends offline itself. In process: one
+// The numbers (pool session ids: a session NAME is only unique on its server) with a human-like send in flight, from its first call to its last. A read mark of the same
+// number (read-marks.ts) puts the number offline after its sendSeen, and that would cut this send's "typing..." (2 to 14 s): it asks isSending first and leaves the presence to
+// the send. Two sends of one number overlap too (two chats, two jobs): the number goes offline when the LAST of them ends, never while another is still typing. In process: one
 // worker process sends for the pool, and a second process's send would not be seen (at worst a shortened "typing..." of a message that is sent all the same). Every mark has a
 // safety expiry, so a send that never settles cannot keep a number "sending" for ever.
 const inFlight = new Map<string, Map<symbol, number>>();
 const SENDING_SAFETY_MS = HUMAN_MAX_MS + 60_000;
 
-/** True while a sendLikeAHuman of this number is between its first call and its last. */
-export function isSending(sessionName: string, now: number = Date.now()): boolean {
-  const sends = inFlight.get(sessionName);
+/** True while a sendLikeAHuman of this number (its pool session id) is between its first call and its last. */
+export function isSending(sessionId: string, now: number = Date.now()): boolean {
+  const sends = inFlight.get(sessionId);
   if (sends === undefined) return false;
   for (const [token, expiresAt] of sends) if (expiresAt <= now) sends.delete(token);
   if (sends.size > 0) return true;
-  inFlight.delete(sessionName);
+  inFlight.delete(sessionId);
   return false;
 }
 
 /** Marks a send of this number in flight; the returned function ends it. */
-function beginSending(sessionName: string): () => void {
+function beginSending(sessionId: string): () => void {
   const token = Symbol("send");
-  const sends = inFlight.get(sessionName) ?? new Map<symbol, number>();
+  const sends = inFlight.get(sessionId) ?? new Map<symbol, number>();
   sends.set(token, Date.now() + SENDING_SAFETY_MS);
-  inFlight.set(sessionName, sends);
+  inFlight.set(sessionId, sends);
   return () => {
     sends.delete(token);
-    if (sends.size === 0 && inFlight.get(sessionName) === sends) inFlight.delete(sessionName);
+    if (sends.size === 0 && inFlight.get(sessionId) === sends) inFlight.delete(sessionId);
   };
 }
 
@@ -67,6 +68,8 @@ export interface HumanSend<T> {
   /** The length of what is typed (the message, or the caption of a file). */
   readonly textLength: number;
   readonly kind: HumanKind;
+  /** The pool session's id (waha_sessions.id): with its server it is what names the number, and what the in-flight registry is keyed by (a session NAME repeats across servers). */
+  readonly sessionId: string;
   readonly signal: AbortSignal;
   /** Called after the last wait, just before the send: false = the claim can no longer cover the send (do not send). */
   readonly beforeSend?: () => boolean;
@@ -100,7 +103,7 @@ export async function sendLikeAHuman<T>(deps: HumanDeps, input: HumanSend<T>): P
   };
 
   const state = { typing: false };
-  const done = beginSending(sessionName);
+  const done = beginSending(input.sessionId);
   try {
     // No message ids: the whole chat is marked as read, the older unread messages too.
     await bestEffort("seen", () => client.sendSeen(sessionName, chatId));
@@ -118,7 +121,8 @@ export async function sendLikeAHuman<T>(deps: HumanDeps, input: HumanSend<T>): P
   } finally {
     // Never left typing or online, whatever happened (a send that failed, an abort in the middle of the typing wait).
     if (state.typing) await bestEffort("paused", () => client.stopTyping(sessionName, chatId));
-    await bestEffort("offline", () => client.setOffline(sessionName));
+    // This send is over; the number goes offline only when no other send of it is still on (one that is typing would be cut, and it goes offline itself when it ends).
     done();
+    if (!isSending(input.sessionId)) await bestEffort("offline", () => client.setOffline(sessionName));
   }
 }

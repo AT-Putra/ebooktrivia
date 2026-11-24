@@ -14,6 +14,7 @@ import { Queue, QueueEvents, Worker } from "bullmq";
 import { Redis } from "ioredis";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { loadPublicValkeyFunctions, parseWaReadItem, PUBLIC_VALKEY_LIBRARY, PUBLIC_VALKEY_LIBRARY_CODE, RATE_LIMIT_FUNCTION, WA_READ_FUNCTION, WA_READ_NAMESPACE, waReadCall, waReadKeys } from "@ebooktrivia/adapters/valkey-functions";
+import { READ_LOCK_COMMIT_SCRIPT, READ_LOCK_RELEASE_SCRIPT } from "../src/delivery/read-marks.ts";
 import { createLogger } from "../src/log.ts";
 import { startValkeyFunctionLoader } from "../src/valkey-functions.ts";
 import { VALKEY_IMAGE } from "./support/docker.ts";
@@ -292,6 +293,19 @@ describe("production Valkey ACL", () => {
     expect(await reply(worker.get("cache:public:acl-other"))).toMatch(/NOPERM/);
     expect(await reply(worker.get("rl:acl"))).toMatch(/NOPERM/);
     await worker.del(keys.pending(item.digest), keys.seq, keys.item(1), keys.item(2), keys.item(3));
+  });
+
+  it("the read path's two lock scripts run as `worker` on its own ebt: keys, and are refused anywhere else", async () => {
+    const worker = client("worker");
+    await worker.connect();
+    await worker.set("ebt:acl-lock", "holder", "EX", 30);
+    expect(await reply(worker.eval(READ_LOCK_COMMIT_SCRIPT, 2, "ebt:acl-lock", "ebt:acl-cursor", "intruder", "3", "60"))).toBe("0");
+    expect(await reply(worker.eval(READ_LOCK_COMMIT_SCRIPT, 2, "ebt:acl-lock", "ebt:acl-cursor", "holder", "3", "60"))).toBe("1");
+    expect(await reply(worker.get("ebt:acl-cursor"))).toBe("3");
+    expect(await reply(worker.eval(READ_LOCK_RELEASE_SCRIPT, 1, "ebt:acl-lock", "holder"))).toBe("1");
+    // Their keys are the worker's own: another user's are refused, as a plain command on them is.
+    expect(await reply(worker.eval(READ_LOCK_COMMIT_SCRIPT, 2, "rl:acl-lock", "rl:acl-cursor", "holder", "3", "60"))).toMatch(/NOPERM/);
+    await worker.del("ebt:acl-cursor");
   });
 
   it("runs with noeviction and AOF", async () => {

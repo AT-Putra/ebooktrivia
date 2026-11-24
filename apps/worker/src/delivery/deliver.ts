@@ -508,6 +508,7 @@ export function createDelivery(deps: DeliveryDeps): Delivery {
         const result = await sendLikeAHuman(humanDeps, {
           client,
           sessionName,
+          sessionId: target.sessionId,
           chatId,
           textLength: caption.length,
           kind: "message",
@@ -571,6 +572,7 @@ export function createDelivery(deps: DeliveryDeps): Delivery {
         return sendLikeAHuman(humanDeps, {
           client,
           sessionName,
+          sessionId: target.sessionId,
           chatId: contact.chatId,
           textLength: text.length,
           kind: "message",
