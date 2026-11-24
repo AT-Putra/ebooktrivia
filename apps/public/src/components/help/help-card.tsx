@@ -26,7 +26,7 @@ export interface HelpCardProps {
 export function HelpCard({ contact, orderCode, className }: HelpCardProps) {
   if (!hasCsContact(contact)) return null;
   return (
-    <section aria-labelledby="help-title" data-testid="help-block" className={cn("flex w-full flex-col gap-3 rounded-2xl border bg-card p-4 text-card-foreground shadow-md md:p-6", className)}>
+    <section aria-labelledby="help-title" data-testid="help-block" className={cn("flex w-full flex-col gap-3 rounded-2xl border bg-card p-4 text-card-foreground shadow-md md:p-8", className)}>
       <header className="flex items-center gap-2">
         <LifebuoyIcon aria-hidden="true" size={24} weight="duotone" className="shrink-0 text-primary" />
         <h2 id="help-title" className="font-heading text-lg leading-tight">
