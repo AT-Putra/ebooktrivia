@@ -18,7 +18,10 @@
 //                      paid order, the openers this number sent that still await the reply), asked of WhatsApp with check-exists on the receiving session; the
 //                      phone whose lid equals the sender's is the sender (phoneSideMatch). At most 5 phones per message, one such round per sender lid per hour, at
 //                      most 30 questions per number per hour, and 15 s for the whole round. A candidate that fails does not stop the others; if none matches and one
-//                      failed, the job is retried; the cache answers first (a negative answer too), so a phone is asked about at most once a day.
+//                      failed, the job is retried; the cache answers first (a negative answer too), so a phone is asked about at most once a day (a refusal of
+//                      WhatsApp is remembered for the day in Valkey). A spent round or ceiling stops the questions, never the reading of the cache; an order whose phone
+//                      was NOT asked for that reason alone (`unasked`) gets no PDF: the neutral text (a stranger who spent their lid's round on a first message must not
+//                      walk the second, with a leaked code, into the PDF-only reply).
 //                 Measured on the Owner's WAHA (2026.10.1, WEBJS, 2026-11-24): WAHA's LID store (lids/{lid}, lids/pn/{phone}) is LOCAL to a session and knows only
 //                 what that session looked up, so b. often has no number; check-exists is a WhatsApp SERVER query that answers for any phone, so c. is reliable.
 //                 A code-less reply of a buyer who writes from a @lid is then found by openerReplyOrder through the phone c. matched.
@@ -90,23 +93,39 @@ export const PHONE_SIDE_MAX_MS = PHONE_SIDE_BUDGET_MS + LOOKUP_TIMEOUT_MS + 5000
 /** What the job's lease has on top of the delivery lease (config.leaseMs): the re-fetch, the lid lookup and the records (30 s), and the phone-side match. (The read mark is not this job's: read-marks.ts.) */
 export const INBOUND_EXTRA_LEASE_MS = 30_000 + PHONE_SIDE_MAX_MS;
 
-/** The two limits of the phone-side match, kept in Valkey (lidGateFromValkey). A failure of either (Valkey down) is thrown: the job is retried, never answered as unresolved. */
+/**
+ * The limits of the phone-side match, kept in Valkey (lidGateFromValkey). A failure of `round` or `question` (Valkey down) is thrown: the job is retried, never answered as
+ * unresolved. The three others are conveniences (a skipped question, a log line): they never throw.
+ */
 export interface LidGate {
   /** Spends the ONE phone-side round a sender lid gets per hour; false when it is already spent. The same holder (the inbound row) may take it again: a retried job. */
   round(lid: string, holder: string): Promise<boolean>;
   /** Counts one question of WhatsApp on this number (session id); false when the number has spent its hour. */
   question(sessionId: string): Promise<boolean>;
+  /** Whether WhatsApp refused the question about this phone within the day: it is not asked again (a refusal is not cached with the answers). */
+  refused(phone: string): Promise<boolean>;
+  /** Remembers a refusal for the day. */
+  refuse(phone: string): Promise<void>;
+  /** True once per hour per number (session id): the moment to say that its ceiling was reached. */
+  ceilingNotice(sessionId: string): Promise<boolean>;
 }
 
+/** How long a refusal of WhatsApp is remembered. */
+export const LID_REFUSED_TTL_SECONDS = 86_400;
+
 /**
- * The limits in Valkey, under the worker's key prefix: `<prefix>:lid-round:<HMAC of the lid>` (SET NX EX 3600, holding the inbound row id) and
- * `<prefix>:lid-checks:<session id>` (INCR, and EXPIRE NX 3600 on every call, so a counter whose first EXPIRE never ran still gets its hour). The lid is a sender's
- * identifier: the key holds its HMAC-SHA256 under a key derived (HKDF) from `secret` (the worker's file-URL key, already loaded for deliveries: no new env), never the
- * lid itself, so nobody who can list the keys (or read the AOF) can test a guessed lid against them. A session id is a random uuid, not personal data.
- * Without a gate (no Valkey wired) the consumer does no phone-side match at all.
+ * The limits in Valkey, under the worker's key prefix: `<prefix>:lid-round:<HMAC of the lid>` (SET NX EX 3600, holding the inbound row id),
+ * `<prefix>:lid-checks:<session id>` (INCR, and EXPIRE NX 3600 on every call, so a counter whose first EXPIRE never ran still gets its hour),
+ * `<prefix>:lid-refused:<HMAC of the phone>` (SET EX 86400: WhatsApp refused the question about that phone, so it is not asked again for the day) and
+ * `<prefix>:lid-ceiling:<session id>` (SET NX EX 3600: the one warning an hour that a number reached its ceiling). The lid and the phone are a sender's and a buyer's
+ * identifiers: their keys hold an HMAC-SHA256 under a key derived (HKDF, a purpose of its own each) from `secret` (the worker's file-URL key, already loaded for
+ * deliveries: no new env), never the identifier itself, so nobody who can list the keys (or read the AOF) can test a guessed number against them. A session id is a random
+ * uuid, not personal data. Without a gate (no Valkey wired) the consumer does no phone-side match at all.
  */
 export function lidGateFromValkey(valkey: Pick<Redis, "get" | "set" | "incr" | "expire">, prefix: string, secret: Uint8Array): LidGate {
   const key = Buffer.from(hkdfSync("sha256", secret, "ebooktrivia/worker/lid-round", "v1", 32));
+  const refusedKey = Buffer.from(hkdfSync("sha256", secret, "ebooktrivia/worker/lid-refused", "v1", 32));
+  const refusedName = (phone: string): string => `${prefix}:lid-refused:${createHmac("sha256", refusedKey).update(phone).digest("hex")}`;
   return {
     async round(lid, holder) {
       const name = `${prefix}:lid-round:${createHmac("sha256", key).update(lid).digest("hex")}`;
@@ -117,6 +136,15 @@ export function lidGateFromValkey(valkey: Pick<Redis, "get" | "set" | "incr" | "
       const count = await valkey.incr(name);
       await valkey.expire(name, LID_ROUND_TTL_SECONDS, "NX");
       return count <= LID_SESSION_CHECK_CEILING;
+    },
+    async refused(phone) {
+      return (await valkey.get(refusedName(phone)).catch(() => null)) !== null;
+    },
+    async refuse(phone) {
+      await valkey.set(refusedName(phone), "1", "EX", LID_REFUSED_TTL_SECONDS).catch(() => undefined);
+    },
+    async ceilingNotice(sessionId) {
+      return (await valkey.set(`${prefix}:lid-ceiling:${sessionId}`, "1", "EX", LID_ROUND_TTL_SECONDS, "NX").catch(() => null)) === "OK";
     },
   };
 }
@@ -162,16 +190,21 @@ type ReplyClaim = { readonly slotStart: Date; readonly sessionId: string; readon
 
 /**
  * How an @lid sender was put to a phone. `source`: where the answer came from; `cache` is a link we already held (it is NOT confirmed again by this message: handle
- * never refreshes it), `waha` and `check_exists` are answers of just now. `lidOf`: the lid WhatsApp gave each candidate phone the phone side looked at (only phones with one).
+ * never refreshes it), `waha` and `check_exists` are answers of just now. `lidOf`: the lid WhatsApp gave each candidate phone the phone side looked at (only phones with one),
+ * from the cache or from a question. `unasked`: the candidate phones whose answer is MISSING only because the question was not put (the sender's hourly round was already
+ * spent, or the number's ceiling stopped it): the cache had nothing for them and nothing was asked. Such an order's buyer is not known to be someone else (no `lidOf`
+ * entry) and not known to have no lid either: it is not a case for the PDF-only reply (handle).
  */
 interface LidResolution {
   readonly phone: string | null;
   readonly source: "cache" | "waha" | "check_exists" | null;
   readonly lidOf: ReadonlyMap<string, string>;
+  readonly unasked: ReadonlySet<string>;
 }
 
 const NO_LIDS: ReadonlyMap<string, string> = new Map();
-const UNRESOLVED: LidResolution = { phone: null, source: null, lidOf: NO_LIDS };
+const NO_PHONES: ReadonlySet<string> = new Set();
+const UNRESOLVED: LidResolution = { phone: null, source: null, lidOf: NO_LIDS, unasked: NO_PHONES };
 
 /** A buyer-first claim that did not happen: the outcome code, and the row's status when it was not pending. */
 type Refused = { readonly outcome: string; readonly status?: string | undefined };
@@ -213,10 +246,10 @@ export function createInboundConsumer(deps: InboundDeps): OutboxConsumer {
    */
   async function resolveLid(inbound: InboundRow, fetched: Fetched, lid: string, paidPhones: readonly string[], signal: AbortSignal): Promise<LidResolution> {
     const known = await knownLid(sql, lid);
-    if (known !== null && Date.now() - known.checkedAt.getTime() < LID_LINK_FRESH_MS) return { phone: known.phone, source: "cache", lidOf: NO_LIDS };
+    if (known !== null && Date.now() - known.checkedAt.getTime() < LID_LINK_FRESH_MS) return { phone: known.phone, source: "cache", lidOf: NO_LIDS, unasked: NO_PHONES };
     try {
       const phone = await deps.waha.withSession(fetched.sessionId, ({ sessionName, client }) => client.resolveLid(sessionName, lid), { timeoutMs: LOOKUP_TIMEOUT_MS });
-      if (phone !== null) return { phone, source: "waha", lidOf: NO_LIDS };
+      if (phone !== null) return { phone, source: "waha", lidOf: NO_LIDS, unasked: NO_PHONES };
     } catch (error) {
       // An @lid WAHA has no number for (it may answer 404): no answer from this step, which only costs the link. Anything else is an outage: retry.
       if (!(error instanceof WahaError && error.code === "rejected")) throw error;
@@ -229,9 +262,13 @@ export function createInboundConsumer(deps: InboundDeps): OutboxConsumer {
    * session, never the session-local lids/pn), and the one whose lid equals the sender's is the sender. Candidates are OUR buyers' phones only, and only phones of a PAID
    * order, in this order: the orders whose codes the message carries; the phone of a stale link for this lid (when a paid order has it: the link may be a test number or a
    * stranger's); the phones of openers this number sent (within a week) whose delivery still awaits the reply, newest first. At most LID_CHECK_MAX of them.
-   *   - Cost: the cache answers first, a negative answer too (lidCacheOf), so a phone is asked about at most once a day; a sender lid gets ONE round an hour and a number
-   *     LID_SESSION_CHECK_CEILING questions an hour (the gate: a spent budget or ceiling, or no gate wired, is the same as no match, never an error; the gate's own failure
-   *     is thrown); the whole round has PHONE_SIDE_BUDGET_MS and ends with the job's signal.
+   *   - Cost: the cache answers first, a negative answer too (lidCacheOf), so a phone is asked about at most once a day (a refusal of WhatsApp is remembered for the day in
+   *     Valkey, gate.refused); a sender lid gets ONE round an hour and a number LID_SESSION_CHECK_CEILING questions an hour (the gate; the gate's own failure is thrown);
+   *     the whole round has PHONE_SIDE_BUDGET_MS and ends with the job's signal. No gate wired: no phone-side match at all.
+   *   - A spent round or ceiling stops the QUESTIONS, not the reading of the cache: every candidate is still looked up in what we already know (no WhatsApp call), so a cached
+   *     match still matches and a cached lid still tells an order's phone apart from the sender (`lidOf`). A phone with no answer in the cache that was not asked only because
+   *     the round or the ceiling stopped the question goes to `unasked`: nothing is known of it, so handle gives the sender no PDF for that order (a stranger could otherwise
+   *     spend their lid's round on a first message and walk the second, with a leaked code, past the check). The first time a number reaches its ceiling in an hour it is logged.
    *   - A candidate that fails does not stop the others (a match returns whatever failed before it). If none matches and one failed (or the time ran out, or the signal
    *     ended), the first failure is thrown: the job is retried and the same message may take the round again. A candidate WhatsApp refuses does not match and is no failure.
    *   - What WhatsApp said of each candidate (its lid, when it has one) goes to `lidOf`: an order whose own phone has another lid makes the sender a stranger (handle).
@@ -240,7 +277,8 @@ export function createInboundConsumer(deps: InboundDeps): OutboxConsumer {
   async function phoneSideMatch(inbound: InboundRow, fetched: Fetched, lid: string, paidPhones: readonly string[], stalePhone: string | null, signal: AbortSignal): Promise<LidResolution> {
     const { lidGate } = deps;
     const lidOf = new Map<string, string>();
-    const none: LidResolution = { phone: null, source: null, lidOf };
+    const unasked = new Set<string>();
+    const none: LidResolution = { phone: null, source: null, lidOf, unasked };
     if (lidGate === undefined) return none;
     const stale =
       stalePhone !== null && (await sql`SELECT 1 FROM public.orders WHERE buyer_phone = ${stalePhone} AND status = 'paid' LIMIT 1`).length > 0 ? [stalePhone] : [];
@@ -251,53 +289,75 @@ export function createInboundConsumer(deps: InboundDeps): OutboxConsumer {
         JOIN public.orders o ON o.id = d.order_id AND o.status = 'paid'
        WHERE p.status IN ('sent', 'unknown') AND p.session_id = ${fetched.sessionId} AND p.sent_at > now() - interval '7 days'
        GROUP BY o.buyer_phone ORDER BY max(p.sent_at) DESC LIMIT ${LID_CHECK_MAX}`;
-    const candidates = [...new Set([...paidPhones, ...stale, ...awaiting.map((r) => r.buyer_phone)])].filter((p) => isIdMobileE164(p)).slice(0, LID_CHECK_MAX);
-    if (candidates.length === 0 || !(await lidGate.round(lid, inbound.id))) return none;
+    const known = [...new Set([...paidPhones, ...stale, ...awaiting.map((r) => r.buyer_phone)])].filter((p) => isIdMobileE164(p));
+    const candidates = known.slice(0, LID_CHECK_MAX);
+    // A candidate beyond the cut was not looked at either: nothing is known of it.
+    for (const phone of known.slice(LID_CHECK_MAX)) unasked.add(phone);
+    if (candidates.length === 0) return none;
+    const roundOpen = await lidGate.round(lid, inbound.id);
     const deadline = clock() + PHONE_SIDE_BUDGET_MS;
-    return deps.waha.withSession(
-      fetched.sessionId,
-      async ({ sessionName, client }) => {
-        let failure: Error | undefined;
-        for (const phone of candidates) {
-          if (signal.aborted) throw new Error("the phone-side match was cut short");
-          if (clock() > deadline) {
-            failure ??= new Error("the phone-side match ran out of time");
-            break;
+    /** Goes through the candidates: the cache first, then (`ask` given, the round open and the number under its ceiling) WhatsApp. */
+    const scan = async (ask: ((phone: string) => Promise<string | null>) | undefined): Promise<LidResolution> => {
+      let failure: Error | undefined;
+      let asking = ask !== undefined;
+      for (const phone of candidates) {
+        if (signal.aborted) throw new Error("the phone-side match was cut short");
+        if (clock() > deadline) {
+          failure ??= new Error("the phone-side match ran out of time");
+          break;
+        }
+        let cached: Awaited<ReturnType<typeof lidCacheOf>>;
+        try {
+          cached = await lidCacheOf(sql, phone);
+        } catch (error) {
+          failure ??= new ContactCacheError(error);
+          continue;
+        }
+        let candidateLid: string | null;
+        if (cached !== null) candidateLid = cached.lid;
+        else if (await lidGate.refused(phone)) continue; // WhatsApp refused the question within the day: the same answer, no lid
+        else {
+          // Only a question that really goes to WhatsApp counts against the number's hour; when it is spent, no more are asked (the cache is still read for the rest).
+          if (asking && !(await lidGate.question(fetched.sessionId))) {
+            asking = false;
+            if (await lidGate.ceilingNotice(fetched.sessionId)) log.warn({ sessionId: fetched.sessionId }, "phone-side ceiling reached");
           }
-          let cached: Awaited<ReturnType<typeof lidCacheOf>>;
-          try {
-            cached = await lidCacheOf(sql, phone);
-          } catch (error) {
-            failure ??= new ContactCacheError(error);
+          if (!asking || ask === undefined) {
+            unasked.add(phone);
             continue;
           }
-          // Only a question that really goes to WhatsApp counts against the number's hour; when it is spent, no more are asked.
-          if (cached === null && !(await lidGate.question(fetched.sessionId))) break;
-          let candidateLid: string | null;
           try {
-            candidateLid = cached === null ? await askedLid(sessionName, client, phone) : cached.lid;
+            candidateLid = await ask(phone);
           } catch (error) {
             failure ??= error instanceof Error ? error : new Error("a candidate could not be asked");
             continue;
           }
-          if (candidateLid === null) continue;
-          lidOf.set(phone, candidateLid);
-          if (candidateLid === lid) return { phone, source: cached === null ? "check_exists" : "cache", lidOf } satisfies LidResolution;
         }
-        if (failure !== undefined) throw failure;
-        return none;
-      },
-      { timeoutMs: LOOKUP_TIMEOUT_MS },
-    );
+        if (candidateLid === null) continue;
+        lidOf.set(phone, candidateLid);
+        if (candidateLid === lid) return { phone, source: cached === null ? "check_exists" : "cache", lidOf, unasked } satisfies LidResolution;
+      }
+      if (failure !== undefined) throw failure;
+      return none;
+    };
+    // A spent round opens no WhatsApp session at all: the cache alone is read.
+    if (!roundOpen) return scan(undefined);
+    return deps.waha.withSession(fetched.sessionId, ({ sessionName, client }) => scan((phone) => askedLid(sessionName, client, phone, lidGate)), { timeoutMs: LOOKUP_TIMEOUT_MS });
   }
 
-  /** The lid WhatsApp gives `phone` (asked with check-exists, and cached); null when it has none (a plain chat, not on WhatsApp) or WhatsApp refuses the question. */
-  async function askedLid(sessionName: string, client: WahaClient, phone: string): Promise<string | null> {
+  /**
+   * The lid WhatsApp gives `phone` (asked with check-exists, and cached); null when it has none (a plain chat, not on WhatsApp) or WhatsApp refuses the question. A refusal is
+   * not cached with the answers, so the gate remembers it for the day: it is not asked again every round and every retry.
+   */
+  async function askedLid(sessionName: string, client: WahaClient, phone: string, gate: LidGate): Promise<string | null> {
     try {
       const contact = await askContact(sql, client, sessionName, phone);
       return contact.kind === "ok" ? contact.lid : null;
     } catch (error) {
-      if (error instanceof WahaError && error.code === "rejected") return null;
+      if (error instanceof WahaError && error.code === "rejected") {
+        await gate.refuse(phone);
+        return null;
+      }
       throw error;
     }
   }
@@ -551,6 +611,9 @@ export function createInboundConsumer(deps: InboundDeps): OutboxConsumer {
     if (verdict === "verified" && fetched.chat.kind === "lid" && resolvedPhone !== null && resolution.source !== "cache") await rememberLid(sql, resolvedPhone, fetched.chat.lid);
     // A stranger who knows an order code gets a neutral text and nothing else: no PDF, no login link, and the buyer's delivery is untouched.
     if (verdict === "mismatch" || verdict === "ignore") return verdict === "ignore" ? "ignored" : textReply(inbound, fetched, "mismatch", signal);
+    // The order's phone was not asked about only because the sender's round was spent or the number's ceiling stopped the question, and the cache knew nothing of it: nothing
+    // tells this sender from a stranger, and a stranger could have spent the round on an earlier message. No PDF: the one neutral text.
+    if (verdict === "unresolved" && resolution.unasked.has(order.buyer_phone)) return textReply(inbound, fetched, "generic", signal);
     if (verdict === "unresolved") return order.status === "paid" ? pdfOnlyReply(inbound, fetched, order, signal) : textReply(inbound, fetched, "generic", signal);
     return buyerFirst(inbound, fetched, order, signal);
   }

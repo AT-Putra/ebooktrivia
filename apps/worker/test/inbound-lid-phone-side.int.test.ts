@@ -14,6 +14,7 @@ import {
   INBOUND_EXTRA_LEASE_MS,
   INBOUND_TOPIC,
   LID_CHECK_MAX,
+  LID_REFUSED_TTL_SECONDS,
   LID_ROUND_TTL_SECONDS,
   LID_SESSION_CHECK_CEILING,
   type LidGate,
@@ -25,6 +26,7 @@ import { pdfOnlyCaption, replyText } from "../src/delivery/messages.ts";
 import type { WahaAccess } from "../src/delivery/ports.ts";
 import { inertFailpoint } from "../src/failpoint.ts";
 import { createOutboxProcessor } from "../src/outbox-consumer.ts";
+import { createLogger } from "../src/log.ts";
 import { redisOptions } from "../src/queues.ts";
 import {
   createDeliveryShop,
@@ -74,12 +76,24 @@ const askingFor = (order: Pick<PaidOrder, "code">): string => `Halo, ini kode pe
 const proactiveLater = (): Date => new Date(Date.now() + 180_000);
 const digits = (phone: string): string => phone.slice(1);
 const gateOf = (secret: Uint8Array = SECRET): LidGate => lidGateFromValkey(valkey, prefix, secret);
+/** The keys of the worker's prefix that match (the worker's ACL has no KEYS: scan). */
+async function scanKeys(match: string): Promise<string[]> {
+  const keys: string[] = [];
+  let cursor = "0";
+  do {
+    const [next, found] = await valkey.scan(cursor, "MATCH", match, "COUNT", 1000);
+    keys.push(...found);
+    cursor = next;
+  } while (cursor !== "0");
+  return keys;
+}
+const refusalKeys = (): Promise<string[]> => scanKeys(`${prefix}:lid-refused:*`);
 
 /**
  * A Valkey that fails (as a Valkey that is down would) for the commands named, until `state.down` is set false; the others go to the real one. The commands of the
  * gate are overloaded, so the stand-in is typed loosely.
  */
-function valkeyDown(commands: readonly ("set" | "incr")[]): { readonly state: { down: boolean }; readonly gate: LidGate } {
+function valkeyDown(commands: readonly ("get" | "set" | "incr")[]): { readonly state: { down: boolean }; readonly gate: LidGate } {
   const state = { down: true };
   const through = (name: "get" | "set" | "incr" | "expire") => {
     const real = (valkey[name] as unknown as (...args: unknown[]) => Promise<unknown>).bind(valkey);
@@ -95,6 +109,8 @@ interface RigOptions {
   /** Called with the phone (E.164) every time the consumer asks WhatsApp about one, before the answer. */
   readonly onCheck?: (phone: string) => void;
   readonly clock?: () => number;
+  /** The consumer's logger (default: silent). */
+  readonly log?: ReturnType<typeof createLogger>;
 }
 
 /** The consumer under test, over a WAHA mock the test can read. `faults`: phones (E.164) whose check-exists fails with this error. `attempted`: every phone the consumer asked about. */
@@ -139,7 +155,7 @@ function rig(options: RigOptions = {}) {
   const gate = options.gate === undefined ? gateOf() : options.gate;
   const consumer = createInboundConsumer({
     sql: workerSql,
-    log: silentLog,
+    log: options.log ?? silentLog,
     config,
     waha: consumerAccess,
     delivery,
@@ -340,7 +356,7 @@ describe("an @lid sender matched from the phone side", () => {
     const a = await paidOrder(shop);
     await openerSent(r, a, 1);
     await forgetContacts();
-    // WhatsApp refuses the question: nothing is cached about the phone, so only the budget keeps a second message from asking again.
+    // WhatsApp refuses the question: nothing is cached about the phone in the database, so only the lid's budget keeps a second message from asking again.
     r.faults.set(a.phone, new WahaError("rejected", "WAHA rejected the request (422)"));
     const lid = newLid();
     await r.waha.lid(lid, null);
@@ -352,11 +368,16 @@ describe("an @lid sender matched from the phone side", () => {
     await again.run();
     expect(await inboundOf(again.inboundId)).toMatchObject({ outcome: "no_code" });
     expect(r.asked()).toEqual([digits(a.phone)]);
-    // Another lid has a round of its own.
+    // Another lid has a round of its own, which the day's memory of the refusal (L-a) makes a round of no question; once that memory is gone (the day passed), it asks again.
     const other = newLid();
     await r.waha.lid(other, null);
     const third = await r.hear({ session: session.name, chatId: other, body: "halo" });
     await third.run();
+    expect(r.asked()).toEqual([digits(a.phone)]);
+    for (const key of await refusalKeys()) await valkey.del(key);
+    const fourth = newLid();
+    await r.waha.lid(fourth, null);
+    await (await r.hear({ session: session.name, chatId: fourth, body: "halo" })).run();
     expect(r.asked()).toEqual([digits(a.phone), digits(a.phone)]);
   });
 
@@ -745,6 +766,153 @@ describe("the limits of the phone side", () => {
   });
 });
 
+// N1 (security re-review): the sender's hourly round and the number's ceiling stop the QUESTIONS put to WhatsApp, never the reading of the cache. A stranger could otherwise
+// spend their lid's round on a first message that matches nobody, and walk a second one, with a leaked PAID code, past the Owner's check (the buyer's own lid is not the
+// sender's) into the PDF-only reply: the phone side returned nothing at all while the round was spent.
+describe("N1: a spent round or ceiling stops the questions, never the cache", () => {
+  it("a stranger spends their lid's round on a first message, then quotes a leaked PAID code: the neutral text, no PDF, nothing issued, the buyer's delivery untouched, and nothing more is asked", async () => {
+    const r = rig();
+    const session = await createSession();
+    const awaiting = await paidOrder(shop);
+    await openerSent(r, awaiting, 1);
+    await forgetContacts();
+    const leaked = await paidOrder(shop, { waNotBefore: proactiveLater() });
+    await r.waha.contact(leaked.phone, { chatId: newLid() });
+    const stranger = newLid();
+    await r.waha.lid(stranger, null);
+    const first_ = await r.hear({ session: session.name, chatId: stranger, body: "halo kak" });
+    await first_.run();
+    // The round is spent here: the opener's phone is asked, matches nobody, and the message has no code, so there is no reply.
+    expect(await inboundOf(first_.inboundId)).toMatchObject({ outcome: "no_code", replied: false });
+    expect(r.asked()).toEqual([digits(awaiting.phone)]);
+    await sql`UPDATE waha_sessions SET next_send_at = NULL`;
+    const second = await r.hear({ session: session.name, chatId: stranger, body: askingFor(leaked) });
+    await second.run();
+    expect(await inboundOf(second.inboundId)).toMatchObject({ outcome: "text_generic", replied: true });
+    expect(r.files()).toEqual([]);
+    // (The other text is the opener of the order that was awaiting a reply.)
+    expect(r.texts().filter((t) => t.chatId === stranger)).toEqual([expect.objectContaining({ text: replyText("generic") })]);
+    expect(r.texts().filter((t) => t.chatId !== stranger)).toHaveLength(1);
+    expect(r.magic.issued).toEqual([]);
+    expect(r.asked()).toEqual([digits(awaiting.phone)]);
+    expect(await deliveryOf(leaked.deliveries.whatsapp)).toMatchObject({ status: "pending", attempts: 0, session_id: null });
+  });
+
+  it("the same when the NUMBER's ceiling stops the question for the order's phone: the neutral text, no PDF; and the ceiling is logged once an hour per number, the session id only", async () => {
+    const lines: { level: number; msg: string; sessionId?: string }[] = [];
+    const log = createLogger({ level: "warn", role: "worker" }, { write: (line: string) => void lines.push(JSON.parse(line) as (typeof lines)[number]) });
+    const r = rig({ log });
+    const session = await createSession();
+    const leaked = await paidOrder(shop, { waNotBefore: proactiveLater() });
+    await r.waha.contact(leaked.phone, { chatId: newLid() });
+    // The number has used its questions this hour; this one's notice has not been given.
+    await valkey.set(`${prefix}:lid-checks:${session.id}`, String(LID_SESSION_CHECK_CEILING), "EX", 3600);
+    await valkey.del(`${prefix}:lid-ceiling:${session.id}`);
+    const outcomes: (string | null)[] = [];
+    for (let i = 0; i < 2; i++) {
+      await sql`UPDATE waha_sessions SET next_send_at = NULL`;
+      const lid = newLid();
+      await r.waha.lid(lid, null);
+      const heard = await r.hear({ session: session.name, chatId: lid, body: askingFor(leaked) });
+      await heard.run();
+      outcomes.push((await inboundOf(heard.inboundId)).outcome);
+    }
+    expect(outcomes).toEqual(["text_generic", "text_generic"]);
+    expect(r.files()).toEqual([]);
+    expect(r.magic.issued).toEqual([]);
+    expect(r.asked()).toEqual([]);
+    // One warning for the two rounds that hit the ceiling: the number's session id and nothing else.
+    expect(lines.filter((l) => l.msg === "phone-side ceiling reached")).toEqual([expect.objectContaining({ sessionId: session.id })]);
+    expect(JSON.stringify(lines)).not.toContain(digits(leaked.phone));
+    expect(await valkey.ttl(`${prefix}:lid-ceiling:${session.id}`)).toBeGreaterThan(0);
+    // The next hour (the marker gone) says it again.
+    await valkey.del(`${prefix}:lid-ceiling:${session.id}`);
+    await sql`UPDATE waha_sessions SET next_send_at = NULL`;
+    const lid = newLid();
+    await r.waha.lid(lid, null);
+    await (await r.hear({ session: session.name, chatId: lid, body: askingFor(leaked) })).run();
+    expect(lines.filter((l) => l.msg === "phone-side ceiling reached")).toHaveLength(2);
+  });
+
+  it("the order's phone has a lid in the cache and the round is spent: the sender is told apart from the buyer (the neutral text, not the PDF), though nothing is asked", async () => {
+    const r = rig();
+    const session = await createSession();
+    const order = await paidOrder(shop, { waNotBefore: proactiveLater() });
+    const buyerLid = newLid();
+    await sql`
+      INSERT INTO wa_contacts (phone, number_exists, chat_id, lid, checked_at, lid_checked_at)
+      VALUES (${order.phone}, true, ${buyerLid}, ${buyerLid}, now() - interval '1 hour', now() - interval '1 hour')`;
+    const stranger = newLid();
+    await r.waha.lid(stranger, null);
+    expect(await gateOf().round(stranger, "an-earlier-message")).toBe(true);
+    const heard = await r.hear({ session: session.name, chatId: stranger, body: askingFor(order) });
+    await heard.run();
+    expect(await inboundOf(heard.inboundId)).toMatchObject({ outcome: "text_mismatch" });
+    expect(r.files()).toEqual([]);
+    expect(r.magic.issued).toEqual([]);
+    expect(r.asked()).toEqual([]);
+  });
+
+  it("a returning buyer is served while their lid's round is spent: the cache knows the link, nothing is asked", async () => {
+    const r = rig();
+    const session = await createSession();
+    const order = await paidOrder(shop, { waNotBefore: proactiveLater() });
+    const buyerLid = newLid();
+    await sql`
+      INSERT INTO wa_contacts (phone, number_exists, chat_id, lid, checked_at, lid_checked_at)
+      VALUES (${order.phone}, true, ${buyerLid}, ${buyerLid}, now() - interval '1 hour', now() - interval '1 hour')`;
+    await r.waha.lid(buyerLid, null);
+    expect(await gateOf().round(buyerLid, "an-earlier-message")).toBe(true);
+    const heard = await r.hear({ session: session.name, chatId: buyerLid, body: askingFor(order) });
+    await heard.run();
+    expect(await inboundOf(heard.inboundId)).toMatchObject({ outcome: "delivered" });
+    expect(r.files()).toEqual([expect.objectContaining({ chatId: buyerLid })]);
+    expect(r.asked()).toEqual([]);
+  });
+});
+
+describe("L-a: a refusal of WhatsApp is remembered for the day", () => {
+  it("the phone WhatsApp refuses the question about is not asked again by another lid's round or a retry, still counts as having no lid (PDF-only for its order), and the marker is an HMAC with a day's life", async () => {
+    const r = rig();
+    const session = await createSession();
+    const order = await paidOrder(shop, { waNotBefore: proactiveLater() });
+    r.faults.set(order.phone, new WahaError("rejected", "WAHA rejected the request (422)"));
+    const before = new Set(await refusalKeys());
+    const first_ = newLid();
+    await r.waha.lid(first_, null);
+    const one = await r.hear({ session: session.name, chatId: first_, body: askingFor(order) });
+    await one.run();
+    expect(await inboundOf(one.inboundId)).toMatchObject({ outcome: "pdf_only_sent" });
+    expect(r.asked()).toEqual([digits(order.phone)]);
+    const created = (await refusalKeys()).filter((k) => !before.has(k));
+    expect(created).toHaveLength(1);
+    const [marker = ""] = created;
+    expect(marker).toMatch(/^[a-z0-9]+:lid-refused:[0-9a-f]{64}$/);
+    expect(marker).not.toContain(digits(order.phone));
+    expect(marker).not.toContain(createHash("sha256").update(order.phone).digest("hex"));
+    const ttl = await valkey.ttl(marker);
+    expect(ttl).toBeGreaterThan(86_400 - 60);
+    expect(ttl).toBeLessThanOrEqual(LID_REFUSED_TTL_SECONDS);
+    const questions = Number(await valkey.get(`${prefix}:lid-checks:${session.id}`));
+    // Another lid, another round: the phone is not asked again, no question is spent, and it is answered as before (no lid).
+    await sql`UPDATE waha_sessions SET next_send_at = NULL`;
+    const second = newLid();
+    await r.waha.lid(second, null);
+    const two = await r.hear({ session: session.name, chatId: second, body: askingFor(order) });
+    await two.run();
+    expect(await inboundOf(two.inboundId)).toMatchObject({ outcome: "pdf_only_sent" });
+    expect(r.asked()).toEqual([digits(order.phone)]);
+    expect(Number(await valkey.get(`${prefix}:lid-checks:${session.id}`))).toBe(questions);
+    // The day passed (the marker is gone): it is asked again.
+    await valkey.del(marker);
+    await sql`UPDATE waha_sessions SET next_send_at = NULL`;
+    const third = newLid();
+    await r.waha.lid(third, null);
+    await (await r.hear({ session: session.name, chatId: third, body: askingFor(order) })).run();
+    expect(r.asked()).toEqual([digits(order.phone), digits(order.phone)]);
+  });
+});
+
 describe("a link we already hold is not renewed by its own sender (L3)", () => {
   it("a message matched by the fresh link leaves lid_checked_at as it was; one WAHA just resolved, or check-exists just confirmed, renews it", async () => {
     const r = rig();
@@ -846,5 +1014,35 @@ describe("the limits in Valkey (lidGateFromValkey)", () => {
     expect(await valkey.ttl(`${prefix}:lid-checks:${stuck}`)).toBe(-1);
     expect(await gate.question(stuck)).toBe(true);
     expect(await valkey.ttl(`${prefix}:lid-checks:${stuck}`)).toBeGreaterThan(0);
+  });
+
+  it("L-a / L-b: a refusal is kept for the day under an HMAC of the phone with a key of its own; the ceiling notice is given once an hour per number; neither ever throws", async () => {
+    const gate = gateOf();
+    const phone = uniquePhone();
+    expect(await gate.refused(phone)).toBe(false);
+    await gate.refuse(phone);
+    expect(await gate.refused(phone)).toBe(true);
+    expect(await gate.refused(uniquePhone())).toBe(false);
+    // Another secret is another key: the marker cannot be tested against a guessed number without it, and it is not the round's key either.
+    expect(await gateOf(randomBytes(32)).refused(phone)).toBe(false);
+    const markers = await refusalKeys();
+    expect(markers.length).toBeGreaterThan(0);
+    for (const marker of markers) {
+      expect(marker).toMatch(/^[a-z0-9]+:lid-refused:[0-9a-f]{64}$/);
+      expect(await valkey.ttl(marker)).toBeGreaterThan(0);
+    }
+    // The notice: the first caller of the hour, then nobody, for that number only.
+    const session = randomUUID();
+    expect(await gate.ceilingNotice(session)).toBe(true);
+    expect(await gate.ceilingNotice(session)).toBe(false);
+    expect(await gate.ceilingNotice(randomUUID())).toBe(true);
+    const ttl = await valkey.ttl(`${prefix}:lid-ceiling:${session}`);
+    expect(ttl).toBeGreaterThan(0);
+    expect(ttl).toBeLessThanOrEqual(LID_ROUND_TTL_SECONDS);
+    // A Valkey that fails: a convenience never breaks the round (the three do not throw).
+    const broken = valkeyDown(["get", "set"]).gate;
+    expect(await broken.refused(phone)).toBe(false);
+    await expect(broken.refuse(phone)).resolves.toBeUndefined();
+    expect(await broken.ceilingNotice(session)).toBe(false);
   });
 });
