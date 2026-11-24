@@ -59,9 +59,47 @@ export function warningSlowdown(level: WarningLevel, capFactors: readonly [numbe
   }
 }
 
-/** A number's new-contact budget for today after its warning (whole sends). */
-export const effectiveNewContactCap = (session: Pick<PoolSession, "newContactCap" | "warning">, capFactors?: readonly [number, number]): number =>
-  Math.floor(session.newContactCap * warningSlowdown(session.warning, capFactors).capFactor);
+/**
+ * The warm-up of a NEW WhatsApp number (Owner decision 2026-11-24): a fresh number that suddenly writes to dozens of strangers is what WhatsApp bans, so its
+ * daily budget of NEW contacts grows with the days since `waha_sessions.warmup_started_at` (NULL = an established number, no warm-up). Days are whole WIB
+ * calendar days from the start's WIB date (day 0 is the start day, whatever the hour): days 0-6 five new contacts, 7-13 ten, 14-20 twenty, day 21 on the
+ * number's own new_contact_cap. Only NEW-contact sends are limited (an opener, a login code to a chat the number has no history with); a reply to a buyer
+ * who wrote first, and a message to a contact the number already knows, never are.
+ */
+export const WARMUP_DAYS = 21;
+export const WARMUP_SCHEDULE: readonly { readonly fromDay: number; readonly cap: number }[] = [
+  { fromDay: 0, cap: 5 },
+  { fromDay: 7, cap: 10 },
+  { fromDay: 14, cap: 20 },
+];
+
+const WIB_OFFSET_MS = 7 * 3_600_000;
+const DAY_MS = 24 * 3_600_000;
+const wibDayNumber = (at: Date): number => Math.floor((at.getTime() + WIB_OFFSET_MS) / DAY_MS);
+
+/** Whole WIB days from the day the warm-up started to `now`'s day (0 on the start day; never negative). */
+export function warmupDay(startedAt: Date, now: Date): number {
+  return Math.max(0, wibDayNumber(now) - wibDayNumber(startedAt));
+}
+
+/** The warm-up's cap for a day, or null once the warm-up is over (day 21 on): the number's own cap applies. */
+export function warmupCap(day: number): number | null {
+  if (day >= WARMUP_DAYS) return null;
+  let cap: number | null = null;
+  for (const step of WARMUP_SCHEDULE) if (day >= step.fromDay) cap = step.cap;
+  return cap;
+}
+
+/** A number's budget of NEW contacts today before any warning: its own cap, held down by the warm-up while it lasts. */
+export function newContactLimit(session: Pick<PoolSession, "newContactCap" | "warmupStartedAt">, now: Date): number {
+  if (session.warmupStartedAt === null || session.warmupStartedAt === undefined) return session.newContactCap;
+  const cap = warmupCap(warmupDay(session.warmupStartedAt, now));
+  return cap === null ? session.newContactCap : Math.min(session.newContactCap, cap);
+}
+
+/** A number's new-contact budget for today after its warm-up and its warning (whole sends): floor(min(own cap, warm-up cap) x warning cap factor). */
+export const effectiveNewContactCap = (session: Pick<PoolSession, "newContactCap" | "warning" | "warmupStartedAt">, now: Date, capFactors?: readonly [number, number]): number =>
+  Math.floor(newContactLimit(session, now) * warningSlowdown(session.warning, capFactors).capFactor);
 
 export interface PoolSession {
   readonly id: string;
@@ -83,6 +121,8 @@ export interface PoolSession {
   /** The number's daily budget of NEW contacts (a chat it has no history with), separate from its replies, and what it spent of it today. */
   readonly newContactCap: number;
   readonly newContactsToday: number;
+  /** When the number's warm-up started (WARMUP_DAYS): null or absent = an established number, never held down by the warm-up. */
+  readonly warmupStartedAt?: Date | null;
   /** This number already has a chat with the contact being written to (a reply, an earlier message, an inbound message): no new-contact rules for it. */
   readonly knowsContact?: boolean;
 }
@@ -140,7 +180,7 @@ export function pickSession(sessions: readonly PoolSession[], ctx: PickContext):
   const isNew = (s: PoolSession): boolean => ctx.newContact === true && s.knowsContact !== true;
   const reachable = rested.filter((s) => !isNew(s) || s.reachoutUntil === null || s.reachoutUntil.getTime() <= ctx.now.getTime());
   if (reachable.length === 0) return { kind: "none", reason: "all_reachout_blocked" };
-  const budgeted = reachable.filter((s) => !isNew(s) || s.newContactsToday < effectiveNewContactCap(s, ctx.warningCapFactors));
+  const budgeted = reachable.filter((s) => !isNew(s) || s.newContactsToday < effectiveNewContactCap(s, ctx.now, ctx.warningCapFactors));
   if (budgeted.length === 0) return { kind: "none", reason: "all_new_contact_capped" };
   const free = budgeted.filter((s) => waitMs(s, ctx.now) <= ctx.maxWaitMs);
   if (free.length === 0) return { kind: "none", reason: "all_busy" };

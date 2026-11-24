@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { newContactLimit, WARMUP_DAYS, warmupDay } from "@ebooktrivia/core";
 import { Badge } from "@ebooktrivia/ui/components/badge";
 import { Card, CardDescription, CardTitle } from "@ebooktrivia/ui/components/card";
 import { ActionForm } from "../../../../components/settings/action-form.tsx";
@@ -23,16 +24,30 @@ export const metadata: Metadata = { title: "WhatsApp (WAHA) | Admin Console" };
 
 const PRIVATE_HINT = "Only for a WAHA box on your private network (10.x, 172.16-31.x, 192.168.x, 100.64/10). Loopback, link-local and cloud metadata addresses are never allowed. Audited.";
 
-function SessionFields({ prefix, session }: { prefix: string; session?: { sessionName: string; phone: string | null; weight: number; dailyCap: number; active: boolean } }) {
+const ESTABLISHED_HINT = "Tick only for a number that has already been writing to new people for weeks. A new number warms up for 21 days. Unticking it on an established number restarts the warm-up from today. Audited.";
+
+function SessionFields({ prefix, session }: { prefix: string; session?: { sessionName: string; phone: string | null; weight: number; dailyCap: number; active: boolean; warmupStartedAt: Date | null } }) {
   return (
-    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
-      <TextField id={`${prefix}-name`} name="sessionName" label="Session name" defaultValue={session?.sessionName} maxLength={64} />
-      <TextField id={`${prefix}-phone`} name="phone" label="Number" defaultValue={session?.phone} required={false} inputMode="tel" maxLength={32} />
-      <TextField id={`${prefix}-weight`} name="weight" label="Weight" inputMode="numeric" defaultValue={session?.weight ?? 1} maxLength={3} />
-      <TextField id={`${prefix}-cap`} name="dailyCap" label="Daily cap" inputMode="numeric" defaultValue={session?.dailyCap ?? 200} maxLength={5} />
-      <CheckboxField id={`${prefix}-active`} name="active" label="Active" defaultChecked={session?.active ?? true} />
-    </div>
+    <>
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+        <TextField id={`${prefix}-name`} name="sessionName" label="Session name" defaultValue={session?.sessionName} maxLength={64} />
+        <TextField id={`${prefix}-phone`} name="phone" label="Number" defaultValue={session?.phone} required={false} inputMode="tel" maxLength={32} />
+        <TextField id={`${prefix}-weight`} name="weight" label="Weight" inputMode="numeric" defaultValue={session?.weight ?? 1} maxLength={3} />
+        <TextField id={`${prefix}-cap`} name="dailyCap" label="Daily cap" inputMode="numeric" defaultValue={session?.dailyCap ?? 200} maxLength={5} />
+        <CheckboxField id={`${prefix}-active`} name="active" label="Active" defaultChecked={session?.active ?? true} />
+      </div>
+      <CheckboxField id={`${prefix}-established`} name="established" label="Established number (skip warm-up)" defaultChecked={session !== undefined && session.warmupStartedAt === null} hint={ESTABLISHED_HINT} />
+    </>
   );
+}
+
+/** "Warm-up: day 3 of 21 - today's new-people limit 5", or that the number is established / has finished its warm-up. */
+function warmupLine(session: { newContactCap: number; warmupStartedAt: Date | null }, now: Date): string {
+  if (session.warmupStartedAt === null) return "Established number";
+  const day = warmupDay(session.warmupStartedAt, now);
+  const limit = newContactLimit(session, now);
+  if (day >= WARMUP_DAYS) return `Warm-up finished - today's new-people limit ${String(limit)}`;
+  return `Warm-up: day ${String(day + 1)} of ${String(WARMUP_DAYS)} - today's new-people limit ${String(limit)}`;
 }
 
 /** Why a delete button is not shown: used ones keep only the Active switch; an unused one must be inactive first. */
@@ -61,6 +76,7 @@ export default async function WahaPage({ searchParams }: { searchParams: Promise
   const servers = await listWahaServers(rt.sql);
   const sealing = rt.settings.sealer?.scopes.includes("messaging") === true;
   const deleted = deletedText(param(await searchParams, "deleted"));
+  const now = new Date();
   return (
     <>
       <PageHeading title="WhatsApp (WAHA)" description="Sending numbers for ebook delivery and login codes: weighted round robin with a daily cap per number." />
@@ -117,7 +133,10 @@ export default async function WahaPage({ searchParams }: { searchParams: Promise
                   <input type="hidden" name="serverId" value={server.id} />
                   <input type="hidden" name="sessionId" value={session.id} />
                   <SessionFields prefix={`sess-${session.id}`} session={session} />
-                  <span className="text-xs text-muted-foreground">Last status: {session.status ?? "unknown"}</span>
+                  <div className="flex flex-col gap-1 text-xs text-muted-foreground">
+                    <span data-testid="waha-warmup">{warmupLine(session, now)}</span>
+                    <span>Last status: {session.status ?? "unknown"}</span>
+                  </div>
                 </ActionForm>
                 {session.used || session.active ? (
                   <DeleteHint used={session.used} active={session.active} what="session" />

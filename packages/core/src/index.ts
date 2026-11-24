@@ -12,6 +12,7 @@ export * from "./delivery-opener.ts";
 export * from "./human-send.ts";
 export * from "./delivery-pool.ts";
 export * from "./eligibility.ts";
+export * from "./greeting.ts";
 export * from "./hosts.ts";
 export * from "./ids.ts";
 export * from "./legal.ts";

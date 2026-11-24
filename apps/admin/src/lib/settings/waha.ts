@@ -9,6 +9,10 @@
 //     (waha_servers_clear_bound_secrets), so the key is never sent to a new host unasked;
 //   - sessions: name (the WAHA session), pool number (E.164, Indonesian mobile), weight (round robin)
 //     and daily cap. The pool number is shown to buyers (wa.me) but audited as a reference only;
+//   - warm-up: a new session starts its warm-up (warmup_started_at = now: its budget of new contacts is held
+//     down for 21 WIB days, core delivery-pool) unless "Established number" is ticked (NULL). Ticking it on a
+//     warming number ends the warm-up; unticking it on an established one restarts the warm-up from today;
+//     saving a warming number without changing the box keeps its start. Audited like every other field;
 //   - delete: only what was never used (no message history anywhere, see usedSessionIds) and, for a
 //     session, only while it is inactive; a server goes with its sessions and its sealed API key in
 //     one transaction. Used ones keep only the Active switch. Audited by id and name only.
@@ -23,7 +27,7 @@ import { InvalidInput, singleLine, wholeNumber } from "./fields.ts";
 import { clearSecret, parseSecret, requireSealer, secretStatuses, type SecretStatus, writeSecret } from "./secrets.ts";
 
 const SERVER_FIELDS: Readonly<Record<string, FieldKind>> = { name: "value", base_url: "value", base_url_host: "value", allow_private_ip: "value", active: "value" };
-const SESSION_FIELDS: Readonly<Record<string, FieldKind>> = { server_id: "value", session_name: "value", phone: "pii", weight: "value", daily_cap: "value", active: "value" };
+const SESSION_FIELDS: Readonly<Record<string, FieldKind>> = { server_id: "value", session_name: "value", phone: "pii", weight: "value", daily_cap: "value", active: "value", warmup_started_at: "value" };
 
 export interface WahaServerInput {
   readonly name: string;
@@ -52,9 +56,11 @@ export interface WahaSessionInput {
   readonly weight: number;
   readonly dailyCap: number;
   readonly active: boolean;
+  /** An established number: no warm-up (warmup_started_at NULL). */
+  readonly established: boolean;
 }
 
-export function parseWahaSession(values: { readonly serverId: string; readonly sessionName: string; readonly phone: string; readonly weight: string; readonly dailyCap: string }, active: boolean): WahaSessionInput {
+export function parseWahaSession(values: { readonly serverId: string; readonly sessionName: string; readonly phone: string; readonly weight: string; readonly dailyCap: string }, active: boolean, established = false): WahaSessionInput {
   const sessionName = values.sessionName.trim();
   if (!/^[A-Za-z0-9_-]{1,64}$/.test(sessionName)) throw new InvalidInput("The session name is 1 to 64 letters, digits, _ or - (as in WAHA).");
   let phone: string | null = null;
@@ -70,11 +76,13 @@ export function parseWahaSession(values: { readonly serverId: string; readonly s
     weight: wholeNumber(values.weight, "The weight is 1 to 100.", { min: 1, max: 100 }),
     dailyCap: wholeNumber(values.dailyCap, "The daily cap is 0 to 10,000 messages.", { min: 0, max: 10_000 }),
     active,
+    established,
   };
 }
 
 const serverRow = (s: WahaServerInput) => ({ name: s.name, base_url: s.baseUrl, base_url_host: s.baseUrlHost, allow_private_ip: s.allowPrivateIp, active: s.active });
-const sessionRow = (s: WahaSessionInput) => ({ server_id: s.serverId, session_name: s.sessionName, phone: s.phone, weight: s.weight, daily_cap: s.dailyCap, active: s.active });
+/** A new session's warm-up starts now unless it is an established number. */
+const sessionRow = (s: WahaSessionInput) => ({ server_id: s.serverId, session_name: s.sessionName, phone: s.phone, weight: s.weight, daily_cap: s.dailyCap, active: s.active, warmup_started_at: s.established ? null : new Date() });
 
 const MESSAGES: Readonly<Record<string, string>> = {
   "23505": "This server already has a session with that name.",
@@ -141,9 +149,11 @@ export function createWahaSession(sql: Sql, input: WahaSessionInput): Promise<st
 export function updateWahaSession(sql: Sql, id: string, input: Omit<WahaSessionInput, "serverId">): Promise<void> {
   return auditedChange(sql, async (tx, audit) => {
       const [before] = await tx<Record<string, unknown>[]>`
-        SELECT session_name, phone, weight, daily_cap, active FROM public.waha_sessions WHERE id = ${id} FOR UPDATE`;
+        SELECT session_name, phone, weight, daily_cap, active, warmup_started_at FROM public.waha_sessions WHERE id = ${id} FOR UPDATE`;
       if (before === undefined) throw new InvalidInput("This session no longer exists.");
-      const values = { session_name: input.sessionName, phone: input.phone, weight: input.weight, daily_cap: input.dailyCap, active: input.active };
+      // The warm-up: ticked = established (none); unticked on an established number = restart from today; unticked on a warming one = its start stays.
+      const warmup = input.established ? null : ((before["warmup_started_at"] as Date | null) ?? new Date());
+      const values = { session_name: input.sessionName, phone: input.phone, weight: input.weight, daily_cap: input.dailyCap, active: input.active, warmup_started_at: warmup };
       await tx`UPDATE public.waha_sessions SET ${tx(values)}, updated_at = clock_timestamp() WHERE id = ${id}`;
       audit({ action: "waha_session.update", entityType: "waha_session", entityId: id, fields: SESSION_FIELDS, before, after: values });
   }, MESSAGES);
@@ -241,6 +251,9 @@ export interface WahaServerRow {
     readonly dailyCap: number;
     readonly active: boolean;
     readonly status: string | null;
+    /** The number's own budget of new contacts a day, and when its warm-up started (null: an established number). */
+    readonly newContactCap: number;
+    readonly warmupStartedAt: Date | null;
     /** Ever used (see usedSessionIds): it can only be switched off, never deleted. */
     readonly used: boolean;
   }[];
@@ -249,8 +262,8 @@ export interface WahaServerRow {
 export async function listWahaServers(sql: Sql): Promise<WahaServerRow[]> {
   const servers = await sql<{ id: string; name: string; base_url: string; allow_private_ip: boolean; active: boolean }[]>`
     SELECT id, name, base_url, allow_private_ip, active FROM public.waha_servers ORDER BY name`;
-  const sessions = await sql<{ id: string; server_id: string; session_name: string; phone: string | null; weight: number; daily_cap: number; active: boolean; status: string | null }[]>`
-    SELECT id, server_id, session_name, phone, weight, daily_cap, active, status FROM public.waha_sessions ORDER BY session_name`;
+  const sessions = await sql<{ id: string; server_id: string; session_name: string; phone: string | null; weight: number; daily_cap: number; active: boolean; status: string | null; new_contact_cap: number; warmup_started_at: Date | null }[]>`
+    SELECT id, server_id, session_name, phone, weight, daily_cap, active, status, new_contact_cap, warmup_started_at FROM public.waha_sessions ORDER BY session_name`;
   const keys = await secretStatuses(sql, servers.map((s) => ({ scope: "messaging", name: SECRET_NAMES.wahaApiKey(s.id), adnetId: null })));
   const used = await usedSessionIds(sql, sessions.map((x) => x.id));
   return servers.map((s, i) => {
@@ -263,7 +276,18 @@ export async function listWahaServers(sql: Sql): Promise<WahaServerRow[]> {
       active: s.active,
       apiKey: keys[i] ?? { set: false, last4: "", updatedAt: null },
       used: own.some((x) => used.has(x.id)),
-      sessions: own.map((x) => ({ id: x.id, sessionName: x.session_name, phone: x.phone, weight: x.weight, dailyCap: x.daily_cap, active: x.active, status: x.status, used: used.has(x.id) })),
+      sessions: own.map((x) => ({
+        id: x.id,
+        sessionName: x.session_name,
+        phone: x.phone,
+        weight: x.weight,
+        dailyCap: x.daily_cap,
+        active: x.active,
+        status: x.status,
+        newContactCap: x.new_contact_cap,
+        warmupStartedAt: x.warmup_started_at,
+        used: used.has(x.id),
+      })),
     };
   });
 }

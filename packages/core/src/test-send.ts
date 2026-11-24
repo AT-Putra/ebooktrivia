@@ -12,4 +12,5 @@ export const TEST_SEND_SAMPLE_VALUES: Readonly<Record<MessageVariable, string>> 
   order_id: "CONTOH0001",
   link_trivia: "https://play.invalid/",
   kode_otp: "000000",
+  sapaan: "Selamat pagi",
 });

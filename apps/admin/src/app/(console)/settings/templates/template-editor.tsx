@@ -67,6 +67,11 @@ export function TemplateEditor({
           ) : (
             <iframe title="E-mail preview" sandbox="" srcDoc={shown.body} referrerPolicy="no-referrer" className="h-72 w-full rounded-md border bg-white" data-testid="preview-frame" />
           )}
+          {shown.note === null ? null : (
+            <p className="text-xs text-muted-foreground" data-testid="preview-note">
+              {shown.note}
+            </p>
+          )}
         </section>
       ) : null}
     </form>

@@ -259,7 +259,7 @@ describe("deleting a session", () => {
   it("untick Active and save, then it can go (the page's two steps)", async () => {
     const { serverId, sessions } = await fixture([true]);
     const [session] = sessions;
-    await as(() => updateWahaSession(rt.sql, session?.id ?? "", { sessionName: session?.name ?? "", phone: null, weight: 1, dailyCap: 10, active: false }));
+    await as(() => updateWahaSession(rt.sql, session?.id ?? "", { sessionName: session?.name ?? "", phone: null, weight: 1, dailyCap: 10, active: false, established: false }));
     const listed = (await listWahaServers(rt.sql)).find((s) => s.id === serverId)?.sessions[0];
     expect(listed).toMatchObject({ active: false, used: false });
     await as(() => deleteWahaSession(rt.sql, session?.id ?? ""));

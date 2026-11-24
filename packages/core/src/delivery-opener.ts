@@ -177,3 +177,24 @@ export const contactCacheFresh = (entry: { readonly numberExists: boolean; reado
 
 /** Is the opener too old to send (counted from the delivery's not_before)? */
 export const openerTooOld = (now: Date, notBefore: Date): boolean => now.getTime() - notBefore.getTime() > OPENER_MAX_AGE_MS;
+
+/** A number does not repeat a wording it used for one of its last this many openers. */
+export const OPENER_NO_REPEAT = 3;
+
+/**
+ * Which wording (the key of a `delivery_opener_*` template) a number's next opener uses (Owner decision 2026-11-24): uniformly at random among the wordings
+ * the number did NOT use for its last OPENER_NO_REPEAT openers. `recentKeys` are the keys of that number's latest openers, newest first (a key whose
+ * wording has since been removed still takes its place in the window and excludes nothing). With fewer than OPENER_NO_REPEAT + 1 wordings, as many of the
+ * newest ones are excluded as leaves at least one to choose from. Undefined when there is no wording at all. `random` is uniform in [0, 1).
+ */
+export function pickOpenerWording(keys: readonly string[], recentKeys: readonly string[], random: () => number): string | undefined {
+  if (keys.length === 0) return undefined;
+  const excluded: string[] = [];
+  for (const key of recentKeys.slice(0, OPENER_NO_REPEAT)) {
+    if (!keys.includes(key) || excluded.includes(key)) continue;
+    // Keep at least one wording to choose from: the oldest of the recent ones are the first to be allowed again.
+    if (keys.length - excluded.length > 1) excluded.push(key);
+  }
+  const allowed = keys.filter((key) => !excluded.includes(key));
+  return allowed[Math.min(allowed.length - 1, Math.floor(random() * allowed.length))];
+}

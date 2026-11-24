@@ -366,9 +366,8 @@ describe("WhatsApp: the proactive message is ONE short opener (Owner decision D7
       texts.add((r.waha.sent.at(-1)?.text ?? "").replace(/Siti|Agus/g, "{nama}").replace(/Ebook [^ ]+/g, "{judul}"));
       expect(r.waha.sent.at(-1)?.text).toContain(i % 2 === 0 ? "Siti" : "Agus");
     }
-    // Three seeded variants: with a fair draw 30 buyers do not all get the same one (the chance of that is about 1 in 10^13).
-    expect(texts.size).toBeGreaterThan(1);
-    expect(texts.size).toBeLessThanOrEqual(3);
+    // Ten seeded wordings (a number never repeats one of its last 3, so 30 buyers cannot all get the same one): they differ, and each is also varied by {sapaan} and [[a|b]].
+    expect(texts.size).toBeGreaterThan(3);
   });
 
   it("holds no lock and no open transaction while it talks to WAHA, and a delivery that is not due is left alone", async () => {

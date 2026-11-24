@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   DELIVERY_GAP_MS,
   jitterMs,
+  newContactLimit,
   OTP_GAP_MS,
   type PoolSession,
   pickSession,
@@ -15,6 +16,10 @@ import {
   SESSION_COOLDOWN_MS,
   SESSION_FAIL_THRESHOLD,
   sessionHealthAfter,
+  WARMUP_DAYS,
+  WARMUP_SCHEDULE,
+  warmupCap,
+  warmupDay,
   warningSlowdown,
 } from "./delivery-pool.ts";
 
@@ -196,10 +201,85 @@ describe("ban signals (WhatsApp's 463 reachout timelock and 475 message capping)
     expect(warningSlowdown("second", [0.8, 0.1])).toEqual({ capFactor: 0.1, gapFactor: 4 });
     expect(DEFAULT_WARNING_CAP_FACTORS).toEqual([0.5, 0.25]);
     expect(REACHOUT_COOLDOWN_MS).toBe(3_600_000);
-    expect(effectiveNewContactCap({ newContactCap: 30, warning: "none" })).toBe(30);
-    expect(effectiveNewContactCap({ newContactCap: 30, warning: "first" })).toBe(15);
-    expect(effectiveNewContactCap({ newContactCap: 30, warning: "second" })).toBe(7);
-    expect(effectiveNewContactCap({ newContactCap: 30, warning: "second" }, [0.5, 0.5])).toBe(15);
+    expect(effectiveNewContactCap({ newContactCap: 30, warning: "none" }, NOW)).toBe(30);
+    expect(effectiveNewContactCap({ newContactCap: 30, warning: "first" }, NOW)).toBe(15);
+    expect(effectiveNewContactCap({ newContactCap: 30, warning: "second" }, NOW)).toBe(7);
+    expect(effectiveNewContactCap({ newContactCap: 30, warning: "second" }, NOW, [0.5, 0.5])).toBe(15);
+  });
+});
+
+describe("the warm-up of a new number (Owner decision 2026-11-24)", () => {
+  // WIB is UTC+7: WIB midnight is 17:00 UTC of the day before.
+  const wib = (iso: string): Date => new Date(`${iso}+07:00`);
+  const started = wib("2027-06-01T15:30:00");
+
+  it("counts whole WIB days from the start's WIB date: the start day is day 0, whatever the hour, and the day turns at WIB midnight", () => {
+    expect(warmupDay(started, wib("2027-06-01T15:30:00"))).toBe(0);
+    expect(warmupDay(started, wib("2027-06-01T23:59:59.999"))).toBe(0);
+    expect(warmupDay(started, wib("2027-06-02T00:00:00"))).toBe(1);
+    // Started one minute before WIB midnight: the next minute is already day 1.
+    expect(warmupDay(wib("2027-06-01T23:59:00"), wib("2027-06-02T00:00:00"))).toBe(1);
+    // The boundary is WIB midnight, 17:00 UTC, not UTC midnight (07:00 WIB).
+    expect(warmupDay(started, new Date("2027-06-01T16:59:59.999Z"))).toBe(0);
+    expect(warmupDay(started, new Date("2027-06-01T17:00:00Z"))).toBe(1);
+    expect(warmupDay(started, new Date("2027-06-02T00:00:00Z"))).toBe(1);
+    expect(warmupDay(started, new Date("2027-06-02T16:59:59.999Z"))).toBe(1);
+    expect(warmupDay(started, new Date("2027-06-22T16:59:59.999Z"))).toBe(21);
+    // A clock that reads before the start (skew) is day 0, never negative.
+    expect(warmupDay(started, wib("2027-05-30T10:00:00"))).toBe(0);
+  });
+
+  it("holds new contacts to 5 (days 0-6), 10 (7-13) and 20 (14-20), and ends at day 21: a boundary at every step", () => {
+    const cap = (day: number): number | null => warmupCap(day);
+    expect([0, 6].map(cap)).toEqual([5, 5]);
+    expect([7, 13].map(cap)).toEqual([10, 10]);
+    expect([14, 20].map(cap)).toEqual([20, 20]);
+    expect([21, 22, 365].map(cap)).toEqual([null, null, null]);
+    expect(WARMUP_DAYS).toBe(21);
+    expect(WARMUP_SCHEDULE).toEqual([
+      { fromDay: 0, cap: 5 },
+      { fromDay: 7, cap: 10 },
+      { fromDay: 14, cap: 20 },
+    ]);
+  });
+
+  it("the budget is the lower of the number's own cap and the warm-up's, then the warning's share; an established number keeps its cap", () => {
+    const day = (n: number): Date => wib(`2027-06-${String(1 + n).padStart(2, "0")}T12:00:00`);
+    const warm = (over: Partial<PoolSession> = {}) => ({ newContactCap: 30, warmupStartedAt: started, warning: "none" as PoolSession["warning"], ...over });
+    expect(newContactLimit(warm(), day(0))).toBe(5);
+    expect(newContactLimit(warm(), day(6))).toBe(5);
+    expect(newContactLimit(warm(), day(7))).toBe(10);
+    expect(newContactLimit(warm(), day(13))).toBe(10);
+    expect(newContactLimit(warm(), day(14))).toBe(20);
+    expect(newContactLimit(warm(), day(20))).toBe(20);
+    expect(newContactLimit(warm(), day(21))).toBe(30);
+    // The own cap is lower than the warm-up's: the own cap wins.
+    expect(newContactLimit(warm({ newContactCap: 3 }), day(0))).toBe(3);
+    expect(newContactLimit(warm({ newContactCap: 12 }), day(14))).toBe(12);
+    // Established: NULL (or absent) never limits.
+    expect(newContactLimit(warm({ warmupStartedAt: null }), day(0))).toBe(30);
+    expect(newContactLimit({ newContactCap: 30 }, day(0))).toBe(30);
+    // floor(min(own, warm-up) x warning factor).
+    expect(effectiveNewContactCap(warm({ warning: "first" }), day(0))).toBe(2);
+    expect(effectiveNewContactCap(warm({ warning: "second" }), day(7))).toBe(2);
+    expect(effectiveNewContactCap(warm({ warning: "first" }), day(14))).toBe(10);
+    expect(effectiveNewContactCap(warm({ warning: "first" }), day(21))).toBe(15);
+    expect(effectiveNewContactCap(warm({ warning: "first", warmupStartedAt: null }), day(0))).toBe(15);
+  });
+
+  it("pickSession stops a warming number's NEW contacts at its warm-up budget, while a reply or a contact it already knows goes on, and an established number keeps its cap", () => {
+    const now = wib("2027-06-03T12:00:00"); // day 2: five new contacts
+    const c = (over: Partial<Parameters<typeof pickSession>[1]> = {}) => ctx({ now, ...over });
+    const warming = (spent: number) => session("a", { statusAt: now, newContactCap: 30, newContactsToday: spent, warmupStartedAt: started });
+    expect(idOf(pickSession([warming(4)], c({ newContact: true })))).toBe("a");
+    expect(idOf(pickSession([warming(5)], c({ newContact: true })))).toBe("none:all_new_contact_capped");
+    // A reply (not a new contact) and a chat the number already has are never limited by the warm-up.
+    expect(idOf(pickSession([warming(5)], c()))).toBe("a");
+    expect(idOf(pickSession([{ ...warming(5), knowsContact: true }], c({ newContact: true })))).toBe("a");
+    // An established number (no warm-up) has its own cap, here 30.
+    expect(idOf(pickSession([session("a", { statusAt: now, newContactCap: 30, newContactsToday: 5, warmupStartedAt: null })], c({ newContact: true })))).toBe("a");
+    // The second number takes over what the warming one cannot.
+    expect(idOf(pickSession([warming(5), session("b", { statusAt: now, newContactsToday: 5 })], c({ newContact: true })))).toBe("b");
   });
 });
 

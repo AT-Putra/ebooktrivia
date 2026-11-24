@@ -9,7 +9,9 @@
 //   - the streak of failed sends and the cooldown of a number the breaker rested (core sessionHealthAfter);
 //   - WhatsApp's own limits on a number (reachout_until: errors 463 / 475, or WAHA's timelock / capping state; warning_level: the capping
 //     warnings): a number under one sends no NEW-contact message (an opener, an OTP), and a warning shrinks its share of the cap and
-//     stretches its gap.
+//     stretches its gap;
+//   - the warm-up of a new number (waha_sessions.warmup_started_at, core WARMUP_SCHEDULE): its budget of NEW contacts grows with the WIB days
+//     since it started; replies and contacts the number already knows are never held down by it.
 // Every reservation runs in the caller's transaction under ONE advisory lock (POOL_LOCK), so two claims never both pass
 // a cap check or take the same slot. The lock is held only for those few statements, never across a WAHA call, and is taken
 // after the order and delivery locks (the lock order of every delivery path), so it cannot deadlock with them.
@@ -53,6 +55,7 @@ interface SessionDbRow {
   reachout_until: Date | null;
   warning_level: WarningLevel;
   new_contact_cap: number;
+  warmup_started_at: Date | null;
   sent_today: number;
   new_contacts_today: number;
   now: Date;
@@ -61,7 +64,7 @@ interface SessionDbRow {
 /** The pool: every active session of an active server, with what it sent since WIB midnight. */
 export async function listPoolSessions(db: Db, only?: string): Promise<{ readonly sessions: PoolSession[]; readonly now: Date }> {
   const rows = await db<SessionDbRow[]>`
-    SELECT s.id, s.weight, s.daily_cap, s.status, s.status_at, s.next_send_at, s.cooldown_until, s.reachout_until, s.warning_level, s.new_contact_cap,
+    SELECT s.id, s.weight, s.daily_cap, s.status, s.status_at, s.next_send_at, s.cooldown_until, s.reachout_until, s.warning_level, s.new_contact_cap, s.warmup_started_at,
            (SELECT count(*)::int FROM public.waha_sends x
              WHERE x.session_id = s.id AND x.outcome <> 'failed'
                AND x.created_at >= date_trunc('day', clock_timestamp() AT TIME ZONE 'Asia/Jakarta') AT TIME ZONE 'Asia/Jakarta') AS sent_today,
@@ -86,6 +89,7 @@ export async function listPoolSessions(db: Db, only?: string): Promise<{ readonl
       reachoutUntil: r.reachout_until,
       warning: r.warning_level,
       newContactCap: r.new_contact_cap,
+      warmupStartedAt: r.warmup_started_at,
       newContactsToday: r.new_contacts_today,
     })),
   };

@@ -1220,6 +1220,7 @@ exports[`hardening > pins the full privilege matrix 1`] = `
   "worker_rw UPDATE public.delivery_openers(status)",
   "worker_rw UPDATE public.delivery_openers(tried_session_ids)",
   "worker_rw UPDATE public.delivery_openers(updated_at)",
+  "worker_rw UPDATE public.delivery_openers(variant_key)",
   "worker_rw UPDATE public.delivery_openers(wa_message_id)",
   "worker_rw UPDATE public.heartbeats",
   "worker_rw UPDATE public.midtrans_attempts(gateway_checked_at)",

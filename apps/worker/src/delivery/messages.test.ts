@@ -1,6 +1,6 @@
 import { escapeHtml, TemplateError } from "@ebooktrivia/core";
 import { describe, expect, it } from "vitest";
-import { emailMessage, htmlSourceToText, openerMessage, pdfOnlyCaption, replyText, type ReplyKind, type StoredTemplate, TemplateMissing, whatsappCaption } from "./messages.ts";
+import { emailMessage, htmlSourceToText, openerMessage, openerWording, pdfOnlyCaption, replyText, type ReplyKind, type StoredTemplate, TemplateMissing, whatsappCaption } from "./messages.ts";
 
 const PLAY = "https://play.example.test";
 const LINK = "https://play.example.test/masuk#c=email&t=abcDEF0123456789abcDEF0123456789abcDEF01234";
@@ -34,25 +34,63 @@ describe("whatsappCaption", () => {
 });
 
 describe("openerMessage (the short text of the WhatsApp opener, Owner decision D7)", () => {
-  const variants: StoredTemplate[] = [
-    { subject: null, body: "Halo {nama}, ebook {judul_ebook} sudah siap. Balas ya." },
-    { subject: null, body: "Hai {nama}! Pesanan {order_id} sudah dibayar, balas pesan ini." },
-  ];
+  const wording: StoredTemplate = { subject: null, body: "Halo {nama}, ebook {judul_ebook} sudah siap ({order_id}). Balas ya." };
   const v = { firstName: "Budi", title: "Ebook Nusantara", code: "7K3M9XQ2PA" };
+  // 10:00 WIB: "Selamat pagi" (a draw at or above 1/3 keeps the time's greeting).
+  const morning = new Date("2027-06-01T10:00:00+07:00");
 
-  it("picks one of the variants by the random draw and puts the first name, the title and the code in it, as plain text", () => {
-    expect(openerMessage(variants, v, () => 0)).toBe("Halo Budi, ebook Ebook Nusantara sudah siap. Balas ya.");
-    expect(openerMessage(variants, v, () => 0.99)).toBe("Hai Budi! Pesanan 7K3M9XQ2PA sudah dibayar, balas pesan ini.");
-    // A draw of exactly 1 (or more) never runs off the list.
-    expect(openerMessage(variants, v, () => 1)).toContain("Hai Budi");
+  it("puts the first name, the title and the code in the wording, as plain text", () => {
+    expect(openerMessage(wording, v, morning, () => 0.9)).toBe("Halo Budi, ebook Ebook Nusantara sudah siap (7K3M9XQ2PA). Balas ya.");
+    expect(openerMessage({ subject: null, body: "Hai {nama}! Pesanan {order_id}." }, { ...v, firstName: "*Bu_di*" }, morning, () => 0.9)).toBe("Hai Budi! Pesanan 7K3M9XQ2PA.");
   });
 
   it("greets a buyer without a usable first name with a neutral address, never an empty one", () => {
-    expect(openerMessage(variants, { ...v, firstName: "" }, () => 0)).toBe("Halo Kak, ebook Ebook Nusantara sudah siap. Balas ya.");
+    expect(openerMessage(wording, { ...v, firstName: "" }, morning, () => 0.9)).toBe("Halo Kak, ebook Ebook Nusantara sudah siap (7K3M9XQ2PA). Balas ya.");
   });
 
-  it("with no variant at all it is a missing template, never a blank message", () => {
-    expect(() => openerMessage([], v, () => 0)).toThrow(TemplateMissing);
+  it("renders {sapaan} from the clock in Jakarta, or a casual Halo / Hai on the one draw in three below 1/3", () => {
+    const greeting: StoredTemplate = { subject: null, body: "{sapaan} {nama}, pesanan Anda siap." };
+    expect(openerMessage(greeting, v, new Date("2027-06-01T10:59:00+07:00"), () => 0.9)).toBe("Selamat pagi Budi, pesanan Anda siap.");
+    expect(openerMessage(greeting, v, new Date("2027-06-01T11:00:00+07:00"), () => 0.9)).toBe("Selamat siang Budi, pesanan Anda siap.");
+    expect(openerMessage(greeting, v, new Date("2027-06-01T15:00:00+07:00"), () => 0.9)).toBe("Selamat sore Budi, pesanan Anda siap.");
+    expect(openerMessage(greeting, v, new Date("2027-06-01T18:00:00+07:00"), () => 0.9)).toBe("Selamat malam Budi, pesanan Anda siap.");
+    expect(openerMessage(greeting, v, new Date("2027-06-01T03:59:00+07:00"), () => 0.9)).toBe("Selamat malam Budi, pesanan Anda siap.");
+    expect(openerMessage(greeting, v, morning, () => 0)).toBe("Halo Budi, pesanan Anda siap.");
+    expect(openerMessage(greeting, v, morning, (() => { const draws = [0.2, 0.9]; return () => draws.shift() ?? 0; })())).toBe("Hai Budi, pesanan Anda siap.");
+  });
+
+  it("draws each [[a|b]] choice with the same random source", () => {
+    const choice: StoredTemplate = { subject: null, body: "[[Halo|Hai]] {nama}, [[cukup|tinggal]] balas ya." };
+    expect(openerMessage(choice, v, morning, () => 0)).toBe("Halo Budi, cukup balas ya.");
+    expect(openerMessage(choice, v, morning, () => 0.99)).toBe("Hai Budi, tinggal balas ya.");
+  });
+
+  it("never renders a login link or a code: an opener that mentions one is refused", () => {
+    expect(() => openerMessage({ subject: null, body: "{link_trivia}" }, v, morning, () => 0)).toThrow(TemplateError);
+  });
+});
+
+describe("openerWording (the wording an opener was claimed with)", () => {
+  const variants = [
+    { key: "delivery_opener_1", subject: null, body: "satu" },
+    { key: "delivery_opener_2", subject: null, body: "dua" },
+    { key: "delivery_opener_4", subject: null, body: "empat" },
+  ];
+
+  it("returns the claimed wording", () => {
+    expect(openerWording(variants, "delivery_opener_4", () => 0).body).toBe("empat");
+    expect(openerWording(variants, "delivery_opener_2", () => 0.99).body).toBe("dua");
+  });
+
+  it("when the claimed wording was removed (or none was claimed) draws another one: nothing breaks", () => {
+    expect(openerWording(variants, "delivery_opener_3", () => 0).body).toBe("satu");
+    expect(openerWording(variants, null, () => 0.99).body).toBe("empat");
+    // A draw of exactly 1 never runs off the list.
+    expect(openerWording(variants, "delivery_opener_9", () => 1).body).toBe("empat");
+  });
+
+  it("with no wording at all it is a missing template, never a blank message", () => {
+    expect(() => openerWording([], "delivery_opener_1", () => 0)).toThrow(TemplateMissing);
   });
 });
 

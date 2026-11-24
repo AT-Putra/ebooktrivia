@@ -16,6 +16,7 @@ const sessionInput = (form: FormData, serverId: string) =>
   parseWahaSession(
     { serverId, sessionName: formValue(form, "sessionName"), phone: formValue(form, "phone"), weight: formValue(form, "weight"), dailyCap: formValue(form, "dailyCap") },
     checkbox(form, "active"),
+    checkbox(form, "established"),
   );
 
 export const createWahaServerAction = adminAction({ permission: "waha.edit" }, async ({ rt }, _previous: SaveState, form: FormData): Promise<SaveState> =>

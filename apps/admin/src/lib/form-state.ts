@@ -58,7 +58,7 @@ export const INITIAL_SAVE: SaveState = { status: "idle" };
 /** The template preview (US-017): WhatsApp text, or an e-mail document for a sandboxed iframe. */
 export type PreviewState =
   | { readonly status: "idle" }
-  | { readonly status: "preview"; readonly at: number; readonly channel: "whatsapp" | "email"; readonly subject: string | null; readonly body: string }
+  | { readonly status: "preview"; readonly at: number; readonly channel: "whatsapp" | "email"; readonly subject: string | null; readonly body: string; readonly note: string | null }
   | { readonly status: "error"; readonly at: number; readonly error: string };
 
 export const INITIAL_PREVIEW: PreviewState = { status: "idle" };

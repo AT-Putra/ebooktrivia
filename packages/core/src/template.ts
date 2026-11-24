@@ -41,8 +41,20 @@
 // Redacted renders (previews, logs) never call the resolver: `{secret:name}` becomes
 // `[secret:name]`, and {kode_otp} / {link_trivia} (a login code and a login link) become
 // `[kode_otp]` / `[link_trivia]`.
+//
+// {sapaan} (greeting.ts) is a system value: the caller renders it at send time and passes it in; only the greetings
+// greeting.ts can produce are accepted.
+//
+// Choices (WhatsApp only): `[[Halo|Hai]]` is replaced at render time by ONE of its options, drawn with `options.random` (default:
+// the operating system's CSPRNG), before anything else is parsed, so an option can never add a variable or a brace. A choice has 2
+// to 5 options of plain text (no `{`, `}` or nested `[[`), `[[` and `]]` must balance, and the template's length limit applies to
+// the expansion with the LONGEST option (longestChoiceExpansion). E-mail (subject and HTML) refuses `[[` and `]]` altogether: an
+// option is free text, and in HTML it could close an attribute or a tag, which no single scan of the template could rule out for
+// every combination of options.
+import { randomInt } from "node:crypto";
+import { SAPAAN_VALUES } from "./greeting.ts";
 
-export const MESSAGE_VARIABLES = ["nama", "judul_ebook", "order_id", "link_trivia", "kode_otp"] as const;
+export const MESSAGE_VARIABLES = ["nama", "judul_ebook", "order_id", "link_trivia", "kode_otp", "sapaan"] as const;
 export type MessageVariable = (typeof MESSAGE_VARIABLES)[number];
 export type MessageValues = Readonly<Partial<Record<MessageVariable, string>>>;
 export type MessageChannel = "whatsapp" | "email_html" | "email_subject";
@@ -50,6 +62,8 @@ export type MessageChannel = "whatsapp" | "email_html" | "email_subject";
 export interface MessageRenderOptions {
   /** Expected origin of {link_trivia}, e.g. "https://play.example.id". Required to render it. */
   readonly linkOrigin?: string;
+  /** Uniform in [0, 1): picks the option of each `[[a|b]]` choice (WhatsApp). Default: the operating system's CSPRNG. A test passes its own. */
+  readonly random?: () => number;
 }
 
 /** Login material: never written to previews or logs. */
@@ -95,7 +109,8 @@ export type TemplateErrorCode =
   | "host_mismatch"
   | "insecure_scheme"
   | "secret_unresolved"
-  | "secret_binding";
+  | "secret_binding"
+  | "invalid_choice";
 
 export class TemplateError extends Error {
   readonly code: TemplateErrorCode;
@@ -422,6 +437,65 @@ function scanEmailHtml(template: string): Token[] {
   return tokens;
 }
 
+// ---------------------------------------------------------------- choices
+
+export const CHOICE_MIN_OPTIONS = 2;
+export const CHOICE_MAX_OPTIONS = 5;
+
+export type ChoicePart = { readonly kind: "text"; readonly text: string } | { readonly kind: "choice"; readonly options: readonly string[] };
+
+const invalidChoice = (why: string): TemplateError => new TemplateError("invalid_choice", why);
+
+/** Uniform in [0, 1) from the operating system's CSPRNG (47 bits: exact in a double). */
+const csprng = (): number => randomInt(2 ** 47) / 2 ** 47;
+
+/** True when the text holds `[[` or `]]` (e-mail templates refuse both). */
+const hasChoiceMarker = (template: string): boolean => template.includes("[[") || template.includes("]]");
+
+/** Splits a template into plain text and `[[a|b|c]]` choices; throws invalid_choice for any that breaks the rules in the header. */
+export function parseChoices(template: string): ChoicePart[] {
+  const parts: ChoicePart[] = [];
+  const pushText = (text: string): void => {
+    if (text.includes("]]")) throw invalidChoice("a ]] has no [[ before it");
+    if (text !== "") parts.push({ kind: "text", text });
+  };
+  let at = 0;
+  for (;;) {
+    const open = template.indexOf("[[", at);
+    if (open < 0) break;
+    pushText(template.slice(at, open));
+    const close = template.indexOf("]]", open + 2);
+    if (close < 0) throw invalidChoice("a [[ is never closed with ]]");
+    const inner = template.slice(open + 2, close);
+    if (inner.includes("[[")) throw invalidChoice("[[...]] choices cannot be nested");
+    if (/[{}]/.test(inner)) throw invalidChoice("the options of a [[...]] choice are plain text: no { or } (no variable) inside");
+    const options = inner.split("|");
+    if (options.length < CHOICE_MIN_OPTIONS || options.length > CHOICE_MAX_OPTIONS) {
+      throw invalidChoice(`a [[...]] choice needs ${String(CHOICE_MIN_OPTIONS)} to ${String(CHOICE_MAX_OPTIONS)} options separated by |`);
+    }
+    if (options.some((option) => option.trim() === "")) throw invalidChoice("an option of a [[...]] choice is empty");
+    parts.push({ kind: "choice", options });
+    at = close + 2;
+  }
+  pushText(template.slice(at));
+  return parts;
+}
+
+/** The template with each choice replaced by one option (uniform, `random` or the CSPRNG). */
+export function expandChoices(template: string, random: () => number = csprng): string {
+  return parseChoices(template)
+    .map((part) => (part.kind === "text" ? part.text : (part.options[Math.min(part.options.length - 1, Math.floor(random() * part.options.length))] ?? "")))
+    .join("");
+}
+
+/** The template with each choice replaced by its longest option: the text a length limit is checked on. */
+export function longestChoiceExpansion(template: string): string {
+  const length = (text: string): number => Array.from(text).length;
+  return parseChoices(template)
+    .map((part) => (part.kind === "text" ? part.text : part.options.reduce((longest, option) => (length(option) > length(longest) ? option : longest))))
+    .join("");
+}
+
 // ---------------------------------------------------------------- message templates
 
 const OTP_CODE = /^[0-9]{6}$/;
@@ -459,6 +533,10 @@ function systemValue(name: MessageVariable, value: string, options: MessageRende
     return value;
   }
   if (name === "link_trivia") return triviaLink(value, options);
+  if (name === "sapaan") {
+    if (!SAPAAN_VALUES.includes(value)) throw new TemplateError("invalid_value", "sapaan is not one of the greetings");
+    return value;
+  }
   return undefined;
 }
 
@@ -481,7 +559,10 @@ function renderMessageTokens(
   options: MessageRenderOptions,
   redact: boolean,
 ): string {
-  const tokens = channel === "email_html" ? scanEmailHtml(template) : parse(template, MESSAGE_VARIABLES, false, "strict");
+  let source = template;
+  if (channel === "whatsapp") source = expandChoices(template, options.random);
+  else if (hasChoiceMarker(template)) throw new TemplateError("invalid_choice", "[[...]] choices are only for WhatsApp templates, not e-mail");
+  const tokens = channel === "email_html" ? scanEmailHtml(source) : parse(source, MESSAGE_VARIABLES, false, "strict");
   let out = "";
   for (const token of tokens) {
     if (token.kind === "text") {

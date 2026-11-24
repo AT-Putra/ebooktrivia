@@ -9,7 +9,7 @@ import { bpsToPercent, MIDTRANS_METHODS, parseMethodsAndFees, parseServerKey, pe
 import { graceEndDay, lastSalesDay, salesWindow, wibDay } from "./programs.ts";
 import { parseSecret } from "./secrets.ts";
 import { parseSmtp } from "./smtp.ts";
-import { maskPhone, parseTemplate, preview } from "./templates.ts";
+import { isOpenerKey, maskPhone, parseTemplate, preview, templateEntry } from "./templates.ts";
 import { parseWahaSession } from "./waha.ts";
 
 const refused = (fn: () => unknown): string => {
@@ -213,6 +213,12 @@ describe("WAHA sessions", () => {
       expect(() => parseWahaSession({ ...values, ...change }, true), JSON.stringify(change)).toThrow(InvalidInput);
     }
   });
+
+  it("a session is a new number (warm-up) unless 'Established number' is ticked", () => {
+    expect(parseWahaSession(values, true).established).toBe(false);
+    expect(parseWahaSession(values, true, false).established).toBe(false);
+    expect(parseWahaSession(values, true, true).established).toBe(true);
+  });
 });
 
 describe("message templates", () => {
@@ -235,6 +241,80 @@ describe("message templates", () => {
     ["the OTP template without the code", "otp", "whatsapp", "Masuk sekarang", /must contain \{kode_otp\}/],
   ])("refuses %s", (_what, key, channel, body, message) => {
     expect(refused(() => parseTemplate(key, channel as "whatsapp" | "email", { subject: "Subjek", body }))).toMatch(message);
+  });
+
+  it("{sapaan} is for openers only, and the e-mail and the other WhatsApp templates refuse it", () => {
+    expect(parseTemplate("delivery_opener_4", "whatsapp", { subject: "", body: "{sapaan} {nama}, balas ya." }).body).toBe("{sapaan} {nama}, balas ya.");
+    expect(parseTemplate("delivery_opener_12", "whatsapp", { subject: "", body: "{sapaan} {nama}" }).body).toBe("{sapaan} {nama}");
+    expect(refused(() => parseTemplate("delivery", "whatsapp", { subject: "", body: "{sapaan} {nama}" }))).toMatch(/cannot have/);
+    expect(refused(() => parseTemplate("otp", "whatsapp", { subject: "", body: "{sapaan} {kode_otp}" }))).toMatch(/cannot have/);
+    expect(refused(() => parseTemplate("delivery", "email", { subject: "Ebook", body: "<p>{sapaan}</p>" }))).toMatch(/cannot have/);
+  });
+
+  it("only delivery_opener_N keys are openers, and an unknown key is refused", () => {
+    expect(templateEntry("delivery_opener_1")?.variables).not.toContain("link_trivia");
+    expect(templateEntry("delivery_opener_20")).toBeDefined();
+    for (const key of ["delivery_opener_", "delivery_opener_0", "delivery_opener_01", "delivery_opener_x", "delivery_opener_1x", "xdelivery_opener_1", "delivery_openers", "nope"]) {
+      expect(templateEntry(key), key).toBeUndefined();
+      expect(isOpenerKey(key), key).toBe(false);
+    }
+    expect(refused(() => parseTemplate("delivery_opener_x", "whatsapp", { subject: "", body: "Halo" }))).toMatch(/Unknown template/);
+  });
+
+  it.each([
+    ["a choice with two options", "[[Halo|Hai]] {nama}"],
+    ["a choice with five options", "[[a|b|c|d|e]] {nama}"],
+    ["two choices in one text", "[[Halo|Hai]] {nama}, [[cukup|tinggal]] balas ya."],
+    ["an option with spaces and punctuation", "[[Halo, apa kabar?|Hai!]] {nama}"],
+  ])("accepts %s in an opener and in the delivery text", (_what, body) => {
+    expect(parseTemplate("delivery_opener_1", "whatsapp", { subject: "", body }).body).toBe(body);
+    expect(parseTemplate("delivery", "whatsapp", { subject: "", body }).body).toBe(body);
+  });
+
+  it.each([
+    ["a choice that is never closed", "[[Halo|Hai {nama}", /never closed/],
+    ["a ]] without a [[", "Halo|Hai]] {nama}", /no \[\[ before it/],
+    ["nested choices", "[[a|[[b|c]]]] {nama}", /nested/],
+    ["a choice with one option", "[[Halo]] {nama}", /2 to 5 options/],
+    ["an empty choice", "[[]] {nama}", /2 to 5 options/],
+    ["a choice with six options", "[[a|b|c|d|e|f]] {nama}", /2 to 5 options/],
+    ["an empty option", "[[Halo||Hai]] {nama}", /option .* is empty/],
+    ["an option of only spaces", "[[Halo| ]] {nama}", /option .* is empty/],
+    ["a variable inside an option", "[[Halo|{nama}]]", /no \{ or \}/],
+    ["a brace inside an option", "[[Halo|Ha}i]] {nama}", /no \{ or \}/],
+  ])("refuses %s, saying what is wrong", (_what, body, message) => {
+    expect(refused(() => parseTemplate("delivery_opener_1", "whatsapp", { subject: "", body }))).toMatch(message);
+  });
+
+  it("refuses [[ ]] in an e-mail (subject and body), where an option could break out of a tag", () => {
+    expect(refused(() => parseTemplate("delivery", "email", { subject: "Ebook", body: "<p>[[Halo|Hai]] {nama}</p>" }))).toMatch(/only for WhatsApp/);
+    expect(refused(() => parseTemplate("delivery", "email", { subject: "[[a|b]] ebook", body: "<p>{nama}</p>" }))).toMatch(/only for WhatsApp/);
+  });
+
+  it("the length limit counts each choice at its LONGEST option", () => {
+    const longOption = "x".repeat(2000);
+    // 3 x 2000 characters when every choice takes its longest option: over 4000, although any single pick could be shorter.
+    const body = `[[a|${longOption}]] [[b|${longOption}]] [[c|${longOption}]]`;
+    expect(refused(() => parseTemplate("delivery_opener_1", "whatsapp", { subject: "", body }))).toMatch(/1 to 4,000 characters .*longest option/);
+    // Exactly at the limit with the longest options is allowed.
+    const fits = `[[a|${"y".repeat(1999)}]] [[b|${"y".repeat(1999)}]]`;
+    expect(parseTemplate("delivery_opener_1", "whatsapp", { subject: "", body: fits }).body).toBe(fits);
+    // A plain text over the limit is still refused.
+    expect(refused(() => parseTemplate("delivery_opener_1", "whatsapp", { subject: "", body: "z".repeat(4001) }))).toMatch(/1 to 4,000 characters/);
+  });
+
+  it("previews one pick of each choice, says it is random, and explains {sapaan}; a text without either has no note", () => {
+    const picks = new Set<string>();
+    for (let i = 0; i < 60; i++) picks.add(preview("delivery_opener_1", "whatsapp", { subject: null, body: "[[Halo|Hai]] {nama}" }, "Budi").body);
+    expect([...picks].sort()).toEqual(["Hai Budi", "Halo Budi"]);
+    const withChoice = preview("delivery_opener_1", "whatsapp", { subject: null, body: "[[Halo|Hai]] {nama}" }, "Budi");
+    expect(withChoice.note).toMatch(/picked at random/);
+    const withGreeting = preview("delivery_opener_1", "whatsapp", { subject: null, body: "{sapaan} {nama}" }, "Budi");
+    expect(withGreeting.body).toMatch(/^(Selamat pagi|Selamat siang|Selamat sore|Selamat malam|Halo|Hai) Budi$/);
+    expect(withGreeting.note).toMatch(/\{sapaan\}.*Jakarta/);
+    expect(preview("delivery_opener_1", "whatsapp", { subject: null, body: "[[a|b]] {sapaan}" }, "Budi").note).toMatch(/random.*Jakarta/);
+    expect(preview("delivery", "whatsapp", { subject: null, body: "Halo {nama}" }, "Budi").note).toBeNull();
+    expect(preview("delivery", "email", { subject: "S", body: "<p>{nama}</p>" }, "Budi").note).toBeNull();
   });
 
   it("previews with the sample name encoded: no HTML or script injection", () => {

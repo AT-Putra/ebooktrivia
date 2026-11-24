@@ -72,6 +72,12 @@ export const wahaSessions = pgTable(
     /** US-025: the number's daily budget of NEW contacts (an opener or a login code to a chat it has no history with), separate from replies. */
     newContactCap: integer("new_contact_cap").notNull().default(30),
     /**
+     * When this number's warm-up started (core delivery-pool WARMUP_DAYS): its daily budget of NEW contacts is held down for the first 21 WIB days. NULL = an
+     * established number, no warm-up. Set by the console (a new session, or an established number switched back to warming up); migration 0026 started it for
+     * the numbers that existed then.
+     */
+    warmupStartedAt: tstz("warmup_started_at"),
+    /**
      * US-025: WhatsApp's limits on this number as WAHA reports them (docs, Sessions: Reachout timelock, Message capping), persisted from the health poll, the
      * session.status webhook and every 463 / 475. The shapes are RECORDED (US-005, WAHA 2026.10.1: an unrestricted account); 463 / 475 are documented only. `capping_status` is an open set (NONE, FIRST_WARNING, SECOND_WARNING, CAPPED).
      */
@@ -230,6 +236,11 @@ export const deliveryOpeners = pgTable(
     waMessageId: text("wa_message_id"),
     sentAt: tstz("sent_at"),
     lastError: text("last_error"),
+    /**
+     * The key of the wording (message_templates.key, `delivery_opener_N`) this opener was claimed with: a number does not repeat the wordings of its last 3
+     * openers (core pickOpenerWording). Text, no foreign key: the Owner may remove a wording, and the row keeps saying which one it used. NULL before 0026.
+     */
+    variantKey: text("variant_key"),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },

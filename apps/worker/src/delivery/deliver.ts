@@ -72,7 +72,7 @@ import { ContactCacheError, type ContactResolution, knownChatsOf, resolveContact
 import { DELIVERED_WRONG_FILE, deliveredSize, FILE_UNAVAILABLE, type WrongFile, wrongFile } from "./file-check.ts";
 import { refreshSessionLimits } from "./health.ts";
 import { cryptoRandom, sendLikeAHuman } from "./human.ts";
-import { emailMessage, loadOpenerTemplates, loadTemplate, openerMessage, TemplateMissing, whatsappCaption } from "./messages.ts";
+import { emailMessage, loadOpenerTemplates, loadTemplate, openerMessage, openerWording, pickOpenerVariant, TemplateMissing, whatsappCaption } from "./messages.ts";
 import { claimSession, closeSend, markReachoutBlocked, recordSessionOutcome } from "./pool.ts";
 import { type EbookFiles, MagicLinkUnavailable, type MagicLinks, MailAccessError, type MailSender, type WahaAccess, WahaAccessError } from "./ports.ts";
 
@@ -171,6 +171,8 @@ export interface OpenerContext {
   readonly whatsapp: { readonly sessionId: string; readonly startAt: Date };
   /** The pool's ledger row of this claim (pool.ts closeSend: its end state, or taken back when nothing went out). */
   readonly sendId: string;
+  /** The wording this claim picked (delivery_openers.variant_key; null when there was none to pick). */
+  readonly variantKey: string | null;
   readonly claimedAt: number;
 }
 
@@ -214,9 +216,9 @@ export function openerColumns(set: OpenerPatch, now: Date): Record<string, strin
 }
 
 /** The expected state of an opener decision, as the WHERE of its UPDATE. */
-async function applyOpenerDecision(tx: postgres.TransactionSql, deliveryId: string, decision: OpenerDecision & { ok: true }, now: Date): Promise<void> {
+async function applyOpenerDecision(tx: postgres.TransactionSql, deliveryId: string, decision: OpenerDecision & { ok: true }, now: Date, extra: Record<string, string | null> = {}): Promise<void> {
   const result = await tx`
-    UPDATE public.delivery_openers SET ${tx(openerColumns(decision.set, now))}
+    UPDATE public.delivery_openers SET ${tx({ ...openerColumns(decision.set, now), ...extra })}
      WHERE delivery_id = ${deliveryId} AND status = ${decision.expect.status} AND attempts = ${decision.expect.attempts}`;
   if (result.count !== 1) throw new Error("delivery_openers row changed under its row lock");
 }
@@ -295,6 +297,8 @@ export function createDelivery(deps: DeliveryDeps): Delivery {
   const { sql, log, config } = deps;
   // The slot and contact gaps are drawn from the operating system's random source too (not Math.random): the pacing is part of what makes the sends look human.
   const random = deps.random ?? cryptoRandom;
+  // The opener's wording, its {sapaan} and its [[a|b]] choices: the human-like random source (a test passes its own).
+  const wordingRandom = deps.humanRandom ?? cryptoRandom;
   const clock = deps.clock ?? (() => performance.now());
   const sleep = deps.sleep ?? ((ms: number, signal: AbortSignal) => delay(ms, undefined, { signal }));
 
@@ -382,7 +386,10 @@ export function createDelivery(deps: DeliveryDeps): Delivery {
         }
         const decision = claimOpener(opener, { now: raw.now, notBefore: row.not_before, leaseMs: config.leaseMs, sessionId: picked.sessionId, retrySameSession: retrySame });
         if (!decision.ok) throw new Abandon({ kind: "skipped", reason: decision.reason });
-        await applyOpenerDecision(tx, id, decision, raw.now);
+        // The wording is picked here, after the pool's lock (claimSession) and in this transaction, so a claim for the same number that starts later sees it:
+        // a number does not repeat the wordings of its last 3 openers.
+        const variantKey = await pickOpenerVariant(tx, picked.sessionId, wordingRandom);
+        await applyOpenerDecision(tx, id, decision, raw.now, { variant_key: variantKey });
         return {
           kind: "opener",
           context: {
@@ -393,6 +400,7 @@ export function createDelivery(deps: DeliveryDeps): Delivery {
             code: row.order_code,
             whatsapp: { sessionId: picked.sessionId, startAt: picked.slot.startAt },
             sendId: picked.sendId,
+            variantKey,
             claimedAt,
           },
         };
@@ -518,8 +526,8 @@ export function createDelivery(deps: DeliveryDeps): Delivery {
     const target = context.whatsapp;
     let text: string;
     try {
-      const variants = await loadOpenerTemplates(sql);
-      text = openerMessage(variants, { firstName: firstName(context.buyer.name), title: context.product.title, code: context.code }, deps.humanRandom ?? cryptoRandom);
+      const wording = openerWording(await loadOpenerTemplates(sql), context.variantKey, wordingRandom);
+      text = openerMessage(wording, { firstName: firstName(context.buyer.name), title: context.product.title, code: context.code }, new Date(), wordingRandom);
     } catch (error) {
       return { outcome: preparationFailure(error), counts: false };
     }

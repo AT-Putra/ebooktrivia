@@ -231,6 +231,97 @@ describe("upgrading a pre-US-018 database", () => {
   }, 120_000);
 });
 
+describe("upgrading a database from before the opener variety and the warm-up (0026)", () => {
+  // The Owner-approved wordings, copied from the decision (independent of the migration and of seed.sql).
+  const APPROVED: Readonly<Record<number, string>> = {
+    4: "{sapaan} {nama}, ebook {judul_ebook} pesanan Anda sudah siap. Cukup balas pesan ini, nanti filenya kami kirim langsung di chat ini ya.",
+    5: '[[Halo|Hai]] {nama}, pembayaran {judul_ebook} sudah masuk. Boleh balas "ok" supaya ebooknya kami kirim di sini?',
+    6: "{sapaan} {nama}! Terima kasih atas pembelian {judul_ebook}. Balas chat ini kapan saja, ebooknya akan kami kirim ke nomor ini.",
+    7: "Hai {nama}, pesanan {judul_ebook} Anda sudah lunas. Supaya ebooknya bisa kami kirim lewat WhatsApp, [[cukup|tinggal]] balas pesan ini ya.",
+    8: "{sapaan} {nama}, kami mau kirim ebook {judul_ebook} yang Anda beli. Balas pesan ini dulu ya, setelah itu filenya langsung kami kirim.",
+    9: "Halo {nama}, terima kasih sudah berbelanja. Ebook {judul_ebook} siap dikirim, [[balas|jawab]] pesan ini dengan kata apa saja ya.",
+    10: "{sapaan} {nama}. Pembayaran untuk {judul_ebook} sudah kami terima, terima kasih! Silakan balas chat ini, ebooknya segera kami kirim.",
+  };
+
+  const wordings = (check: postgres.Sql) =>
+    check<{ key: string; body: string }[]>`
+      SELECT key, body FROM message_templates WHERE key LIKE 'delivery\_opener\_%' AND channel = 'whatsapp' AND locale = 'id' ORDER BY substring(key from '[0-9]+$')::int`;
+
+  it("starts the warm-up of the numbers that exist, adds wordings 4 to 10 beside the Owner's own 1 to 3 without touching them, and never puts a removed one back", async () => {
+    const name = `ebt_mig_${randomBytes(6).toString("hex")}`;
+    const admin = postgres(serverUrl(), { max: 1, onnotice });
+    await admin.unsafe(`CREATE DATABASE ${name}`);
+    const folder = migrationsUpTo(25);
+    try {
+      await deployOld(name, folder, async (old) => {
+        const [server] = await old<{ id: string }[]>`INSERT INTO waha_servers (name, base_url, base_url_host) VALUES ('S', 'https://waha.example.test/', 'waha.example.test') RETURNING id`;
+        for (const session of ["one", "two"]) await old`INSERT INTO waha_sessions (server_id, session_name) VALUES (${server?.id ?? ""}, ${session})`;
+        await old`
+          INSERT INTO message_templates (key, channel, locale, body) VALUES
+            ('delivery_opener_1', 'whatsapp', 'id', 'Halo {nama}, satu.'),
+            ('delivery_opener_2', 'whatsapp', 'id', 'Edit sang Owner untuk {nama}.'),
+            ('delivery_opener_3', 'whatsapp', 'id', 'Hai {nama}, tiga.')`;
+      });
+
+      await runMigrations(databaseUrl(name)); // applies 0026 and the sql/ files
+
+      const check = postgres(databaseUrl(name), { ...PG_CONNECTION_OPTIONS, max: 1, onnotice });
+      try {
+        // The numbers that existed are NEW numbers (Owner): their warm-up starts at the upgrade.
+        const sessions = await check<{ recent: boolean }[]>`SELECT warmup_started_at > now() - interval '5 minutes' AS recent FROM waha_sessions`;
+        expect(sessions).toEqual([{ recent: true }, { recent: true }]);
+        const rows = await wordings(check);
+        expect(rows.map((r) => r.key)).toEqual(Array.from({ length: 10 }, (_, i) => `delivery_opener_${String(i + 1)}`));
+        // 1 to 3 are untouched (an Owner's edit above all), 4 to 10 are the approved text.
+        expect(rows.slice(0, 3).map((r) => r.body)).toEqual(["Halo {nama}, satu.", "Edit sang Owner untuk {nama}.", "Hai {nama}, tiga."]);
+        for (const [n, body] of Object.entries(APPROVED)) expect(rows[Number(n) - 1]?.body, `wording ${n}`).toBe(body);
+        // The new column exists, empty on what was there.
+        expect(await check`SELECT variant_key FROM delivery_openers`).toHaveLength(0);
+
+        // The Owner removes wording 5 and marks a number as established; a later deploy (the sql/ files run every time) puts neither back.
+        await check`DELETE FROM message_templates WHERE key = 'delivery_opener_5'`;
+        await check`UPDATE waha_sessions SET warmup_started_at = NULL WHERE session_name = 'one'`;
+        await runMigrations(databaseUrl(name));
+        expect((await wordings(check)).map((r) => r.key)).not.toContain("delivery_opener_5");
+        expect(await check<{ session_name: string }[]>`SELECT session_name FROM waha_sessions WHERE warmup_started_at IS NULL`).toEqual([{ session_name: "one" }]);
+      } finally {
+        await check.end();
+      }
+    } finally {
+      rmSync(folder, { recursive: true, force: true });
+      await admin.unsafe(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`);
+      await admin.end();
+    }
+  }, 120_000);
+
+  it("a database that has no wording yet (a fresh install) is seeded with all ten, the approved text for 4 to 10", async () => {
+    const name = `ebt_mig_${randomBytes(6).toString("hex")}`;
+    const admin = postgres(serverUrl(), { max: 1, onnotice });
+    await admin.unsafe(`CREATE DATABASE ${name}`);
+    const folder = migrationsUpTo(25);
+    try {
+      await deployOld(name, folder);
+      await runMigrations(databaseUrl(name));
+      const check = postgres(databaseUrl(name), { ...PG_CONNECTION_OPTIONS, max: 1, onnotice });
+      try {
+        const rows = await wordings(check);
+        expect(rows.map((r) => r.key)).toEqual(Array.from({ length: 10 }, (_, i) => `delivery_opener_${String(i + 1)}`));
+        for (const [n, body] of Object.entries(APPROVED)) expect(rows[Number(n) - 1]?.body, `wording ${n}`).toBe(body);
+        // 1 to 3 are the original three.
+        expect(rows[0]?.body).toBe("Halo {nama}, pembayaran Anda untuk {judul_ebook} sudah kami terima. Balas pesan ini ya, ebooknya langsung kami kirim ke sini.");
+        expect(rows[1]?.body).toBe("Hai {nama}, terima kasih sudah membeli {judul_ebook}. Silakan balas pesan ini supaya ebooknya bisa kami kirim lewat WhatsApp.");
+        expect(rows[2]?.body).toBe("Selamat datang {nama}! Pesanan {judul_ebook} sudah lunas. Balas pesan ini dengan satu kata saja, nanti ebooknya kami kirim di chat ini.");
+      } finally {
+        await check.end();
+      }
+    } finally {
+      rmSync(folder, { recursive: true, force: true });
+      await admin.unsafe(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`);
+      await admin.end();
+    }
+  }, 120_000);
+});
+
 describe("upgrading a pre-US-020-review database (security review P2-D)", () => {
   it("0012 gives every existing order a 32-byte buyer_key, then requires one, and stays re-runnable", async () => {
     const name = `ebt_mig_${randomBytes(6).toString("hex")}`;

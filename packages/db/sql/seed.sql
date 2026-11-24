@@ -77,17 +77,30 @@ INSERT INTO public.message_templates (key, channel, locale, subject, body) VALUE
    E'Halo {nama}, terima kasih sudah membeli *{judul_ebook}*.\n\nEbook terlampir di pesan ini. Masuk ke trivia lewat tautan ini: {link_trivia}\n\nKode pesanan: {order_id}'),
   ('delivery', 'email', 'id', 'Ebook {judul_ebook} untuk {nama}',
    E'<p>Halo {nama},</p>\n<p>Terima kasih sudah membeli <strong>{judul_ebook}</strong>. Ebook terlampir di email ini.</p>\n<p><a href="{link_trivia}">Masuk ke trivia</a></p>\n<p>Kode pesanan: {order_id}</p>'),
-  -- The short opener (US-025, Owner decision D7): the proactive WhatsApp message to a buyer who has not written first. Text only (no file, no
-  -- link); it asks the buyer to reply, and the ebook and the login link follow the reply. The worker picks one variant at random for each
-  -- buyer; {nama} is the buyer's FIRST name here. Add or edit variants freely (keys delivery_opener_1 .. delivery_opener_3).
-  ('delivery_opener_1', 'whatsapp', 'id', NULL,
-   E'Halo {nama}, pembayaran Anda untuk {judul_ebook} sudah kami terima. Balas pesan ini ya, ebooknya langsung kami kirim ke sini.'),
-  ('delivery_opener_2', 'whatsapp', 'id', NULL,
-   E'Hai {nama}, terima kasih sudah membeli {judul_ebook}. Silakan balas pesan ini supaya ebooknya bisa kami kirim lewat WhatsApp.'),
-  ('delivery_opener_3', 'whatsapp', 'id', NULL,
-   E'Selamat datang {nama}! Pesanan {judul_ebook} sudah lunas. Balas pesan ini dengan satu kata saja, nanti ebooknya kami kirim di chat ini.'),
   ('otp', 'whatsapp', 'id', NULL,
    E'Kode masuk trivia Anda: {kode_otp}. Berlaku 5 menit. Jangan berikan kode ini kepada siapa pun.')
+ON CONFLICT (key, channel, locale) DO NOTHING;
+-- The short opener (US-025, Owner decision D7): the proactive WhatsApp message to a buyer who has not written first. Text only (no file, no
+-- link); it asks the buyer to reply, and the ebook and the login link follow the reply. The worker picks a wording at random for each buyer
+-- (never one the number used for its last 3 openers); {nama} is the buyer's FIRST name here, {sapaan} a greeting for the time of day and
+-- [[a|b]] one of its options (core template.ts). The Owner adds, edits and removes wordings in the console (keys delivery_opener_N, 3 to 20
+-- of them). This runs on every migrate, so the wordings are seeded ONLY while there is none at all: a wording the Owner removed is never put
+-- back (migration 0026 added 4 .. 10 to a database that already had wordings).
+INSERT INTO public.message_templates (key, channel, locale, subject, body)
+SELECT v.key, 'whatsapp', 'id', NULL, v.body
+  FROM (VALUES
+    ('delivery_opener_1', E'Halo {nama}, pembayaran Anda untuk {judul_ebook} sudah kami terima. Balas pesan ini ya, ebooknya langsung kami kirim ke sini.'),
+    ('delivery_opener_2', E'Hai {nama}, terima kasih sudah membeli {judul_ebook}. Silakan balas pesan ini supaya ebooknya bisa kami kirim lewat WhatsApp.'),
+    ('delivery_opener_3', E'Selamat datang {nama}! Pesanan {judul_ebook} sudah lunas. Balas pesan ini dengan satu kata saja, nanti ebooknya kami kirim di chat ini.'),
+    ('delivery_opener_4', E'{sapaan} {nama}, ebook {judul_ebook} pesanan Anda sudah siap. Cukup balas pesan ini, nanti filenya kami kirim langsung di chat ini ya.'),
+    ('delivery_opener_5', E'[[Halo|Hai]] {nama}, pembayaran {judul_ebook} sudah masuk. Boleh balas "ok" supaya ebooknya kami kirim di sini?'),
+    ('delivery_opener_6', E'{sapaan} {nama}! Terima kasih atas pembelian {judul_ebook}. Balas chat ini kapan saja, ebooknya akan kami kirim ke nomor ini.'),
+    ('delivery_opener_7', E'Hai {nama}, pesanan {judul_ebook} Anda sudah lunas. Supaya ebooknya bisa kami kirim lewat WhatsApp, [[cukup|tinggal]] balas pesan ini ya.'),
+    ('delivery_opener_8', E'{sapaan} {nama}, kami mau kirim ebook {judul_ebook} yang Anda beli. Balas pesan ini dulu ya, setelah itu filenya langsung kami kirim.'),
+    ('delivery_opener_9', E'Halo {nama}, terima kasih sudah berbelanja. Ebook {judul_ebook} siap dikirim, [[balas|jawab]] pesan ini dengan kata apa saja ya.'),
+    ('delivery_opener_10', E'{sapaan} {nama}. Pembayaran untuk {judul_ebook} sudah kami terima, terima kasih! Silakan balas chat ini, ebooknya segera kami kirim.')
+  ) AS v(key, body)
+ WHERE NOT EXISTS (SELECT 1 FROM public.message_templates WHERE key LIKE 'delivery\_opener\_%' AND channel = 'whatsapp' AND locale = 'id')
 ON CONFLICT (key, channel, locale) DO NOTHING;
 -- The first pass of US-025 had a link-free ebook template for a sender nobody confirmed; Owner decision D6 replaced it with a fixed caption (no name, no
 -- link, packages/i18n), so the row is not used by anything.

@@ -539,3 +539,172 @@ test("WAHA: the Owner deletes a never-used server and session after a two-step c
   expect(await owner.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
   await owner.setViewportSize({ width: 1280, height: 720 });
 });
+
+test("Opener wordings: Add wording creates the next one, Remove asks twice, the limits hold (3 to 20); a choice previews one pick; 390 px holds", async () => {
+  const wordings = () => admin.sql<{ id: string; key: string; body: string }[]>`
+    SELECT id, key, body FROM message_templates WHERE key ~ '^delivery_opener_[0-9]+$' AND channel = 'whatsapp' ORDER BY substring(key from '[0-9]+$')::int`;
+  const seeded = await wordings();
+  expect(seeded.map((w) => w.key)).toEqual(Array.from({ length: 10 }, (_, i) => `delivery_opener_${String(i + 1)}`));
+  await owner.goto("/settings/templates");
+  const panel = owner.getByTestId("opener-wordings");
+  await expect(panel).toContainText("10 of at most 20 (at least 3)");
+
+  // An invalid wording is refused with what is wrong with it, and nothing is added.
+  const add = owner.getByTestId("opener-add");
+  await add.getByLabel("New wording").fill("[[Halo|Hai {nama}");
+  await add.getByRole("button", { name: "Add wording" }).click();
+  await expect(add.getByRole("alert")).toContainText("never closed");
+  await add.getByLabel("New wording").fill("Halo {nama}, masuk: {link_trivia}");
+  await add.getByRole("button", { name: "Add wording" }).click();
+  await expect(add.getByRole("alert")).toContainText("cannot have");
+  expect(await wordings()).toHaveLength(10);
+
+  // A valid one becomes the next delivery_opener_N, with a card of its own, and is audited.
+  const body = "{sapaan} {nama}, [[ebook|buku]] {judul_ebook} siap. Balas ya.";
+  await add.getByLabel("New wording").fill(body);
+  await add.getByRole("button", { name: "Add wording" }).click();
+  await expect(add.getByRole("status")).toContainText("Wording added as delivery_opener_11.");
+  const card = owner.getByTestId("template-delivery_opener_11-whatsapp");
+  await expect(card).toBeVisible();
+  await expect(panel).toContainText("11 of at most 20");
+  expect((await wordings()).find((w) => w.key === "delivery_opener_11")?.body).toBe(body);
+  const created = await one(admin.sql<{ changes: { key: { after: string } } }[]>`SELECT changes FROM audit_log WHERE action = 'message_template.create' ORDER BY id DESC LIMIT 1`);
+  expect(created.changes.key.after).toBe("delivery_opener_11");
+
+  // The preview shows ONE pick of the choice and says the choice is random and what {sapaan} is.
+  const editor = card.getByTestId("template-editor");
+  await editor.getByLabel("Sample buyer name (preview only)").fill("Budi");
+  await editor.getByRole("button", { name: "Preview" }).click();
+  await expect(editor.getByTestId("preview-text")).toHaveText(/^Selamat pagi Budi, (ebook|buku) Contoh Ebook siap\. Balas ya\.$/);
+  await expect(editor.getByTestId("preview-note")).toContainText("picked at random");
+  await expect(editor.getByTestId("preview-note")).toContainText("Jakarta");
+
+  // Remove asks twice: Cancel keeps it, "Yes, remove" deletes it, and the page says so once.
+  const remove = card.getByTestId("opener-remove");
+  await remove.getByRole("button", { name: "Remove wording" }).click();
+  await expect(remove.getByRole("group", { name: /Remove this wording \(delivery_opener_11\)\?/ })).toBeVisible();
+  await remove.getByRole("button", { name: "Cancel" }).click();
+  await expect(remove.getByRole("button", { name: "Remove wording" })).toBeFocused();
+  expect(await wordings()).toHaveLength(11);
+  await remove.getByRole("button", { name: "Remove wording" }).click();
+  await remove.getByRole("button", { name: "Yes, remove" }).click();
+  await expect(owner.getByTestId("deleted-notice")).toHaveText("Wording removed.");
+  await expect(owner.getByTestId("template-delivery_opener_11-whatsapp")).toHaveCount(0);
+  expect(await wordings()).toHaveLength(10);
+  const removed = await one(admin.sql<{ changes: { key: { before: string } } }[]>`SELECT changes FROM audit_log WHERE action = 'message_template.delete' ORDER BY id DESC LIMIT 1`);
+  expect(removed.changes.key.before).toBe("delivery_opener_11");
+
+  // 390 px with the wordings, a preview and a removal warning on the page: no sideways scroll.
+  await owner.setViewportSize({ width: 390, height: 844 });
+  await owner.goto("/settings/templates");
+  const fifth = owner.getByTestId("template-delivery_opener_5-whatsapp");
+  await fifth.getByTestId("template-editor").getByRole("button", { name: "Preview" }).click();
+  await expect(fifth.getByTestId("preview-note")).toContainText("picked at random");
+  await fifth.getByTestId("opener-remove").getByRole("button", { name: "Remove wording" }).click();
+  await expect(fifth.getByTestId("opener-remove").getByRole("button", { name: "Yes, remove" })).toBeVisible();
+  expect(await owner.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+  await owner.setViewportSize({ width: 1280, height: 720 });
+
+  // The limits: at 20 there is no Add form, at 3 there is no Remove button, and both say why.
+  await admin.sql`
+    INSERT INTO message_templates (key, channel, locale, body)
+    SELECT 'delivery_opener_' || n, 'whatsapp', 'id', 'Halo {nama}, balas ya ' || n FROM generate_series(11, 20) AS n`;
+  await owner.goto("/settings/templates");
+  await expect(panel).toContainText("20 of at most 20");
+  await expect(owner.getByTestId("opener-add")).toHaveCount(0);
+  await expect(panel).toContainText("That is the most there can be");
+  await admin.sql`DELETE FROM message_templates WHERE key ~ '^delivery_opener_([4-9]|1[0-9]|20)$' AND channel = 'whatsapp'`;
+  await owner.goto("/settings/templates");
+  await expect(panel).toContainText("3 of at most 20");
+  await expect(owner.getByTestId("opener-remove")).toHaveCount(0);
+  await expect(owner.getByTestId("opener-remove-hint")).toHaveCount(3);
+  await expect(owner.getByTestId("opener-remove-hint").first()).toHaveText("At least 3 wordings stay: add another before removing this one.");
+  // Put the Owner's ten back for whatever runs next.
+  for (const w of seeded.filter((s) => !["delivery_opener_1", "delivery_opener_2", "delivery_opener_3"].includes(s.key))) {
+    await admin.sql`INSERT INTO message_templates (key, channel, locale, body) VALUES (${w.key}, 'whatsapp', 'id', ${w.body})`;
+  }
+  expect(await wordings()).toHaveLength(10);
+});
+
+test("WhatsApp numbers: the panel says where the warm-up is, a new session warms up unless it is established, and the box toggles it; 390 px holds", async () => {
+  const serverName = `Pemanasan ${stamp}`;
+  await owner.goto("/settings/waha");
+  const create = owner.getByTestId("waha-create");
+  await create.getByLabel("Name").fill(serverName);
+  await create.getByLabel("Base URL (https)").fill(`https://waha-warm-${stamp}.example.test/`);
+  await create.getByRole("button", { name: "Add server" }).click();
+  await expect(create.getByRole("status")).toContainText("Server added");
+  const server = await one(admin.sql<{ id: string }[]>`SELECT id FROM waha_servers WHERE name = ${serverName}`);
+  const card = owner.getByTestId(`waha-${server.id}`);
+  const addForm = card.locator("form").filter({ has: owner.getByRole("button", { name: "Add session" }) });
+  const sessionOf = async (name: string) =>
+    one(admin.sql<{ id: string; warmup: boolean }[]>`SELECT id, warmup_started_at IS NOT NULL AS warmup FROM waha_sessions WHERE server_id = ${server.id} AND session_name = ${name}`);
+
+  // The add form: a new number warms up by default; the box is unticked.
+  await expect(addForm.getByLabel("Established number (skip warm-up)")).not.toBeChecked();
+  await addForm.getByLabel("Session name").fill("baru");
+  await addForm.getByRole("button", { name: "Add session" }).click();
+  await expect.poll(async () => (await admin.sql`SELECT 1 FROM waha_sessions WHERE server_id = ${server.id} AND session_name = 'baru'`).length).toBe(1);
+  expect((await sessionOf("baru")).warmup).toBe(true);
+  // Ticked: an established number from the start.
+  await addForm.getByLabel("Session name").fill("lama");
+  await addForm.getByLabel("Established number (skip warm-up)").check();
+  await addForm.getByRole("button", { name: "Add session" }).click();
+  await expect.poll(async () => (await admin.sql`SELECT 1 FROM waha_sessions WHERE server_id = ${server.id} AND session_name = 'lama'`).length).toBe(1);
+  expect((await sessionOf("lama")).warmup).toBe(false);
+
+  // The line of each panel: day X of 21 and today's limit of NEW people (5 / 10 / 20 by week, then the number's own cap, whichever is lower), or "Established number".
+  const baru = await sessionOf("baru");
+  const lama = await sessionOf("lama");
+  const mid = await one(admin.sql<{ id: string }[]>`INSERT INTO waha_sessions (server_id, session_name, active, warmup_started_at) VALUES (${server.id}, 'minggu2', false, now() - interval '9 days') RETURNING id`);
+  const late = await one(admin.sql<{ id: string }[]>`INSERT INTO waha_sessions (server_id, session_name, active, warmup_started_at, new_contact_cap) VALUES (${server.id}, 'minggu3', false, now() - interval '15 days', 12) RETURNING id`);
+  const done = await one(admin.sql<{ id: string }[]>`INSERT INTO waha_sessions (server_id, session_name, active, warmup_started_at, new_contact_cap) VALUES (${server.id}, 'selesai', false, now() - interval '30 days', 25) RETURNING id`);
+  const small = await one(admin.sql<{ id: string }[]>`INSERT INTO waha_sessions (server_id, session_name, active, warmup_started_at, new_contact_cap) VALUES (${server.id}, 'kecil', false, now(), 3) RETURNING id`);
+  await owner.goto("/settings/waha");
+  const line = (id: string) => card.getByTestId(`waha-session-${id}`).getByTestId("waha-warmup");
+  await expect(line(baru.id)).toHaveText("Warm-up: day 1 of 21 - today's new-people limit 5");
+  await expect(line(mid.id)).toHaveText("Warm-up: day 10 of 21 - today's new-people limit 10");
+  await expect(line(late.id)).toHaveText("Warm-up: day 16 of 21 - today's new-people limit 12");
+  await expect(line(done.id)).toHaveText("Warm-up finished - today's new-people limit 25");
+  await expect(line(small.id)).toHaveText("Warm-up: day 1 of 21 - today's new-people limit 3");
+  await expect(line(lama.id)).toHaveText("Established number");
+  await expect(card.getByTestId(`waha-session-${lama.id}`).getByLabel("Established number (skip warm-up)")).toBeChecked();
+  await expect(card.getByTestId(`waha-session-${baru.id}`).getByLabel("Established number (skip warm-up)")).not.toBeChecked();
+
+  // Tick it on a warming number: the warm-up ends, audited. Untick it: the warm-up restarts from today.
+  const row = card.getByTestId(`waha-session-${mid.id}`);
+  await row.getByLabel("Established number (skip warm-up)").check();
+  await row.getByRole("button", { name: "Save session" }).click();
+  await expect(line(mid.id)).toHaveText("Established number");
+  expect((await sessionOf("minggu2")).warmup).toBe(false);
+  const ended = await one(admin.sql<{ changes: { warmup_started_at: { before: string; after: string | null } } }[]>`SELECT changes FROM audit_log WHERE action = 'waha_session.update' AND entity_id = ${mid.id} ORDER BY id DESC LIMIT 1`);
+  expect(ended.changes.warmup_started_at.before).toEqual(expect.any(String));
+  expect(ended.changes.warmup_started_at.after).toBeNull();
+  await row.getByLabel("Established number (skip warm-up)").uncheck();
+  await row.getByRole("button", { name: "Save session" }).click();
+  await expect(line(mid.id)).toHaveText("Warm-up: day 1 of 21 - today's new-people limit 5");
+  expect((await sessionOf("minggu2")).warmup).toBe(true);
+  // Saving another field of a warming number leaves its day count alone.
+  const before = await one(admin.sql<{ w: Date }[]>`SELECT warmup_started_at AS w FROM waha_sessions WHERE id = ${late.id}`);
+  const lateRow = card.getByTestId(`waha-session-${late.id}`);
+  await lateRow.getByLabel("Weight").fill("2");
+  await lateRow.getByRole("button", { name: "Save session" }).click();
+  await expect(lateRow.getByRole("status")).toContainText("Session saved");
+  await expect(line(late.id)).toHaveText("Warm-up: day 16 of 21 - today's new-people limit 12");
+  const after = await one(admin.sql<{ w: Date }[]>`SELECT warmup_started_at AS w FROM waha_sessions WHERE id = ${late.id}`);
+  expect(after.w.getTime()).toBe(before.w.getTime());
+
+  // 390 px: each session stays in its own bordered panel, the line and the box fit, nothing scrolls sideways.
+  await owner.setViewportSize({ width: 390, height: 844 });
+  await owner.goto("/settings/waha");
+  await expect(line(baru.id)).toBeVisible();
+  await expect(card.getByTestId(`waha-session-${lama.id}`).getByLabel("Established number (skip warm-up)")).toBeVisible();
+  expect(await owner.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+  for (const id of [baru.id, lama.id, mid.id, late.id, done.id, small.id]) {
+    const box = await card.getByTestId(`waha-session-${id}`).boundingBox();
+    expect(box).not.toBeNull();
+    expect((box?.x ?? 0) + (box?.width ?? 0)).toBeLessThanOrEqual(390);
+    expect(box?.x ?? -1).toBeGreaterThanOrEqual(0);
+  }
+  await owner.setViewportSize({ width: 1280, height: 720 });
+});

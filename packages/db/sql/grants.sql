@@ -285,7 +285,7 @@ REVOKE INSERT, UPDATE, DELETE ON public.waha_sends FROM admin_rw;
 -- The opener of a WhatsApp delivery (Owner decision D7): the worker creates it at its first claim and moves it (pending -> sending -> sent / unknown /
 -- failed / expired; delivery_openers_final_guard, ET131, refuses a way back). The console reads it (the delivery report, US-029) and never writes it.
 GRANT SELECT, INSERT ON public.delivery_openers TO worker_rw;
-GRANT UPDATE (status, attempts, session_id, tried_session_ids, next_attempt_at, lease_until, wa_message_id, sent_at, last_error, updated_at) ON public.delivery_openers TO worker_rw;
+GRANT UPDATE (status, attempts, session_id, tried_session_ids, next_attempt_at, lease_until, wa_message_id, sent_at, last_error, variant_key, updated_at) ON public.delivery_openers TO worker_rw;
 REVOKE INSERT, UPDATE, DELETE ON public.delivery_openers FROM admin_rw;
 GRANT UPDATE (outcome, replied_at) ON public.waha_inbound TO worker_rw;
 GRANT EXECUTE ON FUNCTION public.record_waha_ack(text, text) TO public_rw;

@@ -10,7 +10,7 @@
 //   e-mail     key `delivery`: subject and HTML body, and a plain-text alternative made from the SAME template (so an Owner's edit reaches
 //              both parts). When the PDF is not attached (too large, or refused for its size) a notice and a download link are added
 //              to both parts.
-import { escapeHtml, type MessageValues, renderMessage } from "@ebooktrivia/core";
+import { escapeHtml, type MessageValues, OPENER_NO_REPEAT, pickOpenerWording, renderMessage, sapaan } from "@ebooktrivia/core";
 import { messages } from "@ebooktrivia/i18n";
 import type postgres from "postgres";
 
@@ -58,23 +58,59 @@ export function whatsappCaption(template: StoredTemplate, v: DeliveryValues, pla
 }
 
 /**
- * The opener variants (Owner decision D7): `delivery_opener_*` WhatsApp templates. The proactive WhatsApp message to a buyer who has not written first is
- * ONE short text from one of them, picked at random for each buyer: text only (no file, no login link: an opener cannot even render {link_trivia}), with the
- * buyer's FIRST name, asking them to reply. The ebook and the link follow the reply.
+ * The opener wordings (Owner decision D7): `delivery_opener_N` WhatsApp templates, 3 to 20 of them, added and removed by the Owner in the console. The proactive
+ * WhatsApp message to a buyer who has not written first is ONE short text from one of them: text only (no file, no login link: an opener cannot even render
+ * {link_trivia}), with the buyer's FIRST name, asking them to reply. The ebook and the link follow the reply.
+ *
+ * Which wording a given opener uses is decided when it is claimed (pickOpenerVariant, under the pool's lock) and recorded on the opener row (variant_key): a
+ * number never repeats a wording it used for its last 3 openers. The text is rendered when it is sent (openerMessage): {sapaan} from the clock in Jakarta and
+ * each [[a|b]] choice are drawn then, with the same random source.
  */
-export async function loadOpenerTemplates(db: postgres.Sql | postgres.TransactionSql): Promise<StoredTemplate[]> {
-  const rows = await db<StoredTemplate[]>`
-    SELECT subject, body FROM public.message_templates WHERE key LIKE 'delivery\_opener\_%' AND channel = 'whatsapp' AND locale = 'id' ORDER BY key`;
+export interface OpenerWording extends StoredTemplate {
+  readonly key: string;
+}
+
+export async function loadOpenerTemplates(db: postgres.Sql | postgres.TransactionSql): Promise<OpenerWording[]> {
+  const rows = await db<OpenerWording[]>`
+    SELECT key, subject, body FROM public.message_templates
+     WHERE key ~ '^delivery_opener_[0-9]+$' AND channel = 'whatsapp' AND locale = 'id' ORDER BY substring(key from '[0-9]+$')::int`;
   if (rows.length === 0) throw new TemplateMissing("delivery_opener", "whatsapp");
   return rows;
 }
 
-export function openerMessage(variants: readonly StoredTemplate[], v: { readonly firstName: string; readonly title: string; readonly code: string }, random: () => number): string {
-  const variant = variants[Math.min(variants.length - 1, Math.floor(random() * variants.length))];
-  if (variant === undefined) throw new TemplateMissing("delivery_opener", "whatsapp");
+/**
+ * The wording the next opener of this number uses: random among the wordings it did not use for its last 3 openers (core pickOpenerWording), or null when there is
+ * no wording at all (the send then fails as a missing template). Call it after the pool's lock is taken (claimSession), in the claim's transaction: a claim that
+ * starts later for the same number waits for the lock, and then sees this one's recorded wording. What counts as "used": the opener went out, may have (unknown), or
+ * is in flight; a claim that never sent (back to pending) used nothing.
+ */
+export async function pickOpenerVariant(db: postgres.Sql | postgres.TransactionSql, sessionId: string, random: () => number): Promise<string | null> {
+  const keys = await db<{ key: string }[]>`
+    SELECT key FROM public.message_templates
+     WHERE key ~ '^delivery_opener_[0-9]+$' AND channel = 'whatsapp' AND locale = 'id' ORDER BY substring(key from '[0-9]+$')::int`;
+  const recent = await db<{ variant_key: string }[]>`
+    SELECT variant_key FROM public.delivery_openers
+     WHERE session_id = ${sessionId} AND variant_key IS NOT NULL AND (sent_at IS NOT NULL OR status IN ('sending', 'unknown'))
+     ORDER BY coalesce(sent_at, updated_at) DESC, delivery_id
+     LIMIT ${OPENER_NO_REPEAT}`;
+  return pickOpenerWording(keys.map((r) => r.key), recent.map((r) => r.variant_key), random) ?? null;
+}
+
+/**
+ * The wording an opener was claimed with. When it is gone (the Owner removed it between the claim and the send, or the claim found none) another one is drawn:
+ * a removed wording a row mentions never breaks the send. No wording at all is a missing template.
+ */
+export function openerWording(variants: readonly OpenerWording[], key: string | null, random: () => number): OpenerWording {
+  const wording = variants.find((w) => w.key === key) ?? variants[Math.min(variants.length - 1, Math.floor(random() * variants.length))];
+  if (wording === undefined) throw new TemplateMissing("delivery_opener", "whatsapp");
+  return wording;
+}
+
+/** The text of an opener: {nama} is the buyer's first name, {sapaan} the greeting of `now` in Jakarta (or a casual one), each [[a|b]] one of its options. */
+export function openerMessage(wording: StoredTemplate, v: { readonly firstName: string; readonly title: string; readonly code: string }, now: Date, random: () => number): string {
   // A buyer without a usable first name is greeted without one ("Halo ," is not a greeting): the name becomes a neutral address.
   const nama = v.firstName === "" ? "Kak" : v.firstName;
-  return renderMessage(variant.body, "whatsapp", plainValues({ nama, judul_ebook: v.title, order_id: v.code }), {});
+  return renderMessage(wording.body, "whatsapp", { ...plainValues({ nama, judul_ebook: v.title, order_id: v.code }), sapaan: sapaan(now, random) }, { random });
 }
 
 export interface RenderedEmail {
