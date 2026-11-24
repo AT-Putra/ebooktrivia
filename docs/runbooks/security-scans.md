@@ -202,11 +202,17 @@ WhatsApp message to the worker to be marked as read) lives in `packages/adapters
 - **`ebt_wa_read_v1`** (Owner rule 2026-11-24, `apps/worker/src/delivery/read-marks.ts`): the webhook calls it once per message of a person's chat. It runs under public's ACL with
   the commands public already has (`SET`, `INCR`, `PEXPIRE`) on keys under `cache:public:wa-read:*`: a per-chat pending mark (`SET NX EX 60`), a sequence counter and a **ring of 2000
   slots** (an item lives ten minutes; a lap overwrites the oldest), so the structure is capped by construction and public needs **no new command and no new key pattern**. Only the
-  worker reads the ring: its production ACL line has `~cache:public:wa-read:*` in addition to `~ebt:* ~cache:worker:*` (the narrowest pattern: not `~cache:public:*`, not `~rl:*`). An item
-  holds the session name, the message id (which embeds the chat id, hence the ten minutes) and a keyed digest of the chat; no text. `host-check.sh` asserts the worker's access.
+  worker reads the ring, through a **selector** of its production ACL line, `(~cache:public:wa-read:* -@all +get +mget +del)`: it can read and delete that one pattern of public's keys and
+  nothing else (it never writes the ring; not `~cache:public:*`, not `~rl:*`); `prod-valkey-acl.int.test.ts` and `host-check.sh` assert that a worker SET, INCR, EXPIRE or EXISTS there is NOPERM. An item
+  holds the session name, the message id **sealed** to the messaging public key (the id embeds the sender's phone and Valkey keeps an AOF: `packages/crypto/src/wa-read.ts`) and a keyed digest of the
+  chat; no text. The function builds the slot's key inside from a prefix argument (it is only known from the counter it moves), so it is not in `KEYS`; every command of a function runs under the
+  CALLER's ACL, so a prefix outside public's patterns is refused at the write ("ACL failure in script"), which the production-ACL test proves.
 - **Deploy order for it:** the worker first (it loads the library with both functions and gets the new ACL line), then the public instances. A public instance that calls it before the worker
   has loaded it gets `Function not found`: the webhook logs `public.valkey_function_missing` (kind `ebt_wa_read_v1`) and `webhook.waha.read_not_handed`, answers as usual, and the
   message is simply not marked (the next one is). The ACL file change (`provision.sh` renders it) needs the Valkey restart the provisioning already asks for.
+- **Rolling back:** roll **public back before the worker**. An older worker loads its older library with `FUNCTION LOAD REPLACE`, which drops `ebt_wa_read_v1` while a newer public still calls it; the worker's heartbeat
+  probe (`FUNCTION LIST LIBRARYNAME ebt_public`: EVERY function of the library must be listed) finds that, reloads the library it has and raises the `valkey_function_missing` alert, but until then the new public
+  hands no message over (it logs the code and answers as usual).
 
 - **The worker loads it**, with `FUNCTION LOAD REPLACE`: at start-up, on every reconnect of its health connection, and from
   its heartbeat when the function is missing. Valkey's AOF keeps the library across restarts.

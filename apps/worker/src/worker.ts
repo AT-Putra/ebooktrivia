@@ -195,15 +195,15 @@ export async function startWorker(config: WorkerConfig, ports: WorkerPorts, log:
   redis.on("error", (err: Error) => {
     log.warn({ err }, "valkey health connection error");
   });
-  // US-031: public's rate-limit function (public may FCALL, never load): at start, on every reconnect, and from the
-  // heartbeat, which also raises an alert when it finds the function gone (public answered 503 meanwhile).
+  // US-031: public's function library (public may FCALL, never load): at start, on every reconnect, and from the
+  // heartbeat, which also raises an alert when it finds a function of it gone (public answered 503 meanwhile).
   const functionLoader = await startValkeyFunctionLoader(redis, log, async () => {
     await raiseAlert(sql, {
       kind: "valkey_function_missing",
       severity: "warning",
       dedupeKey: "valkey_function_missing",
-      message: "The Valkey rate-limit function of the public app was missing (flushed or a new Valkey): the worker reloaded it; public answered 503 on its rate-limited routes until then",
-      payload: { function: "ebt_rate_limit_v1" },
+      message: "A function of the public app's Valkey library was missing (flushed, a new Valkey, or an older release that replaced the library): the worker reloaded it; public answered 503 on its rate-limited routes and handed no WhatsApp read mark over until then",
+      payload: { library: "ebt_public", functions: ["ebt_rate_limit_v1", "ebt_wa_read_v1"] },
     });
   });
 

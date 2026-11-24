@@ -7,7 +7,9 @@
 //   - The proactive WhatsApp message is the short opener (Owner decision D7); a definite failure of it fails over to another number through the
 //     queue at once; a buyer-first message is answered through the relay and the consumer; the sweeper picks up what the pool deferred and
 //     settles an unknown PDF reply from the number's outgoing messages.
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
+import { loadPublicValkeyFunctions, WA_READ_FUNCTION, waReadCall } from "@ebooktrivia/adapters/valkey-functions";
+import { Redis } from "ioredis";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createMailSender } from "../src/delivery/access.ts";
 import { testFiles } from "./support/files.ts";
@@ -15,7 +17,8 @@ import { createDeliveryPort } from "../src/delivery/index.ts";
 import { createLogger } from "../src/log.ts";
 import { startWorker } from "../src/worker.ts";
 import { loadWorkerConfig } from "../src/worker-config.ts";
-import { createSecretOpener, generateScopeKeyPair } from "@ebooktrivia/crypto";
+import { createSecretOpener, createWaReadOpener, createWaReadSealer, generateScopeKeyPair } from "@ebooktrivia/crypto";
+import { redisOptions } from "../src/queues.ts";
 import {
   createDeliveryShop,
   createSession,
@@ -34,7 +37,7 @@ import { first, sql, waitFor } from "./support/db.ts";
 import { captureLogger } from "./support/log.ts";
 import { createOrder, midtransStub, notification, workerPool } from "./support/midtrans.ts";
 import { workerEnv } from "./support/processes.ts";
-import { uniquePrefix } from "./support/valkey.ts";
+import { testValkey, uniquePrefix } from "./support/valkey.ts";
 
 const SMTP_PORT = Number(process.env["MAILPIT_SMTP_PORT"] ?? "51025");
 const MAILPIT_API = process.env["MAILPIT_API"] ?? "http://127.0.0.1:58025";
@@ -81,9 +84,11 @@ beforeEach(async () => {
   await retireDeliveries();
 });
 
-function deliveryPorts() {
+function deliveryPorts(extra: { readonly readNamespace?: string } = {}) {
   const config = deliveryConfig(shop);
   return createDeliveryPort({
+    ...extra,
+    ...(extra.readNamespace === undefined ? {} : { readOpener: createWaReadOpener(messaging.privateKey) }),
     config,
     waha: waha.access,
     mail: createMailSender({ sql: stubPool, opener, config: { dev: config.dev, smtpTimeoutMs: config.smtpTimeoutMs } }),
@@ -273,4 +278,46 @@ describe("through the queue and the relay", () => {
       { WORKER_SWEEP_INTERVAL_MS: "300", WORKER_SESSION_POLL_INTERVAL_MS: "600000" },
     );
   }, 120_000);
+});
+
+// Item 11 of the read-marks review: the worker composition runs the read path. startWorker (given a delivery port that has the key to open the sealed ids) consumes the
+// `wa.read` queue and starts the ring poll, so an item that public handed over reaches the WAHA mock as a sendSeen with nobody calling anything but the worker's own loops.
+describe("the read marks in the worker composition", () => {
+  it("a message handed over the way public hands it over (sealed, one function call) is marked as read by the running worker: the poll takes it, the wa.read queue runs it, WAHA gets a sendSeen", async () => {
+    const valkey = new Redis({ ...redisOptions(testValkey()), maxRetriesPerRequest: 1 });
+    const namespace = `cache:public:wa-read-x${randomBytes(4).toString("hex")}`;
+    const { log, lines } = captureLogger("info");
+    const config = loadWorkerConfig(workerEnv(uniquePrefix(), { WORKER_SWEEP_INTERVAL_MS: "600000", WORKER_RECONCILE_INTERVAL_MS: "600000", WORKER_SESSION_POLL_INTERVAL_MS: "600000" }));
+    const running = await startWorker(config, { deliveries: deliveryPorts({ readNamespace: namespace }) }, log);
+    try {
+      expect(lines.find((l) => l["msg"] === "worker started")).toMatchObject({ deliveries: true });
+      await loadPublicValkeyFunctions(valkey);
+      const session = await createSession();
+      const chatId = `${String(Math.floor(10_000_000_000 + Math.random() * 8_999_999_999))}@c.us`;
+      const messageId = await waha.inbound({ session: session.name, chatId, body: "halo, ebooknya mana?" });
+      const digest = createHash("sha256").update(`${session.name}|${chatId}`).digest("hex").slice(0, 32);
+      const sealed = createWaReadSealer(messaging.publicKey).seal({ session: session.name, digest, messageId }).toString("base64url");
+      const call = waReadCall(namespace, { session: session.name, sealed, digest });
+      if (call === null) throw new Error("the item is well formed");
+      await waha.clearCallLog();
+      expect(Number(await valkey.fcall(WA_READ_FUNCTION, call.keys.length, ...call.keys, ...call.args))).toBeGreaterThan(0);
+      await waitFor("the chat marked as read", async () => (await waha.callLog()).some((c) => c.path === "/api/sendSeen" && c.body["chatId"] === chatId), 30_000, 100);
+      const seen = (await waha.callLog()).filter((c) => c.path === "/api/sendSeen");
+      expect(seen).toEqual([{ method: "POST", path: "/api/sendSeen", body: { session: session.name, chatId } }]);
+      // The number is put offline again after it, and nothing is sent.
+      await waitFor("offline again", async () => (await waha.callLog()).some((c) => c.path.endsWith("/presence") && c.body["presence"] === "offline"), 10_000, 100);
+      expect(waha.sent.filter((s) => s.chatId === chatId)).toEqual([]);
+      // The chat's pending mark was released by the job.
+      expect(await valkey.exists(`${namespace}:c:${digest}`)).toBe(0);
+    } finally {
+      await running.stop();
+      let cursor = "0";
+      do {
+        const [next, keys] = await valkey.scan(cursor, "MATCH", `${namespace}:*`, "COUNT", 1000);
+        if (keys.length > 0) await valkey.unlink(...keys);
+        cursor = next;
+      } while (cursor !== "0");
+      valkey.disconnect();
+    }
+  }, 60_000);
 });

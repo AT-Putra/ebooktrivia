@@ -253,7 +253,8 @@ describe("production Valkey ACL", () => {
     // The production namespace itself (the worker's ACL names exactly cache:public:wa-read:*); the container is a throwaway.
     const namespace = WA_READ_NAMESPACE;
     const keys = waReadKeys(namespace);
-    const item = { session: "acl", messageId: "false_628123456789@c.us_3EB0ACL0001", digest: "0123456789abcdef0123456789abcdef" };
+    // The sealed id's shape (the real blob is the worker's to open: wa-read.test.ts and read-marks.int.test.ts).
+    const item = { session: "acl", sealed: "A".repeat(112), digest: "0123456789abcdef0123456789abcdef" };
     const call = waReadCall(namespace, item);
     if (call === null) throw new Error("the item is well formed");
     const fcall = () => reply(pub.call("FCALL", WA_READ_FUNCTION, call.keys.length, ...call.keys, ...call.args));
@@ -263,14 +264,34 @@ describe("production Valkey ACL", () => {
     // It cannot read the ring back, delete anything or reach a key outside its prefixes through the function.
     expect(await reply(pub.get(keys.item(1)))).toMatch(/NOPERM/);
     expect(await reply(pub.del(keys.pending(item.digest)))).toMatch(/NOPERM/);
+    // Illegal KEYS: refused before the function runs.
     expect(await reply(pub.call("FCALL", WA_READ_FUNCTION, 2, "ebt:acl-pending", "ebt:acl-seq", "60", "2000", "600", "1000", "ebt:acl-i:", "x"))).toMatch(/NOPERM/);
-    // The worker takes the item (its production ACL reaches exactly this pattern of public's keys) and lets the chat's mark go.
+    // Legal KEYS but an illegal item prefix (the slot's key is built inside the function from an argument, never declared): refused at the WRITE, as the caller, so the function
+    // is no way round public's key patterns (Valkey says "ACL failure in script: No permissions to access a key"). The pending mark and the counter it set first are public's own keys.
+    const other = "fedcba9876543210fedcba9876543210";
+    expect(
+      await reply(pub.call("FCALL", WA_READ_FUNCTION, 2, keys.pending(other), keys.seq, "60", "2000", "600", "1000", "ebt:acl-i:", `acl|${item.sealed}|${other}`)),
+    ).toMatch(/ACL failure in script: No permissions to access a key/);
+    expect(await reply(worker.del(keys.pending(other)))).toMatch(/^[01]$/);
+    // The worker takes the item (its production ACL has a SELECTOR for exactly this pattern of public's keys: GET, MGET and DEL) and lets the chat's mark go.
     expect(parseWaReadItem(await worker.get(keys.item(1)))).toEqual({ n: 1, ...item });
+    expect((await worker.mget(keys.item(1), keys.item(2)))[0]).toMatch(/^1\|acl\|/);
     expect(await reply(worker.del(keys.pending(item.digest)))).toBe("1");
-    expect(await fcall()).toBe("2");
+    expect(await fcall()).toBe("3"); // the refused call above had moved the counter (2) before its write was refused
+    // ... and it NEVER writes the ring, nor does anything else there (no SET, INCR, EXPIRE, EXISTS, FCALL of the function), nor reaches another key of public's.
+    for (const attempt of [
+      () => worker.set(keys.item(1), "x"),
+      () => worker.set(keys.pending("0".repeat(32)), "1"),
+      () => worker.incr(keys.seq),
+      () => worker.expire(keys.seq, 1),
+      () => worker.exists(keys.seq),
+      () => worker.call("FCALL", WA_READ_FUNCTION, 2, keys.pending("1".repeat(32)), keys.seq, "60", "2000", "600", "1000", keys.itemPrefix, "x"),
+    ]) {
+      expect(await reply(attempt())).toMatch(/NOPERM/);
+    }
     expect(await reply(worker.get("cache:public:acl-other"))).toMatch(/NOPERM/);
     expect(await reply(worker.get("rl:acl"))).toMatch(/NOPERM/);
-    await worker.del(keys.pending(item.digest), keys.seq, keys.item(1), keys.item(2));
+    await worker.del(keys.pending(item.digest), keys.seq, keys.item(1), keys.item(2), keys.item(3));
   });
 
   it("runs with noeviction and AOF", async () => {

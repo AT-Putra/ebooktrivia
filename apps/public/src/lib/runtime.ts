@@ -2,7 +2,7 @@
 // `next build` and the pages need no database, Valkey or keys). A failed start is retried on the next
 // request; until then the API answers 503. Kept on globalThis so `next dev` module reloads reuse it.
 import { createSafeFetch, type HttpFetch } from "@ebooktrivia/adapters";
-import { fileUrlKeyFromEnv, openerFromEnv, sealerFromEnv, type SecretSealer } from "@ebooktrivia/crypto";
+import { fileUrlKeyFromEnv, openerFromEnv, sealerFromEnv, type SecretSealer, type WaReadSealer, waReadSealerFromEnv } from "@ebooktrivia/crypto";
 import { capProviders, type CapRouteDeps } from "./cap-routes.ts";
 import { createMidtransKeyCache } from "./checkout/data.ts";
 import { type CheckoutDeps, SNAP_TIMEOUT_MS } from "./checkout/handler.ts";
@@ -52,7 +52,19 @@ function playSealer(env: Env): { readonly sealer: SecretSealer } | { readonly re
   }
 }
 
-const SANDBOX_HOSTS = /^https:\/\/(?:app|api)\.sandbox\.midtrans\.com(?=\/)/;
+/**
+ * What seals the message ids of the WhatsApp read marks (SECRETS_MESSAGING_PUBLIC_KEY, the key the OTP codes are sealed to), or undefined: without it the webhook hands nothing
+ * over (a raw id, which embeds the sender's phone, is never written to Valkey), and says so. A malformed key is the same (the play login names the variable at start).
+ */
+function readSealer(env: Env): WaReadSealer | undefined {
+  try {
+    return waReadSealerFromEnv(env);
+  } catch {
+    return undefined;
+  }
+}
+
+const SANDBOX_HOSTS =/^https:\/\/(?:app|api)\.sandbox\.midtrans\.com(?=\/)/;
 
 /**
  * How Snap is reached: safe-fetch bounded by `timeoutMs` (whole request). With `stubUrl` (dev / test
@@ -110,7 +122,7 @@ export async function createRuntime(env: Env): Promise<PublicRuntime> {
     cap: { sql, valkey, capFor, log: logEvent },
     sdk: { sql, valkey, domain: config.domain, configCache: createConfigCache(), configLimit: createTokenBuckets(CONFIG_BUCKET), log: logEvent },
     webhooks: { sql, valkey, opener, serverKey: createMidtransKeyCache(), log: logEvent },
-    wahaWebhook: { sql, valkey, hmacSecret: config.wahaWebhookSecret, log: logEvent },
+    wahaWebhook: { sql, valkey, hmacSecret: config.wahaWebhookSecret, log: logEvent, readSealer: readSealer(env) },
     files: { valkey, domain: config.domain, dataDir: config.dataDir, key: fileUrlKeyFromEnv(env), log: logEvent },
     order: { sql, valkey, domain: config.domain, log: logEvent },
     play,

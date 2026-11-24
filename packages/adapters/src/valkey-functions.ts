@@ -25,10 +25,15 @@ export const RATE_LIMIT_FUNCTION = "ebt_rate_limit_v1";
  * ebt_wa_read_v1: hands ONE incoming personal WhatsApp message to the worker, to be marked as read (apps/worker/src/delivery/read-marks.ts).
  * keys[1] is the chat's "a read is pending" mark, keys[2] the sequence counter of the ring of items; args: [1] the mark's life in
  * seconds, [2] the ring's size, [3] an item's life in seconds, [4] the counter's life in ms, [5] the item key prefix, [6] the item's
- * payload. A chat that already has a read pending is a no-op (answers 0); otherwise the counter moves and the payload is stored at
- * slot n mod size (a lap overwrites the oldest item: the ring is capped by construction), answering n. Only SET, INCR and PEXPIRE,
- * which `public` already has, on keys under cache:public:*: no new command and no new key pattern for public. The worker alone reads
- * the ring (waReadKeys, parseWaReadItem) and deletes the chat's mark when it takes the read.
+ * payload (opaque to the function: the session, the SEALED message id and the chat's digest, waReadPayload). A chat that already has a
+ * read pending is a no-op (answers 0); otherwise the counter moves and the payload is stored at slot n mod size (a lap overwrites the
+ * oldest item: the ring is capped by construction), answering n. Only SET, INCR and PEXPIRE, which `public` already has, on keys under
+ * cache:public:*: no new command and no new key pattern for public. The worker alone reads the ring (waReadKeys, parseWaReadItem) and
+ * deletes the chat's mark when it takes the read.
+ * KEYS: the slot's key (args[5] .. n mod size) cannot be declared: it is only known from the counter the function itself moves, so it is
+ * built inside from the prefix argument. That is fine on this single Valkey node, and not a hole: every command of a function runs under
+ * the CALLER's ACL and the key check happens at the write, so a prefix outside public's patterns is refused (NOPERM), which
+ * apps/worker/test/prod-valkey-acl.int.test.ts proves against the production ACL. (A clustered Valkey could not run it: this one is not.)
  */
 export const WA_READ_FUNCTION = "ebt_wa_read_v1";
 /** Everything of the read path lives under this (public's own cache:public:*); the worker's production ACL reaches exactly this pattern more. */
@@ -51,18 +56,24 @@ export const waReadKeys = (namespace: string = WA_READ_NAMESPACE) => ({
 
 const WA_READ_DIGEST = /^[0-9a-f]{32}$/;
 const WA_READ_SESSION = /^[A-Za-z0-9_-]{1,64}$/;
-const WA_READ_MESSAGE_ID = /^(?:true|false)_[0-9]{5,20}@(?:c\.us|lid)_[A-Za-z0-9]{1,64}$/;
+/**
+ * The message id, SEALED to the messaging public key (@ebooktrivia/crypto wa-read.ts) and written as base64url: 49 to 176 bytes. A message id embeds the sender's chat id
+ * (a phone number, a stranger's included), and Valkey keeps an AOF on disk beyond the ring's ten minutes, so the id never sits in Valkey in clear; a raw id does not even
+ * match this (its `@` and `.`), so an item or a job of an older shape drives nothing.
+ */
+const WA_READ_SEALED = /^[A-Za-z0-9_-]{66,236}$/;
 
 export interface WaReadItem {
   readonly session: string;
-  readonly messageId: string;
+  /** The sealed message id, base64url. */
+  readonly sealed: string;
   readonly digest: string;
 }
 
-/** The payload of an item: "<session>|<message id>|<chat digest>" (what the worker needs; the chat comes from its re-fetch). Null when a part is not what it must be. */
+/** The payload of an item: "<session>|<sealed message id>|<chat digest>" (the worker opens the id and re-fetches the message; the chat comes from that). Null when a part is not what it must be. */
 export function waReadPayload(item: WaReadItem): string | null {
-  if (!WA_READ_SESSION.test(item.session) || !WA_READ_MESSAGE_ID.test(item.messageId) || !WA_READ_DIGEST.test(item.digest)) return null;
-  return `${item.session}|${item.messageId}|${item.digest}`;
+  if (!WA_READ_SESSION.test(item.session) || !WA_READ_SEALED.test(item.sealed) || !WA_READ_DIGEST.test(item.digest)) return null;
+  return `${item.session}|${item.sealed}|${item.digest}`;
 }
 
 /** An item as stored ("<n>|<payload>"); undefined for anything else (an overwritten, expired or foreign value), so a stray key can drive nothing. */
@@ -70,9 +81,9 @@ export function parseWaReadItem(value: string | null): (WaReadItem & { readonly 
   if (value === null) return undefined;
   const parts = value.split("|");
   if (parts.length !== 4) return undefined;
-  const [n, session, messageId, digest] = parts as [string, string, string, string];
-  if (!/^[1-9][0-9]{0,15}$/.test(n) || waReadPayload({ session, messageId, digest }) === null) return undefined;
-  return { n: Number(n), session, messageId, digest };
+  const [n, session, sealed, digest] = parts as [string, string, string, string];
+  if (!/^[1-9][0-9]{0,15}$/.test(n) || waReadPayload({ session, sealed, digest }) === null) return undefined;
+  return { n: Number(n), session, sealed, digest };
 }
 
 /** The FCALL of ebt_wa_read_v1 for an item (its keys, then its arguments), or null when the item is not well formed (nothing is called then). */
@@ -129,6 +140,33 @@ export function isFunctionMissing(error: unknown): boolean {
 }
 
 export type FunctionProbe = "ok" | "missing" | "refused" | "unreachable";
+
+/** Every function of the library that an app calls: the worker's heartbeat finds the library intact only while ALL of them are loaded. */
+export const PUBLIC_VALKEY_FUNCTIONS: readonly string[] = [RATE_LIMIT_FUNCTION, WA_READ_FUNCTION];
+
+/** Every string anywhere in a reply (arrays, maps, sets and objects alike: RESP2 and RESP3 shape FUNCTION LIST differently). */
+function stringsIn(value: unknown, into: string[] = []): string[] {
+  if (typeof value === "string") into.push(value);
+  else if (Array.isArray(value)) for (const item of value) stringsIn(item, into);
+  else if (value instanceof Map) for (const [key, item] of value) stringsIn([key, item], into);
+  else if (value instanceof Set) for (const item of value) stringsIn(item, into);
+  else if (typeof value === "object" && value !== null) for (const [key, item] of Object.entries(value)) stringsIn([key, item], into);
+  return into;
+}
+
+/**
+ * Whether the whole library is loaded: FUNCTION LIST LIBRARYNAME ebt_public names EVERY function of PUBLIC_VALKEY_FUNCTIONS. A library that lost one (a worker of an older
+ * release replaced it with FUNCTION LOAD REPLACE while a newer public still calls the missing function: a rollback in the wrong order) is "missing" too, so the heartbeat
+ * loads the current one again and raises the alert. "refused" when the ACL denies FUNCTION LIST, "unreachable" on any other failure.
+ */
+export async function probePublicLibrary(valkey: ValkeyCaller): Promise<FunctionProbe> {
+  try {
+    const listed = new Set(stringsIn(await valkey.call("FUNCTION", "LIST", "LIBRARYNAME", PUBLIC_VALKEY_LIBRARY)));
+    return PUBLIC_VALKEY_FUNCTIONS.every((name) => listed.has(name)) ? "ok" : "missing";
+  } catch (error) {
+    return error instanceof Error && /^NOPERM\b/.test(error.message) ? "refused" : "unreachable";
+  }
+}
 
 /**
  * Whether the rate-limit function is callable: an FCALL with no keys (changes nothing, answers {0, 0}).

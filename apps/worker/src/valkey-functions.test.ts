@@ -2,7 +2,7 @@
 // (a flushed library, the ACL) are test/prod-valkey-acl.int.test.ts's.
 import { EventEmitter } from "node:events";
 import { Writable } from "node:stream";
-import { PUBLIC_VALKEY_LIBRARY, PUBLIC_VALKEY_LIBRARY_CODE, RATE_LIMIT_FUNCTION } from "@ebooktrivia/adapters/valkey-functions";
+import { PUBLIC_VALKEY_LIBRARY, PUBLIC_VALKEY_LIBRARY_CODE, RATE_LIMIT_FUNCTION, WA_READ_FUNCTION } from "@ebooktrivia/adapters/valkey-functions";
 import { describe, expect, it } from "vitest";
 import { createLogger } from "./log.ts";
 import { type FunctionLoaderClient, startValkeyFunctionLoader } from "./valkey-functions.ts";
@@ -18,15 +18,19 @@ function capture() {
   return { lines, log: createLogger({ level: "debug", role: "worker" }, stream) };
 }
 
-/** A client that answers FUNCTION LOAD and FCALL from queues (an Error answer rejects; the last answer repeats) and records every command. */
-function fakeValkey(answers: { readonly load?: unknown[]; readonly fcall?: unknown[] } = {}) {
+/** What FUNCTION LIST LIBRARYNAME answers for a library holding these functions (RESP2 arrays). */
+const listing = (...names: string[]): unknown => [["library_name", PUBLIC_VALKEY_LIBRARY, "engine", "LUA", "functions", names.map((name) => ["name", name, "description", null, "flags", []])]];
+const WHOLE_LIBRARY = listing(RATE_LIMIT_FUNCTION, WA_READ_FUNCTION);
+
+/** A client that answers FUNCTION LOAD and FUNCTION LIST from queues (an Error answer rejects; the last answer repeats) and records every command. */
+function fakeValkey(answers: { readonly load?: unknown[]; readonly list?: unknown[] } = {}) {
   const events = new EventEmitter();
   const commands: string[][] = [];
-  const queues = { LOAD: [...(answers.load ?? [PUBLIC_VALKEY_LIBRARY])], FCALL: [...(answers.fcall ?? [[0, 0]])] };
+  const queues = { LOAD: [...(answers.load ?? [PUBLIC_VALKEY_LIBRARY])], LIST: [...(answers.list ?? [WHOLE_LIBRARY])] };
   const client: FunctionLoaderClient = {
     call: (command, ...args) => {
       commands.push([command, ...args.map(String)]);
-      const queue = command === "FUNCTION" ? queues.LOAD : queues.FCALL;
+      const queue = args[0] === "LIST" ? queues.LIST : queues.LOAD;
       const answer = queue.length > 1 ? queue.shift() : queue[0];
       return answer instanceof Error ? Promise.reject(answer) : Promise.resolve(answer);
     },
@@ -35,6 +39,9 @@ function fakeValkey(answers: { readonly load?: unknown[]; readonly fcall?: unkno
   };
   return { client, commands, events };
 }
+
+/** The FUNCTION LOAD commands among the recorded ones (the probe's FUNCTION LIST is not one). */
+const loads = (commands: readonly string[][]): string[][] => commands.filter((c) => c[0] === "FUNCTION" && c[1] === "LOAD");
 
 describe("startValkeyFunctionLoader", () => {
   it("loads the library at start (FUNCTION LOAD REPLACE with the library's code) and reloads on every later ready, until stopped", async () => {
@@ -53,7 +60,7 @@ describe("startValkeyFunctionLoader", () => {
     expect(events.listenerCount("ready")).toBe(0);
     events.emit("ready");
     await new Promise((resolve) => setImmediate(resolve));
-    expect(commands.filter((c) => c[0] === "FUNCTION")).toHaveLength(2);
+    expect(loads(commands)).toHaveLength(2);
   });
 
   it("logs a failed load as an error, answers false, and keeps running (the next ready or heartbeat retries)", async () => {
@@ -85,17 +92,17 @@ describe("startValkeyFunctionLoader", () => {
   });
 
   describe("check (the heartbeat's probe)", () => {
-    it("is true and loads nothing when the function answers", async () => {
-      const { client, commands } = fakeValkey({ fcall: [[0, 0]] });
+    it("is true and loads nothing while EVERY function of the library is listed", async () => {
+      const { client, commands } = fakeValkey({ list: [WHOLE_LIBRARY] });
       const loader = await startValkeyFunctionLoader(client, capture().log);
       expect(await loader.check()).toBe(true);
-      expect(commands.at(-1)).toEqual(["FCALL", RATE_LIMIT_FUNCTION, "0"]);
-      expect(commands.filter((c) => c[0] === "FUNCTION")).toHaveLength(1);
+      expect(commands.at(-1)).toEqual(["FUNCTION", "LIST", "LIBRARYNAME", PUBLIC_VALKEY_LIBRARY]);
+      expect(loads(commands)).toHaveLength(1);
     });
 
-    it("is false, with no reload and no alert, when the ACL refuses FCALL or Valkey is unreachable", async () => {
-      for (const error of [new Error("NOPERM User public has no permissions to run the 'fcall' command"), new Error("connect ECONNREFUSED 127.0.0.1:1")]) {
-        const { client, commands } = fakeValkey({ fcall: [error] });
+    it("is false, with no reload and no alert, when the ACL refuses FUNCTION LIST or Valkey is unreachable", async () => {
+      for (const error of [new Error("NOPERM User worker has no permissions to run the 'function|list' command"), new Error("connect ECONNREFUSED 127.0.0.1:1")]) {
+        const { client, commands } = fakeValkey({ list: [error] });
         let alerts = 0;
         const loader = await startValkeyFunctionLoader(client, capture().log, () => {
           alerts++;
@@ -103,12 +110,27 @@ describe("startValkeyFunctionLoader", () => {
         });
         expect(await loader.check()).toBe(false);
         expect(alerts).toBe(0);
-        expect(commands.filter((c) => c[0] === "FUNCTION")).toHaveLength(1);
+        expect(loads(commands)).toHaveLength(1);
       }
     });
 
-    it("finding the function missing: warns, raises the alert once, reloads it, and answers whether the reload worked", async () => {
-      const { client, commands } = fakeValkey({ fcall: [new Error("ERR Function not found")] });
+    it("finding a function missing (the library is gone, or one of its functions: an older release replaced it): warns, raises the alert once, reloads it, and answers whether the reload worked", async () => {
+      for (const gone of [[], listing(RATE_LIMIT_FUNCTION), listing(WA_READ_FUNCTION)]) {
+        const { client, commands } = fakeValkey({ list: [gone, WHOLE_LIBRARY] });
+        let alerts = 0;
+        const loader = await startValkeyFunctionLoader(client, capture().log, () => {
+          alerts++;
+          return Promise.resolve();
+        });
+        expect(await loader.check()).toBe(true);
+        expect(alerts).toBe(1);
+        expect(loads(commands)).toHaveLength(2);
+        // Reloaded, it is whole again: the next check finds nothing to do.
+        expect(await loader.check()).toBe(true);
+        expect(alerts).toBe(1);
+        expect(loads(commands)).toHaveLength(2);
+      }
+      const { client, commands } = fakeValkey({ list: [[]] });
       const { log, lines } = capture();
       let alerts = 0;
       const loader = await startValkeyFunctionLoader(client, log, () => {
@@ -118,12 +140,12 @@ describe("startValkeyFunctionLoader", () => {
       expect(await loader.check()).toBe(true);
       expect(alerts).toBe(1);
       expect(lines.find((l) => l["msg"] === "valkey function missing: reloading it")).toMatchObject({ level: 40, library: PUBLIC_VALKEY_LIBRARY });
-      expect(commands.filter((c) => c[0] === "FUNCTION")).toHaveLength(2);
+      expect(loads(commands)).toHaveLength(2);
       expect(lines.filter((l) => l["msg"] === "valkey functions loaded").map((l) => l["reason"])).toEqual(["start", "missing"]);
     });
 
     it("still reloads when the alert cannot be raised (logged), and answers false when the reload fails too", async () => {
-      const { client } = fakeValkey({ load: [PUBLIC_VALKEY_LIBRARY, new Error("OOM command not allowed")], fcall: [new Error("ERR Function not found")] });
+      const { client } = fakeValkey({ load: [PUBLIC_VALKEY_LIBRARY, new Error("OOM command not allowed")], list: [[]] });
       const { log, lines } = capture();
       const loader = await startValkeyFunctionLoader(client, log, () => Promise.reject(new Error("postgres is down")));
       expect(await loader.check()).toBe(false);

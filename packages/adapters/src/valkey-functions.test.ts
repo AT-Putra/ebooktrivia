@@ -6,7 +6,9 @@ import {
   isFunctionMissing,
   loadPublicValkeyFunctions,
   parseWaReadItem,
+  probePublicLibrary,
   probeRateLimitFunction,
+  PUBLIC_VALKEY_FUNCTIONS,
   PUBLIC_VALKEY_LIBRARY,
   PUBLIC_VALKEY_LIBRARY_CODE,
   RATE_LIMIT_FUNCTION,
@@ -48,7 +50,9 @@ describe("the public Valkey library", () => {
   });
 
   describe("the read hand-off (ebt_wa_read_v1): the keys, the item and the call", () => {
-    const item = { session: "default", messageId: "false_628123456789@c.us_3EB0AAAA0001", digest: "0123456789abcdef0123456789abcdef" };
+    // A sealed message id as base64url: 36 bytes of id and the 48 of the box, here only its shape.
+    const sealed = "A".repeat(112);
+    const item = { session: "default", sealed, digest: "0123456789abcdef0123456789abcdef" };
 
     it("keeps everything under one namespace of public's own prefix, and the ring's slots by the counter", () => {
       const keys = waReadKeys();
@@ -61,24 +65,81 @@ describe("the public Valkey library", () => {
       expect(waReadKeys("cache:public:other").item(3)).toBe("cache:public:other:i:3");
     });
 
-    it("builds the call for a well formed item only: odd sessions, ids of groups and channels and digests that are not hex are refused", () => {
+    it("builds the call for a well formed item only: odd sessions, a message id in clear (or no base64url at all) and digests that are not hex are refused", () => {
       const call = waReadCall(WA_READ_NAMESPACE, item);
       expect(call).toEqual({
         keys: [`cache:public:wa-read:c:${item.digest}`, "cache:public:wa-read:seq"],
-        args: [String(WA_READ_PENDING_TTL_S), String(WA_READ_RING_SIZE), String(WA_READ_ITEM_TTL_S), String(7 * 86_400_000), "cache:public:wa-read:i:", `default|${item.messageId}|${item.digest}`],
+        args: [String(WA_READ_PENDING_TTL_S), String(WA_READ_RING_SIZE), String(WA_READ_ITEM_TTL_S), String(7 * 86_400_000), "cache:public:wa-read:i:", `default|${sealed}|${item.digest}`],
       });
       expect(waReadCall(WA_READ_NAMESPACE, { ...item, session: "bad session" })).toBeNull();
       expect(waReadCall(WA_READ_NAMESPACE, { ...item, session: "x".repeat(65) })).toBeNull();
       expect(waReadCall(WA_READ_NAMESPACE, { ...item, session: "a|b" })).toBeNull();
-      for (const messageId of ["false_120363025246125486@g.us_AAAA1111", "false_status@broadcast_AAAA1111", "false_628123456789@c.us_A|B", "true_628123@c.us_", "x"]) expect(waReadCall(WA_READ_NAMESPACE, { ...item, messageId }), messageId).toBeNull();
+      // A raw WAHA message id (it embeds the sender's phone) is not a sealed blob: its `@` and `.` are not base64url. Nor is anything too short, too long or with a separator.
+      for (const raw of ["false_628123456789@c.us_3EB0AAAA0001", "false_628123456789@lid_3EB0AAAA0001".padEnd(80, "A"), "", "A".repeat(65), "A".repeat(237), `${"A".repeat(70)}|x`, `${"A".repeat(70)}=`]) {
+        expect(waReadCall(WA_READ_NAMESPACE, { ...item, sealed: raw }), raw).toBeNull();
+      }
+      expect(waReadCall(WA_READ_NAMESPACE, { ...item, sealed: "A".repeat(66) })).not.toBeNull();
+      expect(waReadCall(WA_READ_NAMESPACE, { ...item, sealed: "A".repeat(236) })).not.toBeNull();
       for (const digest of ["", "0123", "0123456789ABCDEF0123456789ABCDEF", "g123456789abcdef0123456789abcdef"]) expect(waReadCall(WA_READ_NAMESPACE, { ...item, digest }), digest).toBeNull();
     });
 
     it("reads an item back only when it is exactly what the function wrote", () => {
-      expect(parseWaReadItem(`12|default|${item.messageId}|${item.digest}`)).toEqual({ n: 12, ...item });
-      for (const value of [null, "", "junk", `0|default|${item.messageId}|${item.digest}`, `x|default|${item.messageId}|${item.digest}`, `1|default|${item.messageId}`, `1|default|${item.messageId}|${item.digest}|more`, `1|bad session|${item.messageId}|${item.digest}`, `1|default|false_120363025246125486@g.us_AAAA1111|${item.digest}`]) {
+      expect(parseWaReadItem(`12|default|${sealed}|${item.digest}`)).toEqual({ n: 12, ...item });
+      for (const value of [
+        null,
+        "",
+        "junk",
+        `0|default|${sealed}|${item.digest}`,
+        `x|default|${sealed}|${item.digest}`,
+        `1|default|${sealed}`,
+        `1|default|${sealed}|${item.digest}|more`,
+        `1|bad session|${sealed}|${item.digest}`,
+        `1|default|false_628123456789@c.us_3EB0AAAA0001|${item.digest}`,
+      ]) {
         expect(parseWaReadItem(value), String(value)).toBeUndefined();
       }
+    });
+  });
+
+  describe("the whole library is probed (FUNCTION LIST LIBRARYNAME)", () => {
+    /** A FUNCTION LIST answer of a library holding these functions, as RESP2 arrays. */
+    const listing = (...names: string[]): unknown => [["library_name", PUBLIC_VALKEY_LIBRARY, "engine", "LUA", "functions", names.map((name) => ["name", name, "description", null, "flags", []])]];
+
+    it("is ok only while EVERY function of the library is listed: a library that lost one (an older release replaced it) is missing", async () => {
+      const full = caller(() => listing(RATE_LIMIT_FUNCTION, WA_READ_FUNCTION));
+      expect(await probePublicLibrary(full)).toBe("ok");
+      expect(full.sent).toEqual([["FUNCTION", "LIST", "LIBRARYNAME", PUBLIC_VALKEY_LIBRARY]]);
+      expect(PUBLIC_VALKEY_FUNCTIONS).toEqual([RATE_LIMIT_FUNCTION, WA_READ_FUNCTION]);
+      expect(await probePublicLibrary(caller(() => listing(RATE_LIMIT_FUNCTION)))).toBe("missing");
+      expect(await probePublicLibrary(caller(() => listing(WA_READ_FUNCTION)))).toBe("missing");
+      expect(await probePublicLibrary(caller(() => []))).toBe("missing");
+    });
+
+    it("reads a listing of any shape (arrays, a RESP3 map, plain objects) and fails honestly: refused, unreachable", async () => {
+      const asMap = [
+        new Map<string, unknown>([
+          ["library_name", PUBLIC_VALKEY_LIBRARY],
+          ["functions", [new Map<string, unknown>([["name", RATE_LIMIT_FUNCTION]]), { name: WA_READ_FUNCTION }]],
+        ]),
+      ];
+      expect(await probePublicLibrary(caller(() => asMap))).toBe("ok");
+      expect(await probePublicLibrary(caller(() => [new Set([RATE_LIMIT_FUNCTION, WA_READ_FUNCTION])]))).toBe("ok");
+      expect(await probePublicLibrary(caller(() => 7))).toBe("missing");
+      expect(
+        await probePublicLibrary(
+          caller(() => {
+            throw new Error("NOPERM User worker has no permissions to run the 'function|list' command");
+          }),
+        ),
+      ).toBe("refused");
+      expect(
+        await probePublicLibrary(
+          caller(() => {
+            throw new Error("Connection is closed.");
+          }),
+        ),
+      ).toBe("unreachable");
+      expect(await probePublicLibrary({ call: () => Promise.reject(new TypeError("not a Valkey reply")) })).toBe("unreachable");
     });
   });
 

@@ -13,7 +13,7 @@
 //      undated events are dropped (the message_id dedupe below is the other half)                200
 //   6. kind `message`: FIRST, every message of a person's chat (a phone of ANY country, or an @lid; never a group, a status, a broadcast or a
 //      channel, and never our own, which parseWebhookEvent already drops) is handed to the worker to be MARKED AS READ, whatever becomes
-//      of it below (kept, rate-limited, chatter, a foreign number): Owner rule 2026-11-24, one Valkey function call per message (enqueueWaRead:
+//      of it below (kept, rate-limited, chatter, a foreign number): Owner rule 2026-11-24, one Valkey function call per message, its id SEALED to the messaging key (enqueueWaRead:
 //      one pending read per chat, a capped ring, no database), BEST EFFORT: it never changes the answer. The worker re-fetches the message
 //      by id before it marks anything (apps/worker/src/delivery/read-marks.ts).
 //        Then only a person's chat (@c.us or @lid); then a Valkey rate limit per sender and one
@@ -37,6 +37,7 @@
 import { createHash, createHmac, randomUUID } from "node:crypto";
 import { type InboundMessage, isPersonalChatId, parseWebhookEvent, verifyWebhookHmac } from "@ebooktrivia/adapters";
 import { extractOrderCodes } from "@ebooktrivia/core";
+import type { WaReadSealer } from "@ebooktrivia/crypto";
 import type { Sql } from "../db.ts";
 import { json, readRawBody } from "../http.ts";
 import type { Logger } from "../log.ts";
@@ -62,6 +63,11 @@ export interface WahaWebhookDeps {
   readonly now?: () => number;
   /** Where the read hand-off lives in Valkey (default WA_READ_NAMESPACE, under cache:public:); a test passes a namespace of its own. */
   readonly readNamespace?: string;
+  /**
+   * Seals the message id to the messaging public key (SECRETS_MESSAGING_PUBLIC_KEY) before it goes into Valkey: it embeds the sender's phone and Valkey keeps an AOF. Without
+   * it (the key is not configured) nothing is handed over: a raw id is never written there.
+   */
+  readonly readSealer?: WaReadSealer | undefined;
 }
 
 type Answer = "ok" | "ignored" | "invalid" | "too_large" | "signature" | "unavailable" | "internal";
@@ -81,8 +87,13 @@ const readDigest = (secret: string, session: string, chatId: string): string => 
  * EFFORT: a Valkey that is down, slow or without the function never changes the webhook's answer (it is logged as a code); what the webhook answers is decided below.
  */
 async function handToReader(deps: WahaWebhookDeps, secret: string, event: InboundMessage, log: Logger): Promise<void> {
+  const { readSealer } = deps;
+  if (readSealer === undefined) {
+    log("warn", "webhook.waha.read_not_handed", { code: "no_sealer" });
+    return;
+  }
   try {
-    const outcome = await enqueueWaRead(deps.valkey, { session: event.session, messageId: event.messageId, digest: readDigest(secret, event.session, event.chat.chatId) }, deps.readNamespace);
+    const outcome = await enqueueWaRead(deps.valkey, readSealer, { session: event.session, messageId: event.messageId, digest: readDigest(secret, event.session, event.chat.chatId) }, deps.readNamespace);
     log("info", "webhook.waha.read_handed", { outcome });
   } catch (error) {
     log("warn", "webhook.waha.read_not_handed", { code: error instanceof ValkeyUnavailable ? "valkey_unavailable" : "failed" });

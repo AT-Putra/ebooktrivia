@@ -16,12 +16,41 @@
 // transaction is held across any of it (the caller holds none). If the abort signal ends during a wait the send is NOT made: `aborted`, which the delivery
 // turns into not_attempted. The caller also gets `beforeSend` (a last check that the claim's lease can still cover the send) and the waits are injectable.
 import type { WahaClient } from "@ebooktrivia/adapters";
-import { type HumanKind, humanPlan } from "@ebooktrivia/core";
+import { HUMAN_MAX_MS, type HumanKind, humanPlan } from "@ebooktrivia/core";
 import { randomInt } from "node:crypto";
 import type { Logger } from "../log.ts";
 
 /** Uniform in [0, 1) from the operating system's CSPRNG (47 bits: exact in a double). */
 export const cryptoRandom = (): number => randomInt(2 ** 47) / 2 ** 47;
+
+// The numbers (session names) with a human-like send in flight, from its first call to its last. A read mark of the same number (read-marks.ts) puts the number offline after
+// its sendSeen, and that would cut this send's "typing..." (2 to 14 s): it asks isSending first and leaves the presence to the send, which ends offline itself. In process: one
+// worker process sends for the pool, and a second process's send would not be seen (at worst a shortened "typing..." of a message that is sent all the same). Every mark has a
+// safety expiry, so a send that never settles cannot keep a number "sending" for ever.
+const inFlight = new Map<string, Map<symbol, number>>();
+const SENDING_SAFETY_MS = HUMAN_MAX_MS + 60_000;
+
+/** True while a sendLikeAHuman of this number is between its first call and its last. */
+export function isSending(sessionName: string, now: number = Date.now()): boolean {
+  const sends = inFlight.get(sessionName);
+  if (sends === undefined) return false;
+  for (const [token, expiresAt] of sends) if (expiresAt <= now) sends.delete(token);
+  if (sends.size > 0) return true;
+  inFlight.delete(sessionName);
+  return false;
+}
+
+/** Marks a send of this number in flight; the returned function ends it. */
+function beginSending(sessionName: string): () => void {
+  const token = Symbol("send");
+  const sends = inFlight.get(sessionName) ?? new Map<symbol, number>();
+  sends.set(token, Date.now() + SENDING_SAFETY_MS);
+  inFlight.set(sessionName, sends);
+  return () => {
+    sends.delete(token);
+    if (sends.size === 0 && inFlight.get(sessionName) === sends) inFlight.delete(sessionName);
+  };
+}
 
 export interface HumanDeps {
   readonly log: Logger;
@@ -71,6 +100,7 @@ export async function sendLikeAHuman<T>(deps: HumanDeps, input: HumanSend<T>): P
   };
 
   const state = { typing: false };
+  const done = beginSending(sessionName);
   try {
     // No message ids: the whole chat is marked as read, the older unread messages too.
     await bestEffort("seen", () => client.sendSeen(sessionName, chatId));
@@ -89,5 +119,6 @@ export async function sendLikeAHuman<T>(deps: HumanDeps, input: HumanSend<T>): P
     // Never left typing or online, whatever happened (a send that failed, an abort in the middle of the typing wait).
     if (state.typing) await bestEffort("paused", () => client.stopTyping(sessionName, chatId));
     await bestEffort("offline", () => client.setOffline(sessionName));
+    done();
   }
 }

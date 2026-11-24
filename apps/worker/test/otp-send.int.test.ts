@@ -6,7 +6,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { Writable } from "node:stream";
 import { createWahaClient, type HttpFetch } from "@ebooktrivia/adapters";
-import { HUMAN_PRESENCE_TIMEOUT_MS, HUMAN_TIMING, type IdMobileE164, issueOtp, toWaChatId, WA_MAX_SESSIONS } from "@ebooktrivia/core";
+import { HUMAN_PRESENCE_TIMEOUT_MS, HUMAN_TIMING, type IdMobileE164, issueOtp, OTP_GAP_MS, toWaChatId, WA_MAX_SESSIONS } from "@ebooktrivia/core";
 import { createSecretOpener, createSecretSealer, generateScopeKeyPair } from "@ebooktrivia/crypto";
 import { SECRET_NAMES } from "@ebooktrivia/db";
 import { PG_CONNECTION_OPTIONS } from "@ebooktrivia/db/connection";
@@ -15,6 +15,7 @@ import { afterAll, beforeAll, describe, expect, inject, it } from "vitest";
 import { inertFailpoint } from "../src/failpoint.ts";
 import { createLogger } from "../src/log.ts";
 import { createOtpSendConsumer, OTP_LEASE_MS, OTP_MAX_ATTEMPTS, OTP_TOPIC, OtpSendError, type OtpMessage, type OtpSender } from "../src/otp-send.ts";
+import { OTP_CONTACT_WAIT_MS } from "../src/delivery/pool-sender.ts";
 import { createWahaOtpSender, OTP_WAHA_TIMEOUT_MS, otpFromEnv } from "../src/otp-senders.ts";
 import { createOutboxProcessor } from "../src/outbox-consumer.ts";
 import { sweepExpiredOtps } from "../src/sweepers.ts";
@@ -183,11 +184,16 @@ describe("otp.send consumer", () => {
 });
 
 describe("the OTP lease", () => {
-  it("covers the worst case of one code on up to three numbers: the chat marked as read (and its fallback), typing, paused and offline at their 3 s budgets, the longest typing and pause of a code, and the send's request timeout", () => {
-    const perNumber = 5 * HUMAN_PRESENCE_TIMEOUT_MS + HUMAN_TIMING.otpTyping[1] + HUMAN_TIMING.otpPaused[1] + OTP_WAHA_TIMEOUT_MS;
-    expect(perNumber).toBe(5 * 3000 + 3000 + 900 + 7000);
-    expect(OTP_LEASE_MS).toBeGreaterThanOrEqual(WA_MAX_SESSIONS * perNumber);
+  it("covers the worst case of one code: the contact's gap once, then on each of up to three numbers the lookup, the slot, the human-like sequence at its upper bounds and the send", () => {
+    // Per number: check-exists (the request timeout bounds it), the number's slot, five best-effort calls (seen and its fallback, typing, paused, offline) at their 3 s
+    // budgets, the longest typing and pause of a code (no reading pause), and the send's request timeout.
+    const perNumber = OTP_WAHA_TIMEOUT_MS + OTP_GAP_MS[1] + 5 * HUMAN_PRESENCE_TIMEOUT_MS + HUMAN_TIMING.otpTyping[1] + HUMAN_TIMING.otpPaused[1] + OTP_WAHA_TIMEOUT_MS;
+    expect(perNumber).toBe(7000 + 2000 + 5 * 3000 + 3000 + 900 + 7000);
+    const worst = OTP_CONTACT_WAIT_MS + WA_MAX_SESSIONS * perNumber;
+    expect(worst).toBe(114_700);
+    expect(OTP_LEASE_MS).toBeGreaterThanOrEqual(worst);
     expect(createOtpSendConsumer({ sql: workerSql, opener, sender: { send: () => Promise.resolve() }, log: capturedLog().log }).leaseMs).toBe(OTP_LEASE_MS);
+    // What goes past the consumer's signal (90 % of this) sends nothing: an aborted wait ends the send ("an aborted wait for the number's slot" below).
   });
 });
 

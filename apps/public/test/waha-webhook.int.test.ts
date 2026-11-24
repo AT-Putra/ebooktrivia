@@ -4,6 +4,7 @@
 // sender is rate-limited (fail closed), and a verified ack only moves a delivery's ack forward.
 import { randomBytes, randomUUID } from "node:crypto";
 import { parseWaReadItem, WA_READ_FUNCTION, waReadKeys } from "@ebooktrivia/adapters/valkey-functions";
+import { createWaReadOpener, createWaReadSealer, generateScopeKeyPair } from "@ebooktrivia/crypto";
 import { describe, expect, it } from "vitest";
 import { webhookHmacSha512 } from "../../../infra/waha-mock/src/hmac.ts";
 import { createWahaMockApp } from "../../../infra/waha-mock/src/app.ts";
@@ -18,10 +19,14 @@ const CODE = "7K3M9XQ2PA";
 /** The read hand-off of THIS file in Valkey (a namespace of its own under cache:public:, so no other run's ring is touched). */
 const NAMESPACE = `cache:public:wa-read-t${suffix()}`;
 const ring = waReadKeys(NAMESPACE);
+/** The messaging key pair of this "deployment": public seals the message ids to its public half, only the worker (here: the test) opens them with the private one. */
+const MESSAGING = generateScopeKeyPair();
+const sealer = createWaReadSealer(MESSAGING.publicKey);
+const opener = createWaReadOpener(MESSAGING.privateKey);
 
 function deps(overrides: Partial<WahaWebhookDeps> = {}): WahaWebhookDeps & { readonly lines: string[] } {
   const logs = captureLog();
-  return { sql: publicSql, valkey, hmacSecret: SECRET, log: logs.log, lines: logs.lines, readNamespace: NAMESPACE, ...overrides };
+  return { sql: publicSql, valkey, hmacSecret: SECRET, log: logs.log, lines: logs.lines, readNamespace: NAMESPACE, readSealer: sealer, ...overrides };
 }
 
 
@@ -369,16 +374,28 @@ describe("WhatsApp's limits on a number, and replies to our opener (US-025: firs
 // Owner rule (2026-11-24): every incoming personal message is marked as read, the ones the webhook drops included. The webhook only HANDS them to the worker (one Valkey
 // function call, no database): the ring is read here as the worker reads it (the dev ACL's `worker` user), the marking itself is the worker's (worker/test/read-marks.int.test.ts).
 describe("every message of a person's chat is handed to the worker to be marked as read, stored or dropped", () => {
-  /** The ring's items so far, in order (this file's namespace only). */
+  /** The ring's items so far, in order (this file's namespace only), their message ids opened as the worker opens them. */
   async function handed(): Promise<{ n: number; session: string; messageId: string; digest: string }[]> {
     const reader = await newValkey(undefined, true);
     const seq = Number((await reader.get(ring.seq)) ?? 0);
     const items: { n: number; session: string; messageId: string; digest: string }[] = [];
     for (let n = 1; n <= seq; n++) {
       const item = parseWaReadItem(await reader.get(ring.item(n)));
-      if (item !== undefined) items.push(item);
+      if (item !== undefined) items.push({ n: item.n, session: item.session, digest: item.digest, messageId: opener.open({ session: item.session, digest: item.digest, sealed: Buffer.from(item.sealed, "base64url") }) });
     }
     return items;
+  }
+  /** Everything Valkey holds of the hand-over (the ring's items, the counter and the chats' marks), as text: what an AOF would keep. */
+  async function everythingStored(): Promise<string> {
+    const reader = await newValkey(undefined, true);
+    const found: string[] = [];
+    let cursor = "0";
+    do {
+      const [next, keys] = await reader.scan(cursor, "MATCH", `${NAMESPACE}:*`, "COUNT", 1000);
+      for (const key of keys) found.push(key, String(await reader.get(key)));
+      cursor = next;
+    } while (cursor !== "0");
+    return found.join("\n");
   }
   /** What the worker does when it takes a chat's read: lets the chat's pending mark go. */
   const released = async (digest: string): Promise<void> => {
@@ -405,6 +422,15 @@ describe("every message of a person's chat is handed to the worker to be marked 
     expect(await reader.ttl(ring.pending(item?.digest ?? ""))).toBeGreaterThan(0);
     expect(await reader.ttl(ring.item(item?.n ?? 0))).toBeGreaterThan(0);
     expect(ring.pending(item?.digest ?? "")).not.toContain(jid.split("@")[0]);
+    // What Valkey (its AOF too) holds of this hand-over: no digit of the sender's number, no message id, no text: the id is a SEALED blob only the worker can open.
+    const stored = await everythingStored();
+    expect(stored).toContain(ring.pending(item?.digest ?? ""));
+    expect(stored).not.toContain(jid.split("@")[0] ?? "x");
+    expect(stored).not.toContain(m.id);
+    expect(stored).not.toContain(m.id.split("_").at(-1) ?? "x");
+    expect(stored).not.toContain("ebooknya");
+    expect(stored).toContain("default");
+    expect(JSON.stringify(await (await newValkey(undefined, true)).get(ring.item(item?.n ?? 0)))).not.toMatch(/@c\.us|@lid|false_|true_/);
     expect(d.lines.join("\n")).not.toContain(jid.split("@")[0] ?? "x");
     expect(d.lines.some((l) => l.includes('"event":"webhook.waha.read_handed"') && l.includes('"outcome":"queued"'))).toBe(true);
   });
@@ -491,6 +517,18 @@ describe("every message of a person's chat is handed to the worker to be marked 
     // The two odd session names were refused before any call; every other event above never reached the hand-over.
     expect(d.lines.filter((l) => l.includes("read_handed") && !l.includes('"outcome":"refused"'))).toEqual([]);
     expect(d.lines.filter((l) => l.includes('"outcome":"refused"'))).toHaveLength(2);
+  });
+
+  it("without the messaging public key nothing is handed over (a raw id, which embeds the sender's phone, is never written to Valkey), and the webhook answers as usual", async () => {
+    const d = deps({ readSealer: undefined });
+    const before = (await handed()).length;
+    const stored = await everythingStored();
+    const m = message(chat());
+    expect((await post(d, eventBody("message", "default", m))).status).toBe(200);
+    expect((await root`SELECT 1 FROM waha_inbound WHERE message_id = ${m.id}`).length).toBe(1);
+    expect((await handed()).length).toBe(before);
+    expect(await everythingStored()).toBe(stored);
+    expect(d.lines.some((l) => l.includes('"event":"webhook.waha.read_not_handed"') && l.includes('"code":"no_sealer"'))).toBe(true);
   });
 
   it("a Valkey that cannot take the hand-over never changes the answer: the message is still kept, and the failure is a code in the log", async () => {

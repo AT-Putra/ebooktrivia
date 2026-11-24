@@ -3,13 +3,13 @@
 // LOAD (its grant is +@all -@dangerous -@admin; FUNCTION LOAD is @write @slow @scripting), loads it:
 //   - at start-up, before the worker reports itself started;
 //   - on every (re)connect of its health connection ("ready": a Valkey restart, a lost volume, a network blip);
-//   - from the heartbeat when an FCALL probe finds it missing (someone flushed the functions): it reloads it and
-//     raises the `valkey_function_missing` alert, since public answered 503 on its rate-limited routes meanwhile.
+//   - from the heartbeat when its probe (FUNCTION LIST LIBRARYNAME: EVERY function of the library must be listed) finds it missing (someone flushed the functions, or an older release replaced the library and dropped one): it reloads it and
+//     raises the `valkey_function_missing` alert, since public answered 503 on its rate-limited routes (and handed no read mark over) meanwhile.
 // Valkey's AOF keeps the library across restarts; FUNCTION LOAD REPLACE is idempotent, so a reload never hurts. A failed
 // load never stops the worker: it is logged and retried on the next reconnect or heartbeat, while public fails closed.
 // The public instances' readiness does NOT depend on the function (lead decision, code review US-031): Valkey is shared,
 // so a missing function would take every instance out of the load balancer, webhooks included.
-import { loadPublicValkeyFunctions, probeRateLimitFunction, PUBLIC_VALKEY_LIBRARY, type ValkeyCaller } from "@ebooktrivia/adapters/valkey-functions";
+import { loadPublicValkeyFunctions, probePublicLibrary, PUBLIC_VALKEY_LIBRARY, type ValkeyCaller } from "@ebooktrivia/adapters/valkey-functions";
 import type { Logger } from "./log.ts";
 
 export interface FunctionLoaderClient extends ValkeyCaller {
@@ -50,7 +50,7 @@ export async function startValkeyFunctionLoader(valkey: FunctionLoaderClient, lo
   return {
     load,
     async check() {
-      const probe = await probeRateLimitFunction(valkey);
+      const probe = await probePublicLibrary(valkey);
       if (probe !== "missing") return probe === "ok";
       log.warn({ library: PUBLIC_VALKEY_LIBRARY }, "valkey function missing: reloading it");
       await onMissing().catch((err: unknown) => {

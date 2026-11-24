@@ -10,7 +10,7 @@
 //   sweeps         the unknown-send lookup (resolve-unknown.ts), run with the minute sweepers.
 // `deliveriesFromEnv` is the production wiring: real WAHA, SMTP and file access with the messaging private key; without it nothing
 // is delivered (worker.ts logs that), exactly like the template test-sends. createDeliveryPort takes the ports, for the tests.
-import { openerFromEnv } from "@ebooktrivia/crypto";
+import { openerFromEnv, type WaReadOpener, waReadOpenerFromEnv } from "@ebooktrivia/crypto";
 import type { Redis } from "ioredis";
 import type postgres from "postgres";
 import type { Logger } from "../log.ts";
@@ -73,6 +73,8 @@ export interface DeliveryPorts {
   readonly clock?: () => number;
   /** Where public's read-mark ring lives in Valkey (default: the production namespace); a test passes one of its own. */
   readonly readNamespace?: string;
+  /** Opens the sealed message ids of the read marks (the messaging private key). Without it there are no read marks: a sealed id cannot be read. */
+  readonly readOpener?: WaReadOpener;
 }
 
 export function createDeliveryPort(ports: DeliveryPorts): DeliveryPort {
@@ -123,7 +125,7 @@ export function createDeliveryPort(ports: DeliveryPorts): DeliveryPort {
           resolve_unknown: () => resolveUnknownDeliveries({ sql, log, waha: ports.waha, config: ports.config }),
           opener_lease: () => expireOpenerLeases(sql),
         },
-        ...(valkey === undefined
+        ...(valkey === undefined || ports.readOpener === undefined
           ? {}
           : {
               readMarks: createReadMarks({
@@ -131,6 +133,7 @@ export function createDeliveryPort(ports: DeliveryPorts): DeliveryPort {
                 log,
                 waha: ports.waha,
                 valkey: valkey.client,
+                opener: ports.readOpener,
                 prefix: valkey.prefix,
                 ...(ports.readNamespace === undefined ? {} : { namespace: ports.readNamespace }),
                 ...(ports.humanRandom === undefined ? {} : { random: ports.humanRandom }),
@@ -149,6 +152,7 @@ export function deliveriesFromEnv(env: Env, worker: Pick<WorkerConfig, "dev">, m
   if (optional(env, "SECRETS_MESSAGING_PRIVATE_KEY") === undefined) return undefined;
   const config = loadDeliveryConfig(env, worker);
   const opener = openerFromEnv(env);
+  const readOpener = waReadOpenerFromEnv(env);
   return {
     topics: [INBOUND_TOPIC],
     create(context) {
@@ -158,6 +162,7 @@ export function deliveriesFromEnv(env: Env, worker: Pick<WorkerConfig, "dev">, m
         mail: createMailSender({ sql: context.sql, opener, config }),
         files: createEbookFiles(config),
         magicLinks: magicLinks({ sql: context.sql, playOrigin: config.playOrigin }),
+        ...(readOpener === undefined ? {} : { readOpener }),
       };
       return createDeliveryPort(ports).create(context);
     },

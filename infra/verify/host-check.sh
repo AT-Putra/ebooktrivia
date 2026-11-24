@@ -368,7 +368,10 @@ for cmd in "EXISTS cache:public:host-check" "EXISTS rl:host-check" "INFO server"
 done
 expect "worker: EXISTS ebt:* allowed" 0 "$(valkey_as worker "$worker_pw" EXISTS ebt:host-check)"
 expect "worker: EXISTS cache:worker:* allowed" 0 "$(valkey_as worker "$worker_pw" EXISTS cache:worker:host-check)"
-expect "worker: EXISTS cache:public:wa-read:* allowed (the ring of incoming WhatsApp messages)" 0 "$(valkey_as worker "$worker_pw" EXISTS cache:public:wa-read:host-check)"
+# The ring of incoming WhatsApp messages public fills: the worker may read and delete it (a selector: GET, MGET, DEL on exactly this pattern), never write it.
+expect "worker: GET cache:public:wa-read:* allowed" "" "$(valkey_as worker "$worker_pw" GET cache:public:wa-read:host-check)"
+check "worker: SET cache:public:wa-read:* denied (read and delete only)" denied "$(valkey_as worker "$worker_pw" SET cache:public:wa-read:host-check x)"
+check "worker: EXISTS cache:public:wa-read:* denied (no command beyond GET, MGET, DEL)" denied "$(valkey_as worker "$worker_pw" EXISTS cache:public:wa-read:host-check)"
 check "worker: EXISTS rl:* denied" denied "$(valkey_as worker "$worker_pw" EXISTS rl:host-check)"
 check "worker: EXISTS cache:public:* denied" denied "$(valkey_as worker "$worker_pw" EXISTS cache:public:host-check)"
 check "worker: KEYS denied (@dangerous)" denied "$(valkey_as worker "$worker_pw" KEYS host-check-none)"

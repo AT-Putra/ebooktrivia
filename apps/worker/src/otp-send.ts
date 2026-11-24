@@ -29,11 +29,14 @@ export const OTP_TOPIC = "otp.send";
  */
 export const OTP_MAX_ATTEMPTS = 6;
 /**
- * Covers the worst case of the human-like sequence of one code (human.ts) on up to three numbers (US-025): the chat marked as read (its call and the fallback of it), typing,
- * paused and the offline call (five best-effort calls of up to 3 s each), typing at most 3 s and a pause of at most 0.9 s (no reading pause for a code), and the send with its
- * request timeout (otp-senders.ts OTP_WAHA_TIMEOUT_MS, 7 s). test/otp-send.int.test.ts pins it against those constants.
+ * What one code can take, worst case, on up to three numbers (US-025): the wait for the contact's gap (once: OTP_CONTACT_WAIT_MS, 10 s), then PER number the check-exists
+ * lookup (bounded by the request timeout, OTP_WAHA_TIMEOUT_MS, 7 s), the number's slot (OTP_GAP_MS, 2 s), the human-like sequence (human.ts: the chat marked as read and the
+ * fallback of that call, typing, paused and the offline call: five best-effort calls of up to 3 s each, typing at most 3 s and a pause of at most 0.9 s, no reading pause for
+ * a code) and the send with its request timeout (7 s): 34.9 s a number, 114.7 s in all. test/otp-send.int.test.ts pins the lease against those constants.
+ * What goes past the consumer's signal (90 % of the lease) sends nothing: every wait of the sequence and the wait for the slot end with that signal, and a send is only made
+ * after a wait that was not ended by it (human.ts), so a code that took too long is retried by the outbox (it lives 5 minutes), never sent late.
  */
-export const OTP_LEASE_MS = 90_000;
+export const OTP_LEASE_MS = 120_000;
 const CODE = /^[0-9]{6}$/;
 
 export interface OtpMessage {

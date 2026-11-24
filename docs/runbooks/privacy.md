@@ -52,7 +52,7 @@ customer data comes back.
 
 PostgreSQL is what the erasure clears and what the PII scan test checks. The rest ages out on its own.
 
-**Valkey** holds no personal data for longer than 24 hours, so the erasure removes nothing there.
+**Valkey** holds no personal data for longer than 24 hours, so the erasure removes nothing there. Valkey keeps an append-only file (AOF) on disk, so what is written there outlives its TTL in the file until the next rewrite: a WhatsApp message id, which embeds the sender's phone (a stranger's too), is therefore **never written to Valkey in clear**: the read marks seal it to the messaging public key first (see the rows below), and only the worker can open it.
 
 | What | Content | Lifetime |
 |---|---|---|
@@ -62,12 +62,12 @@ PostgreSQL is what the erasure clears and what the PII scan test checks. The res
 | `rl:webhook:waha:from:*` | a truncated SHA-256 of the sender's chat id | 10 min |
 | `rl:play:*:player:*` | a hash of the player id | about a minute |
 | `cache:public:*` | the Cap challenge tokens | their TTL (minutes) |
-| `cache:public:wa-read:i:*` | an incoming WhatsApp message waiting to be marked as read: the session name, the message id (it embeds the sender's chat id, so it is personal data) and a keyed digest of the chat; no text | 10 min, in a ring of 2000 slots a lap overwrites (the worker takes them within seconds) |
+| `cache:public:wa-read:i:*` | an incoming WhatsApp message waiting to be marked as read: the session name, the message id **sealed** to the messaging public key (an X25519 sealed box bound to the session and the chat's digest: it holds no readable part of the id or the phone) and a keyed digest of the chat; no text | 10 min, in a ring of 2000 slots a lap overwrites (the worker takes them within seconds) |
 | `cache:public:wa-read:c:*` | the chat's "a read is pending" mark: an HMAC of session and chat under the webhook secret (never the number) | 60 s at most, released by the worker as it takes the read |
 | `ebt:lid-round:*`, `ebt:lid-refused:*` | an HMAC of the sender's lid, an HMAC of a buyer's phone (a key derived from the worker's file-URL key; never the number) | 1 h, 1 h |
 | `ebt:lid-checks:*`, `ebt:lid-ceiling:*` | a counter and a marker per number (a session id: a random uuid) | 1 h |
-| `ebt:wa-read:cursor`, `ebt:wa-read:cap:*` | the ring cursor, and a counter of marks per number (session name, minute) | 24 h, 2 min |
-| BullMQ `wa.read` jobs | session name, message id, chat digest, for the reading pause (0.6 to 4 s) | deleted when done; a failed one 1 h |
+| `ebt:wa-read:cursor`, `ebt:wa-read:lock`, `ebt:wa-read:cap:*`, `ebt:wa-read:chat:*` | the ring cursor, the poll's lock, a counter of marks per number (session name, minute) and a counter of marks per chat (the chat's digest, minute) | 24 h, 15 s, up to 11 min, 3 min |
+| BullMQ `wa.read` jobs | session name, the SEALED message id, chat digest, for the reading pause (0.6 to 4 s), or for a minute that has room (up to 9 minutes ahead); the job id is a digest of the id | deleted when done; a failed one 1 h |
 
 **Backups** age out within their retention window, which the privacy policy states:
 - wal-g base backups and WAL: 14 days;

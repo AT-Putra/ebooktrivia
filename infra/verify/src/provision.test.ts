@@ -57,9 +57,11 @@ describe("provisioning", () => {
     const user = (name: string) => acl.split("\n").find((l) => l.startsWith(`user ${name} `)) ?? "";
     expect(user("public")).toMatch(/ ~rl:\* ~cache:public:\* /);
     expect(user("admin")).toMatch(/ ~cache:admin:\* /);
-    // The worker also reaches the ring of incoming WhatsApp messages public fills (ebt_wa_read_v1, delivery/read-marks.ts), and nothing else of public's.
-    expect(user("worker")).toMatch(/ ~ebt:\* ~cache:worker:\* ~cache:public:wa-read:\* /);
-    expect(user("worker")).not.toMatch(/~cache:public:\* |~rl:/);
+    expect(user("worker")).toMatch(/ ~ebt:\* ~cache:worker:\* resetchannels /);
+    // The worker also reaches the ring of incoming WhatsApp messages public fills (ebt_wa_read_v1, delivery/read-marks.ts) through a SELECTOR that allows GET, MGET and DEL on
+    // that one pattern and nothing else (it never writes the ring), and no other key of public's.
+    expect(user("worker")).toMatch(/ \(~cache:public:wa-read:\* -@all \+get \+mget \+del\)$/);
+    expect(user("worker").replace(/\([^)]*\)/g, "")).not.toMatch(/cache:public|~rl:/);
     // US-020: public has an explicit allowlist (rate limits, Cap token marks), no INFO, no reads or deletes. US-031: the
     // rate limits are an FCALL of the worker-loaded function, so public never runs its own Lua.
     expect(user("public")).toMatch(/ resetchannels -@all \+ping \+fcall \+incr \+pttl \+pexpire \+set$/);

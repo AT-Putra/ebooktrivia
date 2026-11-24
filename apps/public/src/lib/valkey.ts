@@ -16,8 +16,9 @@
 //     (packages/adapters captcha.ts): a redeemed token verifies once across both apps/public
 //     instances. Cap challenges and redeems store nothing at all (Owner decision, US-020), so this is
 //     the only Cap memory, gated by a solved proof of work and the checkout's per-IP limit.
-//   - WhatsApp read marks: one FCALL of the worker-loaded ebt_wa_read_v1 per incoming personal message hands {session, message id}
-//     to the worker through a capped ring under cache:public:wa-read:* (enqueueWaRead; best effort at its caller, the webhook).
+//   - WhatsApp read marks: one FCALL of the worker-loaded ebt_wa_read_v1 per incoming personal message hands {session, sealed message id}
+//     to the worker through a capped ring under cache:public:wa-read:* (enqueueWaRead; best effort at its caller, the webhook). The id
+//     is sealed to the messaging public key first: it embeds the sender's phone, and Valkey's AOF outlives the ring's ten minutes.
 //
 // FAILURE POLICY: fail CLOSED. The client never queues commands while Valkey is unreachable
 // (enableOfflineQueue false) and every command is bounded (commandTimeout), so a Valkey outage turns
@@ -26,6 +27,7 @@
 import { createHash } from "node:crypto";
 import type { ReplayStore } from "@ebooktrivia/adapters";
 import { isFunctionMissing, RATE_LIMIT_FUNCTION, WA_READ_FUNCTION, WA_READ_NAMESPACE, type WaReadItem, waReadCall } from "@ebooktrivia/adapters/valkey-functions";
+import { CryptoError, type WaReadSealer } from "@ebooktrivia/crypto";
 import { Redis } from "ioredis";
 import type { ValkeyConfig } from "./config.ts";
 import { logEvent } from "./log.ts";
@@ -123,11 +125,24 @@ export const phoneKey = (e164: string, label = "checkout-phone/v1"): string => s
 
 /**
  * Hands one incoming personal message to the worker: ONE FCALL of ebt_wa_read_v1, which keeps a single pending read per chat (the chat's mark, 60 s at most) and puts
- * {session, message id, chat digest} in a capped ring under cache:public:wa-read:* (no text; the message id carries the chat id, so items live 10 minutes at most).
+ * {session, SEALED message id, chat digest} in a capped ring under cache:public:wa-read:* (no text). The message id embeds the sender's chat id, a stranger's too, and
+ * Valkey keeps an AOF on disk beyond the ring's ten minutes, so the id is sealed to the messaging public key before it is written: only the worker can open it.
  * "queued" for a new read, "pending" when the chat already has one coming. Throws ValkeyUnavailable like every call here; the webhook treats it as best effort.
- * An item that is not well formed (an odd session name, a message id WAHA could not have made) is "refused" and nothing is called.
+ * An item that is not well formed (an odd session name, a message id WAHA could not have made) is "refused", and nothing is sealed or called.
  */
-export async function enqueueWaRead(valkey: Valkey, item: WaReadItem, namespace: string = WA_READ_NAMESPACE): Promise<"queued" | "pending" | "refused"> {
+export async function enqueueWaRead(
+  valkey: Valkey,
+  sealer: WaReadSealer,
+  input: { readonly session: string; readonly messageId: string; readonly digest: string },
+  namespace: string = WA_READ_NAMESPACE,
+): Promise<"queued" | "pending" | "refused"> {
+  let item: WaReadItem;
+  try {
+    item = { session: input.session, digest: input.digest, sealed: sealer.seal(input).toString("base64url") };
+  } catch (error) {
+    if (error instanceof CryptoError && error.code === "invalid_input") return "refused";
+    throw error;
+  }
   const call = waReadCall(namespace, item);
   if (call === null) return "refused";
   const reply = await guarded(() => valkey.fcall(WA_READ_FUNCTION, call.keys.length, ...call.keys, ...call.args), WA_READ_FUNCTION);

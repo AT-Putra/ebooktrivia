@@ -113,18 +113,23 @@ read path of its own, with no database write and no worker slot held asleep (`ap
 
 1. **Public** (`apps/public/src/lib/webhooks/waha.ts`), after the signature and the replay window and before any limit or query, calls the worker-loaded Valkey function
    `ebt_wa_read_v1` once per message: one **pending read per chat** (the chat's mark, an HMAC of session and chat under the webhook secret, `cache:public:wa-read:c:*`, 60 s at
-   most), and a **capped ring** of 2000 items (`cache:public:wa-read:i:*`: session, message id, chat digest; ten minutes each; a lap overwrites the oldest). Best effort: a Valkey
+   most), and a **capped ring** of 2000 items (`cache:public:wa-read:i:*`: session, the message id **sealed** to the messaging public key, chat digest; ten minutes each; a lap overwrites the oldest).
+   The id embeds the sender's phone and Valkey keeps an AOF, so it is never written in clear: without `SECRETS_MESSAGING_PUBLIC_KEY` public hands nothing over (it logs `no_sealer`). Best effort: a Valkey
    that is down, slow or without the function never changes the webhook's answer (the log says `webhook.waha.read_not_handed` with a code). No new ACL command or key pattern for public.
-2. **The worker's poll** (every second) takes the ring's new items in order (a cursor in `<prefix>:wa-read:cursor`), spends the number's budget (**60 marks per number per minute**,
-   `<prefix>:wa-read:cap:<session>:<minute>`; over it the mark is skipped and the chat's pending mark released) and schedules a **delayed BullMQ job** on the `wa.read` queue: the delay
-   is the reading pause (0.6 to 4 s, cryptographic random, log-normal).
+2. **The worker's poll** (every second, under a lock `<prefix>:wa-read:lock`, so a second worker process never double-spends or moves the cursor back) takes the ring's new items in order (a cursor in
+   `<prefix>:wa-read:cursor`, moved after each item), opens the sealed id (only the worker has the private key), and for each item: applies the **chat's cap** (**3 marks per chat per minute**: the rest of that
+   minute's messages of a chatty chat share ONE trailing job at the start of the next minute, which marks the whole chat, so its last message is marked too), reserves a mark of the **number's budget**
+   (**60 per number per minute**, `<prefix>:wa-read:cap:<session>:<minute>`; when this minute's is spent it takes the next minute that has room, up to 9 minutes ahead, within the item's ten: **deferred,
+   not dropped**; only when all of them are spent is the mark let go and the chat's pending mark released) and schedules a **delayed BullMQ job** on the `wa.read` queue: the delay is the reading
+   pause (0.6 to 4 s, cryptographic random, log-normal) after the reserved minute starts. The counters are made atomically with their TTL. A poll that fails is counted, not thrown: one warning a minute.
 3. **The job** releases the chat's pending mark, **re-fetches the message by id** on that number (a forged webhook drives nothing; our own messages and anything that is not a person's
-   chat are skipped), sends `sendSeen` for the whole chat (no message ids) and puts the number offline again (like every send). Completed jobs are not kept.
+   chat are skipped), sends `sendSeen` for the whole chat (no message ids) and puts the number offline again (like every send), **unless a human-like send of the same number is in flight**: its
+   "typing..." (2 to 14 s) would be cut, and that send puts the number offline itself when it is done (tracked in process by `isSending` in `human.ts`, with a safety expiry). Completed jobs are not kept.
 
 A reply's own send marks the chat once more (every send does: one extra cheap call, accepted instead of a flag to skip it). The inbound job itself marks nothing and waits for nothing. Like
-every presence call it is best effort: a failure is a code in the debug log per event and **one warning a minute** with the counts (`read marks are failing or skipped`), so a `sendSeen`
-that is broken everywhere is seen; it never fails a delivery or an inbound job. The worker's production Valkey ACL reaches `~cache:public:wa-read:*` for this (and nothing else of public's);
-see `docs/runbooks/security-scans.md` section 4.
+every presence call it is best effort: a failure is a code in the debug log per event and **one warning a minute** with the counts (`read marks are failing or skipped`, flushed from the poll's own tick so
+the last minute is reported too), so a `sendSeen` that is broken everywhere, or a poll that fails every second, is seen as one line a minute; it never fails a delivery or an inbound job. The worker's
+production Valkey ACL reaches the ring through a selector that allows `GET`, `MGET` and `DEL` on `~cache:public:wa-read:*` and nothing else of public's; see `docs/runbooks/security-scans.md` section 4.
 
 Per contact (a phone, whichever number writes): a **second message waits a random 30 to 60 s** after the previous one, and **at most 4 messages an hour**. A code that
 would have to wait longer than 10 s for that gap is not sent late: the outbox retries it (the code lives 5 minutes).
