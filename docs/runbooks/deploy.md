@@ -102,6 +102,11 @@ A release's migrations may therefore only **expand** it:
 
 A rename is therefore three releases: add the new column and write both; switch the reads and drop the writes of the old; drop the old.
 
+**Data counts too, not only the shape.** Rows a migration inserts or rewrites must be readable by the previous release. Ship the code that reads a new format first, and add the data in the next
+release's migration. The one exception so far: 0026 adds seven opener wordings that use `{sapaan}` and `[[a|b]]`, which only its own release renders (the release before, 0a5d436, fails those
+openers with `unknown_variable`), so `migration-compat` failed for the push of 2026-11-24. That was accepted because no production deploy runs a release older than 0026 (the first production deploy
+starts from it), and staging restarted onto the new worker within a minute of the migration with no opener sent in between. Never roll staging or production back to a release before 0026's code.
+
 **Enforced two ways** (both in CI, both runnable locally):
 
 - `infra/verify/local/expand-only.sh [--refuse-contract-ok] [BASE]` (and `infra/verify/src/expand-only.ts`) refuses a **new** `packages/db/migrations/*.sql` that drops or renames a table, column, schema, type,
