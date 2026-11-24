@@ -260,9 +260,16 @@ describe("Cap routes", () => {
     };
     await withSettings({ "captcha.ip_cap": 1000 }, async () => {
       const deps = capDeps();
-      // Ten clients, each in a /48 of its own, 500 challenges and 500 redeems each (their own limits allow 1000).
-      const clients = Array.from({ length: 10 }, () => `2001:db8:${randomBytes(2).readUInt16BE().toString(16)}:1::${randomBytes(2).readUInt16BE().toString(16)}`);
+      // Ten clients, each in a /48 of its own, 500 challenges and 500 redeems each (their own limits allow 1000). The /48s are drawn AFTER the snapshot
+      // and none is one that already has a counter (the Valkey is shared, and other suites draw 2001:db8:xxxx addresses too): a counter that was already
+      // there is not "added", so a clash made this test fail (CI 2026-11-24: 19 counters instead of 20).
       const before = await keys(inspector);
+      const clients: string[] = [];
+      while (clients.length < 10) {
+        const site = `2001:db8:${randomBytes(2).readUInt16BE().toString(16)}`;
+        if (clients.some((ip) => ip.startsWith(`${site}:`)) || [...before].some((key) => key.includes(`:${site}:`))) continue;
+        clients.push(`${site}:1::${randomBytes(2).readUInt16BE().toString(16)}`);
+      }
       let ok = 0;
       for (const ip of clients) {
         for (let batch = 0; batch < 10; batch++) {
