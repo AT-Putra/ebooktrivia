@@ -57,6 +57,19 @@ export class CryptoError extends Error {
   }
 }
 
+const CRYPTO_ERROR_CODES: ReadonlySet<string> = new Set<CryptoErrorCode>(["decrypt_failed", "key_mismatch", "scope_unavailable", "invalid_key", "invalid_input", "binding_mismatch"]);
+
+/**
+ * True for a CryptoError of ANY copy of this package. A Next.js app bundles a copy per bundle, and an object one bundle built (a sealer, an opener on the
+ * process-wide runtime) throws its own copy's class, so `instanceof CryptoError` in another bundle is false. The name and a known code decide instead.
+ */
+export function isCryptoError(error: unknown): error is CryptoError {
+  if (error instanceof CryptoError) return true;
+  if (!(error instanceof Error) || error.name !== "CryptoError") return false;
+  const code: unknown = (error as { readonly code?: unknown }).code;
+  return typeof code === "string" && CRYPTO_ERROR_CODES.has(code);
+}
+
 const decryptFailed = (): CryptoError => new CryptoError("decrypt_failed", "decryption failed");
 
 function rawKey(key: Uint8Array, what: string): Buffer {

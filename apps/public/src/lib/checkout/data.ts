@@ -3,7 +3,7 @@
 // the amount is never taken from the client), the published legal pages, the bounded settings and the
 // sealed Midtrans server key.
 import { enabledMidtransMethods, type MidtransMethod } from "@ebooktrivia/core";
-import { CryptoError, type SecretOpener } from "@ebooktrivia/crypto";
+import { isCryptoError, type SecretOpener } from "@ebooktrivia/crypto";
 // The subpath, not "@ebooktrivia/db": that index pulls the drizzle schema into the bundle (code review).
 import { SECRET_NAMES } from "@ebooktrivia/db/secrets";
 import type { Sql } from "../db.ts";
@@ -236,7 +236,7 @@ function openServerKey(opener: SecretOpener, row: PaymentSecretRow): string {
   try {
     return opener.openSecret({ id: row.id, scope: "payment", name: row.name, adnetId: null, boundHost: row.bound_host, keyId: row.key_id, ciphertext: row.ciphertext, nonce: row.nonce, sealedDek: row.sealed_dek });
   } catch (error) {
-    if (error instanceof CryptoError) throw new ServerKeyUnavailable("unreadable");
+    if (isCryptoError(error)) throw new ServerKeyUnavailable("unreadable");
     throw error;
   }
 }

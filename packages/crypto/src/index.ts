@@ -5,7 +5,7 @@ export {
   type ConversionSecretStore,
   loadConversionSecretResolver,
 } from "./conversion-secrets.ts";
-export { CryptoError, type CryptoErrorCode, generateScopeKeyPair, keyIdOf, SEALED_BOX_OVERHEAD } from "./sealed-box.ts";
+export { CryptoError, type CryptoErrorCode, generateScopeKeyPair, isCryptoError, keyIdOf, SEALED_BOX_OVERHEAD } from "./sealed-box.ts";
 export {
   assertOtpCode,
   createSecretSealer,

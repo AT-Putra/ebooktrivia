@@ -5,6 +5,7 @@ import {
   gcmDecrypt,
   gcmEncrypt,
   generateScopeKeyPair,
+  isCryptoError,
   keyIdOf,
   open,
   privateKeyObject,
@@ -123,5 +124,32 @@ describe("AES-256-GCM helpers", () => {
     expectCode(() => gcmDecrypt(key.subarray(0, 16), nonce, ct, aad), "decrypt_failed");
     expectCode(() => gcmDecrypt(key, nonce.subarray(0, 8), ct, aad), "decrypt_failed");
     expectCode(() => gcmDecrypt(key, nonce, ct.subarray(0, 15), aad), "decrypt_failed");
+  });
+});
+
+describe("isCryptoError", () => {
+  /** A CryptoError as ANOTHER copy of this package throws it (a Next.js app has one copy per bundle): the same name and shape, not this module's class. */
+  class OtherCopyCryptoError extends Error {
+    readonly code: string;
+    constructor(code: string) {
+      super("refused");
+      this.name = "CryptoError";
+      this.code = code;
+    }
+  }
+
+  it("is true for this copy's CryptoError and for another copy's (same name, a known code)", () => {
+    expect(isCryptoError(new CryptoError("invalid_input", "x"))).toBe(true);
+    expect(isCryptoError(new OtherCopyCryptoError("invalid_input"))).toBe(true);
+    expect(isCryptoError(new OtherCopyCryptoError("decrypt_failed"))).toBe(true);
+  });
+
+  it("is false for anything else: other errors, an unknown code, a look-alike object that is not an Error", () => {
+    expect(isCryptoError(new Error("x"))).toBe(false);
+    expect(isCryptoError(new TypeError("x"))).toBe(false);
+    expect(isCryptoError(new OtherCopyCryptoError("not_a_code"))).toBe(false);
+    expect(isCryptoError({ name: "CryptoError", code: "invalid_input" })).toBe(false);
+    expect(isCryptoError(undefined)).toBe(false);
+    expect(isCryptoError("CryptoError")).toBe(false);
   });
 });

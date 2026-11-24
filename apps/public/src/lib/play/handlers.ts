@@ -53,7 +53,10 @@ import { hashMagicLinkToken, isMagicLinkChannel, normalizeIdMobile } from "@eboo
 import { SDK_LIMITS } from "@ebooktrivia/core/sdk-contract";
 import type { SecretSealer } from "@ebooktrivia/crypto";
 import { clientIp, throttleBucket, throttleBucket48 } from "@ebooktrivia/edge";
-import { APIError } from "better-auth/api";
+// isAPIError, never `instanceof APIError`: the shared runtime (lib/runtime.ts, one per process on globalThis) is built by whichever bundle asks first, a
+// page as often as a route, and each Next.js bundle has its own copy of better-auth, so the auth instance's APIError is often not this module's class.
+// better-auth's own check also accepts the error by its name.
+import { isAPIError } from "better-auth/api";
 import { intSettings, loadCaptchaSettings } from "../checkout/data.ts";
 import type { Sql } from "../db.ts";
 import { readJsonBody } from "../http.ts";
@@ -324,7 +327,7 @@ export async function handleOtpVerify(deps: PlayDeps, request: Request): Promise
       login = { token: answer.token ?? null, authUserId: answer.user?.id ?? null, setCookies: result.headers.getSetCookie() };
     } catch (error) {
       // INVALID_OTP, and R13's FAILED_TO_UPDATE_USER (500) / FAILED_TO_CREATE_SESSION: one generic answer.
-      if (!(error instanceof APIError)) throw error;
+      if (!isAPIError(error)) throw error;
       deps.log("info", "play.refused", { route, reason: "invalid_code" });
       await padTo(started, deps.verifyFloorMs ?? PLAY_LIMITS.verifyFloorMs);
       return playError("invalid_code");
@@ -362,7 +365,7 @@ export async function handleMagicLink(deps: PlayDeps, request: Request): Promise
       const result = await deps.auth.api.playerMagicLinkLogin({ body: { tokenHash: tokenHash.toString("hex"), channel }, headers: authHeaders(request.headers, false), returnHeaders: true });
       login = { authUserId: result.response.authUserId, setCookies: result.headers.getSetCookie() };
     } catch (error) {
-      if (!(error instanceof APIError)) throw error;
+      if (!isAPIError(error)) throw error;
       deps.log("info", "play.refused", { route, reason: "invalid_link" });
       return playError("invalid_link");
     }

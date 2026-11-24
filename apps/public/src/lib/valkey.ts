@@ -27,7 +27,7 @@
 import { createHash } from "node:crypto";
 import type { ReplayStore } from "@ebooktrivia/adapters";
 import { isFunctionMissing, RATE_LIMIT_FUNCTION, WA_READ_FUNCTION, WA_READ_NAMESPACE, type WaReadItem, waReadCall } from "@ebooktrivia/adapters/valkey-functions";
-import { CryptoError, type WaReadSealer } from "@ebooktrivia/crypto";
+import { isCryptoError, type WaReadSealer } from "@ebooktrivia/crypto";
 import { Redis } from "ioredis";
 import type { ValkeyConfig } from "./config.ts";
 import { logEvent } from "./log.ts";
@@ -140,7 +140,7 @@ export async function enqueueWaRead(
   try {
     item = { session: input.session, digest: input.digest, sealed: sealer.seal(input).toString("base64url") };
   } catch (error) {
-    if (error instanceof CryptoError && error.code === "invalid_input") return "refused";
+    if (isCryptoError(error) && error.code === "invalid_input") return "refused";
     throw error;
   }
   const call = waReadCall(namespace, item);

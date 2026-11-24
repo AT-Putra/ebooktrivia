@@ -579,6 +579,49 @@ describe("OTP verify", () => {
   });
 });
 
+describe("an auth instance another bundle built (lib/runtime.ts is one per process, built by a page as often as by a route)", () => {
+  /** better-auth's APIError as ANOTHER Next.js bundle's copy of the library throws it: the same name and shape, not this module's class. */
+  class OtherCopyAPIError extends Error {
+    readonly status = "BAD_REQUEST";
+    readonly statusCode = 400;
+    constructor(message: string) {
+      super(message);
+      this.name = "APIError";
+    }
+  }
+  const authThrowing = (endpoint: "verifyPhoneNumber" | "playerMagicLinkLogin"): PlayDeps["auth"] => ({
+    ...auth,
+    api: { ...auth.api, [endpoint]: () => Promise.reject(new OtherCopyAPIError("refused")) },
+  });
+
+  it("a wrong code is still invalid_code (400, after the floor), never a 503, when the APIError is another copy's class", async () => {
+    const deps = playDeps({ auth: authThrowing("verifyPhoneNumber") });
+    const started = performance.now();
+    const response = await handleOtpVerify(deps, await verifyRequest(uniquePhone(), "123456"));
+    expect(performance.now() - started).toBeGreaterThanOrEqual(PLAY_LIMITS.verifyFloorMs - 1);
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ v: 1, error: "invalid_code" });
+    expect(deps.logs.lines.some((l) => l.includes('"event":"play.failed"'))).toBe(false);
+  });
+
+  it("a refused magic link is still invalid_link (400), never a 503, when the APIError is another copy's class", async () => {
+    const deps = playDeps({ auth: authThrowing("playerMagicLinkLogin") });
+    const response = await handleMagicLink(deps, playRequest("/api/v1/play/auth/magic-link", { channel: "email", token: "x".repeat(43) }));
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ v: 1, error: "invalid_link" });
+    expect(deps.logs.lines.some((l) => l.includes('"event":"play.failed"'))).toBe(false);
+  });
+
+  it("any other error is still a 503 (fail closed): only the auth library's refusals become the generic answer", async () => {
+    const deps = playDeps({
+      auth: { ...auth, api: { ...auth.api, verifyPhoneNumber: async () => Promise.reject(new Error("boom")) } } as unknown as PlayDeps["auth"],
+    });
+    const response = await handleOtpVerify(deps, await verifyRequest(uniquePhone(), "123456"));
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ v: 1, error: "unavailable" });
+  });
+});
+
 describe("sessions", () => {
   it("rotate once a day: a new token on the next use, the old one valid only for the grace period; one rotation under concurrency", async () => {
     const { id, phone } = await player(true);
