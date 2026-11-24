@@ -321,14 +321,18 @@ describe("WhatsApp: the proactive message is ONE short opener (Owner decision D7
     // No PDF, no link: nothing issued, no file sent, no signed URL.
     expect(r.magic.issued).toEqual([]);
     expect(r.waha.sent.filter((s) => s.kind === "file")).toEqual([]);
-    // The order: where does it live (check-exists), typing, paused, the message, offline. An opener has no message to mark as seen.
-    expect((await r.waha.callLog()).map((c) => `${c.path.replace(/^\/api\/[^/]+\/presence$/, "/presence")}${typeof c.body["presence"] === "string" ? `:${c.body["presence"]}` : ""}`)).toEqual([
+    // The order: where does it live (check-exists), the WHOLE chat marked as read (the older unread messages of that person too: no message ids, the chat WAHA returned),
+    // typing, paused, the message, offline.
+    const calls = await r.waha.callLog();
+    expect(calls.map((c) => `${c.path.replace(/^\/api\/[^/]+\/presence$/, "/presence")}${typeof c.body["presence"] === "string" ? `:${c.body["presence"]}` : ""}`)).toEqual([
       "/api/contacts/check-exists",
+      "/api/sendSeen",
       "/presence:typing",
       "/presence:paused",
       "/api/sendText",
       "/presence:offline",
     ]);
+    expect(calls[1]?.body).toEqual({ session: session.name, chatId: "98765432101234@lid" });
     // The delivery itself is untouched: pending, no attempt, no number. The opener is exactly-once on its own row.
     expect(await deliveryOf(order.deliveries.whatsapp)).toMatchObject({ status: "pending", attempts: 0, session_id: null, tried_session_ids: [] });
     expect(await openerOf(order.deliveries.whatsapp)).toMatchObject({ status: "sent", attempts: 1, session_id: session.id, tried_session_ids: [session.id], last_error: null });
@@ -446,9 +450,9 @@ describe("WhatsApp: the proactive message is ONE short opener (Owner decision D7
     const first_ = await paidOrder(shop);
     const second = await paidOrder(shop);
     await r.delivery.process({ id: first_.deliveries.whatsapp });
-    // The first send's waits: its slot, the typing wait and the short pause (an opener has no reading step); the second send's slot comes next.
+    // The first send's waits: its slot, the reading pause (the chat is marked as read first, an opener too), the typing wait and the short pause; the second send's slot comes next.
     const firstSleeps = r.slept.length;
-    expect(firstSleeps).toBe(3);
+    expect(firstSleeps).toBe(4);
     await r.delivery.process({ id: second.deliveries.whatsapp });
     // The first send starts at once; the second waits one gap (never less than the minimum gap, whatever the concurrency).
     expect(r.slept[0]).toBeLessThanOrEqual(5);

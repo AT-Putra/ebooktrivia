@@ -1,8 +1,9 @@
 // The human-like sequence of every WhatsApp send of the worker (US-025, Owner requirement; WAHA docs "How to avoid blocking", "Presence"). The pauses come
 // from core human-send.ts (log-normal, clamped, drawn per message from a cryptographic source: never a fixed timing, never a seeded sequence); this runs them:
 //
-//   1. seen        a reply marks the buyer's message as read (an opener and an OTP have none), best effort;
-//   2. reading     a random pause;
+//   1. seen        the WHOLE chat is marked as read (sendSeen with no message ids) before anything is sent, whatever the kind: opener, reply, text, file, OTP. Older
+//                  unread messages of that person left behind while we write to them look like a bot (Owner rule, 2026-11-24). Best effort;
+//   2. reading     a random pause (none for an OTP: it is time-critical, and its seen mark is the one quick call);
 //   3. typing      the "typing..." presence starts, best effort;
 //   4. typing wait a random wait scaled to the length of the message;
 //   5. paused      the typing presence ends, best effort;
@@ -37,10 +38,6 @@ export interface HumanSend<T> {
   /** The length of what is typed (the message, or the caption of a file). */
   readonly textLength: number;
   readonly kind: HumanKind;
-  /** The inbound message a reply answers: marked as seen first. Absent for an opener and an OTP. */
-  readonly seenMessageId?: string | undefined;
-  /** Mark the chat as seen even without a message id (a reply always does: there is an inbound message). */
-  readonly withSeen: boolean;
   readonly signal: AbortSignal;
   /** Called after the last wait, just before the send: false = the claim can no longer cover the send (do not send). */
   readonly beforeSend?: () => boolean;
@@ -55,7 +52,7 @@ export type HumanResult<T> =
 export async function sendLikeAHuman<T>(deps: HumanDeps, input: HumanSend<T>): Promise<HumanResult<T>> {
   const random = deps.random ?? cryptoRandom;
   const { client, sessionName, chatId, signal } = input;
-  const plan = humanPlan({ kind: input.kind, textLength: input.textLength, withReading: input.withSeen }, random);
+  const plan = humanPlan({ kind: input.kind, textLength: input.textLength }, random);
   const bestEffort = async (step: string, call: () => Promise<void>): Promise<void> => {
     try {
       await call();
@@ -75,10 +72,9 @@ export async function sendLikeAHuman<T>(deps: HumanDeps, input: HumanSend<T>): P
 
   const state = { typing: false };
   try {
-    if (input.withSeen) {
-      await bestEffort("seen", () => client.sendSeen(sessionName, chatId, input.seenMessageId === undefined ? undefined : [input.seenMessageId]));
-      if (!(await wait(plan.readingMs))) return { kind: "not_sent", reason: "aborted" };
-    }
+    // No message ids: the whole chat is marked as read, the older unread messages too.
+    await bestEffort("seen", () => client.sendSeen(sessionName, chatId));
+    if (plan.readingMs > 0 && !(await wait(plan.readingMs))) return { kind: "not_sent", reason: "aborted" };
     await bestEffort("typing", async () => {
       await client.startTyping(sessionName, chatId);
       state.typing = true;

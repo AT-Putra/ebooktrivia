@@ -63,7 +63,7 @@ const clockOf = (...values: number[]) => {
   let i = 0;
   return (): number => values[Math.min(i++, values.length - 1)] ?? 0;
 };
-/** An access that lets the first `pass` calls through (the re-fetch of the inbound message) and runs `hook` before every later one (the send). */
+/** An access that lets the first `pass` calls through (the re-fetch of the inbound message, then its read mark) and runs `hook` before every later one (the send). */
 function hooked(fake: WahaFake, pass: number, hook: () => Promise<void>): WahaAccess {
   let calls = 0;
   return {
@@ -109,7 +109,7 @@ describe("a ledger row is never left `reserved` (it would count against the numb
     fake.fault(s.name, "unauthorized");
     const r = build(
       {
-        waha: hooked(fake, 1, async () => {
+        waha: hooked(fake, 2, async () => {
           await sql`UPDATE orders SET status = 'refunded', refunded_at = now() WHERE id = ${order.orderId}`;
         }),
       },
@@ -126,7 +126,7 @@ describe("a ledger row is never left `reserved` (it would count against the numb
     const order = await paidOrder(shop, { waNotBefore: later() });
     const r = build(
       {
-        waha: hooked(fake, 1, async () => {
+        waha: hooked(fake, 2, async () => {
           await sql`UPDATE deliveries SET attempts = attempts + 1 WHERE id = ${order.deliveries.whatsapp}`;
         }),
       },
@@ -168,7 +168,7 @@ describe("a ledger row is never left `reserved` (it would count against the numb
     const fake = createWahaFake();
     const s = await createSession();
     const order = await paidOrder(shop, { waNotBefore: later() });
-    const r = build({ waha: hooked(fake, 1, () => Promise.reject(new Error("boom"))) }, fake);
+    const r = build({ waha: hooked(fake, 2, () => Promise.reject(new Error("boom"))) }, fake);
     const heard = await r.hear(s.name, "6281999900501@c.us", `kode ${order.code}`);
     await heard.run();
     expect(await inboundOf(heard.inboundId)).toMatchObject({ outcome: "text_failed" });

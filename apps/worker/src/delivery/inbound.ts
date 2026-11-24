@@ -5,6 +5,11 @@
 //   1. re-fetch   the message is read again from WAHA by its id, on the session (and server) it arrived on (adapters getMessage).
 //                 A message WAHA does not know is a forged or stale row: nothing is sent. The sender, the chat and the text below are
 //                 the re-fetched ones, never the webhook's.
+//      read     a confirmed personal message (not ours, a phone or @lid chat: never a group, a status, a channel or anything else) is marked as read: the WHOLE chat,
+//                 on the number it arrived on, after a random reading pause, BEFORE the decision below and whatever it is (a stranger, no code, a rate-limited
+//                 sender, a buyer): WhatsApp finds a number that answers some chats and leaves the others unread suspicious (Owner rule, 2026-11-24; WAHA "How to
+//                 avoid blocking": send seen before processing the message). Best effort: a failed mark is only logged as a code and never fails or retries the job.
+//                 A reply's own send marks the chat again (human.ts): one extra, cheap call, accepted rather than a flag that skips it.
 //   2. match      the order code (>= 40 bits) is found in the text (core extractOrderCodes) and looked up. No code, or a code of no order:
 //                 nothing is sent (a stranger gets no oracle and no chatter).
 //   3. who        the sender decides, never the code alone (core senderVerdict): a phone chat must be the order's phone; an @lid chat is
@@ -37,9 +42,12 @@ import {
   DELIVERY_GAP_MS,
   deliveryFilename,
   extractOrderCodes,
+  HUMAN_PRESENCE_TIMEOUT_MS,
+  HUMAN_TIMING,
   type InboundSender,
   isIdMobileE164,
   isUuid,
+  sampleLogNormal,
   senderVerdict,
   toWaChatId,
 } from "@ebooktrivia/core";
@@ -64,6 +72,8 @@ export const INBOUND_TOPIC = "waha.inbound";
 /** A WAHA lookup (the message, an @lid) is a quick read; a text reply is one small send; the PDF for an unresolved sender is a file send. */
 const LOOKUP_TIMEOUT_MS = 10_000;
 const TEXT_TIMEOUT_MS = 30_000;
+/** The longest the read mark of a message takes before the decision: the reading pause at its top, and the mark's two calls (sendSeen and its fallback) running out their timeouts. */
+const READ_MARK_MAX_MS = HUMAN_TIMING.reading[1] + 2 * HUMAN_PRESENCE_TIMEOUT_MS;
 /** The extra replies (texts, the PDF for an unresolved sender) stop at this share of a number's daily cap. */
 export const REPLY_CAP_SHARE = 0.8;
 /** The phone-side match of an @lid sender asks WhatsApp about at most this many phones per message. */
@@ -294,8 +304,6 @@ export function createInboundConsumer(deps: InboundDeps): OutboxConsumer {
             chatId: fetched.chat.chatId,
             textLength: text.length,
             kind: "message",
-            withSeen: true,
-            seenMessageId: fetched.messageId,
             signal,
             send: () => client.sendText(sessionName, fetched.chat.chatId, text),
           }),
@@ -362,8 +370,6 @@ export function createInboundConsumer(deps: InboundDeps): OutboxConsumer {
             chatId: fetched.chat.chatId,
             textLength: caption.length,
             kind: "message",
-            withSeen: true,
-            seenMessageId: fetched.messageId,
             signal,
             send: () => client.sendFile(sessionName, fetched.chat.chatId, { url, filename: deliveryFilename(file.title), mimetype: "application/pdf" }, caption),
           });
@@ -438,7 +444,6 @@ export function createInboundConsumer(deps: InboundDeps): OutboxConsumer {
             code: row.order_code,
             whatsapp: { sessionId: fetched.sessionId, chatId, filename, startAt: picked.slot.startAt },
             reply,
-            seenMessageId: fetched.messageId,
             sendId: picked.sendId,
             claimedAt: clock(),
           },
@@ -472,10 +477,25 @@ export function createInboundConsumer(deps: InboundDeps): OutboxConsumer {
     return found;
   }
 
+  /**
+   * Marks the sender's whole chat as read on the number it wrote to (sendSeen without message ids), after a random reading pause (log-normal, from the human-like random
+   * source). The pause ends early with the job's signal, and that abort is NOT swallowed: the job ends before anything is decided. The mark itself is best effort: whatever
+   * goes wrong (the session cannot be opened, WAHA refuses or times out) is logged as a code and the message is handled as if it had worked.
+   */
+  async function markRead(inbound: InboundRow, fetched: Fetched, signal: AbortSignal): Promise<void> {
+    await sleep(sampleLogNormal(humanDeps.random ?? cryptoRandom, HUMAN_TIMING.reading), signal);
+    try {
+      await deps.waha.withSession(fetched.sessionId, ({ sessionName, client }) => client.sendSeen(sessionName, fetched.chat.chatId), { timeoutMs: HUMAN_PRESENCE_TIMEOUT_MS });
+    } catch (error) {
+      log.debug({ inboundId: inbound.id, step: "seen", code: error instanceof WahaError || error instanceof WahaAccessError ? error.code : "failed" }, "the inbound message could not be marked as read; it is handled anyway");
+    }
+  }
+
   async function handle(inbound: InboundRow, signal: AbortSignal): Promise<string> {
     const fetched = await refetch(inbound);
     if (fetched === "unverified") return "unverified";
     if (fetched.fromMe || fetched.chat.kind === "other") return "ignored";
+    await markRead(inbound, fetched, signal);
     const codes = extractOrderCodes(fetched.body);
     const sender: InboundSender = fetched.chat.kind === "phone" ? { kind: "phone", phone: fetched.chat.phone } : { kind: "lid" };
     const orders =
@@ -502,7 +522,7 @@ export function createInboundConsumer(deps: InboundDeps): OutboxConsumer {
   return {
     topic: INBOUND_TOPIC,
     // The claim, the number's slot, the WAHA request and the record all happen inside one job.
-    leaseMs: deps.config.leaseMs + 30_000,
+    leaseMs: deps.config.leaseMs + 30_000 + READ_MARK_MAX_MS,
     async perform(row, signal): Promise<FinalizeWrites | undefined> {
       const payload = row.payload as { inbound_id?: unknown; message_id?: unknown };
       if (!isUuid(payload.inbound_id)) throw new Error("waha.inbound payload has no valid inbound_id");

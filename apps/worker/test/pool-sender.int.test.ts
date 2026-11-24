@@ -156,7 +156,7 @@ describe("a text out of the pool", () => {
 });
 
 describe("a text out of the pool: human-like, first contact, and WhatsApp's limits", () => {
-  it("asks WAHA where the phone lives, then types, pauses, sends and goes offline: a short, human sequence with no seen mark, and the chat id WAHA returned (a @lid) is where it goes", async () => {
+  it("asks WAHA where the phone lives, marks the whole chat as read, then types, pauses, sends and goes offline: a short, human sequence with no reading pause, and the chat id WAHA returned (a @lid) is where it goes", async () => {
     const r = rig();
     const session = await createSession();
     const to = TO();
@@ -165,14 +165,18 @@ describe("a text out of the pool: human-like, first contact, and WhatsApp's limi
     await r.waha.clearCallLog();
     await r.sender.sendText({ to, text: "Kode masuk 123456" });
     expect(r.waha.sent).toEqual([expect.objectContaining({ session: session.name, chatId: lid })]);
-    expect((await r.waha.callLog()).map((c) => `${c.path.replace(/^\/api\/[^/]+\/presence$/, "/presence")}${typeof c.body["presence"] === "string" ? `:${c.body["presence"]}` : ""}`)).toEqual([
+    const calls = await r.waha.callLog();
+    expect(calls.map((c) => `${c.path.replace(/^\/api\/[^/]+\/presence$/, "/presence")}${typeof c.body["presence"] === "string" ? `:${c.body["presence"]}` : ""}`)).toEqual([
       "/api/contacts/check-exists",
+      "/api/sendSeen",
       "/presence:typing",
       "/presence:paused",
       "/api/sendText",
       "/presence:offline",
     ]);
-    // Whatever it waits for stays short for a player who is waiting: the slot, then at most ~4 s of typing and pausing.
+    // The seen mark is of the WHOLE chat (the chat WAHA returned, no message ids).
+    expect(calls[1]?.body).toEqual({ session: session.name, chatId: lid });
+    // Whatever it waits for stays short for a player who is waiting: the slot, then at most ~4 s of typing and pausing (no reading pause after the seen mark).
     expect(r.slept).toHaveLength(3);
     expect((r.slept[1] ?? 0) + (r.slept[2] ?? 0)).toBeLessThanOrEqual(4000);
     // A new contact: counted against the number's budget of them, and the answer of WAHA is cached for the next message.

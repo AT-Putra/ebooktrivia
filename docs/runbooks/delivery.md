@@ -94,15 +94,23 @@ A message is never just posted. The worker follows WAHA's recommended order, wit
 random source (`crypto.getRandomValues`; a log-normal distribution, so most pauses are short and a few long, clamped to bounds; never a fixed timing and never the same delay
 twice in a row). The pacing is drawn from that source too: the random gap between the sends of a number (3 to 9 s) and the contact gap (30 to 60 s), never `Math.random`:
 
-1. **Seen**: for a reply, the buyer's message is marked as read (`POST /api/sendSeen`, falling back to `POST /api/{session}/chats/{chatId}/messages/read`);
-2. a **reading** pause: 0.6 to 4 s (replies only);
+1. **Seen**: the **whole chat** is marked as read before anything is sent, for every kind of message (opener, reply, text, file, test-send, OTP): `POST /api/sendSeen` with **no
+   message ids** (falling back to `POST /api/{session}/chats/{chatId}/messages/read`). Older unread messages of that person must not stay unread while we write to them: a number
+   that sends while the earlier messages sit unseen looks like a bot (Owner rule, 2026-11-24; WAHA "How to avoid blocking");
+2. a **reading** pause: 0.6 to 4 s (every kind except an OTP, which has none);
 3. **typing** starts (`POST /api/{session}/presence {chatId, presence: "typing"}`);
 4. a wait **scaled to the length of the message**: a base of 1.2 to 2.5 s plus 35 to 75 ms per character (the rate is itself random per message), clamped to 2 to 14 s;
 5. **typing stops** (`presence: "paused"`), then a short pause of 0.3 to 1.5 s;
 6. the message is **sent**;
 7. the session goes **offline** again (`presence: "offline"`): while a session shows online the phone gets no notifications.
 
-A login code (OTP) has no message to mark as seen and stays quick: typing at most 3 s and a pause of at most 0.9 s, under 4 s in all.
+A login code (OTP) stays quick: it marks the chat as read too, but with no reading pause (one quick best-effort call), then typing at most 3 s and a pause of at most 0.9 s, under 4 s of pauses in all.
+
+**Incoming messages are marked as read too.** Every personal message the worker processes (`waha.inbound`, after the re-fetch confirmed it: not ours, a phone or `@lid` chat, never a
+group, a status or a channel) has its whole chat marked as read on the number it arrived on, after a random reading pause (0.6 to 4 s), **before** the worker decides what to do with it, whether
+it gets a reply or not (no order code, an unknown code, a stranger, a rate-limited sender, a buyer). A reply's own send marks the chat once more (one extra cheap call, accepted instead
+of a flag to skip it). Like the others it is best effort: a failure is only logged as a code and never fails or retries the job or holds back the reply. The job's lease allows for it
+(`READ_MARK_MAX_MS` in `inbound.ts`: the longest pause plus the two calls' timeouts).
 
 Per contact (a phone, whichever number writes): a **second message waits a random 30 to 60 s** after the previous one, and **at most 4 messages an hour**. A code that
 would have to wait longer than 10 s for that gap is not sent late: the outbox retries it (the code lives 5 minutes).
@@ -136,7 +144,7 @@ presence and `sendSeen` with ids answer `201` with **no body** (the adapter acce
    sent that is ours (a template did not render, the lease can no longer cover the send) is not an attempt: the opener goes back to pending after a short backoff, the
    number leaves the tried list and its health is not touched (only WAHA's own answers count against a number); it raises the `delivery_not_attempted` alert.
 5. **The reply.** When the buyer answers (or uses the order page's "Kirim via WhatsApp" button) the buyer-first path claims the SAME delivery row (`pending` to `sending`)
-   and sends the PDF with the login link from the number the buyer wrote to, in that chat, through the human-like sequence (seen first). An opener not yet sent is then
+   and sends the PDF with the login link from the number the buyer wrote to, in that chat, through the human-like sequence (the chat is marked as read first). An opener not yet sent is then
    moot (dropped). A definite failure of this send puts the row back to `pending` (the buyer can write again, to another number: the row remembers the numbers it tried), and after
    **three numbers** have failed it is `failed` (with an alert, and in the "Needs attention" list for a resend); an uncertain one is `unknown` and **never resent**.
    E-mail retries after 1 min, 5 min and 30 min (4 attempts), then the delivery is `failed` with an alert, except that an **SMTP 5xx answer (the server refuses the message)

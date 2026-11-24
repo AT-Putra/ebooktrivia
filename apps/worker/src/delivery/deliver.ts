@@ -153,8 +153,6 @@ export interface SendContext {
   readonly whatsapp?: { readonly sessionId: string; readonly chatId: string; readonly filename: string; readonly startAt: Date };
   /** A buyer-first reply: send to this chat, with or without the login link. */
   readonly reply?: BuyerFirstReply;
-  /** The buyer's inbound message this reply answers: marked as seen first (human.ts). */
-  readonly seenMessageId?: string;
   /** The pool's ledger row of this claim (pool.ts closeSend: its end state, or taken back when nothing went out). */
   readonly sendId?: string;
   /** Monotonic time the claim was taken (for the lease margin). */
@@ -494,8 +492,6 @@ export function createDelivery(deps: DeliveryDeps): Delivery {
           chatId,
           textLength: caption.length,
           kind: "message",
-          withSeen: true,
-          seenMessageId: context.seenMessageId,
           signal,
           beforeSend: () => leaseLeft(context, HUMAN_PRESENCE_TIMEOUT_MS),
           send: () => client.sendFile(sessionName, chatId, { url, filename: target.filename, mimetype: "application/pdf" }, caption),
@@ -517,7 +513,7 @@ export function createDelivery(deps: DeliveryDeps): Delivery {
     }
   }
 
-  /** The short opener (Owner decision D7): one of the Owner's variants with the buyer's first name, text only; the human-like sequence without a seen mark. */
+  /** The short opener (Owner decision D7): one of the Owner's variants with the buyer's first name, text only; the human-like sequence (the whole chat is marked as read first, like every send). */
   async function sendOpener(context: OpenerContext, signal: AbortSignal): Promise<OpenerSent> {
     const target = context.whatsapp;
     let text: string;
@@ -554,7 +550,6 @@ export function createDelivery(deps: DeliveryDeps): Delivery {
           chatId: contact.chatId,
           textLength: text.length,
           kind: "message",
-          withSeen: false,
           signal,
           beforeSend: () => leaseLeft(context, HUMAN_PRESENCE_TIMEOUT_MS),
           send: () => client.sendText(sessionName, contact.chatId, text),

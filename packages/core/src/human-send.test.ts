@@ -60,7 +60,7 @@ describe("humanPlan", () => {
   const within = (value: number, [min, max]: readonly [number, number]) => value >= min && value <= max;
 
   it("over many recipients every pause stays within its bounds and varies: never the same delay for consecutive recipients", () => {
-    const plans = Array.from({ length: 300 }, () => humanPlan({ kind: "message", textLength: 90, withReading: true }, cryptoRandom));
+    const plans = Array.from({ length: 300 }, () => humanPlan({ kind: "message", textLength: 90 }, cryptoRandom));
     for (const plan of plans) {
       expect(within(plan.readingMs, HUMAN_TIMING.reading)).toBe(true);
       expect(within(plan.typingMs, HUMAN_TIMING.typing)).toBe(true);
@@ -76,31 +76,31 @@ describe("humanPlan", () => {
 
   it("the typing wait scales with the length of the message (the per-message rate is random: no fixed milliseconds per character)", () => {
     const mean = (length: number) => {
-      const draws = Array.from({ length: 400 }, () => humanPlan({ kind: "message", textLength: length, withReading: false }, cryptoRandom).typingMs);
+      const draws = Array.from({ length: 400 }, () => humanPlan({ kind: "message", textLength: length }, cryptoRandom).typingMs);
       return draws.reduce((a, b) => a + b, 0) / draws.length;
     };
     expect(mean(20)).toBeLessThan(mean(80));
     expect(mean(80)).toBeLessThan(mean(160));
-    const rates = new Set(Array.from({ length: 50 }, () => humanPlan({ kind: "message", textLength: 100, withReading: false }, cryptoRandom).typingMs));
+    const rates = new Set(Array.from({ length: 50 }, () => humanPlan({ kind: "message", textLength: 100 }, cryptoRandom).typingMs));
     expect(rates.size).toBeGreaterThan(30);
   });
 
   it("a very long message is put back inside the typing range near its top at a random place, not piled on the bound", () => {
-    const draws = Array.from({ length: 300 }, () => humanPlan({ kind: "message", textLength: 600, withReading: false }, cryptoRandom).typingMs);
+    const draws = Array.from({ length: 300 }, () => humanPlan({ kind: "message", textLength: 600 }, cryptoRandom).typingMs);
     expect(Math.max(...draws)).toBeLessThanOrEqual(HUMAN_TIMING.typing[1]);
     expect(Math.min(...draws)).toBeGreaterThanOrEqual(HUMAN_TIMING.typing[1] - (HUMAN_TIMING.typing[1] - HUMAN_TIMING.typing[0]) * 0.15 - 1);
     expect(new Set(draws).size).toBeGreaterThan(100);
     // ... and one that is shorter than the range allows is put back near its bottom.
     const rng = sequence(0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5);
-    const short = humanPlan({ kind: "message", textLength: 0, withReading: false }, rng).typingMs;
+    const short = humanPlan({ kind: "message", textLength: 0 }, rng).typingMs;
     expect(short).toBeGreaterThanOrEqual(HUMAN_TIMING.typing[0]);
     expect(short).toBeLessThan(HUMAN_TIMING.typing[0] + (HUMAN_TIMING.typing[1] - HUMAN_TIMING.typing[0]) * 0.15 + 1);
   });
 
-  it("has no reading pause without an inbound message, and the OTP is short: no reading, at most 3 s typing and 0.9 s pause (under 4 s in all)", () => {
-    expect(humanPlan({ kind: "message", textLength: 80, withReading: false }, cryptoRandom).readingMs).toBe(0);
+  it("every message has a reading pause (the chat is always marked as read first), and the OTP is short: no reading, at most 3 s typing and 0.9 s pause (under 4 s in all)", () => {
+    expect(humanPlan({ kind: "message", textLength: 80 }, cryptoRandom).readingMs).toBeGreaterThanOrEqual(HUMAN_TIMING.reading[0]);
     for (let i = 0; i < 300; i++) {
-      const otp = humanPlan({ kind: "otp", textLength: 70, withReading: true }, cryptoRandom);
+      const otp = humanPlan({ kind: "otp", textLength: 70 }, cryptoRandom);
       expect(otp.readingMs).toBe(0);
       expect(within(otp.typingMs, HUMAN_TIMING.otpTyping)).toBe(true);
       expect(within(otp.pausedMs, HUMAN_TIMING.otpPaused)).toBe(true);
@@ -109,8 +109,8 @@ describe("humanPlan", () => {
   });
 
   it("refuses a negative or fractional length", () => {
-    expect(() => humanPlan({ kind: "message", textLength: -1, withReading: false }, cryptoRandom)).toThrow(RangeError);
-    expect(() => humanPlan({ kind: "message", textLength: 1.5, withReading: false }, cryptoRandom)).toThrow(RangeError);
+    expect(() => humanPlan({ kind: "message", textLength: -1 }, cryptoRandom)).toThrow(RangeError);
+    expect(() => humanPlan({ kind: "message", textLength: 1.5 }, cryptoRandom)).toThrow(RangeError);
   });
 
   it("states its worst case: reading + typing + pause at their top, and the five best-effort calls (seen and its fallback, typing, paused, offline) running out their timeouts", () => {

@@ -3,7 +3,7 @@
 //   - the number comes from the pool (weighted round-robin over the WORKING numbers, under their daily caps, resting numbers skipped) and the
 //     send is recorded in the ledger (kind `otp`), so a player's OTP counts against a number's cap and its pacing like every other send;
 //   - the number paces itself, with the SHORT gap (core OTP_GAP_MS: a player is waiting for a code);
-//   - the sequence is the human-like one (human.ts): typing, a short wait, paused, send, offline; an OTP has no message to mark as seen and its
+//   - the sequence is the human-like one (human.ts): the chat marked as read (one quick best-effort call), typing, a short wait, paused, send, offline; an OTP has no reading pause and its
 //     whole choreography stays short (core HUMAN_TIMING.otp*: under 4 s);
 //   - a player who asked for a code on the web has not written to us on WhatsApp, so an OTP is a message to a NEW contact: a number that WhatsApp holds
 //     back from new contacts (error 463 / 475) is skipped, and one that refuses with those errors is held back and the next number tried (not counted
@@ -134,7 +134,7 @@ export function createPoolSender(deps: {
             if (contact.kind === "no_whatsapp") return { kind: "no_whatsapp" } as const;
             return sendLikeAHuman(
               { log, random: deps.humanRandom, sleep: (ms, s) => sleep(ms, s) },
-              { client, sessionName, chatId: contact.chatId, textLength: text.length, kind: "otp", withSeen: false, signal: abort, send: () => client.sendText(sessionName, contact.chatId, text) },
+              { client, sessionName, chatId: contact.chatId, textLength: text.length, kind: "otp", signal: abort, send: () => client.sendText(sessionName, contact.chatId, text) },
             );
           });
           // The phone is not on WhatsApp: nothing was sent, no number is penalised, and another number would not change it.

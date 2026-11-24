@@ -90,7 +90,6 @@ export function createTestSenders(deps: {
               chatId: contact.chatId,
               textLength: message.text.length,
               kind: "message",
-              withSeen: true,
               signal,
               send: () => client.sendText(sessionName, contact.chatId, message.text),
             },

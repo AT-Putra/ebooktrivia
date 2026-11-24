@@ -2,8 +2,9 @@
 // sends (the opener, the reply with the ebook, a text reply, the player's OTP) follows one order, and this file holds the part that is pure: HOW LONG
 // each pause is. The worker (apps/worker/src/delivery/human.ts) runs the sequence:
 //
-//   1. seen        a reply marks the buyer's message as read (an opener and an OTP have no inbound message: no step 1 and 2);
-//   2. reading     a random pause, as if the message were being read;
+//   1. seen        the WHOLE chat is marked as read (no message ids), whatever the send: an opener, a reply, a text, an OTP. A chat we write to while older messages
+//                  of that person still show unread looks like a bot (Owner rule, 2026-11-24);
+//   2. reading     a random pause, as if the message were being read (not for an OTP: it is time-critical);
 //   3. typing      the "typing..." presence starts;
 //   4. typing wait a random wait scaled to the length of the message;
 //   5. paused      the typing presence ends;
@@ -29,7 +30,7 @@ export const HUMAN_TIMING = {
   typing: [2000, 14_000],
   /** The short pause between "stopped typing" and the send. */
   paused: [300, 1500],
-  /** An OTP is time-critical: its whole choreography stays under 4 seconds (no reading step, typing at most 3 s, a pause of at most 0.9 s). */
+  /** An OTP is time-critical: its choreography stays under 4 seconds (no reading pause, typing at most 3 s, a pause of at most 0.9 s; the seen mark is one quick best-effort call). */
   otpTypingBase: [800, 1500],
   otpTyping: [1000, 3000],
   otpPaused: [300, 900],
@@ -55,7 +56,7 @@ export const HUMAN_MAX_MS = HUMAN_TIMING.reading[1] + HUMAN_TIMING.typing[1] + H
 export type HumanKind = "message" | "otp";
 
 export interface HumanPlan {
-  /** 0 when there is no inbound message to read (an opener, an OTP). */
+  /** 0 for an OTP (time-critical: the chat is marked as read, but there is no reading pause). */
   readonly readingMs: number;
   readonly typingMs: number;
   readonly pausedMs: number;
@@ -90,13 +91,13 @@ function spreadInto(value: number, [min, max]: MsRange, random: () => number): n
 }
 
 /** The pauses of one message (see the header). `textLength` is the length of what is typed: the message, or the caption of a file. */
-export function humanPlan(input: { readonly kind: HumanKind; readonly textLength: number; readonly withReading: boolean }, random: () => number): HumanPlan {
+export function humanPlan(input: { readonly kind: HumanKind; readonly textLength: number }, random: () => number): HumanPlan {
   if (!Number.isSafeInteger(input.textLength) || input.textLength < 0) throw new RangeError("textLength must be a non-negative integer");
   const otp = input.kind === "otp";
   const base = sampleLogNormal(random, otp ? HUMAN_TIMING.otpTypingBase : HUMAN_TIMING.typingBase);
   const perChar = sampleLogNormal(random, HUMAN_TIMING.typingPerChar);
   return {
-    readingMs: input.withReading && !otp ? sampleLogNormal(random, HUMAN_TIMING.reading) : 0,
+    readingMs: otp ? 0 : sampleLogNormal(random, HUMAN_TIMING.reading),
     typingMs: spreadInto(Math.round(base + perChar * input.textLength), otp ? HUMAN_TIMING.otpTyping : HUMAN_TIMING.typing, random),
     pausedMs: sampleLogNormal(random, otp ? HUMAN_TIMING.otpPaused : HUMAN_TIMING.paused),
   };

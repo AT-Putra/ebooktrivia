@@ -572,16 +572,21 @@ describe("the buyer's reply to the opener (Owner decision D7): the PDF and the l
     expect(r.files()).toEqual([expect.objectContaining({ session: number.name, chatId: order.chatId })]);
     expect(r.files()[0]?.text).toContain("https://play.example.test/masuk#c=whatsapp&t=");
     expect(await deliveryOf(order.deliveries.whatsapp)).toMatchObject({ status: "sent", attempts: 1, session_id: number.id });
-    // The human-like order of a REPLY: the buyer's message is marked as read first (with its id), then typing, paused, the file, offline.
+    // The human-like order of a REPLY: the buyer's chat is marked as read when the message is processed (the whole chat, no message ids), and again by the reply's own
+    // sequence (one extra cheap call, accepted), then typing, paused, the file, offline.
     const calls = await r.waha.callLog();
     expect(calls.map((c) => `${c.path.replace(/^\/api\/[^/]+\/presence$/, "/presence")}${typeof c.body["presence"] === "string" ? `:${c.body["presence"]}` : ""}`)).toEqual([
+      "/api/sendSeen",
       "/api/sendSeen",
       "/presence:typing",
       "/presence:paused",
       "/api/sendFile",
       "/presence:offline",
     ]);
-    expect(calls[0]?.body["messageIds"]).toEqual([heard.messageId]);
+    expect(calls.slice(0, 2).map((c) => c.body)).toEqual([
+      { session: number.name, chatId: order.chatId },
+      { session: number.name, chatId: order.chatId },
+    ]);
     // The same delivery is never claimed twice: another "ok" is told it is on its way, not sent again.
     await sql`UPDATE waha_sessions SET next_send_at = NULL`;
     await sql`UPDATE waha_inbound SET replied_at = NULL`;
