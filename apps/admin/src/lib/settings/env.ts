@@ -31,7 +31,7 @@
 //                        process cannot decrypt). Startup fails if one is present, even empty.
 import { isAbsolute } from "node:path";
 import { normalizeHost } from "@ebooktrivia/core";
-import { CryptoError, SECRET_SCOPES, type SecretSealer, sealerFromEnv } from "@ebooktrivia/crypto/sealer";
+import { isCryptoError, SECRET_SCOPES, type SecretSealer, sealerFromEnv } from "@ebooktrivia/crypto/sealer";
 import { getDomain } from "tldts";
 import { AdminConfigError, type Env } from "../config.ts";
 
@@ -110,7 +110,7 @@ export function loadSettingsConfig(env: Env): SettingsConfig {
     try {
       sealer = sealerFromEnv(env);
     } catch (error) {
-      if (error instanceof CryptoError) throw new AdminConfigError("SECRETS_<SCOPE>_PUBLIC_KEY must be base64url X25519 public keys");
+      if (isCryptoError(error)) throw new AdminConfigError("SECRETS_<SCOPE>_PUBLIC_KEY must be base64url X25519 public keys");
       throw error;
     }
   }

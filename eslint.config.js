@@ -39,6 +39,30 @@ export default defineConfig(
     },
   },
   {
+    // The two Next.js apps bundle a copy of every library and workspace package per bundle (pages, routes, the proxy, server
+    // actions, instrumentation), and their process-wide clients (the public runtime, the admin runtime: the auth instance, the
+    // PostgreSQL pool, the sealer and opener, safe-fetch, the Cap store) are built by whichever bundle asks first. An error those
+    // clients throw is then another copy's class, and `instanceof` is false: a wrong OTP code answered 503 and every trivia
+    // refusal answered 503 on staging (2026-11-24). Check these errors by shape instead.
+    files: ["apps/public/src/**/*.{ts,tsx}", "apps/admin/src/**/*.{ts,tsx}"],
+    ignores: ["**/*.test.ts", "**/*.test.tsx"],
+    rules: {
+      "no-restricted-syntax": [
+        "error",
+        {
+          selector:
+            "BinaryExpression[operator='instanceof'][right.name=/^(APIError|BetterAuthError|PostgresError|CryptoError|SafeFetchError|CaptchaStoreUnavailable|WahaError|NotSentError|SmtpError)$/]",
+          message:
+            "instanceof fails across Next.js bundles for errors of shared clients. Use isAPIError (better-auth/api), sqlState (@ebooktrivia/db/sql-state) or isCryptoError (@ebooktrivia/crypto); for another class, add a check by name and code to its package.",
+        },
+        {
+          selector: "BinaryExpression[operator='instanceof'][right.type='MemberExpression'][right.property.name=/^(APIError|BetterAuthError|PostgresError)$/]",
+          message: "instanceof fails across Next.js bundles for errors of shared clients. Use sqlState (@ebooktrivia/db/sql-state) or isAPIError (better-auth/api).",
+        },
+      ],
+    },
+  },
+  {
     // k6 scripts (infra/load/k6) run in k6's own runtime, which provides these globals (and `open` in the init context).
     files: ["infra/load/k6/**/*.js"],
     languageOptions: { sourceType: "module", globals: { __ENV: "readonly", __VU: "readonly", __ITER: "readonly", open: "readonly" } },
