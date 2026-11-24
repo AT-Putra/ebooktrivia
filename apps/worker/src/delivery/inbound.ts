@@ -66,7 +66,7 @@ import { raiseAlert } from "../sweepers.ts";
 import { applyDecision, type Delivery, lockDelivery, machineRow, type SendContext } from "./deliver.ts";
 import { deliveredSize, FILE_UNAVAILABLE, wrongFile } from "./file-check.ts";
 import { cryptoRandom, sendLikeAHuman } from "./human.ts";
-import { pdfOnlyCaption, type ReplyKind, replyText } from "./messages.ts";
+import { loadCsContactOrNone, pdfOnlyCaption, type ReplyKind, replyText } from "./messages.ts";
 import { claimSession, discardSend, recordSessionOutcome, settleSend } from "./pool.ts";
 import { type EbookFiles, type FilePreflight, type WahaAccess, WahaAccessError } from "./ports.ts";
 import { type Fetched, refetchMessage } from "./refetch.ts";
@@ -409,7 +409,7 @@ export function createInboundConsumer(deps: InboundDeps): OutboxConsumer {
     if ("outcome" in claim) return claim.outcome;
     try {
       await sleep(Math.max(0, claim.slotStart.getTime() - Date.now()), signal);
-      const text = replyText(kind);
+      const text = replyText(kind, await loadCsContactOrNone(sql, log));
       const result = await deps.waha.withSession(
         fetched.sessionId,
         ({ sessionName, client }) =>

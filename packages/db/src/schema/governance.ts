@@ -534,6 +534,34 @@ export const alertRecipients = pgTable(
   ],
 );
 
+/**
+ * The Owner's customer-service contact (Owner decision 2026-11-24): where a buyer who has a problem reaches a human. One WhatsApp
+ * number (an Indonesian mobile number, E.164), one e-mail address and the opening hours as free text; each may be empty, and an
+ * empty one is shown nowhere. A singleton row (id = 1). Owner only in the console (cs_contact.edit), audited. public_rw and
+ * worker_rw read ONLY whatsapp, email and hours (sql/grants.sql): the buyer site's help block, the worker's fixed WhatsApp replies
+ * and the {cs_whatsapp} / {cs_email} template variables. The CS number is never one of the sending numbers (waha_sessions.phone):
+ * the triggers cs_contact_not_a_sending_number and waha_sessions_not_the_cs_number (sql/triggers.sql, ET190) hold it for every writer.
+ */
+export const csContact = pgTable(
+  "cs_contact",
+  {
+    id: integer("id").primaryKey().default(1),
+    whatsapp: text("whatsapp"),
+    email: text("email"),
+    hours: text("hours"),
+    updatedByAdminUserId: text("updated_by_admin_user_id"),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    check("cs_contact_singleton_check", sql`${t.id} = 1`),
+    // The Indonesian mobile shape of core normalizeIdMobile (+628, second digit not 4, 9 to 12 digits after +62).
+    check("cs_contact_whatsapp_check", sql`${t.whatsapp} IS NULL OR ${t.whatsapp} ~ '^\\+628[1-35-9][0-9]{7,10}$'`),
+    check("cs_contact_email_check", sql`${t.email} IS NULL OR (char_length(${t.email}) <= 254 AND ${t.email} ~ '^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$')`),
+    // Free text for one line: 1 to 80 characters, no control characters (a line break would split a WhatsApp message).
+    check("cs_contact_hours_check", sql`${t.hours} IS NULL OR (char_length(${t.hours}) BETWEEN 1 AND 80 AND ${t.hours} !~ '[[:cntrl:]]')`),
+  ],
+);
+
 export const heartbeats = pgTable("heartbeats", {
   component: text("component").primaryKey(),
   beatAt: tstz("beat_at").notNull().defaultNow(),

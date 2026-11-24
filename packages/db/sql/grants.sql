@@ -53,6 +53,8 @@ GRANT SELECT ON
   TO public_rw;
 GRANT SELECT (id, slug, name, clickid_param, active) ON public.adnets TO public_rw;
 GRANT SELECT (id, phone, status, active) ON public.waha_sessions TO public_rw;
+-- The Owner's customer-service contact (the buyer site's help block): the three fields a buyer is shown, never who edited it or when.
+GRANT SELECT (whatsapp, email, hours) ON public.cs_contact TO public_rw;
 -- The deep GET /healthz (US-015, @ebooktrivia/db/health) reads the age of the worker's heartbeat: the component name
 -- and the time, never the `info` column.
 GRANT SELECT (component, beat_at) ON public.heartbeats TO public_rw;
@@ -197,6 +199,8 @@ GRANT UPDATE (status, player_id, paid_at, refunded_at, updated_at) ON public.ord
 
 -- Where the alert relay sends the Owner's alerts (US-015): the Owner writes it in the console (admin_rw), the worker only reads it.
 GRANT SELECT ON public.alert_recipients TO worker_rw;
+-- The customer-service contact (the fixed WhatsApp replies and the {cs_whatsapp} / {cs_email} template variables): the three fields only.
+GRANT SELECT (whatsapp, email, hours) ON public.cs_contact TO worker_rw;
 
 GRANT SELECT ON public.waha_sessions TO worker_rw;
 GRANT UPDATE (status, status_at, updated_at) ON public.waha_sessions TO worker_rw;

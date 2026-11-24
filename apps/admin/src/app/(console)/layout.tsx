@@ -36,6 +36,7 @@ const NAV: readonly (NavItem & { readonly permission: Exclude<Permission, Questi
   { href: "/settings/legal", label: "Legal pages", icon: "legal", permission: "legal_page.edit" },
   { href: "/settings/limits", label: "Limits", icon: "limits", permission: "app_settings.edit" },
   { href: "/settings/alerts", label: "Alerts", icon: "alerts", permission: "alert_recipients.edit" },
+  { href: "/settings/customer-service", label: "Customer service", icon: "cs", permission: "cs_contact.edit" },
   { href: "/team", label: "Team", icon: "team", permission: "admin_user.manage" },
   { href: "/audit", label: "Audit log", icon: "audit", permission: "audit.view" },
   { href: "/account", label: "Account", icon: "account", permission: "account.manage_own" },

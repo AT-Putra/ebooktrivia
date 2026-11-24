@@ -5,6 +5,7 @@
 // top N from the 5 s cache, the player's own rank read now).
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
+import { HelpBlock } from "../../../../components/help/help-block.tsx";
 import { LiveBanner } from "../../../../components/trivia/live/live-banner.tsx";
 import { LiveGrid } from "../../../../components/trivia/live/live-grid.tsx";
 import { LiveHeader } from "../../../../components/trivia/live/live-header.tsx";
@@ -73,6 +74,9 @@ export default async function TriviaProgramPage({ params }: PageProps) {
         </div>
         <div className="xl:col-span-12">
           <LiveGrid slug={page.slug} view={view} />
+        </div>
+        <div className="xl:col-span-12">
+          <HelpBlock className="xl:mx-auto xl:max-w-[720px]" />
         </div>
       </main>
     </div>

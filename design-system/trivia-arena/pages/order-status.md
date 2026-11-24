@@ -5,8 +5,8 @@
 
 ## Layout
 - Single column, max width 480px (375: full width minus 16px gutters; 768+: centered card, 32px padding). Page `background`, card `card`, radius 16px, `--shadow-lg`.
-- Order: status header (icon + title + one-line explanation) > order summary > primary CTA > secondary button > help line.
-- The help/contact link sits in the same card-footer position in all four states.
+- Order: status header (icon + title + one-line explanation) > order summary > primary CTA > secondary button. The shared help block (see `help.md`) follows the card, in every state.
+- There is no help area inside the card: the one shared "Butuh bantuan?" block sits under it in the same place in every state, and renders nothing when no CS contact is set. A state with a problem of its own (failed, expired, review, refunded, paid) says "Hubungi CS di bawah." when the block is shown.
 - The URL carries only the order reference. No tokens, OTPs, magic links or session-bearing links appear on this page or in anything it copies/shares.
 
 ## States (icon + title + text; never colour alone)
@@ -15,7 +15,7 @@
 | pending | Phosphor `Hourglass` on info tint; "Menunggu pembayaran" / "Selesaikan pembayaran di aplikasi pembayaranmu. Halaman ini diperbarui otomatis." | Polling indicator active. Primary CTA disabled with reason "Tersedia setelah pembayaran berhasil". Optional secondary link "Buka halaman pembayaran" if the gateway supplied one. |
 | paid | `CheckCircle` fill on success tint; "Pembayaran berhasil" / "Ebook dan akses trivia sedang dikirim ke WhatsApp dan email kamu." | Polling stops. Primary CTA enabled. One 300ms check pop (none under reduced motion). |
 | expired | `ClockCountdown` on warning tint; "Pembayaran kedaluwarsa" | No polling. Primary becomes "Pesan lagi" (back to the product LP). Trivia CTA hidden. |
-| failed | `XCircle` on destructive tint; "Pembayaran gagal" with a gateway-neutral reason | No polling. Primary "Coba bayar lagi"; help line stays. |
+| failed | `XCircle` on destructive tint; "Pembayaran gagal" with a gateway-neutral reason | No polling. Primary "Coba bayar lagi"; the help block stays in its place. |
 
 ## Components
 - **Primary CTA (paid):** "Masuk ke Trivia" goes to trivia login (WhatsApp number + 6-digit OTP). Full width, 52px, accent gold with `text-on-accent` (overrides Master white text). Only one primary CTA on the page.
@@ -32,4 +32,4 @@
 - Status surfaces use `*-soft` backgrounds with `*-soft-foreground` text (semantic tokens) (info/success/warning/destructive) with matching foregrounds; all pairs are covered by `pnpm check:contrast`.
 
 ## Anti-patterns
-- No help controls that move between states. No submit/retry without loading then result feedback. No emoji icons. No raw hex in components.
+- No help controls that move between states, and no second help area on a page. No submit/retry without loading then result feedback. No emoji icons. No raw hex in components.

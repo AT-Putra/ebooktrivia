@@ -35,7 +35,7 @@ export default async function TemplatesPage({ searchParams }: { searchParams: Pr
     <>
       <PageHeading
         title="Message templates"
-        description={`Variables: {nama} {judul_ebook} {order_id} {link_trivia} {kode_otp} {sapaan}, as each template allows. In a WhatsApp text, [[Halo|Hai]] is replaced by one of its 2 to 5 options, picked at random for each message. Test messages use sample values (never a real code or link): e-mail goes to your login address, WhatsApp to the Owner's test numbers; at most ${String(TEST_SEND_CAPS.perAdminHour)} per hour and ${String(TEST_SEND_CAPS.perAdminDay)} per day each.`}
+        description={`Variables: {nama} {judul_ebook} {order_id} {link_trivia} {kode_otp} {sapaan} {cs_whatsapp} {cs_email}, as each template allows. {cs_whatsapp} and {cs_email} are the customer service contact (Settings, Customer service) and only the ebook delivery texts have them; one that is not set renders as nothing, so word the sentence to read well without it. In a WhatsApp text, [[Halo|Hai]] is replaced by one of its 2 to 5 options, picked at random for each message. Test messages use sample values (never a real code or link): e-mail goes to your login address, WhatsApp to the Owner's test numbers; at most ${String(TEST_SEND_CAPS.perAdminHour)} per hour and ${String(TEST_SEND_CAPS.perAdminDay)} per day each.`}
       />
       {deleted === undefined ? null : <DeletedNotice text={deleted} />}
       {manageRecipients ? (

@@ -68,6 +68,8 @@ const PLAN_TABLES = {
     "heartbeats",
     // where the worker's alert relay sends the Owner's alerts (US-015)
     "alert_recipients",
+    // the Owner's customer-service contact (the buyer site's help block, the fixed WhatsApp replies)
+    "cs_contact",
     // admin settings (US-017)
     "smtp_settings",
     "template_test_sends",

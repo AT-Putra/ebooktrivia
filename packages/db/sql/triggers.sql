@@ -39,6 +39,7 @@
 -- ET179 an anonymized player or order given personal data again, or anonymized outside the erasure.
 -- US-033: ET187 the Owner's decision ledger (order_owner_decisions) changed, or written outside order_review_decide;
 -- ET189 an outbox topic the console (admin_rw) does not enqueue.
+-- Customer service: ET190 the CS WhatsApp number (cs_contact.whatsapp) equals a sending number (waha_sessions.phone), from either side.
 
 SELECT pg_catalog.set_config('search_path', 'pg_catalog, pg_temp', false);
 
@@ -1651,6 +1652,61 @@ CREATE OR REPLACE TRIGGER outbox_admin_topic_guard
   BEFORE INSERT ON public.outbox
   FOR EACH ROW EXECUTE FUNCTION public.outbox_admin_topic_guard();
 -- US-033 BLOCK END.
+
+-- ---------------------------------------------------------------------------------------------
+-- The customer-service number is never a sending number (Owner decision 2026-11-24): a buyer who writes to the CS number must reach a
+-- human, not the pool's robot (the sending numbers answer from the worker). Held from both sides, for EVERY writer (the console checks
+-- first and says so in words; this is the guarantee, ET190):
+--   cs_contact.whatsapp   may not equal any waha_sessions.phone (active or not);
+--   waha_sessions.phone   may not equal cs_contact.whatsapp.
+-- Both take one advisory lock, so a save of the CS number and the adding of a session with that number, in two transactions at once,
+-- cannot both pass: the second waits for the first to commit and then sees it (READ COMMITTED). SECURITY DEFINER: the other table is
+-- read with owner rights whoever writes (the worker's own column grants on waha_sessions never reach phone).
+CREATE OR REPLACE FUNCTION public.cs_contact_not_a_sending_number()
+  RETURNS trigger
+  LANGUAGE plpgsql
+  SECURITY DEFINER
+  SET search_path = pg_catalog, pg_temp
+AS $fn$
+BEGIN
+  IF NEW.whatsapp IS NULL THEN
+    RETURN NEW;
+  END IF;
+  PERFORM pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended('cs_contact_number', 0));
+  IF EXISTS (SELECT 1 FROM public.waha_sessions s WHERE s.phone = NEW.whatsapp) THEN
+    RAISE EXCEPTION 'the customer-service WhatsApp number is one of the WhatsApp sending numbers' USING ERRCODE = 'ET190';
+  END IF;
+  RETURN NEW;
+END
+$fn$;
+REVOKE ALL ON FUNCTION public.cs_contact_not_a_sending_number() FROM PUBLIC;
+
+CREATE OR REPLACE TRIGGER cs_contact_not_a_sending_number
+  BEFORE INSERT OR UPDATE OF whatsapp ON public.cs_contact
+  FOR EACH ROW EXECUTE FUNCTION public.cs_contact_not_a_sending_number();
+
+CREATE OR REPLACE FUNCTION public.waha_sessions_not_the_cs_number()
+  RETURNS trigger
+  LANGUAGE plpgsql
+  SECURITY DEFINER
+  SET search_path = pg_catalog, pg_temp
+AS $fn$
+BEGIN
+  IF NEW.phone IS NULL THEN
+    RETURN NEW;
+  END IF;
+  PERFORM pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended('cs_contact_number', 0));
+  IF EXISTS (SELECT 1 FROM public.cs_contact c WHERE c.whatsapp = NEW.phone) THEN
+    RAISE EXCEPTION 'this number is the customer-service WhatsApp number, so it cannot be a sending number' USING ERRCODE = 'ET190';
+  END IF;
+  RETURN NEW;
+END
+$fn$;
+REVOKE ALL ON FUNCTION public.waha_sessions_not_the_cs_number() FROM PUBLIC;
+
+CREATE OR REPLACE TRIGGER waha_sessions_not_the_cs_number
+  BEFORE INSERT OR UPDATE OF phone ON public.waha_sessions
+  FOR EACH ROW EXECUTE FUNCTION public.waha_sessions_not_the_cs_number();
 
 -- ---------------------------------------------------------------------------------------------
 -- Fire every trigger on our tables in ALL session_replication_role modes. The default (ENABLE,

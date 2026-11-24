@@ -4,6 +4,7 @@
 // that is locked for the player goes back to the grid; a program the player may not see is the same 404.
 import type { Metadata } from "next";
 import { notFound, redirect } from "next/navigation";
+import { HelpBlock } from "../../../../../../components/help/help-block.tsx";
 import { PlaySet } from "../../../../../../components/trivia/live/play-set.tsx";
 import { SlowDown } from "../../../../../../components/trivia/live/slow-down.tsx";
 import { programView } from "../../../../../../lib/play/grid.ts";
@@ -47,6 +48,7 @@ export default async function TriviaSetPage({ params }: PageProps) {
         questionCount={tile.set.questionCount}
         attemptId={tile.set.attempt?.id ?? null}
       />
+      <HelpBlock className="mt-4" />
     </main>
   );
 }

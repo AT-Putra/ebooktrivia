@@ -61,7 +61,6 @@ export interface OrderCardLinks {
   readonly whatsapp: string | null;
   /** The pending-state link to the payment page (mockup only: the live page holds no Snap data). */
   readonly payment?: string;
-  readonly help: string | null;
 }
 
 function Row({ label, children }: { label: string; children: ReactNode }) {
@@ -79,11 +78,17 @@ interface OrderCardProps {
   readonly links: OrderCardLinks;
   /** The polling row (components/order/order-client.tsx), shown under the status text in whatever state the caller passes it for. */
   readonly polling?: ReactNode;
+  /**
+   * The page shows the shared help block (components/help) under this card: every state but pending then says what to do when its own
+   * problem is not solved ("Hubungi CS di bawah"). The card has no help area of its own: the block is the one help on the page.
+   */
+  readonly pointToHelp?: boolean;
 }
 
-export function OrderCard({ state, order, links, polling }: OrderCardProps) {
+export function OrderCard({ state, order, links, polling, pointToHelp = false }: OrderCardProps) {
   const { Icon, tint, art } = CONFIG[state];
   const announce = state === "pending" ? "" : t(`order.${state}.announce`);
+  const pointer = pointToHelp && state !== "pending" ? t(`help.order.${state}`) : null;
 
   return (
     <article className="flex w-full max-w-[480px] flex-col gap-5 rounded-2xl bg-card p-4 text-card-foreground shadow-lg md:p-8">
@@ -98,6 +103,11 @@ export function OrderCard({ state, order, links, polling }: OrderCardProps) {
         </span>
         <h1 className="font-heading text-2xl leading-tight">{t(`order.${state}.title`)}</h1>
         <p className="max-w-[40ch] text-base">{t(`order.${state}.body`)}</p>
+        {pointer === null ? null : (
+          <p className="max-w-[40ch] text-base font-semibold" data-testid="order-help-pointer">
+            {pointer}
+          </p>
+        )}
       </header>
 
       <p role="status" aria-live="polite" aria-atomic="true" className="sr-only" data-testid="order-announce">
@@ -175,17 +185,6 @@ export function OrderCard({ state, order, links, polling }: OrderCardProps) {
           </Button>
         ) : null}
       </div>
-
-      {links.help === null ? null : (
-        <footer className="border-t pt-4 text-center text-sm">
-          <p>
-            {t("order.help")}{" "}
-            <a href={links.help} className="inline-flex min-h-11 items-center font-semibold text-primary underline underline-offset-4">
-              {t("order.helpLink")}
-            </a>
-          </p>
-        </footer>
-      )}
     </article>
   );
 }

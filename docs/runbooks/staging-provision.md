@@ -64,6 +64,9 @@ sudo infra/provision/build-images.sh              # 2. postgres-walg, public, ad
 - **Alert recipients (US-015).** After the first Owner exists: Admin, Alerts: the Owner's WhatsApp number,
   e-mail and lowest severity, then **Send a test alert** ([alerts.md](alerts.md)); the Owner first writes one
   message to a pool number from that phone.
+- **Customer service contact.** After the first Owner exists: Admin, Customer service: the CS WhatsApp number
+  (never one of the sending numbers), e-mail and hours. Buyers then see the "Butuh bantuan?" block on every
+  page and a CS line in a few WhatsApp replies; with nothing set they see neither ([customer-service.md](customer-service.md)).
 - **GlitchTip token.** Copy the token from `/etc/ebooktrivia/glitchtip-hook.token` into GlitchTip's
   webhook URL, `https://api.<DOMAIN>/hooks/glitchtip/<token>`. Then delete the file.
 - **Checkout (US-020).** Add the escrowed `SECRETS_PAYMENT_PRIVATE_KEY` to `/etc/ebooktrivia/public.env` (the

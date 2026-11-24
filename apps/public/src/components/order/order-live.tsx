@@ -22,6 +22,7 @@ import { firePurchase, type PixelWindow } from "../../lib/order/pixels.ts";
 import { parsePixelIds } from "../../lib/order/vendors.ts";
 import type { OrderView } from "../../lib/order/view.ts";
 import { t } from "../../lib/t.ts";
+import { ContextHelpBlock, useHelpShown } from "../help/cs-context.tsx";
 import { OrderCard } from "./order-card.tsx";
 import { PollingIndicator, PollingStopped } from "./order-client.tsx";
 
@@ -126,6 +127,8 @@ export function OrderLive({ publicId, view }: OrderLiveProps) {
   const [mounted, setMounted] = useState(false);
   const stateRef = useRef<PageState>(state);
   const claimedRef = useRef(false);
+  // The shared help block sits under the card; the states with a problem of their own point to it.
+  const helpShown = useHelpShown();
 
   // 1. Strip the id from the address, before anything else in this page can run.
   useEffect(() => {
@@ -219,6 +222,7 @@ export function OrderLive({ publicId, view }: OrderLiveProps) {
             notFound
           )}
         </article>
+        <ContextHelpBlock className="max-w-[480px]" />
       </main>
     );
   }
@@ -229,7 +233,8 @@ export function OrderLive({ publicId, view }: OrderLiveProps) {
       <OrderCard
         state={state}
         order={{ ref: view.code, product: view.product, amount: view.amountIdr, name: view.name, whatsapp: view.phone }}
-        links={{ trivia: view.loginHref, again: view.orderAgainHref, whatsapp: view.whatsappHref, help: view.whatsappHref }}
+        links={{ trivia: view.loginHref, again: view.orderAgainHref, whatsapp: view.whatsappHref }}
+        pointToHelp={helpShown}
         polling={
           stopped ? (
             // The automatic checks ran out (an hour): every state that is still polled offers a manual check.
@@ -249,6 +254,7 @@ export function OrderLive({ publicId, view }: OrderLiveProps) {
           ) : undefined
         }
       />
+      <ContextHelpBlock orderCode={view.code} className="max-w-[480px]" />
     </main>
   );
 }

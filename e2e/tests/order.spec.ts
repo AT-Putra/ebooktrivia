@@ -590,3 +590,127 @@ test.describe("at 375 px", () => {
     await context.close();
   });
 });
+
+/**
+ * The shared "Butuh bantuan?" block (Owner decision 2026-11-24: a buyer with a problem reaches a person). One component, the same place at the end
+ * of the main column on every buyer page; nothing at all when no CS contact is set; the order code (only) in its prefilled text and mail subject;
+ * the buyer's name, e-mail and phone in no URL. The app keeps what it read of the contact for 30 s (lib/cs/contact.ts), so a change waits that out.
+ */
+test.describe("the shared help block", () => {
+  const CS = { whatsapp: "+6281234567890", email: "cs@contoh.id", hours: "Senin–Jumat 09.00–17.00 WIB" };
+  const CACHE_WAIT_MS = 31_500;
+  const csUrls = async (page: Page): Promise<{ whatsapp: string | null; email: string | null }> => ({
+    whatsapp: await page.getByTestId("help-whatsapp").getAttribute("href"),
+    email: await page.getByTestId("help-email").getAttribute("href"),
+  });
+  /** What the page's main column ends with. */
+  const lastInMain = (page: Page): Promise<string | null> => page.locator("main").evaluate((main) => main.lastElementChild?.getAttribute("data-testid") ?? null);
+  const sideways = (page: Page): Promise<number> => page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+
+  test("with no contact set there is no block and no pointer to one, on any state", async ({ browser }) => {
+    const shop = await env.shop(META_ONLY);
+    const context = await browser.newContext();
+    await stubVendors(context);
+    const page = await context.newPage();
+    for (const status of ["paid", "gateway_failed"] as const) {
+      await page.goto(orderUrl(await env.order(shop, status)));
+      await expect(page.getByTestId("order-code")).toBeVisible();
+      await expect(page.getByTestId("help-block")).toHaveCount(0);
+      await expect(page.getByTestId("order-help-pointer")).toHaveCount(0);
+      expect(await page.locator("body").innerText()).not.toContain("Butuh bantuan");
+    }
+    await page.goto(`${ORDER_ORIGIN}/${newPublicId()}`);
+    await expect(page.getByRole("heading", { level: 1 })).toHaveText("Halaman tidak ditemukan");
+    await expect(page.getByTestId("help-block")).toHaveCount(0);
+    await context.close();
+  });
+
+  test("the Owner sets the contact: buyers see it once the app's 30 s of memory is over", async () => {
+    test.setTimeout(120_000);
+    await env.sql`DELETE FROM cs_contact`;
+    await env.sql`INSERT INTO cs_contact (id, whatsapp, email, hours) VALUES (1, ${CS.whatsapp}, ${CS.email}, ${CS.hours})`;
+    await new Promise((resolve) => setTimeout(resolve, CACHE_WAIT_MS));
+  });
+
+  test("a paid order at 390 px: the block closes the page, with its hours and the two links, the order code in the prefilled text only", async ({ browser }) => {
+    const shop = await env.shop(META_ONLY);
+    const order = await env.order(shop, "paid");
+    const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+    await stubVendors(context);
+    const page = await context.newPage();
+    const problems = watch(page);
+    await page.goto(orderUrl(order));
+    await expect(page.getByTestId("order-code")).toHaveText(order.code);
+    const block = page.getByTestId("help-block");
+    await expect(block).toHaveCount(1);
+    await expect(block.getByRole("heading", { name: "Butuh bantuan?" })).toBeVisible();
+    await expect(page.getByTestId("help-hours")).toHaveText("Jam layanan: Senin–Jumat 09.00–17.00 WIB");
+    expect(await lastInMain(page)).toBe("help-block");
+    // The order card has no help area of its own: one "Butuh bantuan?" on the page.
+    expect(await page.getByText("Butuh bantuan?").count()).toBe(1);
+    const urls = await csUrls(page);
+    expect(urls.whatsapp).toMatch(/^https:\/\/wa\.me\/6281234567890\?text=/);
+    expect(decodeURIComponent(urls.whatsapp ?? "")).toBe(`https://wa.me/6281234567890?text=Halo CS, saya butuh bantuan untuk pesanan ${order.code}.`);
+    expect(decodeURIComponent(urls.email ?? "")).toBe(`mailto:cs@contoh.id?subject=Butuh bantuan untuk pesanan ${order.code}`);
+    await expect(page.getByTestId("help-whatsapp")).toHaveAttribute("target", "_blank");
+    await expect(page.getByTestId("help-whatsapp")).toHaveAttribute("rel", "noopener noreferrer");
+    // No personal data and not the order's public id in either URL; the paid page points to the block for an ebook that did not arrive.
+    for (const secret of [BUYER.name, "Budi", "Santoso", BUYER.email, order.phone, order.phone.slice(3), order.publicId]) expect(JSON.stringify(urls), secret).not.toContain(secret);
+    await expect(page.getByTestId("order-help-pointer")).toHaveText("Ebook belum sampai? Hubungi CS di bawah.");
+    // Touch targets of at least 44 px, and nothing scrolls sideways.
+    for (const id of ["help-whatsapp", "help-email"]) expect((await page.getByTestId(id).boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(44);
+    expect(await sideways(page)).toBeLessThanOrEqual(0);
+    const results = await new AxeBuilder({ page }).analyze();
+    expect(results.violations.filter((v) => v.impact === "serious" || v.impact === "critical").map((v) => v.id)).toEqual([]);
+    expect(problems).toEqual([]);
+    await context.close();
+  });
+
+  test("a failed order points to the block in its message, and the block stays in its place", async ({ browser }) => {
+    const order = await env.order(await env.shop({}), "gateway_failed");
+    const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+    const page = await context.newPage();
+    await page.goto(orderUrl(order));
+    await expect(page.getByRole("heading", { level: 1 })).toHaveText("Pembayaran gagal");
+    await expect(page.getByTestId("order-help-pointer")).toHaveText("Tetap gagal setelah dicoba lagi? Hubungi CS di bawah.");
+    expect(await lastInMain(page)).toBe("help-block");
+    await context.close();
+  });
+
+  test("the not-found page, the order lookup and the login pages have it too, in the same place and without an order code", async ({ browser }) => {
+    const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+    const page = await context.newPage();
+    for (const url of [`${ORDER_ORIGIN}/${newPublicId()}`, `${ORDER_ORIGIN}/`, `${PLAY_ORIGIN}/login`, `${PLAY_ORIGIN}/masuk`]) {
+      await page.goto(url);
+      await expect(page.getByTestId("help-block"), url).toHaveCount(1);
+      expect(await lastInMain(page), url).toBe("help-block");
+      const urls = await csUrls(page);
+      expect(decodeURIComponent(urls.whatsapp ?? ""), url).toBe("https://wa.me/6281234567890?text=Halo CS, saya butuh bantuan.");
+      expect(decodeURIComponent(urls.email ?? ""), url).toBe("mailto:cs@contoh.id?subject=Butuh bantuan");
+      expect(await sideways(page), url).toBeLessThanOrEqual(0);
+    }
+    await context.close();
+  });
+
+  test("an invalid login link says to contact CS below, above the block", async ({ browser }) => {
+    const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+    const page = await context.newPage();
+    await page.goto(`${PLAY_ORIGIN}/masuk`);
+    await expect(page.getByRole("heading", { name: "Tautan tidak berlaku" })).toBeVisible();
+    await expect(page.getByRole("status").filter({ hasText: "Hubungi CS di bawah." })).toBeVisible();
+    expect(await lastInMain(page)).toBe("help-block");
+    await context.close();
+  });
+
+  test("clearing the contact takes the block away again (nothing empty is left behind)", async ({ browser }) => {
+    test.setTimeout(120_000);
+    await env.sql`DELETE FROM cs_contact`;
+    await new Promise((resolve) => setTimeout(resolve, CACHE_WAIT_MS));
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    await page.goto(`${PLAY_ORIGIN}/login`);
+    await expect(page.getByRole("heading", { name: "Masuk ke Trivia" })).toBeVisible();
+    await expect(page.getByTestId("help-block")).toHaveCount(0);
+    await context.close();
+  });
+});

@@ -172,8 +172,6 @@
     "email": "Email",
     "copyRef": "Salin kode pesanan",
     "copied": "Tersalin",
-    "help": "Butuh bantuan?",
-    "helpLink": "Hubungi kami",
     "sendWhatsapp": "Kirim via WhatsApp",
     "whatsappText": "Halo, ini kode pesanan saya {ref} untuk {product}.",
     "enterTrivia": "Masuk ke Trivia",
@@ -236,7 +234,34 @@
     "replyNotPaid": "Pembayaran untuk pesanan ini belum kami terima. Ebook dikirim otomatis begitu pembayaran terkonfirmasi.",
     "replyNotAvailable": "Pesanan ini tidak dapat kami proses lewat chat. Silakan hubungi penyelenggara.",
     "replyNeedsHelp": "Ebook belum bisa kami kirim lewat WhatsApp. Silakan cek email Anda atau hubungi penyelenggara.",
-    "replyPdfOnly": "Berikut ebook yang Anda minta."
+    "replyPdfOnly": "Berikut ebook yang Anda minta.",
+    "csMismatch": "Jika Anda pembeli pesanan ini, hubungi CS kami di {cs} dengan menyebut kode pesanan.",
+    "csGeneric": "Butuh bantuan? Hubungi CS kami di {cs}.",
+    "csNotAvailable": "Pesanan ini tidak dapat kami proses lewat chat. Silakan hubungi CS kami di {cs}.",
+    "csNeedsHelp": "Ebook belum bisa kami kirim lewat WhatsApp. Silakan cek email Anda atau hubungi CS kami di {cs}."
+  },
+  "help": {
+    "title": "Butuh bantuan?",
+    "intro": "Ada kendala dengan pesanan, login, atau akses trivia? Tim CS kami siap membantu.",
+    "introOrder": "Ada kendala dengan pesanan ini? Tim CS kami siap membantu. Kode pesananmu ikut terkirim supaya lebih cepat.",
+    "hours": "Jam layanan: {hours}",
+    "whatsapp": "Chat CS via WhatsApp",
+    "email": "Email CS",
+    "newTab": "(buka di tab baru)",
+    "whatsappText": "Halo CS, saya butuh bantuan.",
+    "whatsappTextOrder": "Halo CS, saya butuh bantuan untuk pesanan {ref}.",
+    "emailSubject": "Butuh bantuan",
+    "emailSubjectOrder": "Butuh bantuan untuk pesanan {ref}",
+    "pointer": "Hubungi CS di bawah.",
+    "loginPointer": "Masih tidak bisa masuk? Hubungi CS di bawah.",
+    "noProgramPointer": "Sudah membayar tetapi program belum muncul? Hubungi CS di bawah.",
+    "order": {
+      "paid": "Ebook belum sampai? Hubungi CS di bawah.",
+      "expired": "Sudah membayar tetapi halaman ini bilang kedaluwarsa? Hubungi CS di bawah.",
+      "failed": "Tetap gagal setelah dicoba lagi? Hubungi CS di bawah.",
+      "review": "Ada pertanyaan soal pembayaranmu? Hubungi CS di bawah.",
+      "refunded": "Ada pertanyaan soal pengembalian dana? Hubungi CS di bawah."
+    }
   },
   "legal": {
     "terms": "Syarat dan Ketentuan",

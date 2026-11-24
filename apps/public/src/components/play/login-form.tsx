@@ -15,6 +15,7 @@ import { Label } from "@ebooktrivia/ui/components/label";
 import { CircleNotchIcon } from "@phosphor-icons/react";
 import { type SyntheticEvent, useEffect, useRef, useState } from "react";
 import { t } from "../../lib/t.ts";
+import { useHelpShown } from "../help/cs-context.tsx";
 import { type ApiAnswer, postJson } from "./api.ts";
 import { SignedInPanel } from "./signed-in-panel.tsx";
 
@@ -24,13 +25,15 @@ type Step = "phone" | "code";
 const CAP_URLS = { script: "/cap/cap.js", wasm: "/cap/cap-wasm.wasm", hashwx: "/cap/cap-hashwx.wasm" } as const;
 const CAP_API = "/api/v1/play/cap/";
 
-function errorText(answer: ApiAnswer, wrongCode: boolean): string {
+/** The error a buyer who cannot get in reads; when the page shows the help block, the two errors that may need a human say so ("Hubungi CS di bawah"). */
+function errorText(answer: ApiAnswer, wrongCode: boolean, helpShown: boolean): string {
+  const withPointer = (message: string): string => (helpShown ? `${message} ${t("help.loginPointer")}` : message);
   if (answer.status === 0) return t("login.errors.network");
   if (answer.status === 429) return t("login.errors.rateLimited", { seconds: Math.max(answer.retryAfterSeconds, 1) });
   if (answer.body["error"] === "captcha") return t("login.errors.captcha");
-  if (wrongCode && answer.body["error"] === "invalid_code") return t("login.errors.codeWrong");
+  if (wrongCode && answer.body["error"] === "invalid_code") return withPointer(t("login.errors.codeWrong"));
   if (answer.body["error"] === "validation") return wrongCode ? t("login.errors.codeInvalid") : t("login.errors.phoneInvalid");
-  return t("login.errors.unavailable");
+  return withPointer(t("login.errors.unavailable"));
 }
 
 function Spinner() {
@@ -38,6 +41,7 @@ function Spinner() {
 }
 
 export function LoginForm() {
+  const helpShown = useHelpShown();
   const [step, setStep] = useState<Step>("phone");
   const [phone, setPhone] = useState("");
   const [e164, setE164] = useState("");
@@ -93,7 +97,7 @@ export function LoginForm() {
       setResendAt(Date.now() + Math.max(answer.retryAfterSeconds, 1) * 1000);
       setNow(Date.now());
     }
-    onError(errorText(answer, false));
+    onError(errorText(answer, false, helpShown));
   }
 
   async function submitPhone(event: SyntheticEvent<HTMLFormElement>): Promise<void> {
@@ -143,7 +147,7 @@ export function LoginForm() {
       return;
     }
     setBusy(false);
-    setCodeError(errorText(answer, true));
+    setCodeError(errorText(answer, true, helpShown));
     codeInput.current?.focus();
   }
 
@@ -165,7 +169,7 @@ export function LoginForm() {
       setLinkNotice(t("login.linkSent", { phone: target }));
       return;
     }
-    onError(errorText(answer, false));
+    onError(errorText(answer, false, helpShown));
   }
 
   async function sendLink(): Promise<void> {

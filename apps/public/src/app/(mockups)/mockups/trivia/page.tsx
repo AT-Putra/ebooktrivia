@@ -4,7 +4,9 @@ import { LeaderboardCard } from "../../../../components/trivia/leaderboard-card.
 import { ProfileCard } from "../../../../components/trivia/profile-card.tsx";
 import { SetGridCard } from "../../../../components/trivia/set-grid-card.tsx";
 import { TriviaHeader } from "../../../../components/trivia/trivia-header.tsx";
+import { HelpCard } from "../../../../components/help/help-card.tsx";
 import { assertMockupsEnabled } from "../../../../lib/guard.ts";
+import { MOCKUP_CS_CONTACT } from "../../../../lib/mockups.ts";
 import { t } from "../../../../lib/t.ts";
 import { findProgram, mockupTiers, PROGRAMS } from "../../../../lib/trivia-fixtures.ts";
 
@@ -46,6 +48,9 @@ export default async function TriviaMockupPage({ searchParams }: PageProps) {
         </div>
         <div className="xl:col-span-12">
           <SetGridCard program={program} />
+        </div>
+        <div className="xl:col-span-12">
+          <HelpCard contact={MOCKUP_CS_CONTACT} />
         </div>
       </main>
       <footer className="mx-auto max-w-[720px] px-4 pb-6 text-center text-sm text-muted-foreground md:px-6 xl:max-w-[1200px]">

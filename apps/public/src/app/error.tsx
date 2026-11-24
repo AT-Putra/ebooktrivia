@@ -2,6 +2,7 @@
 
 // A page that could not render (the database or Valkey is down, say), in Bahasa Indonesia: the order
 // status page and the legal pages read from the database on every request.
+import { ContextHelpBlock } from "../components/help/cs-context.tsx";
 import { t } from "../lib/t.ts";
 
 export default function PageError({ reset }: { error: Error & { digest?: string }; reset: () => void }) {
@@ -18,6 +19,7 @@ export default function PageError({ reset }: { error: Error & { digest?: string 
           {t("common.retry")}
         </button>
       </article>
+      <ContextHelpBlock className="max-w-[480px]" />
     </main>
   );
 }

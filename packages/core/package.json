@@ -5,6 +5,7 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./cs-contact": "./src/cs-contact.ts",
     "./hosts": "./src/hosts.ts",
     "./magic-link-url": "./src/magic-link-url.ts",
     "./phone": "./src/phone.ts",

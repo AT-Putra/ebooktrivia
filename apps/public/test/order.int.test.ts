@@ -263,7 +263,7 @@ describe("criterion 1: what the page can show (data, masking, the WhatsApp butto
       createElement(OrderCard, {
         state: view.state,
         order: { ref: view.code, product: view.product, amount: view.amountIdr, name: view.name, whatsapp: view.phone },
-        links: { trivia: view.loginHref, again: view.orderAgainHref, whatsapp: view.whatsappHref, help: view.whatsappHref },
+        links: { trivia: view.loginHref, again: view.orderAgainHref, whatsapp: view.whatsappHref },
       }),
     );
     const page = JSON.stringify(view) + html;

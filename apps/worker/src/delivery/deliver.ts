@@ -36,6 +36,8 @@ import {
   type BuyerFirstReply,
   claimDelivery,
   claimOpener,
+  type CsContact,
+  csTemplateValues,
   DELIVERY_GAP_MS,
   type DeliveryDecision,
   type DeliveryOutcome,
@@ -72,7 +74,7 @@ import { ContactCacheError, type ContactResolution, knownChatsOf, resolveContact
 import { DELIVERED_WRONG_FILE, deliveredSize, FILE_UNAVAILABLE, type WrongFile, wrongFile } from "./file-check.ts";
 import { refreshSessionLimits } from "./health.ts";
 import { cryptoRandom, sendLikeAHuman } from "./human.ts";
-import { emailMessage, loadOpenerTemplates, loadTemplate, openerMessage, openerWording, pickOpenerVariant, TemplateMissing, whatsappCaption } from "./messages.ts";
+import { emailMessage, loadCsContactOrNone, loadOpenerTemplates, loadTemplate, openerMessage, openerWording, pickOpenerVariant, TemplateMissing, whatsappCaption } from "./messages.ts";
 import { claimSession, closeSend, markReachoutBlocked, recordSessionOutcome } from "./pool.ts";
 import { type EbookFiles, MagicLinkUnavailable, type MagicLinks, MailAccessError, type MailSender, type WahaAccess, WahaAccessError } from "./ports.ts";
 
@@ -416,11 +418,13 @@ export function createDelivery(deps: DeliveryDeps): Delivery {
   /** A short code for last_error: never a message, an address or a value from a provider. */
   const code = (prefix: string, detail: string): string => `${prefix}_${detail}`.replace(/[^a-z0-9_]/gi, "_").toLowerCase().slice(0, 64);
 
-  const buyerValues = (context: SendContext, link: string | undefined) => ({
+  /** What the delivery templates may say; {cs_whatsapp} and {cs_email} are the Owner's customer-service contact as it is now ("" when not set). */
+  const buyerValues = (context: SendContext, link: string | undefined, cs: CsContact) => ({
     nama: context.buyer.name,
     judul_ebook: context.product.title,
     order_id: context.code,
     ...(link === undefined ? {} : { link_trivia: link }),
+    ...csTemplateValues(cs),
   });
 
   /**
@@ -465,7 +469,7 @@ export function createDelivery(deps: DeliveryDeps): Delivery {
       const template = await loadTemplate(sql, "delivery", "whatsapp");
       const link = context.buyer.playerId === null ? undefined : await deps.magicLinks.issue({ playerId: context.buyer.playerId, channel: "whatsapp" });
       if (link === undefined) throw new MagicLinkUnavailable();
-      caption = whatsappCaption(template, buyerValues(context, link), config.playOrigin);
+      caption = whatsappCaption(template, buyerValues(context, link, await loadCsContactOrNone(sql, log)), config.playOrigin);
       url = deps.files.signedUrl(context.product.storagePath, new Date());
     } catch (error) {
       return { outcome: preparationFailure(error), counts: false };
@@ -608,7 +612,7 @@ export function createDelivery(deps: DeliveryDeps): Delivery {
       const template = await loadTemplate(sql, "delivery", "email");
       const link = context.buyer.playerId === null ? undefined : await deps.magicLinks.issue({ playerId: context.buyer.playerId, channel: "email" });
       if (link === undefined) throw new MagicLinkUnavailable();
-      const values = buyerValues(context, link);
+      const values = buyerValues(context, link, await loadCsContactOrNone(sql, log));
       attach = (await deps.files.size(context.product.storagePath)) <= config.emailAttachMaxBytes;
       if (attach) bytes = await deps.files.read(context.product.storagePath);
       linkUrl = deps.files.signedUrl(context.product.storagePath, new Date(), config.emailLinkTtlSeconds);

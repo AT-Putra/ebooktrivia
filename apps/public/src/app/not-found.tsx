@@ -1,6 +1,7 @@
 // The 404 of every route of the public app, in Bahasa Indonesia. The order origin answers an unknown order
 // id and a malformed one with this same page (US-022), and the legal pages answer an unknown or draft
 // version with it.
+import { HelpBlock } from "../components/help/help-block.tsx";
 import { t } from "../lib/t.ts";
 
 export default function NotFound() {
@@ -10,6 +11,7 @@ export default function NotFound() {
         <h1 className="font-heading text-2xl leading-tight">{t("common.notFoundTitle")}</h1>
         <p className="text-base">{t("common.notFoundBody")}</p>
       </article>
+      <HelpBlock className="max-w-[480px]" />
     </main>
   );
 }

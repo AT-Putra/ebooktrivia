@@ -238,3 +238,34 @@ test("the internal trivia routes are a 404, and an unknown program is the 404 pa
   expect((await page.request.get(`/${play.programSlug}x`)).status()).toBe(404);
   await context.close();
 });
+
+// Owner decision 2026-11-24: one shared "Butuh bantuan?" block at the end of every buyer page (apps/public components/help). The app keeps what it read of
+// the contact for 30 s (lib/cs/contact.ts), so the first page of this spec, loaded before the contact was set, is not the one that shows it.
+test("the trivia pages end with the shared help block when a CS contact is set: the program page and a set, without anything personal in its links", async ({ browser }) => {
+  test.setTimeout(150_000);
+  await play.sql`DELETE FROM cs_contact`;
+  await play.sql`INSERT INTO cs_contact (id, whatsapp, email, hours) VALUES (1, '+6281234567890', 'cs@contoh.id', 'Setiap hari 08.00-20.00 WIB')`;
+  await new Promise((resolve) => setTimeout(resolve, 31_500));
+  const { context, page } = await signedInPhone(browser);
+  try {
+    await page.goto(`/${play.programSlug}`);
+    await expect(page.getByRole("heading", { level: 1, name: "Trivia Sejarah Nusantara" })).toBeVisible();
+    const block = page.getByTestId("help-block");
+    await expect(block).toHaveCount(1);
+    // The last thing of the page's main column, after the four cards.
+    expect(await page.locator("main").evaluate((main) => main.lastElementChild?.querySelector("[data-testid=help-block]") !== null)).toBe(true);
+    await expect(page.getByTestId("help-hours")).toHaveText("Jam layanan: Setiap hari 08.00-20.00 WIB");
+    expect(decodeURIComponent((await page.getByTestId("help-whatsapp").getAttribute("href")) ?? "")).toBe("https://wa.me/6281234567890?text=Halo CS, saya butuh bantuan.");
+    expect(decodeURIComponent((await page.getByTestId("help-email").getAttribute("href")) ?? "")).toBe("mailto:cs@contoh.id?subject=Butuh bantuan");
+    for (const id of ["help-whatsapp", "help-email"]) expect((await page.getByTestId(id).boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(44);
+    await expectAccessible(page);
+    await page.goto(`/${play.programSlug}/set/1`);
+    await expect(page.getByRole("heading", { name: "Set 1: Sejarah" })).toBeVisible();
+    await expect(page.getByTestId("help-block")).toHaveCount(1);
+    expect(await page.locator("main").evaluate((main) => main.lastElementChild?.getAttribute("data-testid") ?? null)).toBe("help-block");
+    await expectAccessible(page);
+  } finally {
+    await context.close();
+    await play.sql`DELETE FROM cs_contact`;
+  }
+});

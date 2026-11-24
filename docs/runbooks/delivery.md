@@ -206,6 +206,8 @@ a reply), and the worker **re-fetches the message from WAHA** and decides from t
 - the sender IS the buyer but the delivery is not pending: a text that follows the row: on its way (in flight, sent, unknown), "could not send, check your e-mail or
   contact us" (failed), "not available here" (cancelled, or the order refunded, in review), "payment not received yet" (the order is not paid yet). The state of an order is told
   **only to its verified buyer**: an unconfirmed sender never learns whether an order is paid, sent or failed.
+- When the Owner has set a customer-service contact (Admin, Customer service), four of these texts carry a CS line (mismatch, the generic one, "not available" and "could not send"): the number as
+  plain text, no wa.me link, no order or buyer data, read when the reply is built; with none set they are exactly as before ([customer-service.md](customer-service.md)).
 
 Extra replies (the texts, and the PDF for an unconfirmed `@lid`) are limited: at most one per sender per hour (claimed in the database under a lock on the sender before
 anything is sent, so two messages at once cannot both pass), and only while the number is under **80 % of its daily cap**, so they can never take the openers' share. No order code and no

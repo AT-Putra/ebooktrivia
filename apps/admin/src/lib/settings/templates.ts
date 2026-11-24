@@ -54,12 +54,13 @@ interface CatalogEntry {
 }
 
 const FIXED_CATALOG: Readonly<Record<string, CatalogEntry>> = {
-  delivery: { label: "Ebook delivery (file + trivia link)", variables: ["nama", "judul_ebook", "order_id", "link_trivia"], required: [] },
+  // {cs_whatsapp} (0812-3456-7890) and {cs_email} are the Owner's customer-service contact (Settings > Customer service); one that is not set renders as nothing.
+  delivery: { label: "Ebook delivery (file + trivia link)", variables: ["nama", "judul_ebook", "order_id", "link_trivia", "cs_whatsapp", "cs_email"], required: [] },
   otp: { label: "Trivia login code", variables: ["kode_otp"], required: ["kode_otp"] },
 };
 
 // The short opener (Owner decision D7): the one WhatsApp message to a buyer who has not written first. Text only: no file and no login link (it cannot have
-// {link_trivia}); {nama} is the buyer's FIRST name; {sapaan} a greeting for the time of day; it asks the buyer to reply, and the ebook follows the reply. The worker
+// {link_trivia}, and no {cs_whatsapp} / {cs_email}: an opener stays short and link-free); {nama} is the buyer's FIRST name; {sapaan} a greeting for the time of day; it asks the buyer to reply, and the ebook follows the reply. The worker
 // picks one wording at random for each opener (never one the number used for its last 3).
 const OPENER_VARIABLES: readonly MessageVariable[] = ["nama", "judul_ebook", "order_id", "sapaan"];
 const OPENER_KEY = /^delivery_opener_([1-9][0-9]*)$/;

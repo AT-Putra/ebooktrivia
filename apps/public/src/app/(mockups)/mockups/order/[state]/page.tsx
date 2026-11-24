@@ -1,8 +1,10 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { isOrderState, OrderCard, type OrderCardData, type OrderCardLinks } from "../../../../../components/order/order-card.tsx";
+import { HelpCard } from "../../../../../components/help/help-card.tsx";
 import { PollingIndicator } from "../../../../../components/order/order-client.tsx";
 import { assertMockupsEnabled } from "../../../../../lib/guard.ts";
+import { MOCKUP_CS_CONTACT } from "../../../../../lib/mockups.ts";
 import { t } from "../../../../../lib/t.ts";
 
 export const metadata: Metadata = { title: "Status pesanan | Trivia Arena" };
@@ -26,7 +28,6 @@ const LINKS: OrderCardLinks = {
   again: "/",
   whatsapp: `https://wa.me/?text=${encodeURIComponent(t("order.whatsappText", { ref: ORDER.ref, product: ORDER.product }))}`,
   payment: "#pembayaran",
-  help: "#bantuan",
 };
 
 export default async function OrderMockupPage({ params }: PageProps) {
@@ -35,7 +36,8 @@ export default async function OrderMockupPage({ params }: PageProps) {
   if (!isOrderState(state)) notFound();
   return (
     <main className="flex min-h-dvh flex-col items-center justify-center gap-4 px-4 py-6 md:py-10">
-      <OrderCard state={state} order={ORDER} links={LINKS} polling={state === "pending" ? <PollingIndicator lastCheckedSeconds={10} /> : undefined} />
+      <OrderCard state={state} order={ORDER} links={LINKS} pointToHelp polling={state === "pending" ? <PollingIndicator lastCheckedSeconds={10} /> : undefined} />
+      <HelpCard contact={MOCKUP_CS_CONTACT} orderCode={ORDER.ref} className="max-w-[480px]" />
     </main>
   );
 }

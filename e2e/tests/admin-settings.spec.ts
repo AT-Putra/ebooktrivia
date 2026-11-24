@@ -708,3 +708,84 @@ test("WhatsApp numbers: the panel says where the warm-up is, a new session warms
   }
   await owner.setViewportSize({ width: 1280, height: 720 });
 });
+
+test("Customer service: the Owner saves the contact, sees what buyers get, and the CS number can never be a sending number (both directions); 390 and 1280 px hold", async () => {
+  const csNumber = "0812 3456 7890";
+  await owner.goto("/settings/customer-service");
+  await expect(owner.getByRole("navigation", { name: "Console" }).first().getByRole("link", { name: "Customer service" })).toBeVisible();
+  await expect(owner.getByRole("heading", { name: "Customer service", level: 1 })).toBeVisible();
+  const form = owner.getByTestId("cs-contact-form");
+  await expect(owner.getByTestId("cs-preview-line")).toHaveText("Nothing is set: the replies carry no customer service line.");
+
+  // A bad number, a bad address and a long hours line are refused with a fixed message, and nothing is saved.
+  await form.getByLabel("Customer service WhatsApp number").fill("12345");
+  await form.getByRole("button", { name: "Save customer service" }).click();
+  await expect(form.getByTestId("form-error")).toContainText("Enter an Indonesian mobile number");
+  await form.getByLabel("Customer service WhatsApp number").fill(csNumber);
+  await form.getByLabel("Customer service e-mail").fill("cs@contoh");
+  await form.getByRole("button", { name: "Save customer service" }).click();
+  await expect(form.getByTestId("form-error")).toContainText("Enter a valid e-mail address");
+  expect((await admin.sql`SELECT 1 FROM cs_contact`).length).toBe(0);
+
+  // A valid contact: saved, normalised, audited with the number and address as references only.
+  await form.getByLabel("Customer service e-mail").fill("cs@contoh.id");
+  await form.getByLabel("Hours (optional)").fill("Senin–Jumat 09.00–17.00 WIB");
+  await form.getByRole("button", { name: "Save customer service" }).click();
+  await expect(form.getByRole("status")).toContainText("Customer service contact saved");
+  const row = await one(admin.sql<{ whatsapp: string; email: string; hours: string }[]>`SELECT whatsapp, email, hours FROM cs_contact`);
+  expect(row).toEqual({ whatsapp: "+6281234567890", email: "cs@contoh.id", hours: "Senin–Jumat 09.00–17.00 WIB" });
+  const audit = await one(admin.sql<{ text: string }[]>`SELECT row_to_json(a)::text AS text FROM audit_log a WHERE action = 'cs_contact.update' ORDER BY id DESC LIMIT 1`);
+  expect(audit.text).not.toContain("+6281234567890");
+  expect(audit.text).not.toContain("cs@contoh.id");
+  await owner.reload();
+  await expect(owner.getByLabel("Customer service WhatsApp number")).toHaveValue("0812-3456-7890");
+  await expect(owner.getByTestId("cs-preview-line")).toHaveText("...hubungi CS kami di WhatsApp 0812-3456-7890 atau email cs@contoh.id (Senin–Jumat 09.00–17.00 WIB).");
+
+  // The CS number is never a sending number, from either side.
+  const serverName = `CS ${stamp}`;
+  await owner.goto("/settings/waha");
+  const create = owner.getByTestId("waha-create");
+  await create.getByLabel("Name").fill(serverName);
+  await create.getByLabel("Base URL (https)").fill(`https://waha-cs-${stamp}.example.test/`);
+  await create.getByRole("button", { name: "Add server" }).click();
+  await expect(create.getByRole("status")).toContainText("Server added");
+  const server = await one(admin.sql<{ id: string }[]>`SELECT id FROM waha_servers WHERE name = ${serverName}`);
+  const card = owner.getByTestId(`waha-${server.id}`);
+  const addForm = card.locator("form").filter({ has: owner.getByRole("button", { name: "Add session" }) });
+  await addForm.getByLabel("Session name").fill("cs-nomor");
+  await addForm.getByLabel("Number", { exact: true }).fill(csNumber);
+  await addForm.getByRole("button", { name: "Add session" }).click();
+  await expect(addForm.getByTestId("form-error")).toContainText("This number is the customer-service number");
+  expect((await admin.sql`SELECT 1 FROM waha_sessions WHERE server_id = ${server.id}`).length).toBe(0);
+  // Another number is a sending number; the CS number can then not be moved onto it.
+  await admin.sql`INSERT INTO waha_sessions (server_id, session_name, phone, active) VALUES (${server.id}, 'kirim', '+6281200000077', false)`;
+  await owner.goto("/settings/customer-service");
+  await form.getByLabel("Customer service WhatsApp number").fill("0812 0000 0077");
+  await form.getByRole("button", { name: "Save customer service" }).click();
+  await expect(form.getByTestId("form-error")).toContainText("This number is one of the WhatsApp sending numbers");
+  expect((await one(admin.sql<{ whatsapp: string }[]>`SELECT whatsapp FROM cs_contact`)).whatsapp).toBe("+6281234567890");
+  // Emptying every field is allowed: then buyers see nothing.
+  await form.getByLabel("Customer service WhatsApp number").fill("");
+  await form.getByLabel("Customer service e-mail").fill("");
+  await form.getByLabel("Hours (optional)").fill("");
+  await form.getByRole("button", { name: "Save customer service" }).click();
+  await expect(form.getByRole("status")).toContainText("Customer service contact saved");
+  await expect(owner.getByTestId("cs-preview-line")).toHaveText("Nothing is set: the replies carry no customer service line.");
+  await form.getByLabel("Customer service WhatsApp number").fill(csNumber);
+  await form.getByRole("button", { name: "Save customer service" }).click();
+  await expect(form.getByRole("status")).toContainText("Customer service contact saved");
+
+  // 390 px and 1280 px: the form and the preview fit, nothing scrolls sideways.
+  for (const width of [390, 1280]) {
+    await owner.setViewportSize({ width, height: 844 });
+    await owner.goto("/settings/customer-service");
+    await expect(form.getByRole("button", { name: "Save customer service" })).toBeVisible();
+    expect(await owner.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth), `${String(width)} px`).toBeLessThanOrEqual(0);
+    for (const label of ["Customer service WhatsApp number", "Customer service e-mail", "Hours (optional)"]) {
+      const box = await form.getByLabel(label).boundingBox();
+      expect((box?.x ?? 0) + (box?.width ?? 0), `${label} at ${String(width)} px`).toBeLessThanOrEqual(width);
+      expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
+    }
+  }
+  await owner.setViewportSize({ width: 1280, height: 720 });
+});

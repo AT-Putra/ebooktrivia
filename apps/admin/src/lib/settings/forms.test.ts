@@ -251,6 +251,24 @@ describe("message templates", () => {
     expect(refused(() => parseTemplate("delivery", "email", { subject: "Ebook", body: "<p>{sapaan}</p>" }))).toMatch(/cannot have/);
   });
 
+  it("{cs_whatsapp} and {cs_email} are for the ebook delivery texts (WhatsApp, e-mail body and subject) and nothing else: openers and the OTP text refuse them", () => {
+    expect(parseTemplate("delivery", "whatsapp", { subject: "", body: "Kendala? Chat CS: {cs_whatsapp} atau {cs_email}" }).body).toBe("Kendala? Chat CS: {cs_whatsapp} atau {cs_email}");
+    expect(parseTemplate("delivery", "email", { subject: "Ebook {judul_ebook} (CS {cs_email})", body: "<p>CS: {cs_whatsapp}, {cs_email}</p>" }).subject).toBe("Ebook {judul_ebook} (CS {cs_email})");
+    for (const body of ["Halo {nama}, CS {cs_whatsapp}", "Halo {nama}, CS {cs_email}"]) {
+      expect(refused(() => parseTemplate("delivery_opener_1", "whatsapp", { subject: "", body })), body).toMatch(/cannot have/);
+      expect(refused(() => parseTemplate("delivery_opener_7", "whatsapp", { subject: "", body })), body).toMatch(/cannot have/);
+    }
+    expect(refused(() => parseTemplate("otp", "whatsapp", { subject: "", body: "Kode {kode_otp}, CS {cs_whatsapp}" }))).toMatch(/cannot have/);
+    expect(templateEntry("delivery")?.variables).toEqual(expect.arrayContaining(["cs_whatsapp", "cs_email"]));
+    expect(templateEntry("delivery_opener_1")?.variables).not.toContain("cs_whatsapp");
+    expect(templateEntry("delivery_opener_1")?.variables).not.toContain("cs_email");
+  });
+
+  it("previews {cs_whatsapp} and {cs_email} with the sample contact", () => {
+    const text = parseTemplate("delivery", "whatsapp", { subject: "", body: "Chat CS: {cs_whatsapp} / {cs_email}" });
+    expect(preview("delivery", "whatsapp", text, "").body).toBe("Chat CS: 0812-3456-7890 / cs@contoh.id");
+  });
+
   it("only delivery_opener_N keys are openers, and an unknown key is refused", () => {
     expect(templateEntry("delivery_opener_1")?.variables).not.toContain("link_trivia");
     expect(templateEntry("delivery_opener_20")).toBeDefined();

@@ -45,6 +45,10 @@
 // {sapaan} (greeting.ts) is a system value: the caller renders it at send time and passes it in; only the greetings
 // greeting.ts can produce are accepted.
 //
+// {cs_whatsapp} and {cs_email} (cs-contact.ts) are system values too: the Owner's customer-service number in the local format with
+// dashes ("0812-3456-7890") and address, inserted unchanged (a copyable address must keep its dots and underscores) after a check of
+// their shape. An empty string is a valid value (nothing is set: the variable renders empty); a missing value is still an error.
+//
 // Choices (WhatsApp only): `[[Halo|Hai]]` is replaced at render time by ONE of its options, drawn with `options.random` (default:
 // the operating system's CSPRNG), before anything else is parsed, so an option can never add a variable or a brace. A choice has 2
 // to 5 options of plain text (no `{`, `}` or nested `[[`), `[[` and `]]` must balance, and the template's length limit applies to
@@ -52,9 +56,10 @@
 // option is free text, and in HTML it could close an attribute or a tag, which no single scan of the template could rule out for
 // every combination of options.
 import { randomInt } from "node:crypto";
+import { CS_LOCAL_PHONE, isCsEmail } from "./cs-contact.ts";
 import { SAPAAN_VALUES } from "./greeting.ts";
 
-export const MESSAGE_VARIABLES = ["nama", "judul_ebook", "order_id", "link_trivia", "kode_otp", "sapaan"] as const;
+export const MESSAGE_VARIABLES = ["nama", "judul_ebook", "order_id", "link_trivia", "kode_otp", "sapaan", "cs_whatsapp", "cs_email"] as const;
 export type MessageVariable = (typeof MESSAGE_VARIABLES)[number];
 export type MessageValues = Readonly<Partial<Record<MessageVariable, string>>>;
 export type MessageChannel = "whatsapp" | "email_html" | "email_subject";
@@ -535,6 +540,14 @@ function systemValue(name: MessageVariable, value: string, options: MessageRende
   if (name === "link_trivia") return triviaLink(value, options);
   if (name === "sapaan") {
     if (!SAPAAN_VALUES.includes(value)) throw new TemplateError("invalid_value", "sapaan is not one of the greetings");
+    return value;
+  }
+  if (name === "cs_whatsapp") {
+    if (value !== "" && !CS_LOCAL_PHONE.test(value)) throw new TemplateError("invalid_value", "cs_whatsapp is not a local phone number with dashes");
+    return value;
+  }
+  if (name === "cs_email") {
+    if (value !== "" && !isCsEmail(value)) throw new TemplateError("invalid_value", "cs_email is not an e-mail address");
     return value;
   }
   return undefined;

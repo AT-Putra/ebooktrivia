@@ -26,6 +26,9 @@ redirect claims).
   check). It stops at **paid** and **refunded** only. An order that looks expired, failed or under review can still be paid late (a virtual
   account paid after the page gave up: the order machine moves any non-paid, non-refunded order to paid on a confirmed settlement), so
   those states keep being asked at 30 s within the hour.
+- **Help.** The shared "Butuh bantuan?" block at the end of the page (the Owner's customer-service WhatsApp number and e-mail, [customer-service.md](customer-service.md)),
+  with the order CODE in its prefilled text and subject (never the name, e-mail, phone or the public id). The card has no help area of its own; the states with a problem of
+  their own say "Hubungi CS di bawah." when the block is shown. With no contact set, neither is rendered.
 
 ## What the page fires, and how once
 

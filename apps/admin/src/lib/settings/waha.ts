@@ -8,7 +8,8 @@
 //     base_url_host (ET062 otherwise); changing the base URL's host deletes it
 //     (waha_servers_clear_bound_secrets), so the key is never sent to a new host unasked;
 //   - sessions: name (the WAHA session), pool number (E.164, Indonesian mobile), weight (round robin)
-//     and daily cap. The pool number is shown to buyers (wa.me) but audited as a reference only;
+//     and daily cap. The pool number is shown to buyers (wa.me) but audited as a reference only. It may not
+//     be the customer-service number (Settings > Customer service): the database refuses it (ET190) on add and edit;
 //   - warm-up: a new session starts its warm-up (warmup_started_at = now: its budget of new contacts is held
 //     down for 21 WIB days, core delivery-pool) unless "Established number" is ticked (NULL). Ticking it on a
 //     warming number ends the warm-up; unticking it on an established one restarts the warm-up from today;
@@ -20,6 +21,7 @@ import { normalizeIdMobile } from "@ebooktrivia/core";
 import { SECRET_NAMES } from "@ebooktrivia/db";
 import { type FieldKind, type Tx, withAudit } from "../audit.ts";
 import { auditedChange, CONCURRENT_SAVE } from "./audited.ts";
+import { SENDING_NUMBER_IS_CS } from "./cs-contact.ts";
 import type { Sql } from "../db.ts";
 import { checkWahaBaseUrl, ENDPOINT_MESSAGES } from "./endpoints.ts";
 import type { SettingsConfig } from "./env.ts";
@@ -88,6 +90,8 @@ const MESSAGES: Readonly<Record<string, string>> = {
   "23505": "This server already has a session with that name.",
   "23514": "The address or values are not valid for a WAHA server.",
   "23503": "The chosen server does not exist.",
+  // The customer-service number is never a sending number (Settings > Customer service; held by the database, ET190).
+  "ET190": SENDING_NUMBER_IS_CS,
 };
 
 export function createWahaServer(sql: Sql, input: WahaServerInput): Promise<string> {

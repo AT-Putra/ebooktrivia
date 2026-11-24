@@ -10,6 +10,7 @@ import { Button } from "@ebooktrivia/ui/components/button";
 import { CircleNotchIcon } from "@phosphor-icons/react";
 import { useEffect, useState } from "react";
 import { t } from "../../lib/t.ts";
+import { useHelpShown } from "../help/cs-context.tsx";
 import { postJson } from "./api.ts";
 import { SignedInPanel } from "./signed-in-panel.tsx";
 
@@ -20,6 +21,7 @@ type State =
   | { readonly kind: "signedIn"; readonly phoneMasked: string | null };
 
 export function MagicLinkConfirm() {
+  const helpShown = useHelpShown();
   const [state, setState] = useState<State>({ kind: "reading" });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -75,7 +77,7 @@ export function MagicLinkConfirm() {
           {t("magicLink.invalidTitle")}
         </h1>
         <p className="text-base" role="status">
-          {t("magicLink.invalidBody")}
+          {t("magicLink.invalidBody")}{helpShown ? ` ${t("help.pointer")}` : ""}
         </p>
         <Button asChild size="lg">
           <a href="/login">{t("magicLink.toLogin")}</a>

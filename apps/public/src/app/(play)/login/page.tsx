@@ -1,5 +1,6 @@
 // play.<DOMAIN>/login (US-026): the WhatsApp OTP login. The paid order page links here (US-022 PLAY_LOGIN_PATH).
 import type { Metadata } from "next";
+import { HelpBlock } from "../../../components/help/help-block.tsx";
 import { LoginForm } from "../../../components/play/login-form.tsx";
 import { t } from "../../../lib/t.ts";
 
@@ -14,6 +15,7 @@ export default function LoginPage() {
   return (
     <main id="main" className="flex min-h-dvh flex-col items-center justify-center gap-4 px-4 py-6 md:py-10">
       <LoginForm />
+      <HelpBlock className="max-w-[420px]" />
     </main>
   );
 }

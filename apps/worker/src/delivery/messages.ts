@@ -10,9 +10,10 @@
 //   e-mail     key `delivery`: subject and HTML body, and a plain-text alternative made from the SAME template (so an Owner's edit reaches
 //              both parts). When the PDF is not attached (too large, or refused for its size) a notice and a download link are added
 //              to both parts.
-import { escapeHtml, type MessageValues, OPENER_NO_REPEAT, pickOpenerWording, renderMessage, sapaan } from "@ebooktrivia/core";
+import { type CsContact, csLine, escapeHtml, isCsEmail, isCsHours, isIdMobileE164, type MessageValues, NO_CS_CONTACT, OPENER_NO_REPEAT, pickOpenerWording, renderMessage, sapaan } from "@ebooktrivia/core";
 import { messages } from "@ebooktrivia/i18n";
 import type postgres from "postgres";
+import type { Logger } from "../log.ts";
 
 export class TemplateMissing extends Error {
   constructor(key: string, channel: string) {
@@ -34,6 +35,33 @@ export async function loadTemplate(db: postgres.Sql | postgres.TransactionSql, k
   return row;
 }
 
+/**
+ * The Owner's customer-service contact (public.cs_contact, one row; worker_rw reads whatsapp, email and hours only), as it is NOW: read each time a
+ * message is built, so a change in the console is used by the next message without a restart. A value the table's checks would have refused is dropped.
+ */
+export async function loadCsContact(db: postgres.Sql | postgres.TransactionSql): Promise<CsContact> {
+  const [row] = await db<{ whatsapp: string | null; email: string | null; hours: string | null }[]>`SELECT whatsapp, email, hours FROM public.cs_contact LIMIT 1`;
+  if (row === undefined) return NO_CS_CONTACT;
+  return {
+    whatsapp: row.whatsapp !== null && isIdMobileE164(row.whatsapp) ? row.whatsapp : null,
+    email: row.email !== null && isCsEmail(row.email) ? row.email : null,
+    hours: row.hours !== null && isCsHours(row.hours) ? row.hours : null,
+  };
+}
+
+/**
+ * The CS contact for a message that must go out whatever happens to the read: a failure (the database, a timeout) gives no contact, so the message goes
+ * out as it was before the CS line existed, and is reported by a code (cs_contact_read_failed), never with the error text.
+ */
+export async function loadCsContactOrNone(db: postgres.Sql | postgres.TransactionSql, log: Logger): Promise<CsContact> {
+  try {
+    return await loadCsContact(db);
+  } catch (error) {
+    log.warn({ code: "cs_contact_read_failed", errorType: error instanceof Error ? error.name : typeof error }, "the customer-service contact could not be read; the message goes out without it");
+    return NO_CS_CONTACT;
+  }
+}
+
 /** What the delivery templates may say about the order. */
 export interface DeliveryValues {
   readonly nama: string;
@@ -42,9 +70,19 @@ export interface DeliveryValues {
   readonly order_id: string;
   /** The login link; absent for a message without it. */
   readonly link_trivia?: string;
+  /** {cs_whatsapp} and {cs_email} (core csTemplateValues): "" when not set. Absent for a text that does not have them (an opener). */
+  readonly cs_whatsapp?: string;
+  readonly cs_email?: string;
 }
 
-const values = (v: DeliveryValues): MessageValues => ({ nama: v.nama, judul_ebook: v.judul_ebook, order_id: v.order_id, ...(v.link_trivia === undefined ? {} : { link_trivia: v.link_trivia }) });
+const values = (v: DeliveryValues): MessageValues => ({
+  nama: v.nama,
+  judul_ebook: v.judul_ebook,
+  order_id: v.order_id,
+  ...(v.link_trivia === undefined ? {} : { link_trivia: v.link_trivia }),
+  ...(v.cs_whatsapp === undefined ? {} : { cs_whatsapp: v.cs_whatsapp }),
+  ...(v.cs_email === undefined ? {} : { cs_email: v.cs_email }),
+});
 
 /**
  * The values of a plain-text part (a WhatsApp caption, the e-mail's text alternative): a buyer's name or an ebook title without its
@@ -170,24 +208,36 @@ export function emailMessage(template: StoredTemplate, v: DeliveryValues, playOr
  *   not_paid       (verified) the payment has not been received yet
  *   not_available  (verified) the order is refunded, in review or cancelled: nothing is sent
  *   needs_help     (verified) the delivery failed: the Owner is told
+ *
+ * Four of them carry a customer-service line when the Owner has set a CS contact (Settings > Customer service), and are exactly as they were when none is
+ * set: mismatch and generic get one more sentence after the old text (csMismatch / csGeneric); not_available and needs_help say "hubungi CS kami di {cs}"
+ * where they said "hubungi penyelenggara" (csNotAvailable / csNeedsHelp). {cs} is core csLine: the number as plain text in the local format with dashes
+ * (no wa.me link: the WAHA anti-blocking guide warns about links in WhatsApp messages), the address, and the hours. The line adds no order and no buyer
+ * data, so a stranger learns nothing from it.
  */
 export type ReplyKind = "mismatch" | "generic" | "already_sent" | "not_paid" | "not_available" | "needs_help";
 
-export function replyText(kind: ReplyKind): string {
+export function replyText(kind: ReplyKind, cs: CsContact = NO_CS_CONTACT): string {
   const m = messages.id.delivery;
+  const line = csLine(cs);
+  const withLine = (sentence: string): string | null => (line === null ? null : sentence.replace("{cs}", () => line));
   switch (kind) {
-    case "mismatch":
-      return m.replyMismatch;
-    case "generic":
-      return m.replyGeneric;
+    case "mismatch": {
+      const extra = withLine(m.csMismatch);
+      return extra === null ? m.replyMismatch : `${m.replyMismatch} ${extra}`;
+    }
+    case "generic": {
+      const extra = withLine(m.csGeneric);
+      return extra === null ? m.replyGeneric : `${m.replyGeneric} ${extra}`;
+    }
     case "already_sent":
       return m.replyAlreadySent;
     case "not_paid":
       return m.replyNotPaid;
     case "not_available":
-      return m.replyNotAvailable;
+      return withLine(m.csNotAvailable) ?? m.replyNotAvailable;
     case "needs_help":
-      return m.replyNeedsHelp;
+      return withLine(m.csNeedsHelp) ?? m.replyNeedsHelp;
   }
 }
 

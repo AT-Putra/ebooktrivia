@@ -21,7 +21,7 @@ function render(state: (typeof PAGE_STATES)[number], overrides: Partial<typeof v
     createElement(OrderCard, {
       state,
       order: { ref: v.code, product: v.product, amount: v.amountIdr, name: v.name, whatsapp: v.phone },
-      links: { trivia: v.loginHref, again: v.orderAgainHref, whatsapp: v.whatsappHref, help: v.whatsappHref },
+      links: { trivia: v.loginHref, again: v.orderAgainHref, whatsapp: v.whatsappHref },
     }),
   );
 }
@@ -74,13 +74,43 @@ describe("OrderCard (server render)", () => {
         createElement(OrderCard, {
           state,
           order: { ref: view.code, product: view.product, amount: view.amountIdr, name: view.name, whatsapp: view.phone },
-          links: { trivia: view.loginHref, again: view.orderAgainHref, whatsapp: view.whatsappHref, help: view.whatsappHref },
+          links: { trivia: view.loginHref, again: view.orderAgainHref, whatsapp: view.whatsappHref },
           polling: createElement(PollingStopped, { onRetry: () => undefined }),
         }),
       );
       expect(html, state).toContain("Pemeriksaan otomatis berhenti");
       expect(html, state).toContain("Periksa lagi");
     }
+  });
+
+  it("has no help area of its own (the shared help block under it is the one help on the page)", () => {
+    for (const state of PAGE_STATES) {
+      const html = render(state);
+      expect(html, state).not.toContain("Butuh bantuan");
+      expect(html, state).not.toContain("Hubungi kami");
+      expect(html, state).not.toContain("order-help-pointer");
+    }
+  });
+
+  it("points every state but pending to the help block when the page shows one (each says what to do about its own problem)", () => {
+    const pointed = (state: (typeof PAGE_STATES)[number]) =>
+      renderToStaticMarkup(
+        createElement(OrderCard, {
+          state,
+          order: { ref: view.code, product: view.product, amount: view.amountIdr, name: view.name, whatsapp: view.phone },
+          links: { trivia: view.loginHref, again: view.orderAgainHref, whatsapp: view.whatsappHref },
+          pointToHelp: true,
+        }),
+      );
+    expect(pointed("pending")).not.toContain("order-help-pointer");
+    for (const state of PAGE_STATES.filter((s) => s !== "pending")) {
+      const html = pointed(state);
+      expect(html, state).toContain("order-help-pointer");
+      expect(html, state).toContain("Hubungi CS di bawah.");
+    }
+    expect(pointed("paid")).toContain("Ebook belum sampai?");
+    expect(pointed("failed")).toContain("Tetap gagal setelah dicoba lagi?");
+    expect(pointed("expired")).toContain("Sudah membayar tetapi halaman ini bilang kedaluwarsa?");
   });
 
   it("leads an expired or failed order back to the landing page, and offers nothing when it has none", () => {

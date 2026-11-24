@@ -172,8 +172,6 @@
     "email": "Email",
     "copyRef": "Copy order reference",
     "copied": "Copied",
-    "help": "Need help?",
-    "helpLink": "Contact us",
     "sendWhatsapp": "Send via WhatsApp",
     "whatsappText": "Hello, this is my order reference {ref} for {product}.",
     "enterTrivia": "Enter Trivia",
@@ -236,7 +234,34 @@
     "replyNotPaid": "We have not received the payment for this order yet. The ebook is sent automatically once the payment is confirmed.",
     "replyNotAvailable": "We cannot process this order by chat. Please contact the organiser.",
     "replyNeedsHelp": "We could not send the ebook by WhatsApp yet. Please check your email or contact the organiser.",
-    "replyPdfOnly": "Here is the ebook you asked for."
+    "replyPdfOnly": "Here is the ebook you asked for.",
+    "csMismatch": "If you are the buyer of this order, contact our customer service at {cs} and quote the order code.",
+    "csGeneric": "Need help? Contact our customer service at {cs}.",
+    "csNotAvailable": "We cannot process this order by chat. Please contact our customer service at {cs}.",
+    "csNeedsHelp": "We could not send the ebook by WhatsApp yet. Please check your email or contact our customer service at {cs}."
+  },
+  "help": {
+    "title": "Need help?",
+    "intro": "A problem with an order, logging in or trivia access? Our customer service team is ready to help.",
+    "introOrder": "A problem with this order? Our customer service team is ready to help. Your order code is sent along so it goes faster.",
+    "hours": "Service hours: {hours}",
+    "whatsapp": "Chat with CS on WhatsApp",
+    "email": "Email CS",
+    "newTab": "(opens in a new tab)",
+    "whatsappText": "Hello CS, I need help.",
+    "whatsappTextOrder": "Hello CS, I need help with order {ref}.",
+    "emailSubject": "I need help",
+    "emailSubjectOrder": "I need help with order {ref}",
+    "pointer": "Contact CS below.",
+    "loginPointer": "Still cannot log in? Contact CS below.",
+    "noProgramPointer": "Paid but the program does not show up? Contact CS below.",
+    "order": {
+      "paid": "Ebook has not arrived? Contact CS below.",
+      "expired": "Paid, but this page says expired? Contact CS below.",
+      "failed": "Still failing after trying again? Contact CS below.",
+      "review": "A question about your payment? Contact CS below.",
+      "refunded": "A question about the refund? Contact CS below."
+    }
   },
   "legal": {
     "terms": "Terms and Conditions",
