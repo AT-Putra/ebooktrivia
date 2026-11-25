@@ -13,7 +13,7 @@ const RECORD: OrderRecord = {
   status: "pending",
   orderCode: "7K4Q9M2XJ5",
   maskedName: "B*** S***",
-  maskedPhone: "****890",
+  maskedPhone: "0812-3456-****",
   productTitle: "Ebook Trivia",
   amountIdr: 49_000,
   pixels: {},

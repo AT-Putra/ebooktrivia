@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import AxeBuilder from "@axe-core/playwright";
+import { maskPhoneTail } from "@ebooktrivia/core";
 import { type BrowserContext, expect, type Page, request, test } from "@playwright/test";
 import { PLAY_URL, type PlayEnv, startPlayEnv } from "../support/play.ts";
 
@@ -72,14 +73,14 @@ test("an eligible player logs in with the WhatsApp code at 375 px; the session c
   await page.getByRole("button", { name: "Masuk", exact: true }).click();
   // Whose account it is, masked (login CSRF): the last 3 digits of the number just used.
   await expect(page.getByRole("heading", { name: "Berhasil masuk" })).toBeVisible();
-  await expect(page.getByText(`Masuk sebagai ****${phone.slice(-3)}`)).toBeVisible();
+  await expect(page.getByText(`Masuk sebagai ${maskPhoneTail(phone)}`)).toBeVisible();
   await expectAccessible(page);
   const cookie = (await context.cookies()).find((c) => c.name === "__Host-play_session");
   expect(cookie).toMatchObject({ path: "/", httpOnly: true, secure: true, sameSite: "Lax", domain: "127.0.0.1" });
   const days = ((cookie?.expires ?? 0) * 1000 - Date.now()) / 86_400_000;
   expect(days).toBeGreaterThan(29.9);
   expect(days).toBeLessThanOrEqual(30);
-  expect(await (await page.request.get("/api/v1/play/auth/session")).json()).toEqual({ v: 1, authenticated: true, phone_masked: `****${phone.slice(-3)}` });
+  expect(await (await page.request.get("/api/v1/play/auth/session")).json()).toEqual({ v: 1, authenticated: true, phone_masked: maskPhoneTail(phone) });
   await page.getByRole("link", { name: "Buka trivia" }).click();
   // US-027: play.<DOMAIN>/ is the trivia home, which opens the player's (first) program.
   await page.waitForURL(`${PLAY_URL}/${play.programSlug}`);
@@ -138,7 +139,7 @@ test("a magic link: the GET shows a confirm page and consumes nothing; the click
 
   await confirm.click();
   const phone = (await play.sql<{ phone: string }[]>`SELECT phone FROM players WHERE id = ${id}`)[0]?.phone ?? "";
-  await expect(page.getByText(`Masuk sebagai ****${phone.slice(-3)}`)).toBeVisible();
+  await expect(page.getByText(`Masuk sebagai ${maskPhoneTail(phone)}`)).toBeVisible();
   await expectAccessible(page);
   expect(await consumed()).toBe(true);
   expect(await (await page.request.get("/api/v1/play/auth/session")).json()).toMatchObject({ v: 1, authenticated: true });

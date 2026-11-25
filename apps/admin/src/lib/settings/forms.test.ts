@@ -372,7 +372,7 @@ describe("message templates", () => {
   });
 
   it("masks test numbers in the console", () => {
-    expect(maskPhone("+6281234567890")).toBe("+62 812-****-7890");
+    expect(maskPhone("+6281234567890")).toBe("0812-3456-****");
   });
 });
 

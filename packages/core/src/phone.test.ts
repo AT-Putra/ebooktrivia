@@ -1,6 +1,6 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
-import { isIdMobileE164, normalizeIdMobile, toWaChatId, type IdMobileE164, type PhoneError } from "./phone.ts";
+import { isIdMobileE164, maskPhoneTail, normalizeIdMobile, toWaChatId, type IdMobileE164, type PhoneError } from "./phone.ts";
 
 /** packages/db e164Check: '^\+[1-9][0-9]{7,14}$'. */
 const DB_E164 = /^\+[1-9][0-9]{7,14}$/;
@@ -158,5 +158,22 @@ describe("review round 2: unbalanced or misplaced parentheses", () => {
     ["+62 (812) 3456 789", "+628123456789"],
   ])("still accepts %j", (input, expected) => {
     expect(ok(input)).toBe(expected);
+  });
+});
+
+describe("maskPhoneTail (the same rules as SQL public.mask_phone_tail)", () => {
+  it("hides the last 4 digits of the local form, grouped 4 / the rest / 4", () => {
+    expect(maskPhoneTail("+6281234567890")).toBe("0812-3456-****");
+    expect(maskPhoneTail("+62 812-3113-1319")).toBe("0812-3113-****");
+    expect(maskPhoneTail("+628123456789")).toBe("0812-345-****");
+    expect(maskPhoneTail("081234567890")).toBe("0812-3456-****");
+  });
+
+  it("keeps a number outside +62 in its own digits, hides the last 4 of a short one, and shows *** for too short or none", () => {
+    expect(maskPhoneTail("+14155552671")).toBe("1415-555-****");
+    expect(maskPhoneTail("12345678")).toBe("1234-****");
+    expect(maskPhoneTail("123456")).toBe("12-****");
+    expect(maskPhoneTail("12345")).toBe("***");
+    expect(maskPhoneTail(null)).toBe("***");
   });
 });

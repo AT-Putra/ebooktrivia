@@ -10,7 +10,7 @@ import { OrderCard } from "./order-card.tsx";
 import { PollingStopped } from "./order-client.tsx";
 
 const view = toView(
-  { status: "pending", orderCode: "7K4Q9M2XJ5", maskedName: "B*** S***", maskedPhone: "****890", productTitle: "Ebook Trivia", amountIdr: 49_000, pixels: {}, lpHost: "promo.example.test" },
+  { status: "pending", orderCode: "7K4Q9M2XJ5", maskedName: "B*** S***", maskedPhone: "0812-3456-****", productTitle: "Ebook Trivia", amountIdr: 49_000, pixels: {}, lpHost: "promo.example.test" },
   "6281111222333",
   "example.test",
 );
@@ -32,7 +32,7 @@ describe("OrderCard (server render)", () => {
     const html = render(state);
     expect(html).toContain(">7K4Q9M2XJ5<");
     expect(html).toContain("B*** S***");
-    expect(html).toContain("****890");
+    expect(html).toContain("0812-3456-****");
     expect(html).toContain("Rp 49.000");
     for (const secret of ["Budi", "Santoso", "81234567890"]) expect(html, secret).not.toContain(secret);
     // No e-mail address anywhere (the art's file names, "status-paid@1x.webp", are not addresses).

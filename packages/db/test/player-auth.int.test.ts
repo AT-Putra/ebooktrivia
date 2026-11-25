@@ -164,11 +164,13 @@ describe("magic links", () => {
     expect(await peek(hash(token), "email")).toBeNull();
   });
 
-  it("player_login_label shows whose login it is, masked (****890), and nothing for a player who may not log in", async () => {
+  it("player_login_label shows whose login it is, its last 4 digits hidden (0812-3456-****), and nothing for a player who may not log in", async () => {
     const { playerId, phone } = await createPlayer({ programId, eligible: true });
     const userId = (await prepare(phone)) ?? "";
     const label = () => asRole("public_rw", async (tx) => first(await tx<{ l: string | null }[]>`SELECT player_login_label(${userId}) AS l`).l);
-    expect(await label()).toBe(`****${phone.slice(-3)}`);
+    // mask_phone_tail: the local form grouped 4 / the rest / 4, the last 4 hidden (Owner decision 2026-11-25).
+    const local = `0${phone.slice(3)}`;
+    expect(await label()).toBe(`${local.slice(0, 4)}-${local.slice(4, -4)}-****`);
     await sql`UPDATE player_programs SET eligible = false WHERE player_id = ${playerId}`;
     expect(await label()).toBeNull();
   });

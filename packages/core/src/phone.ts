@@ -86,3 +86,17 @@ export function toWaChatId(phone: IdMobileE164): string {
   if (!isIdMobileE164(phone)) throw new RangeError("not a canonical Indonesian mobile number");
   return `${phone.slice(1)}@c.us`;
 }
+
+/**
+ * A WhatsApp number with its last 4 digits hidden, in the Indonesian local form grouped 4 / the rest / 4: "0812-3456-****" for +6281234567890
+ * (Owner decision 2026-11-25: the one way a number is shown masked). The same rules as the database's public.mask_phone_tail (sql/functions.sql),
+ * which masks what leaves the database: a number outside +62 keeps its own digits, one of 6..8 digits hides its last 4, anything shorter (or none,
+ * an anonymized player) is "***".
+ */
+export function maskPhoneTail(phone: string | null): string {
+  const digits = (phone ?? "").replace(/[^0-9]/g, "");
+  const local = digits.startsWith("62") ? `0${digits.slice(2)}` : digits;
+  if (local.length < 6) return "***";
+  if (local.length <= 8) return `${local.slice(0, -4)}-****`;
+  return `${local.slice(0, 4)}-${local.slice(4, -4)}-****`;
+}

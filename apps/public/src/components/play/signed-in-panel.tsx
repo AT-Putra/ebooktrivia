@@ -1,7 +1,7 @@
 "use client";
 
 // What a login ends on (US-026 review L5, login CSRF): whose account the browser is now signed in to, as the
-// server masked it ("Masuk sebagai ****890"), with the way out. Someone who opened another person's forwarded
+// server masked it ("Masuk sebagai 0812-3456-****"), with the way out. Someone who opened another person's forwarded
 // magic link sees at once that it is not their number, and signs out instead of playing on that account.
 import { Button } from "@ebooktrivia/ui/components/button";
 import { CheckCircleIcon } from "@phosphor-icons/react";

@@ -9,7 +9,7 @@
 //   - sessions: rotation when due, revoked on login and logout, the stock send-otp short-circuited.
 import { randomBytes } from "node:crypto";
 import type { CapChallenge } from "@ebooktrivia/adapters";
-import { issueMagicLink, type MagicLinkChannel } from "@ebooktrivia/core";
+import { issueMagicLink, type MagicLinkChannel, maskPhoneTail } from "@ebooktrivia/core";
 import { createSecretOpener, createSecretSealer, generateScopeKeyPair } from "@ebooktrivia/crypto";
 import { afterAll, beforeAll, describe, expect, inject, it } from "vitest";
 import { capProviders } from "../src/lib/cap-routes.ts";
@@ -410,8 +410,8 @@ describe("OTP verify", () => {
     const code = await sentCode(phone);
     const response = await handleOtpVerify(deps, await verifyRequest(phone, code));
     expect(response.status).toBe(200);
-    // Whose account this is, masked (login CSRF, review L5): mask_phone's "****" + the last 3 digits.
-    expect(await response.json()).toEqual({ v: 1, ok: true, phone_masked: `****${phone.slice(-3)}` });
+    // Whose account this is, masked (login CSRF, review L5): mask_phone_tail, the last 4 digits hidden ("0812-3456-****").
+    expect(await response.json()).toEqual({ v: 1, ok: true, phone_masked: maskPhoneTail(phone) });
     const [setCookie, ...others] = response.headers.getSetCookie();
     expect(others).toEqual([]);
     expect(setCookie).toMatch(new RegExp(`^${PLAY_SESSION_COOKIE}=[^;]+; Max-Age=${String(SESSION_SECONDS)}; Path=/; HttpOnly; Secure; SameSite=Lax$`));
@@ -666,7 +666,7 @@ describe("sessions", () => {
     expect(await resolvePlayer(deps, new Headers({ cookie: fresh }))).toEqual({ playerId: id, setCookies: [] });
     // The session route answers the same, and carries the rotation's cookie when there is one.
     const viaRoute = await handleSession(deps, playRequest("/api/v1/play/auth/session", undefined, { method: "GET", cookie: fresh }));
-    expect(await viaRoute.json()).toEqual({ v: 1, authenticated: true, phone_masked: `****${phone.slice(-3)}` });
+    expect(await viaRoute.json()).toEqual({ v: 1, authenticated: true, phone_masked: maskPhoneTail(phone) });
   });
 
   it("logout deletes the session and expires the cookie", async () => {
@@ -777,7 +777,7 @@ describe("magic links (confirm by POST; US-025 issues them)", () => {
     const response = await consume(deps, "whatsapp", token);
     expect(response.status).toBe(200);
     const phone = (await one(root<{ phone: string }[]>`SELECT phone FROM players WHERE id = ${id}`)).phone;
-    expect(await response.json()).toEqual({ v: 1, ok: true, phone_masked: `****${phone.slice(-3)}` });
+    expect(await response.json()).toEqual({ v: 1, ok: true, phone_masked: maskPhoneTail(phone) });
     expect((await resolvePlayer(deps, new Headers({ cookie: sessionCookie(response) }))).playerId).toBe(id);
     const replay = await consume(deps, "whatsapp", token);
     expect(replay.status).toBe(400);

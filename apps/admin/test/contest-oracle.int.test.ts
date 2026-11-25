@@ -6,7 +6,7 @@
 // tampered stored scores, refunded players, players who never paid, exact ties and prize tiers.
 // The SQL masking (public.mask_name / mask_phone: the order page and the snapshot) equals core maskName / maskPhone. The play
 // board and the winners banner show the phone with public.mask_phone_tail since 2026-11-25 (tested in packages/db play-flow).
-import { type ContestAnswer, type ContestInput, type ContestPlayer, type ContestQuestion, finalizeContest, maskName, maskPhone } from "@ebooktrivia/core";
+import { type ContestAnswer, type ContestInput, type ContestPlayer, type ContestQuestion, finalizeContest, maskName, maskPhone, maskPhoneTail } from "@ebooktrivia/core";
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import { root, suffix } from "./support.ts";
@@ -217,5 +217,20 @@ describe("public.mask_name / mask_phone equal core maskName / maskPhone (propert
     );
     const [none] = await root<{ masked: string | null }[]>`SELECT public.mask_phone(NULL) AS masked`;
     expect(none?.masked).toBeNull();
+  });
+});
+
+describe("public.mask_phone_tail equals core maskPhoneTail (property; Owner decision 2026-11-25: the one masked form of a number)", () => {
+  it("on random phones, and NULL", async () => {
+    const phone = fc.array(fc.constantFrom("+", "6", "2", "8", "1", "0", "9", "5", " ", "-", "x"), { maxLength: 20 }).map((parts) => parts.join(""));
+    await fc.assert(
+      fc.asyncProperty(phone, async (value) => {
+        const [row] = await root<{ masked: string }[]>`SELECT public.mask_phone_tail(${value}) AS masked`;
+        expect(row?.masked).toBe(maskPhoneTail(value));
+      }),
+      { numRuns: 300 },
+    );
+    const [none] = await root<{ masked: string }[]>`SELECT public.mask_phone_tail(NULL) AS masked`;
+    expect(none?.masked).toBe(maskPhoneTail(null));
   });
 });

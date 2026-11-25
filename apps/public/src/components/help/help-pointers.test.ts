@@ -57,7 +57,7 @@ describe("the trivia home of a player with no program", () => {
 });
 
 describe("the order page's script component", () => {
-  const record: OrderRecord = { status: "gateway_failed", orderCode: "7K4Q9M2XJ5", maskedName: "B*** S***", maskedPhone: "****890", productTitle: "Ebook Trivia", amountIdr: 49_000, pixels: {}, lpHost: "promo.example.test" };
+  const record: OrderRecord = { status: "gateway_failed", orderCode: "7K4Q9M2XJ5", maskedName: "B*** S***", maskedPhone: "0812-3456-****", productTitle: "Ebook Trivia", amountIdr: 49_000, pixels: {}, lpHost: "promo.example.test" };
   const page = (status: string, contact: typeof FULL | typeof NO_CS_CONTACT) =>
     renderToStaticMarkup(
       createElement(CsContactProvider, { contact, children: createElement(OrderLive, { publicId: "AbCdEfGhIjKlMnOpQrStUv", view: toView({ ...record, status }, "6281111222333", "example.test") }) }),

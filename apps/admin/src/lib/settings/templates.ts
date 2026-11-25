@@ -29,6 +29,7 @@ import {
   choiceSkeleton,
   isOpenerKey,
   longestChoiceExpansion,
+  maskPhoneTail,
   type MessageVariable,
   normalizeIdMobile,
   OPENER_KEY_PATTERN,
@@ -270,8 +271,8 @@ export async function removeTestRecipient(sql: Sql, id: string): Promise<void> {
   });
 }
 
-/** "+62 812-****-7890": enough to tell numbers apart in the console. */
-export const maskPhone = (e164: string): string => `${e164.slice(0, 3)} ${e164.slice(3, 6)}-****-${e164.slice(-4)}`;
+/** "0812-3456-****" (core maskPhoneTail, the one masked form of a number; Owner decision 2026-11-25): the label tells the test numbers apart. */
+export const maskPhone = (e164: string): string => maskPhoneTail(e164);
 
 export async function listTestRecipients(sql: Sql): Promise<{ readonly id: string; readonly label: string; readonly masked: string }[]> {
   const rows = await sql<{ id: string; phone: string; label: string }[]>`SELECT id, phone, label FROM public.test_recipients ORDER BY label`;

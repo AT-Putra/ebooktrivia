@@ -1,6 +1,6 @@
 // The order page's view of an order: the DB status mapped to a page state, and the only fields the page
 // ever shows. The buyer's name and phone arrive MASKED from the database (get_order_status returns only
-// public.mask_name / public.mask_phone, the product's one masking rule) and the e-mail is never read,
+// public.mask_name / public.mask_phone_tail, "0812-3456-****", the one masked form of a number) and the e-mail is never read,
 // so nothing unmasked exists in this process, the HTML, the page's props or an API answer.
 import type { OrderStatus } from "@ebooktrivia/core";
 import { PAID_PAGE_DEFAULTS, type PaidPageWording } from "@ebooktrivia/core/paid-page";

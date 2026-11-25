@@ -13,7 +13,7 @@
 // Errors: 400 validation (+fields) | 400 invalid_code | 400 invalid_link | 401 unauthenticated | 403 origin |
 // 403 captcha | 429 rate_limited (Retry-After) | 503 unavailable (PostgreSQL, Valkey or a setting missing:
 // fail closed). The question flow (lib/play/trivia.ts, US-027) adds 403 forbidden and 409 locked | closed |
-// already_answered | not_served | too_late | empty_set. A login answers with the signed-in player's phone MASKED (player_login_label, "****890"),
+// already_answered | not_served | too_late | empty_set. A login answers with the signed-in player's phone MASKED (player_login_label, "0812-3456-****"),
 // which the page shows, so that someone who opened another person's forwarded link sees whose account it is
 // (login CSRF, security review L5).
 //

@@ -3,7 +3,7 @@
 // warning). Owner only (alert_recipients.edit): the page, the action and the table's own use are the Owner's, Staff see nothing of it.
 // Every change is audited with the number and the address classified as PII (the audit log masks them). "Send a test alert"
 // writes an info alert that the relay sends whatever the minimum is, so the Owner can see that the whole path works.
-import { normalizeIdMobile } from "@ebooktrivia/core";
+import { maskPhoneTail, normalizeIdMobile } from "@ebooktrivia/core";
 import type { FieldKind } from "../audit.ts";
 import type { Sql } from "../db.ts";
 import { auditedChange } from "./audited.ts";
@@ -48,8 +48,8 @@ export async function getAlertRecipients(sql: Sql): Promise<AlertRecipients> {
   return row === undefined ? NO_ALERT_RECIPIENTS : { phone: row.phone, email: row.email, minSeverity: row.min_severity };
 }
 
-/** "+62 812-****-7890": enough for the page to show which number is set. */
-export const maskedPhone = (e164: string): string => `${e164.slice(0, 3)} ${e164.slice(3, 6)}-****-${e164.slice(-4)}`;
+/** "0812-3456-****" (core maskPhoneTail, the one masked form of a number; Owner decision 2026-11-25): enough for the page to show which number is set. */
+export const maskedPhone = (e164: string): string => maskPhoneTail(e164);
 
 export async function saveAlertRecipients(sql: Sql, adminUserId: string, next: AlertRecipients): Promise<void> {
   await auditedChange(sql, async (tx, audit) => {

@@ -10,7 +10,7 @@ const RECORD: OrderRecord = {
   status: "pending",
   orderCode: "7K4Q9M2XJ5",
   maskedName: "B*** S***",
-  maskedPhone: "****890",
+  maskedPhone: "0812-3456-****",
   productTitle: "Ebook Trivia Nusantara Juara",
   amountIdr: 49_000,
   pixels: { meta: "1234567890123", tiktok: "ABCDEFGH12345678" },
@@ -50,7 +50,7 @@ describe("toView", () => {
 
   it("passes the database's masked name and phone through, and carries nothing else personal", () => {
     expect(view.name).toBe("B*** S***");
-    expect(view.phone).toBe("****890");
+    expect(view.phone).toBe("0812-3456-****");
     expect(Object.keys(view).sort()).toEqual(["amountIdr", "code", "loginHref", "name", "orderAgainHref", "paidWording", "phone", "product", "state", "vendors", "whatsappHref", "whatsappPaidHref"]);
     const json = JSON.stringify(view);
     for (const secret of ["1234567890123", "ABCDEFGH12345678"]) expect(json, secret).not.toContain(secret);

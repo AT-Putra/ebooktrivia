@@ -512,8 +512,8 @@ $fn$;
 --
 -- get_order_status: one row for the order, none for an unknown id (the caller answers a malformed id
 -- the same way). The buyer's personal data never leaves the database raw: the name and phone come back
--- ONLY as public.mask_name / public.mask_phone (the one masking rule of the product, shared with the
--- winners banner and core contest.ts), and the e-mail is not returned at all. `order_code` is the code
+-- ONLY as public.mask_name / public.mask_phone_tail ("0812-3456-****", the one masked form of a number, shared with
+-- the leaderboard, the winners banner and the login label), and the e-mail is not returned at all. `order_code` is the code
 -- the page shows and puts in the WhatsApp message. `pixels` is the landing page's registered browser
 -- pixel ids (jsonb), checked by the app against the vendors' id formats; the page's CSP is built from
 -- it, and the ids themselves reach a browser only through claim_browser_mt. `lp_host` is the landing
@@ -760,8 +760,10 @@ END
 $fn$;
 
 -- Whose account a session is (public_rw), shown right after a login so that a player who opened someone
--- else's forwarded link sees it is not theirs (login CSRF): the player's phone masked by mask_phone
--- ("****" + its last 3 digits), or NULL when the player may not log in.
+-- else's forwarded link sees it is not theirs (login CSRF): the player's phone with its last 4 digits hidden,
+-- mask_phone_tail ("0812-3456-****", the leaderboard's and the order page's form; Owner decision 2026-11-25),
+-- or NULL when the player may not log in. It shows no more than the play page's own profile card shows the
+-- signed-in player in full.
 -- The signed-in player's own contact, in full, for the profile card of the play page (Owner decision 2026-11-25: the name, the
 -- e-mail and the WhatsApp number, unmasked, to the player themself). Keyed by the request's player SESSION (apps/public
 -- lib/play/page.ts readPlayerSession), never by a player id: public_rw can list every player id (player_programs), so an
@@ -792,7 +794,7 @@ CREATE OR REPLACE FUNCTION public.player_login_label(p_auth_user_id text)
   SECURITY DEFINER
   SET search_path = pg_catalog, pg_temp
 AS $fn$
-  SELECT public.mask_phone(p.phone) FROM public.players p WHERE p.id = public.player_for_login(p_auth_user_id)
+  SELECT public.mask_phone_tail(p.phone) FROM public.players p WHERE p.id = public.player_for_login(p_auth_user_id)
 $fn$;
 
 -- Consumes a magic link (public_rw; the POST behind the confirm page, never a GET): single use, the first
