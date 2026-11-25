@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import AxeBuilder from "@axe-core/playwright";
 import { type Browser, type BrowserContext, expect, type Page, test } from "@playwright/test";
-import { type AdminEnv, freshTotp, runAdminCli, startAdminEnv } from "../support/admin.ts";
+import { type AdminEnv, consoleNavLinks, freshTotp, runAdminCli, startAdminEnv } from "../support/admin.ts";
 
 /**
  * US-030 (M10b) against the production build of apps/admin (`next start`, own database, port and data directory):
@@ -151,9 +151,8 @@ test("Staff get 403 on the fulfilment and deletion pages and routes, and see nei
     expect(response.status(), path).toBe(403);
   }
   await staff.goto("/");
-  const nav = staff.getByRole("navigation", { name: "Console" }).first();
-  await expect(nav.getByRole("link", { name: "Prize fulfilment" })).toHaveCount(0);
-  await expect(nav.getByRole("link", { name: "Data deletion" })).toHaveCount(0);
+  await expect(consoleNavLinks(staff, "/fulfillment")).toHaveCount(0);
+  await expect(consoleNavLinks(staff, "/privacy")).toHaveCount(0);
 });
 
 test("the Owner moves a fulfilment step by step, corrects it with a reason, keeps notes and a proof, and downloads the proof", async () => {
@@ -211,7 +210,9 @@ test("the Owner records a deletion request, reviews the person with their consen
   await create.getByRole("button", { name: "Record request" }).click();
   await expect(owner).toHaveURL(/\/privacy\/[0-9a-f-]{36}$/);
   const ref = (owner.url().split("/").at(-1) ?? "").slice(0, 8);
-  await expect(owner.getByTestId("deletion-subject")).toContainText("S*** H***");
+  // In full for the Owner (2026-11-25).
+  await expect(owner.getByTestId("deletion-subject")).toContainText("Sari Hapus");
+  await expect(owner.getByTestId("deletion-subject")).toContainText(subject?.phone ?? "missing");
   await expect(owner.getByTestId("deletion-orders").getByTestId("order-consents")).toContainText("Terms (S&K) v1");
   await expect(owner.getByTestId("deletion-orders").getByTestId("order-consents")).toContainText("Privacy policy v1");
   await expect(owner.getByTestId("deletion-blocked")).toHaveCount(0);

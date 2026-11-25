@@ -4,7 +4,7 @@
 //            lookup resolves it to ONE data subject: a phone (one buyer = one phone = one player, AC-Q1). An e-mail that several
 //            phones used is refused (ask for the phone), and so is a lookup that matches nothing (nothing to delete). The request
 //            keeps the phone only while it is pending; the audit row keeps only the lookup kind and a reference;
-//   review   the Owner sees the matched subject (masked: name, phone, e-mail), every order (public id, status, amount), the
+//   review   the Owner sees the matched subject (in full: name, phone, e-mail; the Owner's decision of 2026-11-25), every order (public id, status, amount), the
 //            consents recorded at checkout (legal page and version, when, and the device recorded), the prizes, and what would
 //            block the erasure;
 //   execute  with the request's 8-character reference typed as the confirmation, through public.erase_data_subject (packages/db
@@ -14,7 +14,7 @@
 //            sweeper removes any left behind);
 //   reject   with a reason (10-500 characters, no contact details); the phone is dropped from the request.
 // Staff never reach any of it: every page, action and query here is behind deletion_request.process.
-import { maskName, maskPhone, normalizeIdMobile } from "@ebooktrivia/core";
+import { normalizeIdMobile } from "@ebooktrivia/core";
 import { withAudit } from "../audit.ts";
 import type { Sql } from "../db.ts";
 import { actor, bounded } from "./contest.ts";
@@ -148,9 +148,9 @@ export interface DeletionReview {
   readonly summary: Readonly<Record<string, unknown>>;
   /** Only while pending: who would be erased. */
   readonly subject: {
-    readonly maskedName: string | null;
-    readonly maskedPhone: string | null;
-    readonly maskedEmail: string | null;
+    readonly name: string | null;
+    readonly phone: string | null;
+    readonly email: string | null;
     readonly playerRef: string | null;
     readonly orders: readonly SubjectOrder[];
     readonly prizes: readonly { readonly program: string; readonly rank: number; readonly status: string; readonly fulfillment: string | null }[];
@@ -159,11 +159,7 @@ export interface DeletionReview {
   } | null;
 }
 
-const maskEmail = (email: string | null): string | null => {
-  if (email === null || email === "") return null;
-  const at = email.indexOf("@");
-  return at <= 0 ? "***" : `${email.charAt(0)}***${email.slice(at)}`;
-};
+const nonEmpty = (value: string | null): string | null => (value === null || value === "" ? null : value);
 
 export const BLOCK_PRIZE = "Holds a prize that was not delivered yet: forfeit it first (Prize fulfilment: revoke and re-award), or deliver it.";
 export const BLOCK_ORDER = "Has an order that is still open (pending) or awaits your review: wait until it expires or decide it.";
@@ -215,9 +211,9 @@ export async function getDeletionReview(sql: Sql, id: string): Promise<DeletionR
   return {
     ...base,
     subject: {
-      maskedName: name === null ? null : maskName(name),
-      maskedPhone: maskPhone(phone),
-      maskedEmail: maskEmail(player?.email ?? orders.at(-1)?.buyer_email ?? null),
+      name: name === null || name === "" ? null : name,
+      phone,
+      email: nonEmpty(player?.email ?? orders.at(-1)?.buyer_email ?? null),
       playerRef: player?.id.slice(0, 8) ?? null,
       orders: orders.map((o) => ({
         publicId: o.public_id,

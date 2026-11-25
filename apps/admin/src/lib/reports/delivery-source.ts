@@ -7,7 +7,7 @@
 // send is one WAHA refused for sure (the number's own failure: the delivery went on to another number); `unknown` may have gone out; `reserved` is in
 // flight and in no rate. What is not the number's doing (a phone that is not on WhatsApp, WhatsApp's own limit on new contacts, a fault of ours) takes its row
 // back and is in no figure. The ledger keeps 31 days: a longer range shows the last 31.
-// Buyers are shown masked (SQL mask_name / mask_phone), and an error is shown as its CODE only: `last_error` is a short code by design, but the report does not
+// Buyers are shown in full (name, phone, e-mail: the Owner's decision of 2026-11-25), and an error is shown as its CODE only: `last_error` is a short code by design, but the report does not
 // trust a column that a future writer could fill with a message (security review US-029 L2): anything that is not a lower-case code is shown as `other`.
 import { DELIVERED_WRONG_FILE, DELIVERY_CHANNELS, DELIVERY_STATUSES, type DeliveryStatus, isUuid, rateBps, reportRange, wibDateOf, addDays, REPORT_DEFAULT_DAYS } from "@ebooktrivia/core";
 import type { Sql } from "../db.ts";
@@ -106,9 +106,10 @@ export interface DeliveryRow {
   readonly id: string;
   readonly createdAt: Date;
   readonly orderCode: string;
-  /** Masked in SQL (public.mask_name / mask_phone): the report holds no raw buyer data. */
+  /** In full ('' / null / '' after a deletion request). */
   readonly buyerName: string;
   readonly buyerPhone: string | null;
+  readonly buyerEmail: string;
   readonly channel: "whatsapp" | "email";
   readonly status: DeliveryStatus;
   /** The number the WhatsApp message was (last) sent from. */
@@ -143,6 +144,7 @@ export async function deliveryList(sql: Sql, f: DeliveryFilters, page: number): 
         order_code: string;
         buyer_name: string;
         buyer_phone: string | null;
+        buyer_email: string;
         channel: "whatsapp" | "email";
         status: DeliveryStatus;
         sender: string | null;
@@ -159,7 +161,7 @@ export async function deliveryList(sql: Sql, f: DeliveryFilters, page: number): 
          ORDER BY d.created_at DESC, d.id DESC
          LIMIT ${PAGE_SIZE} OFFSET ${(page - 1) * PAGE_SIZE}
       )
-      SELECT d.id, d.created_at, o.order_code, public.mask_name(o.buyer_name) AS buyer_name, public.mask_phone(o.buyer_phone) AS buyer_phone, d.channel, d.status,
+      SELECT d.id, d.created_at, o.order_code, o.buyer_name, o.buyer_phone, o.buyer_email, d.channel, d.status,
              s.phone AS sender, d.attempts, cardinality(d.tried_session_ids) AS numbers_tried, d.wa_ack,
              CASE WHEN d.last_error IS NULL THEN NULL WHEN d.last_error ~ '^[a-z0-9_]{1,64}$' THEN d.last_error ELSE 'other' END AS error_code, op.status AS opener, d.sent_at
         FROM page
@@ -177,6 +179,7 @@ export async function deliveryList(sql: Sql, f: DeliveryFilters, page: number): 
       orderCode: r.order_code,
       buyerName: r.buyer_name,
       buyerPhone: r.buyer_phone,
+      buyerEmail: r.buyer_email,
       channel: r.channel,
       status: r.status,
       sender: r.sender,
@@ -201,6 +204,7 @@ export interface AttentionRow {
   readonly orderCode: string;
   readonly buyerName: string;
   readonly buyerPhone: string | null;
+  readonly buyerEmail: string;
   readonly channel: "whatsapp" | "email";
   readonly status: "failed" | "unknown" | "sent";
   readonly errorCode: string | null;
@@ -224,9 +228,9 @@ export async function attentionList(
     AND o.status = 'paid'`;
   const [rows, [counts]] = await Promise.all([
     sql<
-      { id: string; created_at: Date; order_code: string; buyer_name: string; buyer_phone: string | null; channel: "whatsapp" | "email"; status: "failed" | "unknown" | "sent"; error_code: string | null; attempts: number; sender: string | null }[]
+      { id: string; created_at: Date; order_code: string; buyer_name: string; buyer_phone: string | null; buyer_email: string; channel: "whatsapp" | "email"; status: "failed" | "unknown" | "sent"; error_code: string | null; attempts: number; sender: string | null }[]
     >`
-      SELECT d.id, d.created_at, o.order_code, public.mask_name(o.buyer_name) AS buyer_name, public.mask_phone(o.buyer_phone) AS buyer_phone, d.channel, d.status::text AS status,
+      SELECT d.id, d.created_at, o.order_code, o.buyer_name, o.buyer_phone, o.buyer_email, d.channel, d.status::text AS status,
              CASE WHEN d.last_error IS NULL THEN NULL WHEN d.last_error ~ '^[a-z0-9_]{1,64}$' THEN d.last_error ELSE 'other' END AS error_code, d.attempts, s.phone AS sender
         FROM public.deliveries d
         JOIN public.orders o ON o.id = d.order_id
@@ -247,6 +251,7 @@ export async function attentionList(
       orderCode: r.order_code,
       buyerName: r.buyer_name,
       buyerPhone: r.buyer_phone,
+      buyerEmail: r.buyer_email,
       channel: r.channel,
       status: r.status,
       errorCode: r.error_code,

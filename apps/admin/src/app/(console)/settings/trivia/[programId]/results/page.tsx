@@ -6,6 +6,7 @@ import { isUuid } from "@ebooktrivia/core";
 import { Badge } from "@ebooktrivia/ui/components/badge";
 import { Card, CardDescription, CardTitle } from "@ebooktrivia/ui/components/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@ebooktrivia/ui/components/table";
+import { BuyerContact } from "../../../../../../components/buyer-contact.tsx";
 import { ActionForm } from "../../../../../../components/settings/action-form.tsx";
 import { CheckboxField, Notice, PageHeading, TextArea, TextField } from "../../../../../../components/settings/fields.tsx";
 import { requireAdmin } from "../../../../../../lib/next/require-admin.ts";
@@ -25,7 +26,7 @@ const WINNER_LABEL: Readonly<Record<string, string>> = { awaiting_confirmation: 
  * A program's contest results (US-028): the frozen results snapshot and its winners, the anti-cheat
  * flags (never acted on automatically), the Owner's winner confirmation and the Owner's deadline
  * extension for outages. Reports permission (Staff see it); the two forms are Owner-only. Players
- * appear masked, with a short reference. Times in WIB.
+ * appear in full (the Owner's decision of 2026-11-25), with a short reference. Times in WIB.
  */
 export default async function ContestResultsPage({ params }: { params: Promise<{ programId: string }> }) {
   const admin = await requireAdmin({ permission: "reports.view" });
@@ -105,10 +106,8 @@ export default async function ContestResultsPage({ params }: { params: Promise<{
                   <TableCell>{w.rank}</TableCell>
                   <TableCell>{w.prizeName}</TableCell>
                   <TableCell>
-                    {w.maskedName}
-                    <span className="block text-xs text-muted-foreground">
-                      {w.maskedPhone ?? "no phone"} · ref {w.ref}
-                    </span>
+                    <BuyerContact name={w.name} phone={w.phone} email={w.email} />
+                    <span className="block text-xs text-muted-foreground">ref {w.ref}</span>
                   </TableCell>
                   <TableCell>
                     <span className="flex flex-wrap gap-1">
@@ -190,7 +189,7 @@ export default async function ContestResultsPage({ params }: { params: Promise<{
               {results.flagged.map((f) => (
                 <TableRow key={f.playerId} data-testid={`flagged-${f.ref}`}>
                   <TableCell>
-                    {f.maskedName}
+                    <BuyerContact name={f.name} phone={f.phone} email={f.email} />
                     <span className="block text-xs text-muted-foreground">ref {f.ref}</span>
                   </TableCell>
                   <TableCell className="text-xs">{f.flags.map((k) => FLAG_LABELS[k]).join("; ")}</TableCell>

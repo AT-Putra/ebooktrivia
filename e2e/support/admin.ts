@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { generateScopeKeyPair } from "@ebooktrivia/crypto";
 import { createTestDatabase } from "@ebooktrivia/test-support/database";
 import postgres from "postgres";
+import type { Locator, Page } from "@playwright/test";
 
 export { freshTotp, wrongTotp } from "@ebooktrivia/test-support/totp";
 
@@ -93,4 +94,25 @@ export function runAdminCli(env: Record<string, string>, args: readonly string[]
     });
     child.stdin.end(stdin);
   });
+}
+
+/**
+ * The console menu, ready to read (2026-11-25: the menu is in collapsible groups, and on a phone behind a "Menu" button): opens the phone
+ * menu when it is the one shown, then the group `group` (dashboard, orders, reports, program, messaging, payments, system) when it is
+ * closed. Returns the menu that is on screen.
+ */
+/** Every console-menu link to `href`, open or closed group, phone or sidebar menu: "count 0" then means the server never rendered it. */
+export function consoleNavLinks(page: Page, href: string): Locator {
+  return page.locator(`nav[aria-label="Console"] a[href="${href}"]`);
+}
+
+export async function openConsoleNav(page: Page, group?: string): Promise<Locator> {
+  const menu = page.getByTestId("nav-menu");
+  if ((await menu.isVisible()) && (await menu.getAttribute("open")) === null) await menu.locator("summary").first().click();
+  const nav = page.getByRole("navigation", { name: "Console" }).first();
+  if (group !== undefined) {
+    const details = nav.getByTestId(`nav-group-${group}`);
+    if ((await details.getAttribute("open")) === null) await details.locator("summary").click();
+  }
+  return nav;
 }

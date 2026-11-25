@@ -4,16 +4,15 @@
 //   loadReviewQueue   every order in `review`, oldest stay first: why it is there (the payment code's status change that put it
 //                     there, its open alerts, the reconciliation's findings), its Midtrans attempts with their latest re-queried
 //                     status and the payments ledger, its status history and the decisions taken on it, the amount, the buyer
-//                     MASKED (core maskName / maskPhone; the raw values never leave this server module), the player's eligibility;
-//   revealBuyer       the unmasked buyer of one order in review, one click away for the Owner, and AUDITED (order.buyer.view);
+//                     in full (name, phone, e-mail: the Owner's decision of 2026-11-25), the player's eligibility;
 //   requestRequery    "re-query Midtrans now": one outbox row of topic payment.requery (the worker holds the Midtrans key and
 //                     runs the normal applyRequery path for it); audited; refused while one is still running;
 //   decideReview      "mark paid" / "not paid" through public.order_review_decide (packages/db sql/order-review.sql, owned by the
 //                     NOLOGIN role order_review), which does everything in one transaction under the order lock and writes its
 //                     own audit row; the console only validates the form and maps the database's refusals to messages. A replay
 //                     of the same request key (a double click, a re-posted form) answers the same result and changes nothing.
-import { maskName, maskPhone, OWNER_DECISIONS, OWNER_REQUERY_MAX_ATTEMPTS, type OwnerDecision } from "@ebooktrivia/core";
-import { currentMutationScope, insertAudit, NoMutationScopeError, withAudit } from "../audit.ts";
+import { OWNER_DECISIONS, OWNER_REQUERY_MAX_ATTEMPTS, type OwnerDecision } from "@ebooktrivia/core";
+import { currentMutationScope, insertAudit, NoMutationScopeError } from "../audit.ts";
 import type { Sql } from "../db.ts";
 import { InvalidInput, multiLine, singleLine, sqlState, uuid } from "../settings/fields.ts";
 import { parseReason } from "../settings/rescore.ts";
@@ -109,14 +108,6 @@ export function reasonLabel(event: string, from: string): string {
   }
 }
 
-/** b***@g*** : the first character of the local part and of the domain. */
-export function maskEmail(email: string): string {
-  const at = email.lastIndexOf("@");
-  const local = Array.from(at < 0 ? email : email.slice(0, at))[0] ?? "";
-  const domain = at < 0 ? "" : (Array.from(email.slice(at + 1))[0] ?? "");
-  return `${local}***@${domain}***`;
-}
-
 const text = (v: unknown): string | null => (typeof v === "string" ? v : null);
 const num = (v: unknown): number | null => (typeof v === "number" && Number.isSafeInteger(v) ? v : null);
 
@@ -207,7 +198,7 @@ export async function loadReviewQueue(sql: Sql): Promise<{ readonly total: numbe
       reviewSince: r.review_since,
       program: r.program,
       product: r.product,
-      buyer: { name: maskName(r.buyer_name), phone: maskPhone(r.buyer_phone) ?? "", email: maskEmail(r.buyer_email) },
+      buyer: { name: r.buyer_name, phone: r.buyer_phone ?? "", email: r.buyer_email },
       erased: r.erased,
       eligibility: { state: r.player_id === null || r.eligible === null ? "no_player" : r.eligible ? "eligible" : "suspended", firstPaidAt: r.first_paid_at },
       reason:
@@ -245,19 +236,6 @@ export async function loadReviewQueue(sql: Sql): Promise<{ readonly total: numbe
 }
 
 const NOT_IN_REVIEW = "This order is no longer in review: it was decided, or a Midtrans event moved it. Reload the page.";
-
-/** The unmasked buyer of an order in review, for the Owner; every view is audited (no value in the log, only that it was shown). */
-export async function revealBuyer(sql: Sql, orderId: string): Promise<{ readonly name: string; readonly phone: string; readonly email: string }> {
-  return withAudit(sql, async (tx, audit) => {
-    const [row] = await tx<{ status: string; erased: boolean; buyer_name: string; buyer_phone: string | null; buyer_email: string }[]>`
-      SELECT status::text AS status, anonymized_at IS NOT NULL AS erased, buyer_name, buyer_phone, buyer_email FROM public.orders WHERE id = ${orderId}`;
-    if (row === undefined) throw new InvalidInput("This order no longer exists.");
-    if (row.status !== "review") throw new InvalidInput(NOT_IN_REVIEW);
-    if (row.erased || row.buyer_phone === null) throw new InvalidInput("The buyer of this order was erased (UU PDP): there is nothing to show.");
-    audit({ action: "order.buyer.view", entityType: "order", entityId: orderId, facts: { fields: "buyer_name,buyer_phone,buyer_email", purpose: "review_queue" } });
-    return { name: row.buyer_name, phone: row.buyer_phone, email: row.buyer_email };
-  });
-}
 
 /**
  * Asks the worker to re-query every Midtrans attempt of an order in review now (outbox topic payment.requery; the worker applies the

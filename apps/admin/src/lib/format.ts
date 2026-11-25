@@ -33,3 +33,21 @@ export const formatWibTime = (at: Date): string => `${WIB_TIME.format(at)} WIB`;
 
 /** "20 Nov" for a YYYY-MM-DD day. */
 export const formatDay = (day: string): string => WIB_DAY.format(new Date(`${day}T12:00:00+07:00`));
+
+const WIB_DAY_YEAR = new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Jakarta", day: "numeric", month: "short", year: "numeric" });
+const WIB_STAMP = new Intl.DateTimeFormat("en-GB", {
+  timeZone: "Asia/Jakarta",
+  day: "numeric",
+  month: "short",
+  year: "numeric",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  hour12: false,
+});
+
+/** "20 Nov 2026" for a YYYY-MM-DD day. */
+export const formatDayYear = (day: string): string => WIB_DAY_YEAR.format(new Date(`${day}T12:00:00+07:00`));
+
+/** "20 Nov 2026, 14:05:09 WIB" */
+export const formatWibStamp = (at: Date): string => `${WIB_STAMP.format(at)} WIB`;

@@ -1,11 +1,11 @@
-// US-033 (M10c): the Owner's review queue in the console, as the admin_rw login: the queue (masked buyer, reason, attempts,
-// eligibility), the audited reveal of the buyer, the audited re-query request, and the decision through
+// US-033 (M10c): the Owner's review queue in the console, as the admin_rw login: the queue (the buyer in full since 2026-11-25,
+// reason, attempts, eligibility), the audited re-query request, and the decision through
 // public.order_review_decide (its full effects and races are proven in apps/worker test/order-review.int.test.ts, against the
 // real payment code). The policy keeps every one of these to the Owner (Staff: 403, actions.test.ts and guards.test.ts).
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { can } from "../src/lib/policy.ts";
-import { decideReview, decisionMessage, loadRecentDecisions, loadReviewQueue, parseDecision, requestRequery, revealBuyer, reviewCount } from "../src/lib/review/review.ts";
+import { decideReview, decisionMessage, loadRecentDecisions, loadReviewQueue, parseDecision, requestRequery, reviewCount } from "../src/lib/review/review.ts";
 import { InvalidInput } from "../src/lib/settings/fields.ts";
 import { asAdmin, auditRows, createTestAdmin, newRuntime, root, suffix } from "./support.ts";
 
@@ -65,7 +65,7 @@ describe("who may use the review queue", () => {
 });
 
 describe("the queue", () => {
-  it("lists the order with why it is there, its attempts, the buyer MASKED and the eligibility state", async () => {
+  it("lists the order with why it is there, its attempts, the buyer IN FULL and the eligibility state", async () => {
     const order = await reviewOrder();
     const { total, orders } = await loadReviewQueue(rt.sql);
     expect(total).toBe(await reviewCount(rt.sql));
@@ -73,32 +73,12 @@ describe("the queue", () => {
     expect(row).toMatchObject({
       publicId: order.publicId,
       amountIdr: 49000,
-      buyer: { name: "B*** S***", email: "b***@e***" },
+      buyer: { name: "Budi Santoso", phone: order.phone, email: "budi@example.test" },
       eligibility: { state: "no_player", firstPaidAt: null },
       reason: { event: "challenge", from: "pending", attempt: 1, source: "notification" },
       alerts: [expect.objectContaining({ kind: "payment_settlement_review", severity: "critical" })],
       attempts: [expect.objectContaining({ n: 1, gatewayStatus: "settlement", gatewayFraudStatus: "challenge" })],
     });
-    expect(row?.buyer.phone).toMatch(/^\*{4}\d{3}$/);
-    const text = JSON.stringify(row);
-    for (const raw of [order.phone, "Budi Santoso", "budi@example.test"]) expect(text).not.toContain(raw);
-  });
-});
-
-describe("the buyer's details, one audited click away", () => {
-  it("shows the unmasked buyer and records the view (no value in the log)", async () => {
-    const order = await reviewOrder();
-    expect(await asAdmin(ownerId, () => revealBuyer(rt.sql, order.id))).toEqual({ name: "Budi Santoso", phone: order.phone, email: "budi@example.test" });
-    const [audit] = await auditRows(order.id, "order.buyer.view");
-    expect(audit).toMatchObject({ actor_kind: "admin", actor_admin_user_id: ownerId });
-    expect(JSON.stringify(audit?.changes)).not.toContain(order.phone);
-  });
-
-  it("refuses an order that is not in review", async () => {
-    const order = await reviewOrder();
-    await asAdmin(ownerId, () => decideReview(rt.sql, decision(order, "not_paid")));
-    await expect(asAdmin(ownerId, () => revealBuyer(rt.sql, order.id))).rejects.toThrow(InvalidInput);
-    expect(await auditRows(order.id, "order.buyer.view")).toEqual([]);
   });
 });
 
@@ -116,7 +96,7 @@ describe("re-query Midtrans now", () => {
 });
 
 describe("an order whose buyer was erased (US-030 UU PDP)", () => {
-  it("shows no contact and refuses the reveal; mark paid keeps the money without fulfilment", async () => {
+  it("shows no contact; mark paid keeps the money without fulfilment", async () => {
     const order = await reviewOrder();
     // An erasure refuses a subject with an order in review (ET178), so the order is closed first and comes back to review the way
     // the payment code routes a settlement of an erased order (apps/worker payments-erased.int.test.ts).
@@ -131,7 +111,6 @@ describe("an order whose buyer was erased (US-030 UU PDP)", () => {
     await root`UPDATE orders SET status = 'review' WHERE id = ${order.id}`;
     const row = (await loadReviewQueue(rt.sql)).orders.find((o) => o.id === order.id);
     expect(row).toMatchObject({ erased: true, buyer: { phone: "" } });
-    await expect(asAdmin(ownerId, () => revealBuyer(rt.sql, order.id))).rejects.toThrow(/erased/);
     const result = await asAdmin(ownerId, () => decideReview(rt.sql, decision(order, "paid")));
     expect(result).toMatchObject({ fulfilmentSkipped: true, deliveriesCreated: 0, eligible: false });
     expect(decisionMessage(result)).toContain("without fulfilment");

@@ -1,4 +1,4 @@
-// The daily series of the dashboard and the sales report (US-029): MO and MT per WIB day as an SVG line chart, with the
+// The daily series of the dashboard and the sales report (US-029): MO and MT (on screen "Leads" and "Purchase") per WIB day as an SVG line chart, with the
 // same numbers in a table right below it (accessible alternative, opened by "View as table"). Server-rendered, no
 // client script. The two series differ by colour, line dash AND marker shape (circle / square), so the meaning never
 // rests on colour alone; the figcaption states what the chart says in words; every figure is tabular.
@@ -28,8 +28,8 @@ export function DailyChart({ days, title, id }: { days: readonly SalesDay[]; tit
   const labelEvery = Math.max(1, Math.ceil(n / 7));
   const peak = days.reduce<SalesDay | null>((best, d) => (best === null || d.mo > best.mo ? d : best), null);
   const series = [
-    { key: "mo" as const, label: "MO", color: "var(--chart-1)", dash: undefined, shape: "circle" as const },
-    { key: "mt" as const, label: "MT", color: "var(--chart-2)", dash: "6 4", shape: "square" as const },
+    { key: "mo" as const, label: "Leads", color: "var(--chart-1)", dash: undefined, shape: "circle" as const },
+    { key: "mt" as const, label: "Purchase", color: "var(--chart-2)", dash: "6 4", shape: "square" as const },
   ];
   return (
     <figure className="flex flex-col gap-2 rounded-lg border bg-card p-3" aria-labelledby={`${id}-title`} data-testid={`${id}-chart`}>
@@ -52,7 +52,7 @@ export function DailyChart({ days, title, id }: { days: readonly SalesDay[]; tit
       {n === 0 ? (
         <p className="text-sm text-muted-foreground">No days in this range.</p>
       ) : (
-        <svg viewBox={`0 0 ${String(W)} ${String(H)}`} className="block h-auto w-full" role="img" aria-label={`Line chart of daily MO and MT over ${String(n)} days. MO totals ${formatInt(totalMo)} and MT totals ${formatInt(totalMt)}. The same numbers are in the table below.`}>
+        <svg viewBox={`0 0 ${String(W)} ${String(H)}`} className="block h-auto w-full" role="img" aria-label={`Line chart of daily leads and purchases over ${String(n)} days. Leads total ${formatInt(totalMo)} and purchases total ${formatInt(totalMt)}. The same numbers are in the table below.`}>
           {ticks.map((t) => (
             <g key={t}>
               <line x1={M.l} x2={W - M.r} y1={y(t)} y2={y(t)} className="stroke-border" strokeWidth="1" />
@@ -79,8 +79,8 @@ export function DailyChart({ days, title, id }: { days: readonly SalesDay[]; tit
       <figcaption className="text-xs text-muted-foreground">
         {n === 0
           ? ""
-          : `${formatInt(totalMo)} MO and ${formatInt(totalMt)} MT in ${String(n)} day${n === 1 ? "" : "s"} (${formatBps(rateBps(totalMt, totalMo))} MO to MT).${
-              peak === null || peak.mo === 0 ? "" : ` The busiest day was ${formatDay(peak.day)} with ${formatInt(peak.mo)} MO.`
+          : `${formatInt(totalMo)} leads and ${formatInt(totalMt)} purchases in ${String(n)} day${n === 1 ? "" : "s"} (success rate ${formatBps(rateBps(totalMt, totalMo))}).${
+              peak === null || peak.mo === 0 ? "" : ` The busiest day was ${formatDay(peak.day)} with ${formatInt(peak.mo)} leads.`
             }`}
       </figcaption>
       <details className="rounded-md border" data-testid={`${id}-table`}>
@@ -94,9 +94,9 @@ export function DailyChart({ days, title, id }: { days: readonly SalesDay[]; tit
               <TableRow className="hover:bg-transparent">
                 <TableHead>Day</TableHead>
                 <TableHead className="text-right">Visits</TableHead>
-                <TableHead className="text-right">MO</TableHead>
-                <TableHead className="text-right">MT</TableHead>
-                <TableHead className="text-right">MO to MT</TableHead>
+                <TableHead className="text-right">Leads</TableHead>
+                <TableHead className="text-right">Purchase</TableHead>
+                <TableHead className="text-right">Success Rate</TableHead>
                 <TableHead className="text-right">Revenue</TableHead>
               </TableRow>
             </TableHeader>

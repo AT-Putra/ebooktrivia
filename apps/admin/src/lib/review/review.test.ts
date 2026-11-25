@@ -1,7 +1,7 @@
 // US-033: the review queue's pure helpers, and the SQLSTATE read the decision's messages rest on.
 import { describe, expect, it } from "vitest";
 import { sqlState } from "../settings/fields.ts";
-import { type DecisionResult, decisionMessage, maskEmail, reasonLabel } from "./review.ts";
+import { type DecisionResult, decisionMessage, reasonLabel } from "./review.ts";
 
 const base: DecisionResult = {
   decision: "paid",
@@ -42,11 +42,6 @@ describe("the queue's labels", () => {
     expect(reasonLabel("challenge", "pending")).toContain("Fraud challenge");
     expect(reasonLabel("refund", "pending")).toBe("Full refund of an order that was never confirmed paid");
     expect(reasonLabel("unknown", "pending")).toBe("Midtrans status unknown");
-  });
-
-  it("masks an e-mail address to its first characters", () => {
-    expect(maskEmail("budi@example.test")).toBe("b***@e***");
-    expect(maskEmail("no-at-sign")).toBe("n***@***");
   });
 });
 

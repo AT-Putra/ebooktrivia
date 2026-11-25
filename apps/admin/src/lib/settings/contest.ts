@@ -12,9 +12,8 @@
 // request id and IP of the mutation scope, and turns the database's refusals into form messages.
 //
 // The anti-cheat flags are computed here on read (core CONTEST_FLAGS), never acted on: the Owner
-// decides. Players are shown masked (core maskName / maskPhone) with a short reference, so this page
-// holds no raw name, phone or e-mail.
-import { CONTEST_FLAGS, maskName, maskPhone } from "@ebooktrivia/core";
+// decides. Players are shown in full (name, phone, e-mail: the Owner's decision of 2026-11-25) with a short reference.
+import { CONTEST_FLAGS } from "@ebooktrivia/core";
 import { currentMutationScope, NoMutationScopeError, type Tx } from "../audit.ts";
 import type { Sql } from "../db.ts";
 import { formValue, InvalidInput, multiLine, sqlState } from "./fields.ts";
@@ -54,8 +53,10 @@ export interface FlaggedPlayer {
   readonly playerId: string;
   /** The first 8 characters of the player id: enough to tell rows apart, not an identity. */
   readonly ref: string;
-  readonly maskedName: string;
-  readonly maskedPhone: string | null;
+  /** In full ('' / null / null after a deletion request). */
+  readonly name: string;
+  readonly phone: string | null;
+  readonly email: string | null;
   readonly flags: readonly FlagKind[];
   readonly medianMs: number | null;
   readonly pickedAnswers: number;
@@ -71,8 +72,9 @@ export interface ResultWinner {
   readonly rank: number;
   readonly prizeName: string;
   readonly ref: string;
-  readonly maskedName: string;
-  readonly maskedPhone: string | null;
+  readonly name: string;
+  readonly phone: string | null;
+  readonly email: string | null;
   readonly status: string;
   /** Still paid and not refunded (confirmation is refused otherwise). */
   readonly eligible: boolean;
@@ -102,6 +104,7 @@ interface FlagRow {
   readonly id: string;
   readonly name: string;
   readonly phone: string | null;
+  readonly email: string | null;
   readonly picked: number;
   readonly median_ms: number | null;
   readonly twins: number;
@@ -180,7 +183,7 @@ async function flagRows(sql: Sql, programId: string, scope: { readonly only: rea
         LEFT JOIN twins t ON t.player_id = r.player_id
         LEFT JOIN chargebacks cb ON cb.player_id = r.player_id
     )
-    SELECT pl.id, pl.name, pl.phone, f.picked, f.median_ms, f.twins, f.ip_players, f.ua_players, f.chargeback, f.flag_count,
+    SELECT pl.id, pl.name, pl.phone, pl.email, f.picked, f.median_ms, f.twins, f.ip_players, f.ua_players, f.chargeback, f.flag_count,
            (count(*) OVER ())::int AS total
       FROM flagged f JOIN public.players pl ON pl.id = f.player_id
      WHERE f.flag_count > 0 AND (${only}::uuid[] IS NULL OR f.player_id = ANY (${only}::uuid[]))
@@ -205,8 +208,9 @@ export async function listFlaggedPlayers(sql: Sql, programId: string, limit = FL
     players: rows.map((r) => ({
       playerId: r.id,
       ref: ref(r.id),
-      maskedName: maskName(r.name),
-      maskedPhone: maskPhone(r.phone),
+      name: r.name,
+      phone: r.phone,
+      email: r.email,
       flags: flagsOf(r),
       medianMs: r.median_ms,
       pickedAnswers: r.picked,
@@ -225,8 +229,8 @@ export async function getContestResults(sql: Sql, programId: string): Promise<Co
   if (program === undefined) return null;
   const [snapshot] = await sql<{ frozen_at: Date; created_at: Date; ranked: number }[]>`
     SELECT frozen_at, created_at, jsonb_array_length(entries)::int AS ranked FROM public.leaderboard_snapshots WHERE program_id = ${programId}`;
-  const winners = await sql<{ winner_id: string; rank: number; prize: string; id: string; name: string; phone: string | null; status: string; eligible: boolean; erased: boolean }[]>`
-    SELECT w.id AS winner_id, w.rank, t.name AS prize, pl.id, pl.name, pl.phone, w.status::text AS status, coalesce(pp.eligible, false) AS eligible,
+  const winners = await sql<{ winner_id: string; rank: number; prize: string; id: string; name: string; phone: string | null; email: string | null; status: string; eligible: boolean; erased: boolean }[]>`
+    SELECT w.id AS winner_id, w.rank, t.name AS prize, pl.id, pl.name, pl.phone, pl.email, w.status::text AS status, coalesce(pp.eligible, false) AS eligible,
            pl.anonymized_at IS NOT NULL AS erased
       FROM public.winners w
       JOIN public.prize_tiers t ON t.id = w.prize_tier_id
@@ -255,8 +259,9 @@ export async function getContestResults(sql: Sql, programId: string): Promise<Co
       rank: w.rank,
       prizeName: w.prize,
       ref: ref(w.id),
-      maskedName: maskName(w.name),
-      maskedPhone: maskPhone(w.phone),
+      name: w.name,
+      phone: w.phone,
+      email: w.email,
       status: w.status,
       eligible: w.eligible,
       flags: winnerFlags.get(w.id) ?? [],

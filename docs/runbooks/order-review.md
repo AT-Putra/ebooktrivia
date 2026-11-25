@@ -19,8 +19,8 @@ chargeback (REFUNDED). Everything else waits for you:
 
 Console, **Review queue** (Owner only; Staff get 403 on the page and on every action). The navigation badge and the Overview page show how
 many orders wait. Each order shows why it is there (the status change and its open alerts, the nightly reconciliation's findings), every
-Midtrans attempt with the last re-queried status and the payments ledger, the status history, the amount, the buyer masked and the player's
-eligibility. "Show buyer details" shows the full name, WhatsApp number and e-mail; every view is written to the audit log (`order.buyer.view`).
+Midtrans attempt with the last re-queried status and the payments ledger, the status history, the amount, the buyer (full name, WhatsApp number
+and e-mail: the Owner's decision of 2026-11-25 shows customers in full to the Owner and Staff) and the player's eligibility.
 
 **Re-query Midtrans now** asks the worker (which holds the Midtrans key) to re-query every attempt and apply the answers through the normal
 payment path, exactly as a notification. Reload the page after a minute. If Midtrans now says something new (it settled after all, or it

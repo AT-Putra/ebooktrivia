@@ -19,7 +19,7 @@ const WIB = new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Jakarta", dateSty
 const KIND: Readonly<Record<string, string>> = { terms: "Terms (S&K)", privacy: "Privacy policy" };
 
 /**
- * Owner only (US-030): one deletion request. While pending: the matched person (masked), every order with the consents recorded
+ * Owner only (US-030): one deletion request. While pending: the matched person (in full), every order with the consents recorded
  * at checkout, their prizes, what blocks the erasure, and the two decisions (execute with the typed reference, or reject with a
  * reason). Once decided: the record of what was done (counts only).
  */
@@ -70,11 +70,11 @@ export default async function DeletionRequestPage({ params }: { params: Promise<
             <CardTitle className="text-base">Who would be erased</CardTitle>
             <dl className="grid gap-1 text-sm sm:grid-cols-[auto_1fr] sm:gap-x-4">
               <dt className="text-muted-foreground">Name</dt>
-              <dd>{s.maskedName ?? "unknown"}</dd>
+              <dd className="[overflow-wrap:anywhere]">{s.name ?? "unknown"}</dd>
               <dt className="text-muted-foreground">WhatsApp</dt>
-              <dd>{s.maskedPhone ?? "none"}</dd>
+              <dd className="font-mono tabular">{s.phone ?? "none"}</dd>
               <dt className="text-muted-foreground">E-mail</dt>
-              <dd>{s.maskedEmail ?? "none"}</dd>
+              <dd className="[overflow-wrap:anywhere]">{s.email ?? "none"}</dd>
               <dt className="text-muted-foreground">Player</dt>
               <dd>{s.playerRef === null ? "Never played (no paid order)" : `ref ${s.playerRef}`}</dd>
             </dl>

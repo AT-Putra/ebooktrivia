@@ -12,7 +12,7 @@ and play rows stay, so revenue, ROI and reconciliation are unchanged. The column
    - Describe the request: how and when it arrived. Write no phone numbers or e-mail addresses in it.
    - An e-mail used with several numbers is refused: ask the requester for their number.
 2. **Verify the requester.** Before you erase, confirm that the request comes from the number or address it names, for example
-   by replying from the pool number or by e-mail. The review page shows the matched person (masked), every order with the consents
+   by replying from the pool number or by e-mail. The review page shows the matched person (name, WhatsApp number and e-mail in full), every order with the consents
    given at checkout, and their prizes.
 3. **Resolve what blocks the erasure**, if anything:
    - **An undelivered prize.** A winner awaiting confirmation, confirmed or flagged whose fulfilment is not done. Either deliver it

@@ -2,63 +2,12 @@
 
 // The Owner's controls on one order of the review queue (US-033). The server actions refuse everyone but the Owner
 // (order.review.resolve); the page renders this for the Owner only.
-//   RevealBuyer     the buyer is shown masked; "Show buyer details" asks the server (an audited POST) for the full name, phone
-//                   and e-mail and shows them in place, for this view only;
 //   RequeryForm     "Re-query Midtrans now" (the worker runs the normal payment path; reload to see the answer);
 //   DecisionForm    "Mark paid" or "Not paid": the order's id typed to confirm and a reason, each form with its own request key, so a
 //                   double click or a re-posted form is the same request (the database answers it again and changes nothing).
-import { type SubmitEvent as ReactSubmitEvent, startTransition, useActionState } from "react";
-import { Button } from "@ebooktrivia/ui/components/button";
-import { INITIAL_REVEAL, type RevealState, type SaveState } from "../../lib/form-state.ts";
-import { FormError } from "../auth/auth-card.tsx";
+import type { SaveState } from "../../lib/form-state.ts";
 import { ActionForm } from "../settings/action-form.tsx";
 import { TextArea, TextField } from "../settings/fields.tsx";
-
-export function RevealBuyer({
-  id,
-  masked,
-  action,
-}: {
-  id: string;
-  masked: { readonly name: string; readonly phone: string; readonly email: string };
-  action: (previous: RevealState, form: FormData) => Promise<RevealState>;
-}) {
-  const [state, dispatch, pending] = useActionState(action, INITIAL_REVEAL);
-  const onSubmit = (event: ReactSubmitEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const data = new FormData(event.currentTarget);
-    startTransition(() => {
-      dispatch(data);
-    });
-  };
-  const shown = state.status === "shown" ? state : null;
-  return (
-    <div className="flex flex-col gap-1.5" data-testid={`buyer-${id}`}>
-      <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-sm">
-        <dt className="text-muted-foreground">Name</dt>
-        <dd data-testid="buyer-name">{shown?.name ?? masked.name}</dd>
-        <dt className="text-muted-foreground">WhatsApp</dt>
-        <dd className="tabular" data-testid="buyer-phone">
-          {shown?.phone ?? masked.phone}
-        </dd>
-        <dt className="text-muted-foreground">E-mail</dt>
-        <dd className="break-all" data-testid="buyer-email">
-          {shown?.email ?? masked.email}
-        </dd>
-      </dl>
-      {shown === null ? (
-        <form onSubmit={onSubmit}>
-          <input type="hidden" name="id" value={id} />
-          <Button type="submit" variant="ghost" size="sm" disabled={pending} data-testid={`reveal-${id}`}>
-            Show buyer details
-          </Button>
-          <span className="text-xs text-muted-foreground"> (recorded in the audit log)</span>
-        </form>
-      ) : null}
-      {state.status === "error" ? <FormError key={state.at}>{state.error}</FormError> : null}
-    </div>
-  );
-}
 
 export function RequeryForm({ id, requestKey, action }: { id: string; requestKey: string; action: (previous: SaveState, form: FormData) => Promise<SaveState> }) {
   return (

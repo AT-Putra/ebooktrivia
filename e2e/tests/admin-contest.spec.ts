@@ -4,7 +4,7 @@ import { type AdminEnv, freshTotp, runAdminCli, startAdminEnv } from "../support
 
 /**
  * US-028 (M9c) against the production build of apps/admin (`next start`, own database and port):
- *   - the contest results page shows the frozen winners masked, with their anti-cheat flags, to
+ *   - the contest results page shows the frozen winners in full (the Owner's decision of 2026-11-25), with their anti-cheat flags, to
  *     Staff and the Owner; only the Owner gets the confirmation and the deadline-extension forms;
  *   - the Owner extends the open questions of a running program (validated, audited);
  *   - the Owner confirms the winners (a confirmation box first); the banner read path then returns
@@ -145,18 +145,17 @@ test.afterAll(async () => {
   if (started) await admin.stop();
 });
 
-test("Staff see the frozen winners masked with their flags, and no Owner form", async () => {
+test("Staff see the frozen winners in full with their flags, and no Owner form", async () => {
   await staff.goto(`/settings/trivia/${ended.id}`);
   await staff.getByTestId("contest-results-link").click();
   await expect(staff).toHaveURL(new RegExp(`/settings/trivia/${ended.id}/results$`));
   await expect(staff.getByTestId("snapshot-summary")).toContainText("2 eligible players ranked");
   const first = staff.getByTestId("winner-1");
-  await expect(first).toContainText("R*** K***");
-  await expect(first).toContainText("****111");
+  await expect(first).toContainText("Rina Kilat");
+  await expect(first).toContainText("+6281234500111");
   await expect(first).toContainText("Awaiting confirmation");
   await expect(first).toContainText("Median answer time under 800 ms");
-  await expect(staff.getByTestId("winner-2")).toContainText("D*** S***");
-  await expect(staff.locator("body")).not.toContainText("Rina");
+  await expect(staff.getByTestId("winner-2")).toContainText("Dodi Santai");
   await expect(staff.getByTestId("confirm-winners")).toHaveCount(0);
   await staff.goto(`/settings/trivia/${running.id}/results`);
   await expect(staff.getByTestId("contest-extension")).toHaveCount(0);

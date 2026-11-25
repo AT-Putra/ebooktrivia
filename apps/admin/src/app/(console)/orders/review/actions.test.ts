@@ -39,10 +39,10 @@ vi.mock("../../../../lib/next/require-admin.ts", async () => {
     },
   };
 });
-const db = vi.hoisted(() => ({ decideReview: vi.fn(), requestRequery: vi.fn(), revealBuyer: vi.fn() }));
+const db = vi.hoisted(() => ({ decideReview: vi.fn(), requestRequery: vi.fn() }));
 vi.mock("../../../../lib/review/review.ts", async (importOriginal) => ({ ...(await importOriginal<object>()), ...db }));
 
-const { decideReviewAction, requeryReviewAction, revealBuyerAction } = await import("./actions.ts");
+const { decideReviewAction, requeryReviewAction } = await import("./actions.ts");
 
 const ORDER = "6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b";
 const KEY = "0b1c2d3e-4f50-4617-8829-3a4b5c6d7e8f";
@@ -56,7 +56,6 @@ const calls = () =>
   [
     ["decide", () => decideReviewAction({ status: "idle" }, decisionForm())],
     ["requery", () => requeryReviewAction({ status: "idle" }, form({ id: ORDER, key: KEY }))],
-    ["reveal", () => revealBuyerAction({ status: "idle" }, form({ id: ORDER }))],
   ] as const;
 
 beforeEach(() => {
@@ -77,7 +76,6 @@ beforeEach(() => {
     fulfilmentSkipped: false,
   });
   db.requestRequery.mockResolvedValue(true);
-  db.revealBuyer.mockResolvedValue({ name: "Budi Santoso", phone: "+6281234567890", email: "budi@example.test" });
   vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 });
 afterEach(() => {
@@ -91,7 +89,6 @@ describe("the review queue's actions", () => {
     await expect(call()).rejects.toThrow(/403/);
     expect(db.decideReview).not.toHaveBeenCalled();
     expect(db.requestRequery).not.toHaveBeenCalled();
-    expect(db.revealBuyer).not.toHaveBeenCalled();
   });
 
   it.each(calls())("refuse a cross-site or Origin-less POST before the session (%s)", async (_name, call) => {
@@ -101,7 +98,6 @@ describe("the review queue's actions", () => {
     }
     expect(db.decideReview).not.toHaveBeenCalled();
     expect(db.requestRequery).not.toHaveBeenCalled();
-    expect(db.revealBuyer).not.toHaveBeenCalled();
   });
 
   it.each(calls())("send a signed-out browser to the login page (%s)", async (_name, call) => {
@@ -109,11 +105,10 @@ describe("the review queue's actions", () => {
     await expect(call()).rejects.toThrow(/NEXT_REDIRECT;\/login/);
   });
 
-  it("run for the Owner: the decision with the parsed form, the re-query, the audited reveal", async () => {
+  it("run for the Owner: the decision with the parsed form, the re-query", async () => {
     expect(await decideReviewAction({ status: "idle" }, decisionForm())).toMatchObject({ status: "saved", message: expect.stringContaining("Marked paid") as unknown });
     expect(db.decideReview).toHaveBeenCalledWith({}, { orderId: ORDER, decision: "paid", confirm: "AbCdEf0123456789XYZ", reason: "Midtrans support confirmed the transfer arrived.", requestKey: KEY });
     expect(await requeryReviewAction({ status: "idle" }, form({ id: ORDER, key: KEY }))).toMatchObject({ status: "saved" });
-    expect(await revealBuyerAction({ status: "idle" }, form({ id: ORDER }))).toMatchObject({ status: "shown", phone: "+6281234567890" });
   });
 
   it("refuse a tampered form (an unknown field, a bad decision) with a message, without the database", async () => {
@@ -121,8 +116,6 @@ describe("the review queue's actions", () => {
     const extra = decisionForm();
     extra.set("to_status", "paid");
     expect(await decideReviewAction({ status: "idle" }, extra)).toMatchObject({ status: "error" });
-    expect(await revealBuyerAction({ status: "idle" }, form({ id: "not-a-uuid" }))).toMatchObject({ status: "error" });
     expect(db.decideReview).not.toHaveBeenCalled();
-    expect(db.revealBuyer).not.toHaveBeenCalled();
   });
 });

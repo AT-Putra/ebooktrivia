@@ -150,6 +150,7 @@ const GUARDS: Readonly<Record<string, string>> = {
   // Reports (US-029): Staff view the dashboard, sales, delivery, postback and contest reports (reports.view, no export); the profit
   // view, ad spend, the re-fire and both CSV exports are Owner-only, so a Staff session is refused by the route itself.
   "(console)/reports/sales/page.tsx": "permission:reports.view",
+  "(console)/reports/leads/page.tsx": "permission:reports.view",
   "(console)/reports/sales/export/route.ts#POST": "permission:sales.export",
   "(console)/reports/delivery/page.tsx": "permission:reports.view",
   "(console)/reports/delivery/actions.ts#resendDeliveryAction": "permission:delivery.resend",
@@ -183,7 +184,6 @@ const GUARDS: Readonly<Record<string, string>> = {
   "(console)/orders/review/page.tsx": "permission:order.review.resolve",
   "(console)/orders/review/actions.ts#decideReviewAction": "permission:order.review.resolve",
   "(console)/orders/review/actions.ts#requeryReviewAction": "permission:order.review.resolve",
-  "(console)/orders/review/actions.ts#revealBuyerAction": "permission:order.review.resolve",
 };
 
 /** Pages / layouts reachable without a console session, with the reason. */

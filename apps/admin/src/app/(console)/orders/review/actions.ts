@@ -3,13 +3,12 @@
 // adminAction before the body runs) and POST with the Origin check of lib/next/actions.ts:
 //   decideReviewAction    "mark paid" / "not paid": typed confirmation, reason and a request key per rendered form; the database
 //                         function public.order_review_decide does the rest (lib/review/review.ts) and writes the audit row;
-//   requeryReviewAction   "re-query Midtrans now": one outbox row for the worker's normal payment path; audited;
-//   revealBuyerAction     the unmasked buyer of one order in review, audited (order.buyer.view).
-import { type RevealState, type SaveState } from "../../../../lib/form-state.ts";
+//   requeryReviewAction   "re-query Midtrans now": one outbox row for the worker's normal payment path; audited.
+import type { SaveState } from "../../../../lib/form-state.ts";
 import { adminAction } from "../../../../lib/next/actions.ts";
 import { saveResult } from "../../../../lib/next/settings-result.ts";
-import { decideReview, decisionMessage, parseDecision, requestRequery, revealBuyer, REVIEW_PATH } from "../../../../lib/review/review.ts";
-import { formValue, InvalidInput, onlyFields, uuid } from "../../../../lib/settings/fields.ts";
+import { decideReview, decisionMessage, parseDecision, requestRequery, REVIEW_PATH } from "../../../../lib/review/review.ts";
+import { formValue, onlyFields, uuid } from "../../../../lib/settings/fields.ts";
 
 export const decideReviewAction = adminAction({ permission: "order.review.resolve" }, async ({ rt }, _previous: SaveState, form: FormData): Promise<SaveState> =>
   saveResult(REVIEW_PATH, async () => {
@@ -34,14 +33,3 @@ export const requeryReviewAction = adminAction({ permission: "order.review.resol
       : "A re-query of this order is already running. Reload the page in a minute to see the answer.";
   }),
 );
-
-export const revealBuyerAction = adminAction({ permission: "order.review.resolve" }, async ({ rt }, _previous: RevealState, form: FormData): Promise<RevealState> => {
-  try {
-    onlyFields(form, ["id"]);
-    const buyer = await revealBuyer(rt.sql, uuid(formValue(form, "id")));
-    return { status: "shown", at: Date.now(), ...buyer };
-  } catch (error) {
-    if (error instanceof InvalidInput) return { status: "error", at: Date.now(), error: error.message };
-    throw error;
-  }
-});

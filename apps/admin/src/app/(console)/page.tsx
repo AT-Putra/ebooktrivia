@@ -18,7 +18,8 @@ export const dynamic = "force-dynamic";
 
 /**
  * The dashboard (AC-A4): today's visits, MO, MT, MO to MT % and revenue (WIB day), read from the rollups, so it says when they
- * were computed. Staff and Owner see the same figures (reports.view); nothing here is personal data.
+ * were computed. On screen MO is "Leads", MT "Purchase" and MO to MT "Success Rate" (the Owner's words, 2026-11-25; the
+ * database and the adnet postbacks keep MO / MT). Staff and Owner see the same figures (reports.view); nothing here is personal data.
  */
 export default async function OverviewPage() {
   const admin = await requireAdmin({ permission: "dashboard.view" });
@@ -69,15 +70,16 @@ export default async function OverviewPage() {
         title={`Today, ${formatDay(d.today)}`}
         tiles={[
           { label: "Visits today", value: formatInt(t.visits), note: `Yesterday ${formatInt(y.visits)}`, testId: "kpi-visits" },
-          { label: "MO today", value: formatInt(t.mo), note: `Yesterday ${formatInt(y.mo)}`, testId: "kpi-mo" },
-          { label: "MT today", value: formatInt(t.mt), note: `Yesterday ${formatInt(y.mt)}`, testId: "kpi-mt" },
-          { label: "MO to MT today", value: formatBps(t.conversionBps), note: `Yesterday ${formatBps(y.conversionBps)}`, testId: "kpi-conversion" },
+          { label: "Leads today", value: formatInt(t.mo), note: `Yesterday ${formatInt(y.mo)}`, testId: "kpi-mo" },
+          { label: "Purchase today", value: formatInt(t.mt), note: `Yesterday ${formatInt(y.mt)}`, testId: "kpi-mt" },
+          { label: "Success Rate today", value: formatBps(t.conversionBps), note: `Yesterday ${formatBps(y.conversionBps)}`, testId: "kpi-conversion" },
           { label: "Revenue today", value: formatRupiah(t.revenueIdr), note: `Yesterday ${formatRupiah(y.revenueIdr)}`, testId: "kpi-revenue" },
         ]}
       />
       <p className="text-xs text-muted-foreground">
-        MO is an order with a payment page, MT a paid order; both count the orders created on that WIB day, so a payment that arrives tomorrow raises
-        today&apos;s MT. Revenue is the amount of paid orders (a refund or a chargeback removes it).{" "}
+        A lead is an order that reached the payment page, a purchase is a paid order, and the success rate is purchases out of leads. All
+        three count the orders created on that WIB day, so a payment that arrives tomorrow raises today&apos;s purchases. Revenue is the amount
+        of paid orders (a refund or a chargeback removes it).{" "}
         <Link href="/reports/sales" className="underline underline-offset-4">
           Open the sales report
         </Link>
@@ -89,7 +91,7 @@ export default async function OverviewPage() {
           {formatInt(d.reviewOrders)} order{d.reviewOrders === 1 ? " is" : "s are"} in review in these {String(DASHBOARD_DAYS)} days (a partial refund or chargeback): the money is undecided, so it is in no revenue figure.
         </p>
       ) : null}
-      <DailyChart days={d.series} title={`Daily MO and MT, last ${String(DASHBOARD_DAYS)} days`} id="dashboard" />
+      <DailyChart days={d.series} title={`Daily leads and purchases, last ${String(DASHBOARD_DAYS)} days`} id="dashboard" />
     </>
   );
 }

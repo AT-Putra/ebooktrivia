@@ -1,5 +1,5 @@
 // US-028 admin side (lib/settings/contest.ts), as the admin_rw login: the results page data
-// (masked winners, anti-cheat flags), the Owner's winner confirmation and the deadline extension,
+// (winners in full, anti-cheat flags), the Owner's winner confirmation and the deadline extension,
 // each through the database's function with the mutation scope's actor, request id and IP, the
 // database's refusals turned into form messages.
 import { describe, expect, it } from "vitest";
@@ -96,7 +96,7 @@ const refusal = async (p: Promise<unknown>): Promise<string> => {
 };
 
 describe("contest results (lib/settings/contest.ts)", () => {
-  it("shows masked winners with their flags; the Owner confirms them (audited with the request scope), Staff cannot", async () => {
+  it("shows the winners in full with their flags; the Owner confirms them (audited with the request scope), Staff cannot", async () => {
     const rt = newRuntime();
     const owner = await createTestAdmin(rt, "owner");
     const staff = await createTestAdmin(rt, "staff");
@@ -112,12 +112,12 @@ describe("contest results (lib/settings/contest.ts)", () => {
     const results = await getContestResults(rt.sql, p.programId);
     expect(results?.status).toBe("awaiting_confirmation");
     expect(results?.snapshot?.ranked).toBe(2);
-    expect(results?.winners.map((w) => [w.rank, w.prizeName, w.maskedName, w.maskedPhone, w.status, w.eligible])).toEqual([
-      [1, "Juara", "R*** K***", "****111", "awaiting_confirmation", true],
-      [2, "Juara", "D*** S***", "****222", "awaiting_confirmation", true],
+    // In full for the Owner and Staff (the Owner's decision of 2026-11-25).
+    expect(results?.winners.map((w) => [w.rank, w.prizeName, w.name, w.phone, w.status, w.eligible])).toEqual([
+      [1, "Juara", "Rina Kilat", "+6281234500111", "awaiting_confirmation", true],
+      [2, "Juara", "Dodi Santai", "+6281234500222", "awaiting_confirmation", true],
     ]);
     expect(results?.winners[0]?.flags).toEqual(["fast_median"]);
-    expect(JSON.stringify(results)).not.toContain("Rina");
 
     expect(await refusal(asAdmin(staff.userId, () => confirmWinners(rt.sql, p.programId)))).toMatch(/active Owner/);
     expect(await asAdmin(owner.userId, () => confirmWinners(rt.sql, p.programId), "198.51.100.20")).toEqual({ winners: 2 });
@@ -203,6 +203,6 @@ describe("contest results (lib/settings/contest.ts)", () => {
     for (const name of ["clean", "lateA", "lateB"]) expect(flagged.has(at(name)), name).toBe(false);
     for (const name of ["charged", "inbox"]) expect(flagged.get(at(name))?.flags, name).toEqual(["chargeback"]);
     expect(flagged.size).toBe(14);
-    for (const f of flagged.values()) expect(f.maskedName).toMatch(/^P\*\*\* /);
+    for (const f of flagged.values()) expect(f.name).toMatch(/^Pemain /);
   });
 });

@@ -268,7 +268,7 @@ describe("deletion requests (lib/settings/privacy.ts)", () => {
     const proof = await proofOf(f);
     const id = await owner(() => createDeletionRequest(rt.sql, form("phone", players[0]?.phone ?? "")));
     const review = await getDeletionReview(rt.sql, id);
-    expect(review?.subject?.maskedName).toBe("P*** 1***");
+    expect(review?.subject).toMatchObject({ name: "Pemenang 1", phone: players[0]?.phone });
     expect(review?.subject?.orders[0]?.consents.map((c) => [c.kind, c.version, c.ip, c.uaRecorded])).toEqual([
       ["privacy", 1, "2001:db8::5", true],
       ["terms", 1, "2001:db8::5", true],

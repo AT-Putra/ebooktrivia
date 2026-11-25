@@ -1,13 +1,13 @@
 import { randomBytes } from "node:crypto";
 import AxeBuilder from "@axe-core/playwright";
 import { type Browser, type BrowserContext, expect, type Page, test } from "@playwright/test";
-import { type AdminEnv, freshTotp, runAdminCli, startAdminEnv } from "../support/admin.ts";
+import { type AdminEnv, consoleNavLinks, freshTotp, runAdminCli, startAdminEnv } from "../support/admin.ts";
 
 /**
  * US-033 (M10c) against the production build of apps/admin (`next start`, own database and port), at 375 px:
  *   - the Owner sees the review queue count on the dashboard and as the navigation badge;
- *   - the queue lists each order in review with its reason, its Midtrans attempt and the buyer masked; "Show buyer details" shows the
- *     full contact, and the view is audited;
+ *   - the queue lists each order in review with its reason, its Midtrans attempt and the buyer in full (the Owner's decision of
+ *     2026-11-25);
  *   - "Re-query Midtrans now" queues the worker's job (audited);
  *   - "Mark paid" refuses a wrong typed confirmation, then pays the order with its effects; "Not paid" closes the other one as failed;
  *     the queue and the badge empty;
@@ -124,26 +124,24 @@ test("the Owner sees the queue count on the dashboard and as the navigation badg
   await owner.goto("/");
   await expect(owner.getByTestId("review-queue")).toContainText("2 orders wait for your decision");
   await expect(owner.getByTestId("nav-badge-review").first()).toContainText("2");
+  // The Orders group is closed on the Overview page: its title carries the count, so it is never hidden.
+  await expect(owner.getByTestId("nav-group-badge-orders").first()).toContainText("2");
   await owner.getByTestId("review-queue").getByRole("link", { name: "Open the review queue" }).click();
   await expect(owner.getByRole("heading", { name: "Review queue" })).toBeVisible();
   await expect(owner.getByTestId("review-total")).toContainText("2 orders in review");
 });
 
-test("each order shows its reason, its Midtrans attempt and the buyer masked; the full contact is one audited click away", async () => {
+test("each order shows its reason, its Midtrans attempt and the buyer in full", async () => {
   const [first] = orders;
   if (first === undefined) throw new Error("no order");
   await owner.goto("/orders/review");
   const card = owner.getByTestId(`review-${first.publicId}`);
   await expect(card.getByTestId("review-reason")).toContainText("Fraud challenge");
   await expect(card.getByTestId("attempt-row")).toContainText("settlement (fraud challenge)");
-  await expect(card.getByTestId("buyer-name")).toHaveText("B*** S***");
-  await expect(card.getByTestId("buyer-phone")).toHaveText("****110");
-  await expect(card).not.toContainText("+6281234500110");
-  await card.getByRole("button", { name: "Show buyer details" }).click();
+  await expect(card.getByTestId("buyer-name")).toHaveText("Budi Santoso");
   await expect(card.getByTestId("buyer-phone")).toHaveText("+6281234500110");
   await expect(card.getByTestId("buyer-email")).toHaveText("budi@example.invalid");
-  const audit = await one(admin.sql<{ n: number }[]>`SELECT count(*)::int AS n FROM audit_log WHERE action = 'order.buyer.view' AND entity_id = ${first.id}`);
-  expect(audit.n).toBe(1);
+  await expect(card.getByRole("button", { name: "Show buyer details" })).toHaveCount(0);
 });
 
 test("re-query Midtrans now queues the worker's job, once", async () => {
@@ -198,7 +196,7 @@ test("Staff get 403 on the queue and no navigation entry", async () => {
   const response = await staff.goto("/orders/review");
   expect(response?.status()).toBe(403);
   await staff.goto("/");
-  await expect(staff.getByRole("navigation", { name: "Console" }).first().getByRole("link", { name: /Review queue/ })).toHaveCount(0);
+  await expect(consoleNavLinks(staff, "/orders/review")).toHaveCount(0);
   await expect(staff.getByTestId("review-queue")).toHaveCount(0);
 });
 

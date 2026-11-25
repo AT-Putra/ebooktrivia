@@ -56,7 +56,7 @@ export default async function SalesPage({ searchParams }: { searchParams: Promis
     <>
       <PageHeading
         title="Sales report"
-        description="Visits, MO (an order with a payment page), MT (a paid order), MO to MT % and gross revenue per WIB day, by landing page and source. Revenue is paid orders only: refunds, chargebacks and orders in review are not in it."
+        description="Visits, leads (orders that reached the payment page), purchases (paid orders), success rate (purchases out of leads) and gross revenue per WIB day, by landing page and source. Revenue is paid orders only: refunds, chargebacks and orders in review are not in it."
       />
       {error === null ? null : (
         <p role="alert" className="rounded-md border border-destructive/60 bg-destructive-soft px-3 py-2 text-sm text-destructive-soft-foreground" data-testid="filter-error">
@@ -84,9 +84,9 @@ export default async function SalesPage({ searchParams }: { searchParams: Promis
         title="Totals for the filters"
         tiles={[
           { label: "Visits", value: formatInt(totals.visits), note: filters.status === null ? undefined : "Visits have no status", testId: "kpi-visits" },
-          { label: "MO", value: formatInt(totals.mo), testId: "kpi-mo" },
-          { label: "MT", value: formatInt(totals.mt), testId: "kpi-mt" },
-          { label: "MO to MT", value: formatBps(totals.conversionBps), testId: "kpi-conversion" },
+          { label: "Leads", value: formatInt(totals.mo), testId: "kpi-mo" },
+          { label: "Purchase", value: formatInt(totals.mt), testId: "kpi-mt" },
+          { label: "Success Rate", value: formatBps(totals.conversionBps), testId: "kpi-conversion" },
           { label: "Gross revenue", value: formatRupiah(totals.revenueIdr), testId: "kpi-revenue" },
         ]}
       />
@@ -95,7 +95,7 @@ export default async function SalesPage({ searchParams }: { searchParams: Promis
           {formatInt(review)} order{review === 1 ? " is" : "s are"} in review in this range (a partial refund or chargeback): not in the revenue above.
         </p>
       ) : null}
-      <DailyChart days={days} title="Daily MO and MT" id="sales" />
+      <DailyChart days={days} title="Daily leads and purchases" id="sales" />
       <Card data-testid="sales-table-card">
         <CardTitle className="text-base">By landing page and source</CardTitle>
         {rows.length === 0 ? (
@@ -107,9 +107,9 @@ export default async function SalesPage({ searchParams }: { searchParams: Promis
                 <TableHead>Landing page</TableHead>
                 <TableHead>Source</TableHead>
                 <TableHead className="text-right">Visits</TableHead>
-                <TableHead className="text-right">MO</TableHead>
-                <TableHead className="text-right">MT</TableHead>
-                <TableHead className="text-right">MO to MT</TableHead>
+                <TableHead className="text-right">Leads</TableHead>
+                <TableHead className="text-right">Purchase</TableHead>
+                <TableHead className="text-right">Success Rate</TableHead>
                 <TableHead className="text-right">Revenue</TableHead>
               </TableRow>
             </TableHeader>

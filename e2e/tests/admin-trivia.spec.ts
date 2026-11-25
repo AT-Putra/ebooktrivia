@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Browser, type BrowserContext, expect, type Page, request, test } from "@playwright/test";
-import { type AdminEnv, freshTotp, runAdminCli, startAdminEnv } from "../support/admin.ts";
+import { type AdminEnv, freshTotp, openConsoleNav, runAdminCli, startAdminEnv } from "../support/admin.ts";
 
 /**
  * US-018 (M5b) against the production build of apps/admin (`next start`, own database and port):
@@ -308,7 +308,7 @@ test("prize tiers refuse overlaps; a legal page preview shows markup as text; li
 
   // Staff reach the trivia pages, not the Owner's settings.
   for (const path of ["/settings/prizes", "/settings/legal", `/settings/legal/${other.id}`, "/settings/limits"]) expect((await staff.goto(path))?.status(), path).toBe(403);
-  await expect(staff.getByRole("navigation", { name: "Console" }).first().getByRole("link", { name: "Trivia" })).toBeVisible();
+  await expect((await openConsoleNav(staff, "program")).getByRole("link", { name: "Trivia" })).toBeVisible();
 });
 
 test("the new pages fit a 390 px wide screen (no horizontal scrolling)", async () => {

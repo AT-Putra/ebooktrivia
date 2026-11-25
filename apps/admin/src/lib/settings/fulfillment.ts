@@ -12,7 +12,6 @@
 // The page lists the winners of a FINALIZED program only (the Owner confirmed them): nothing before. It shows the winner's
 // name, phone and e-mail as they are, because the Owner contacts the winner to deliver the prize; the page is Owner-only
 // (policy prize_fulfillment.update) and the database is asked for nothing else.
-import { maskName } from "@ebooktrivia/core";
 import { insertAudit, currentMutationScope, NoMutationScopeError } from "../audit.ts";
 import type { Sql } from "../db.ts";
 import { actor, bounded } from "./contest.ts";
@@ -69,7 +68,6 @@ export interface FulfillmentWinner {
   /** The first 8 characters of the player id. */
   readonly ref: string;
   readonly name: string;
-  readonly maskedName: string;
   readonly phone: string | null;
   readonly email: string | null;
   /** The player asked for their data to be deleted (US-030): no contact is left. */
@@ -154,7 +152,6 @@ export async function getFulfillmentPage(sql: Sql, programId: string): Promise<F
       status: r.status,
       ref: r.player_id.slice(0, 8),
       name: r.name,
-      maskedName: maskName(r.name),
       phone: r.phone,
       email: r.email,
       erased: r.erased,

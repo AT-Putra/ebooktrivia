@@ -14,6 +14,11 @@ Every text, varchar, jsonb, inet and bytea column of every table, classified, an
   - **pseudonymous**: a random id or a business key that identifies a person only together with a PII row;
   - **not PII**: configuration, content, codes and counts.
 
+- **Who sees it (the Owner's decision, 2026-11-25).** The admin console shows customers' names, WhatsApp numbers and e-mails in
+  full to the Owner AND to Staff (delivery and contest reports, contest results, prize fulfilment, the review queue, deletion
+  requests). The public trivia site (leaderboard, winners banner) and the logs keep masking them. The CSV exports stay Owner-only and
+  audited.
+
 ## Subject data: erased or blanked
 
 | Table.column | Class | Erasure |

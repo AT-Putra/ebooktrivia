@@ -1,4 +1,4 @@
-// US-029: the delivery report (per-number volume and failure rate from the send ledger, per-order status with the sender number, buyers masked, errors
+// US-029: the delivery report (per-number volume and failure rate from the send ledger, per-order status with the sender number, buyers in full, errors
 // as codes only, the failed deliveries and their resend) and the contest report (completion per set, the live and the frozen leaderboard, the winners export), as the admin_rw login. Figures are
 // worked out by hand in the comments.
 import { randomBytes } from "node:crypto";
@@ -123,14 +123,10 @@ describe("the delivery report (AC-A6)", () => {
     expect(counts).toContainEqual(["email", 2, 1, 1, 0, 0]);
   });
 
-  it("lists each delivery with its sender number and tries, buyers MASKED in SQL, and filters by channel, status and number", async () => {
+  it("lists each delivery with its sender number and tries, buyers IN FULL (the Owner's decision of 2026-11-25), and filters by channel, status and number", async () => {
     const all = await deliveryList(rt.sql, { ...RANGE, channel: null, status: null, sessionId: null }, 1);
     expect(all.count).toBe(7);
-    expect(JSON.stringify(all.rows)).not.toContain("Budi");
-    expect(JSON.stringify(all.rows)).not.toContain("Santoso");
-    expect(JSON.stringify(all.rows)).not.toContain("+6281234500100");
-    expect(JSON.stringify(all.rows)).not.toContain("budi@example.invalid");
-    expect(all.rows[0]).toMatchObject({ buyerName: "B*** S***", buyerPhone: "****100" });
+    expect(all.rows[0]).toMatchObject({ buyerName: "Budi Santoso", buyerPhone: "+6281234500100", buyerEmail: "budi@example.invalid" });
     const d2 = all.rows.find((r) => r.id === deliveries["d2"]);
     expect(d2).toMatchObject({ channel: "whatsapp", status: "sent", sender: PHONES.n2, attempts: 2, numbersTried: 2 });
     const d1 = all.rows.find((r) => r.id === deliveries["d1"]);
@@ -153,25 +149,25 @@ describe("the delivery report (AC-A6)", () => {
     const id = (await leaky).id;
     const list = await deliveryList(rt.sql, { ...RANGE, channel: "email", status: "failed", sessionId: null }, 1);
     expect(list.rows.find((r) => r.id === id)).toMatchObject({ errorCode: "other" });
+    // The stored text never reaches the page (the buyer's own contact is shown, in its own fields, since 2026-11-25).
     expect(JSON.stringify(list.rows)).not.toContain("mailbox");
-    expect(JSON.stringify(list.rows)).not.toContain("budi@example.invalid");
+    expect(JSON.stringify(list.rows.map((r) => r.errorCode))).not.toContain("budi@example.invalid");
     const attention = await attentionList(rt.sql, 200);
     expect(attention.rows.find((r) => r.id === id)).toMatchObject({ errorCode: "other", status: "failed" });
     expect(JSON.stringify(attention.rows)).not.toContain("mailbox");
-    expect(JSON.stringify(attention.rows)).not.toContain("+6281234500100");
+    expect(JSON.stringify(attention.rows.map((r) => r.errorCode))).not.toContain("+6281234500100");
     // A code is shown as it is.
     const smtp = (await deliveryList(rt.sql, { ...RANGE, channel: "email", status: "failed", sessionId: null }, 1)).rows.find((r) => r.errorCode === "smtp_refused");
     expect(smtp).toBeDefined();
   });
 
-  it("lists the failed and unknown deliveries of PAID orders for a resend, buyers masked, newest first; a delivery of a refunded order is not offered", async () => {
+  it("lists the failed and unknown deliveries of PAID orders for a resend, buyers in full, newest first; a delivery of a refunded order is not offered", async () => {
     const before = await attentionList(rt.sql, 200);
     const mineFailed = before.rows.filter((r) => [deliveries["d3"], deliveries["d4"]].includes(r.id));
     expect(mineFailed.map((r) => [r.id, r.status, r.errorCode])).toEqual(expect.arrayContaining([[deliveries["d3"], "failed", "waha_error"], [deliveries["d4"], "unknown", "timeout"]]));
     expect(before.failed).toBeGreaterThanOrEqual(2);
     expect(before.unknown).toBeGreaterThanOrEqual(1);
-    expect(JSON.stringify(before.rows)).not.toContain("Budi");
-    expect(JSON.stringify(before.rows)).not.toContain("budi@example.invalid");
+    expect(before.rows.find((r) => r.id === deliveries["d3"])).toMatchObject({ buyerName: "Budi Santoso", buyerPhone: "+6281234500100", buyerEmail: "budi@example.invalid" });
     // The order is refunded: nothing is sent for it, so it is not offered.
     const refundedOrder = await paidOrder(ids.programId, ids.productId, ids.lpId, DAY2, 11);
     const refunded = (await one(root<Id[]>`INSERT INTO deliveries (order_id, channel, status, attempts, last_error, created_at) VALUES (${refundedOrder}, 'email', 'failed', 1, 'smtp_refused', ${at(DAY2, 11)}) RETURNING id`)).id;
@@ -180,7 +176,7 @@ describe("the delivery report (AC-A6)", () => {
     expect((await attentionList(rt.sql, 200)).rows.map((r) => r.id)).not.toContain(refunded);
   });
 
-  it("lists a WhatsApp file that arrived WRONG (sent + delivered_wrong_file) for a person to see: counted, masked, never offered for a resend, and not a plain sent delivery or a refunded order's", async () => {
+  it("lists a WhatsApp file that arrived WRONG (sent + delivered_wrong_file) for a person to see: counted, never offered for a resend, and not a plain sent delivery or a refunded order's", async () => {
     // The worker writes this code (US-005 R11: WAHA delivered a file of the wrong size); the report shows it and the row stays `sent` (final).
     expect(DELIVERED_WRONG_FILE).toBe("delivered_wrong_file");
     const before = await attentionList(rt.sql, 200);
@@ -199,7 +195,7 @@ describe("the delivery report (AC-A6)", () => {
     await root`UPDATE orders SET status = 'refunded', refunded_at = now() WHERE id = ${refunded.order}`;
     const after = await attentionList(rt.sql, 200);
     const listed = after.rows.map((r) => r.id);
-    expect(after.rows.find((r) => r.id === wrong.id)).toMatchObject({ status: "sent", errorCode: "delivered_wrong_file", channel: "whatsapp", buyerName: "B*** S***", buyerPhone: "****100" });
+    expect(after.rows.find((r) => r.id === wrong.id)).toMatchObject({ status: "sent", errorCode: "delivered_wrong_file", channel: "whatsapp", buyerName: "Budi Santoso", buyerPhone: "+6281234500100" });
     // Only the wrong-file delivery of a PAID order is listed and counted: not a plain sent one (d1 / d2), not a sent one with another code, not a refunded order's.
     expect(listed).not.toContain(deliveries["d1"]);
     expect(listed).not.toContain(deliveries["d2"]);
@@ -207,8 +203,6 @@ describe("the delivery report (AC-A6)", () => {
     expect(listed).not.toContain(refunded.id);
     expect(after.wrongFile).toBe(before.wrongFile + 1);
     expect([after.failed, after.unknown]).toEqual([before.failed, before.unknown]);
-    expect(JSON.stringify(after.rows)).not.toContain("Budi");
-    expect(JSON.stringify(after.rows)).not.toContain("+6281234500100");
     // Display only: the report changes nothing, the delivery stays `sent`.
     expect((await one(root<{ status: string }[]>`SELECT status FROM deliveries WHERE id = ${wrong.id}`)).status).toBe("sent");
   });
@@ -288,21 +282,19 @@ describe("the contest report (AC-A9)", () => {
     ]);
   });
 
-  it("shows the LIVE leaderboard of eligible players only (the refunded player is out), ranked like the frozen one (ties broken by the earlier first payment), buyers masked in SQL", async () => {
+  it("shows the LIVE leaderboard of eligible players only (the refunded player is out), ranked like the frozen one (ties broken by the earlier first payment), players in full", async () => {
     const board = await leaderboard(rt.sql, programId);
     expect(board).toMatchObject({ frozen: false, frozenAt: null, total: 4 });
     // a 40. b and e tie on score, time and finish (20 points, 30000 ms): the EARLIER FIRST PAYMENT wins, so e (paid 10-19) is 2nd and b (paid 10-20) 3rd, unique ranks;
     // c (20, 30000, unfinished) is last.
     expect(board.rows.map((r) => [r.rank, r.name, r.phone, r.score, r.totalMs])).toEqual([
-      [1, "A*** W***", "****001", 40, 50_000],
-      [2, "E*** P***", "****005", 20, 30_000],
-      [3, "B*** H***", "****002", 20, 30_000],
-      [4, "C*** D***", "****003", 20, 30_000],
+      [1, "Ani Wijaya", "+6281300000001", 40, 50_000],
+      [2, "Eko Prasetyo", "+6281300000005", 20, 30_000],
+      [3, "Budi Hartono", "+6281300000002", 20, 30_000],
+      [4, "Citra Dewi", "+6281300000003", 20, 30_000],
     ]);
     expect(board.rows[3]?.finishedAt).toBeNull();
-    const text = JSON.stringify(board);
-    for (const raw of ["Ani", "Wijaya", "Budi", "Dedi", "+62813000000"]) expect(text).not.toContain(raw);
-    expect(board.rows.some((r) => r.name.startsWith("D"))).toBe(false);
+    expect(board.rows.some((r) => r.name.startsWith("Dedi"))).toBe(false);
   });
 
   it("shows the FROZEN leaderboard once the results snapshot exists", async () => {
@@ -317,9 +309,9 @@ describe("the contest report (AC-A9)", () => {
     expect(board).toMatchObject({ frozen: true, total: 3 });
     expect(board.frozenAt?.toISOString()).toBe("2026-11-12T00:00:00.000Z");
     expect(board.rows.map((r) => [r.rank, r.name, r.score, r.finishedAt?.toISOString() ?? null])).toEqual([
-      [1, "A*** W***", 40, "2026-11-10T03:00:00.000Z"],
-      [2, "B*** H***", 20, "2026-11-10T03:00:00.000Z"],
-      [3, "C*** D***", 20, null],
+      [1, "Ani Wijaya", 40, "2026-11-10T03:00:00.000Z"],
+      [2, "Budi Hartono", 20, "2026-11-10T03:00:00.000Z"],
+      [3, "Citra Dewi", 20, null],
     ]);
     expect((await leaderboard(rt.sql, programId, 2)).rows).toHaveLength(2);
   });
@@ -467,9 +459,9 @@ describe("the contest report on real play rows (US-027)", () => {
     expect(board).toMatchObject({ frozen: false, total: 3 });
     // a and c tie on 10 points; c's unanswered second question costs its full 20 s, so a is first. b: 0 points, both timers (40 s).
     expect(board.rows.map((r) => [r.rank, r.name, r.score])).toEqual([
-      [1, "A*** M***", 10],
-      [2, "C*** M***", 10],
-      [3, "B*** M***", 0],
+      [1, "Ayu Main", 10],
+      [2, "Cahya Main", 10],
+      [3, "Bayu Main", 0],
     ]);
     expect(board.rows[1]?.totalMs).toBeGreaterThanOrEqual(20_000);
     expect(board.rows[2]?.totalMs).toBe(40_000);

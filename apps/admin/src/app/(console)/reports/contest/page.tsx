@@ -5,6 +5,7 @@ import { isUuid } from "@ebooktrivia/core";
 import { Badge } from "@ebooktrivia/ui/components/badge";
 import { Card, CardDescription, CardTitle } from "@ebooktrivia/ui/components/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@ebooktrivia/ui/components/table";
+import { BuyerContact } from "../../../../components/buyer-contact.tsx";
 import { EmptyState, ExportForm, FilterForm, FilterSelect, KpiGrid } from "../../../../components/reports/report-ui.tsx";
 import { PageHeading } from "../../../../components/settings/fields.tsx";
 import { formatBps, formatInt, formatWibTime } from "../../../../lib/format.ts";
@@ -23,7 +24,7 @@ const secondsOf = (ms: number): string => `${(ms / 1000).toFixed(1)} s`;
 
 /**
  * The trivia report (AC-A9): players and completion per set, the leaderboard, the anti-cheat flags and the winners of a program.
- * Staff view it (reports.view) with every player masked; the winners export (names, phones, e-mails for prize fulfillment) is
+ * Staff view it (reports.view) with every player in full (the Owner's decision of 2026-11-25); the winners export (names, phones, e-mails for prize fulfillment) is
  * Owner-only (winners.export), a POST form to an audited route. Confirming winners and the outage tool stay on the results page.
  */
 export default async function ContestReportPage({ searchParams }: { searchParams: Promise<Query> }) {
@@ -48,7 +49,7 @@ export default async function ContestReportPage({ searchParams }: { searchParams
   const [people, board, results] = await Promise.all([participation(sql, program.id), leaderboard(sql, program.id), getContestResults(sql, program.id)]);
   return (
     <>
-      <PageHeading title="Contest report" description={`${program.name}: who plays, how far they get, who leads, which players look suspicious and who wins. Players are masked.`} />
+      <PageHeading title="Contest report" description={`${program.name}: who plays, how far they get, who leads, which players look suspicious and who wins.`} />
       {filter}
       <KpiGrid
         title="Participation"
@@ -122,10 +123,8 @@ export default async function ContestReportPage({ searchParams }: { searchParams
                 <TableRow key={`${String(r.rank)}:${r.ref}`} data-testid="leaderboard-row">
                   <TableCell className="tabular">{r.rank}</TableCell>
                   <TableCell>
-                    {r.name}
-                    <span className="block text-xs text-muted-foreground">
-                      {r.phone ?? "no phone"} · ref {r.ref}
-                    </span>
+                    <BuyerContact name={r.name} phone={r.phone} email={r.email} />
+                    <span className="block text-xs text-muted-foreground">ref {r.ref}</span>
                   </TableCell>
                   <TableCell className="text-right font-mono tabular">{formatInt(r.score)}</TableCell>
                   <TableCell className="text-right font-mono tabular">{secondsOf(r.totalMs)}</TableCell>
@@ -158,7 +157,7 @@ export default async function ContestReportPage({ searchParams }: { searchParams
               {results.flagged.map((f) => (
                 <TableRow key={f.playerId} data-testid="flag-row">
                   <TableCell>
-                    {f.maskedName}
+                    <BuyerContact name={f.name} phone={f.phone} email={f.email} />
                     <span className="block text-xs text-muted-foreground">ref {f.ref}</span>
                   </TableCell>
                   <TableCell className="text-xs">{f.flags.map((k) => FLAG_LABELS[k]).join("; ")}</TableCell>
@@ -190,10 +189,8 @@ export default async function ContestReportPage({ searchParams }: { searchParams
                   <TableCell className="tabular">{w.rank}</TableCell>
                   <TableCell>{w.prizeName}</TableCell>
                   <TableCell>
-                    {w.maskedName}
-                    <span className="block text-xs text-muted-foreground">
-                      {w.maskedPhone ?? "no phone"} · ref {w.ref}
-                    </span>
+                    <BuyerContact name={w.name} phone={w.phone} email={w.email} />
+                    <span className="block text-xs text-muted-foreground">ref {w.ref}</span>
                   </TableCell>
                   <TableCell>
                     <span className="flex flex-wrap gap-1">

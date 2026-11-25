@@ -6,6 +6,7 @@ import { Card, CardDescription, CardTitle } from "@ebooktrivia/ui/components/car
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@ebooktrivia/ui/components/table";
 import { DateInput, EmptyState, FilterForm, FilterSelect, Pager } from "../../../../components/reports/report-ui.tsx";
 import { PageHeading } from "../../../../components/settings/fields.tsx";
+import { BuyerContact } from "../../../../components/buyer-contact.tsx";
 import { MarkHandledForm } from "../../../../components/reports/mark-handled-form.tsx";
 import { ResendForm } from "../../../../components/reports/resend-form.tsx";
 import { formatBps, formatInt, formatWibTime } from "../../../../lib/format.ts";
@@ -65,7 +66,7 @@ function StatusBadge({ status }: { status: string }) {
 /**
  * The delivery report (AC-A6): per-order WhatsApp and e-mail status, the sender number and the retries, the volume and failure
  * rate of every pool number (from the send ledger), and the failed deliveries with their resend (AC-A1: Staff manage resends). Staff
- * view it (reports.view); buyers appear masked (SQL mask_name / mask_phone) and an error is only ever shown as its code. The figures come
+ * view it (reports.view); buyers appear in full (the Owner's decision of 2026-11-25) and an error is only ever shown as its code. The figures come
  * from lib/reports/delivery-source.ts (the one place that knows where deliveries are recorded).
  */
 export default async function DeliveryPage({ searchParams }: { searchParams: Promise<Query> }) {
@@ -181,12 +182,11 @@ export default async function DeliveryPage({ searchParams }: { searchParams: Pro
               {attention.rows.map((r) => (
                 <TableRow key={r.id} data-testid="attention-row">
                   <TableCell className="tabular whitespace-nowrap">{formatWibTime(r.createdAt)}</TableCell>
-                  <TableCell className="font-mono">{r.orderCode}</TableCell>
+                  <TableCell className="font-mono whitespace-nowrap">{r.orderCode}</TableCell>
                   <TableCell>
-                    {r.buyerName}
-                    <span className="block text-xs text-muted-foreground">{r.buyerPhone ?? ""}</span>
+                    <BuyerContact name={r.buyerName} phone={r.buyerPhone} email={r.buyerEmail} />
                   </TableCell>
-                  <TableCell>{CHANNEL_LABELS[r.channel] ?? r.channel}</TableCell>
+                  <TableCell className="whitespace-nowrap">{CHANNEL_LABELS[r.channel] ?? r.channel}</TableCell>
                   <TableCell>
                     <StatusBadge status={r.status} />
                   </TableCell>
@@ -249,7 +249,7 @@ export default async function DeliveryPage({ searchParams }: { searchParams: Pro
 
       <Card data-testid="delivery-list">
         <CardTitle className="text-base">Deliveries</CardTitle>
-        <CardDescription>Newest first. Buyers are masked; the order code is what the buyer sees.</CardDescription>
+        <CardDescription>Newest first. The order code is what the buyer sees.</CardDescription>
         {list.rows.length === 0 ? (
           <EmptyState testId="deliveries-empty">No deliveries match these filters.</EmptyState>
         ) : (
@@ -270,16 +270,15 @@ export default async function DeliveryPage({ searchParams }: { searchParams: Pro
               {list.rows.map((r) => (
                 <TableRow key={r.id} data-testid="delivery-row">
                   <TableCell className="tabular whitespace-nowrap">{formatWibTime(r.createdAt)}</TableCell>
-                  <TableCell className="font-mono">{r.orderCode}</TableCell>
+                  <TableCell className="font-mono whitespace-nowrap">{r.orderCode}</TableCell>
                   <TableCell>
-                    {r.buyerName}
-                    <span className="block text-xs text-muted-foreground">{r.buyerPhone ?? ""}</span>
+                    <BuyerContact name={r.buyerName} phone={r.buyerPhone} email={r.buyerEmail} />
                   </TableCell>
-                  <TableCell>{CHANNEL_LABELS[r.channel] ?? r.channel}</TableCell>
+                  <TableCell className="whitespace-nowrap">{CHANNEL_LABELS[r.channel] ?? r.channel}</TableCell>
                   <TableCell>
                     <StatusBadge status={r.status} />
                   </TableCell>
-                  <TableCell className="font-mono">{r.channel === "whatsapp" ? (r.sender ?? "-") : "-"}</TableCell>
+                  <TableCell className="font-mono whitespace-nowrap">{r.channel === "whatsapp" ? (r.sender ?? "-") : "-"}</TableCell>
                   <TableCell className="text-right font-mono tabular">
                     {r.attempts}
                     {r.channel === "whatsapp" && r.numbersTried > 1 ? <span className="block text-xs text-muted-foreground">{`${String(r.numbersTried)} numbers`}</span> : null}

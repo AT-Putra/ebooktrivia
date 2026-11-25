@@ -5,14 +5,14 @@ import { Badge } from "@ebooktrivia/ui/components/badge";
 import { Card, CardDescription, CardTitle } from "@ebooktrivia/ui/components/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@ebooktrivia/ui/components/table";
 import { EmptyState } from "../../../../components/reports/report-ui.tsx";
-import { DecisionForm, RequeryForm, RevealBuyer } from "../../../../components/review/review-forms.tsx";
+import { DecisionForm, RequeryForm } from "../../../../components/review/review-forms.tsx";
 import { Notice, PageHeading } from "../../../../components/settings/fields.tsx";
 import { formatInt, formatRupiah, formatWibTime } from "../../../../lib/format.ts";
 import { requireAdmin } from "../../../../lib/next/require-admin.ts";
 import { getRuntime } from "../../../../lib/next/runtime.ts";
 import { DECISION_STATUS } from "@ebooktrivia/core";
 import { decisionMessage, loadRecentDecisions, loadReviewQueue, type ReviewOrder } from "../../../../lib/review/review.ts";
-import { decideReviewAction, requeryReviewAction, revealBuyerAction } from "./actions.ts";
+import { decideReviewAction, requeryReviewAction } from "./actions.ts";
 
 export const metadata: Metadata = { title: "Review queue | Admin Console" };
 export const dynamic = "force-dynamic";
@@ -93,7 +93,20 @@ function OrderCard({ order, now }: { order: ReviewOrder; now: Date }) {
               Erased on request (UU PDP): no contact is kept, and nothing can be delivered.
             </p>
           ) : (
-            <RevealBuyer id={order.id} masked={order.buyer} action={revealBuyerAction} />
+            <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-sm" data-testid={`buyer-${order.id}`}>
+              <dt className="text-muted-foreground">Name</dt>
+              <dd className="[overflow-wrap:anywhere]" data-testid="buyer-name">
+                {order.buyer.name}
+              </dd>
+              <dt className="text-muted-foreground">WhatsApp</dt>
+              <dd className="font-mono tabular" data-testid="buyer-phone">
+                {order.buyer.phone}
+              </dd>
+              <dt className="text-muted-foreground">E-mail</dt>
+              <dd className="break-all" data-testid="buyer-email">
+                {order.buyer.email}
+              </dd>
+            </dl>
           )}
           <p className="text-xs" data-testid="eligibility">
             Player: {ELIGIBILITY[order.eligibility.state]}
@@ -162,7 +175,7 @@ function OrderCard({ order, now }: { order: ReviewOrder; now: Date }) {
 
 /**
  * The Owner's review queue (US-033): every order in review with why it is there, what Midtrans says about each attempt, the buyer
- * (masked; the full detail one audited click away) and the player's eligibility, and the two decisions. Owner only
+ * (in full) and the player's eligibility, and the two decisions. Owner only
  * (order.review.resolve): Staff get 403 here and on every action.
  */
 export default async function ReviewQueuePage() {

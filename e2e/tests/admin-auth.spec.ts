@@ -1,5 +1,5 @@
 import { type APIRequestContext, type Browser, type BrowserContext, expect, type Page, request, test } from "@playwright/test";
-import { ADMIN_AUTH_URL, type AdminEnv, freshTotp, OTHER_ORIGIN, runAdminCli, startAdminEnv, wrongTotp } from "../support/admin.ts";
+import { ADMIN_AUTH_URL, type AdminEnv, consoleNavLinks, freshTotp, openConsoleNav, OTHER_ORIGIN, runAdminCli, startAdminEnv, wrongTotp } from "../support/admin.ts";
 
 /**
  * US-016 (M5a-1) against the production build of apps/admin (`next start`, own database):
@@ -206,12 +206,14 @@ test("Staff get 403 on Owner-only pages and actions, and those controls are hidd
   staffSecret = (await enroll(staffPage, STAFF, "staff")).secret;
 
   // Hidden: the navigation has no Owner-only entries for Staff (the Owner sees them).
-  const nav = staffPage.getByRole("navigation", { name: "Console" }).first();
+  // The menu is in collapsible groups (the page's group starts open): open Dashboard and System to read them.
+  await openConsoleNav(staffPage, "dashboard");
+  const nav = await openConsoleNav(staffPage, "system");
   await expect(nav.getByRole("link", { name: "Overview" })).toBeVisible();
   await expect(nav.getByRole("link", { name: "Account" })).toBeVisible();
-  await expect(staffPage.getByRole("link", { name: "Team" })).toHaveCount(0);
-  await expect(staffPage.getByRole("link", { name: "Audit log" })).toHaveCount(0);
-  await expect(ownerPage.getByRole("navigation", { name: "Console" }).first().getByRole("link", { name: "Audit log" })).toBeVisible();
+  await expect(consoleNavLinks(staffPage, "/team")).toHaveCount(0);
+  await expect(consoleNavLinks(staffPage, "/audit")).toHaveCount(0);
+  await expect((await openConsoleNav(ownerPage, "system")).getByRole("link", { name: "Audit log" })).toBeVisible();
 
   // 403 on the routes.
   for (const path of ["/team", "/audit"]) {

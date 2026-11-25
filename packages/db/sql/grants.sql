@@ -471,8 +471,9 @@ REVOKE INSERT, UPDATE, DELETE ON public.report_orders_daily, public.report_visit
 GRANT EXECUTE ON FUNCTION public.refresh_report_rollups(timestamptz, integer) TO worker_rw;
 GRANT EXECUTE ON FUNCTION public.wib_day(timestamptz), public.order_source_adnet(uuid, text), public.gateway_fee_idr(bigint, bigint, integer),
   public.midtrans_method_codes(text) TO worker_rw, admin_rw;
--- The console labels sources through order_source_label (US-024) and masks buyers and winners in SQL, with the one
--- masking rule of the product (functions.sql), wherever Staff can see them.
+-- The console labels sources through order_source_label (US-024). Since 2026-11-25 (the Owner's decision) it shows buyers
+-- and winners in full to the Owner and Staff; mask_name / mask_phone (the one masking rule of the product, functions.sql)
+-- stay granted for the masked views that remain, and the public site keeps masking through its own functions.
 GRANT EXECUTE ON FUNCTION public.report_source_label(uuid), public.mask_name(text), public.mask_phone(text) TO admin_rw;
 -- US-029 BLOCK END.
 -- US-027 (M9b trivia page, question flow, leaderboard) BLOCK BEGIN.

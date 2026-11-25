@@ -1,7 +1,7 @@
 // The trivia (contest) report (AC-A9): players and completion per set, the leaderboard (frozen once the results snapshot exists, live
 // before), and the anti-cheat flags and winners (lib/settings/contest.ts, US-028: listFlaggedPlayers, getContestResults). Players are
-// shown MASKED: the leaderboard masks in SQL (public.mask_name / mask_phone, the one masking rule of the product), and the flag and
-// winner lists come from US-028's code, which masks with the same rule. The winners export (contact details) is Owner-only
+// shown IN FULL (name, phone, e-mail) to the Owner and to Staff: the Owner's decision of 2026-11-25 (the public site still masks them,
+// public.mask_name / mask_phone). The winners export (contact details) is Owner-only
 // (lib/reports/exports.ts). The live board and the count of players who finished everything come from public.play_ranking
 // (packages/db sql/play.sql, US-027): THE ranking the players see and the snapshot freezes (D4, D8), never a copy of it.
 import { rateBps } from "@ebooktrivia/core";
@@ -65,6 +65,7 @@ export interface LeaderboardRow {
   readonly ref: string;
   readonly name: string;
   readonly phone: string | null;
+  readonly email: string | null;
   readonly score: number;
   readonly totalMs: number;
   readonly finishedAt: Date | null;
@@ -90,11 +91,11 @@ export const LEADERBOARD_LIMIT = 50;
 export async function leaderboard(sql: Sql, programId: string, limit = LEADERBOARD_LIMIT): Promise<Leaderboard> {
   const [snapshot] = await sql<{ frozen_at: Date; total: number }[]>`
     SELECT frozen_at, jsonb_array_length(entries)::int AS total FROM public.leaderboard_snapshots WHERE program_id = ${programId}`;
-  type Row = { rank: number; player_id: string; name: string; phone: string | null; score: number; total_ms: string; finished_at: Date | null };
-  const toRow = (r: Row): LeaderboardRow => ({ rank: r.rank, ref: r.player_id.slice(0, 8), name: r.name, phone: r.phone, score: r.score, totalMs: Number(r.total_ms), finishedAt: r.finished_at });
+  type Row = { rank: number; player_id: string; name: string; phone: string | null; email: string | null; score: number; total_ms: string; finished_at: Date | null };
+  const toRow = (r: Row): LeaderboardRow => ({ rank: r.rank, ref: r.player_id.slice(0, 8), name: r.name, phone: r.phone, email: r.email, score: r.score, totalMs: Number(r.total_ms), finishedAt: r.finished_at });
   if (snapshot !== undefined) {
     const rows = await sql<Row[]>`
-      SELECT (e.value ->> 'rank')::int AS rank, pl.id AS player_id, public.mask_name(pl.name) AS name, public.mask_phone(pl.phone) AS phone,
+      SELECT (e.value ->> 'rank')::int AS rank, pl.id AS player_id, pl.name, pl.phone, pl.email,
              (e.value ->> 'score')::int AS score, (e.value ->> 'total_ms') AS total_ms, (e.value ->> 'finished_at')::timestamptz AS finished_at
         FROM public.leaderboard_snapshots l
         CROSS JOIN LATERAL jsonb_array_elements(l.entries) AS e(value)
@@ -105,7 +106,7 @@ export async function leaderboard(sql: Sql, programId: string, limit = LEADERBOA
     return { frozen: true, frozenAt: snapshot.frozen_at, rows: rows.map(toRow), total: snapshot.total };
   }
   const rows = await sql<(Row & { total: number })[]>`
-    SELECT r.rank, r.player_id, public.mask_name(pl.name) AS name, public.mask_phone(pl.phone) AS phone, r.score, r.total_ms::text AS total_ms,
+    SELECT r.rank, r.player_id, pl.name, pl.phone, pl.email, r.score, r.total_ms::text AS total_ms,
            r.finished_at, (count(*) OVER ())::int AS total
       FROM public.play_ranking(${programId}) r
       JOIN public.players pl ON pl.id = r.player_id

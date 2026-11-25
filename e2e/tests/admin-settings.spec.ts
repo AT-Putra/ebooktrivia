@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Browser, type BrowserContext, expect, type Page, request, test } from "@playwright/test";
 import { makeZip } from "../../packages/uploads/test/zip-fixture.ts";
-import { type AdminEnv, freshTotp, runAdminCli, startAdminEnv } from "../support/admin.ts";
+import { type AdminEnv, consoleNavLinks, freshTotp, openConsoleNav, runAdminCli, startAdminEnv } from "../support/admin.ts";
 
 /**
  * US-017 (M5a-2) against the production build of apps/admin (`next start`, own database and port):
@@ -296,11 +296,12 @@ test("Staff cannot register LP domains: the control is hidden and the action is 
   const staff = await staffContext.newPage();
   await passwordStep(staff, STAFF.email, STAFF.password);
   await enroll(staff, STAFF, "staff");
-  const nav = staff.getByRole("navigation", { name: "Console" }).first();
+  await openConsoleNav(staff, "program");
+  const nav = await openConsoleNav(staff, "messaging");
   await expect(nav.getByRole("link", { name: "Landing pages" })).toBeVisible();
   await expect(nav.getByRole("link", { name: "Products" })).toBeVisible();
   await expect(nav.getByRole("link", { name: "Templates" })).toBeVisible();
-  for (const name of ["Programs", "Adnets", "Midtrans", "WhatsApp", "SMTP"]) await expect(staff.getByRole("link", { name, exact: true })).toHaveCount(0);
+  for (const href of ["/settings/programs", "/settings/adnets", "/settings/midtrans", "/settings/waha", "/settings/smtp"]) await expect(consoleNavLinks(staff, href), href).toHaveCount(0);
   await staff.goto("/settings/landing-pages");
   const staffCard = staff.getByTestId(`lp-${lp.lp_key}`);
   await expect(staffCard.getByTestId("lp-domains")).toContainText("promo.brand.example");
@@ -730,7 +731,7 @@ test("WhatsApp numbers: the panel says where the warm-up is, a new session warms
 test("Customer service: the Owner saves the contact, sees what buyers get, and the CS number can never be a sending number (both directions); 390 and 1280 px hold", async () => {
   const csNumber = "0812 3456 7890";
   await owner.goto("/settings/customer-service");
-  await expect(owner.getByRole("navigation", { name: "Console" }).first().getByRole("link", { name: "Customer service" })).toBeVisible();
+  await expect((await openConsoleNav(owner, "messaging")).getByRole("link", { name: "Customer service" })).toBeVisible();
   await expect(owner.getByRole("heading", { name: "Customer service", level: 1 })).toBeVisible();
   const form = owner.getByTestId("cs-contact-form");
   await expect(owner.getByTestId("cs-preview-line")).toHaveText("Nothing is set: the replies carry no customer service line.");

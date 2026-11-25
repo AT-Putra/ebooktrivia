@@ -1,11 +1,12 @@
 import { randomBytes } from "node:crypto";
 import AxeBuilder from "@axe-core/playwright";
 import { type Browser, type BrowserContext, expect, type Page, test } from "@playwright/test";
-import { type AdminEnv, freshTotp, runAdminCli, startAdminEnv } from "../support/admin.ts";
+import { type AdminEnv, consoleNavLinks, freshTotp, openConsoleNav, runAdminCli, startAdminEnv } from "../support/admin.ts";
 
 /**
  * US-029 (M10a) against the production build of apps/admin (`next start`, own database and port), at 375 px:
- *   - the dashboard shows today's visits, MO, MT, conversion % and revenue from the rollups, with the "as of" time;
+ *   - the dashboard shows today's visits, leads, purchases, success rate and revenue from the rollups, with the "as of" time;
+ *   - the Leads Report shows today live and one row per day with a TOTAL, its range, program and sort in the URL;
  *   - the sales report filters, shows the chart with its table alternative, and the Owner (only) downloads an audited CSV;
  *   - Staff view the reports with no export, no profit view, no ad spend and no re-fire, enforced by the server (403), not only hidden;
  *   - the Owner's profit report matches the hand-computed fixture, and ad spend entered in the console changes it at once;
@@ -138,13 +139,17 @@ test.afterAll(async () => {
   if (started) await admin.stop();
 });
 
-test("the dashboard shows today's visits, MO, MT, conversion % and revenue from the rollups, with the time they are as of", async () => {
+test("the dashboard shows today's visits, leads, purchases, success rate and revenue from the rollups, with the time they are as of", async () => {
   await owner.goto("/");
   await expect(owner.getByTestId("kpi-visits")).toContainText("5");
+  await expect(owner.getByTestId("kpi-mo")).toContainText("Leads today");
   await expect(owner.getByTestId("kpi-mo")).toContainText("4");
+  await expect(owner.getByTestId("kpi-mt")).toContainText("Purchase today");
   await expect(owner.getByTestId("kpi-mt")).toContainText("3");
+  await expect(owner.getByTestId("kpi-conversion")).toContainText("Success Rate today");
   await expect(owner.getByTestId("kpi-conversion")).toContainText("75%");
   await expect(owner.getByTestId("kpi-revenue")).toContainText("Rp 147.000");
+  await expect(owner.getByRole("main")).not.toContainText(/\bM[OT]\b/);
   await expect(owner.getByTestId("as-of")).toContainText("Figures as of");
   await expect(owner.getByTestId("stale-warning")).toHaveCount(0);
   // The chart has its table alternative.
@@ -184,15 +189,63 @@ test("the sales report filters (status), and the Owner downloads an audited CSV 
   expect(audit.n).toBe(1);
 });
 
+test("the Leads Report shows today live and one row per day with a TOTAL; the date range, program and sort live in the URL", async () => {
+  await owner.goto("/reports/leads");
+  await expect(owner.getByRole("heading", { name: "Leads Report", level: 1 })).toBeVisible();
+  await expect(owner.getByTestId("last-updated")).toContainText("WIB");
+  // Today, live (not the rollups): 4 leads, 3 purchases, 75 %, Rp 147.000; nobody played.
+  await expect(owner.getByTestId("today-leads-value")).toHaveText("4");
+  await expect(owner.getByTestId("today-purchase-value")).toHaveText("3");
+  await expect(owner.getByTestId("today-success-rate-value")).toHaveText("75%");
+  await expect(owner.getByTestId("today-revenue-value")).toHaveText("Rp 147.000");
+  await expect(owner.getByTestId("today-active-value")).toHaveText("0");
+  await expect(owner.getByTestId("today-play-rate-value")).toHaveText("0%");
+  // The default table: the 10 days before today, all zero here, with the TOTAL row.
+  await expect(owner.getByTestId("leads-day-row")).toHaveCount(10);
+  await expect(owner.getByTestId("days-caption")).toContainText("Showing 10 days");
+  await expect(owner.getByTestId("leads-total-row")).toContainText("TOTAL");
+  // Today in the range: one row, the same figures, the WhatsApp ebook that was sent.
+  const today = await one(admin.sql<{ d: string }[]>`SELECT ((now() AT TIME ZONE 'UTC') + interval '7 hours')::date::text AS d`);
+  const program = await one(admin.sql<{ id: string }[]>`SELECT id FROM programs WHERE name = 'Musim Laporan'`);
+  await owner.getByLabel("From (WIB)").fill(today.d);
+  await owner.getByLabel("To (WIB)").fill(today.d);
+  await owner.getByLabel("Program", { exact: true }).selectOption(program.id);
+  await owner.getByRole("button", { name: "Apply" }).click();
+  await expect(owner).toHaveURL(new RegExp(`from=${today.d}.*program=${program.id}`));
+  await expect(owner.getByTestId("leads-day-row")).toHaveCount(1);
+  const total = owner.getByTestId("leads-total-row");
+  const cells = total.getByRole("cell");
+  for (const [i, text] of ["TOTAL", "4", "3", "75%", "Rp 147.000", "0", "0%"].entries()) await expect(cells.nth(i), String(i)).toHaveText(text);
+  await expect(total.getByRole("cell").nth(7)).toHaveText("1");
+  await expect(total.getByRole("cell").nth(8)).toHaveText("1");
+  await expect(total.getByRole("cell").nth(9)).toHaveText("0");
+  // A sort keeps the filters; a second click flips it.
+  await owner.getByRole("columnheader", { name: /^Leads/ }).getByRole("link").click();
+  await expect(owner).toHaveURL(/sort=leads&dir=desc/);
+  await expect(owner).toHaveURL(new RegExp(`program=${program.id}`));
+  await expect(owner.getByRole("columnheader", { name: /^Leads/ })).toHaveAttribute("aria-sort", "descending");
+  await owner.getByRole("columnheader", { name: /^Leads/ }).getByRole("link").click();
+  await expect(owner).toHaveURL(/sort=leads&dir=asc/);
+  // A date in the future is refused with a message, and the default range is shown.
+  await owner.goto("/reports/leads?to=2999-01-01");
+  await expect(owner.getByTestId("filter-error")).toContainText("future");
+  await expect(owner.getByTestId("leads-day-row")).toHaveCount(10);
+  // Staff open it too, from the Dashboard group of the menu.
+  await staff.goto("/");
+  await (await openConsoleNav(staff, "dashboard")).getByRole("link", { name: "Leads Report" }).click();
+  await expect(staff.getByRole("heading", { name: "Leads Report", level: 1 })).toBeVisible();
+  await expect(staff.getByTestId("today-leads-value")).toHaveText("4");
+});
+
 test("Staff view the reports but cannot export, see profit, edit ad spend or re-fire: the server refuses, not only the menu", async () => {
   await staff.goto("/reports/sales");
   await expect(staff.getByTestId("kpi-revenue")).toContainText("Rp 147.000");
   await expect(staff.getByTestId("sales-export")).toHaveCount(0);
-  const nav = staff.getByRole("navigation", { name: "Console" }).first();
+  const nav = await openConsoleNav(staff, "reports");
   await expect(nav.getByRole("link", { name: "Sales" })).toBeVisible();
   await expect(nav.getByRole("link", { name: "Postbacks" })).toBeVisible();
-  await expect(nav.getByRole("link", { name: "Profit and ROI" })).toHaveCount(0);
-  await expect(nav.getByRole("link", { name: "Ad spend" })).toHaveCount(0);
+  await expect(consoleNavLinks(staff, "/reports/roi")).toHaveCount(0);
+  await expect(consoleNavLinks(staff, "/reports/ad-spend")).toHaveCount(0);
   // The server: the CSV routes, the profit view and the ad-spend page answer 403 to a Staff session.
   for (const path of ["/reports/sales/export", "/reports/contest/export"]) {
     const response = await staff.request.post(path, { form: { from: "2026-01-01", to: "2026-01-02" }, headers: { origin: URL_ } });
@@ -207,9 +260,11 @@ test("Staff view the reports but cannot export, see profit, edit ad spend or re-
   await expect(staff.getByTestId("postback-row")).toHaveCount(1);
   await expect(staff.getByRole("button", { name: "Re-fire" })).toHaveCount(0);
   await expect(staff.getByRole("columnheader", { name: "Payout" })).toHaveCount(0);
-  // Delivery and contest reports load for Staff, with buyers masked.
+  // Delivery and contest reports load for Staff, with buyers in full (the Owner's decision of 2026-11-25).
   await staff.goto("/reports/delivery");
   await expect(staff.getByRole("heading", { name: "Delivery report" })).toBeVisible();
+  await expect(staff.getByTestId("attention-row").first()).toContainText("Budi Santoso");
+  await expect(staff.getByTestId("attention-row").first()).toContainText("+6281234500100");
   await staff.goto("/reports/contest");
   await expect(staff.getByRole("heading", { name: "Contest report" })).toBeVisible();
   await expect(staff.getByTestId("winners-export")).toHaveCount(0);
@@ -306,7 +361,7 @@ test("the postback report shows the failed conversion and the reconciliation ide
 });
 
 test("every report page passes axe and fits a 375 px wide screen", async () => {
-  for (const path of ["/", "/reports/sales", "/reports/roi", "/reports/ad-spend", "/reports/postbacks", "/reports/delivery", "/reports/contest"]) {
+  for (const path of ["/", "/reports/leads", "/reports/sales", "/reports/roi", "/reports/ad-spend", "/reports/postbacks", "/reports/delivery", "/reports/contest"]) {
     await owner.setViewportSize({ width: 1280, height: 900 });
     await owner.goto(path);
     const scan = await new AxeBuilder({ page: owner }).analyze();
