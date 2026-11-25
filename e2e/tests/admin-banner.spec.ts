@@ -90,11 +90,11 @@ test("the Owner uploads, previews, replaces and removes a program's banner pictu
   await owner.goto("/settings/programs");
   const card = owner.getByTestId(`program-${slug}`);
   const banner = card.getByTestId("program-banner");
-  await expect(banner).toContainText("Banner program (ditampilkan ke pemain)");
-  await expect(banner).toContainText("Belum ada gambar banner");
+  await expect(banner).toContainText("Program banner (shown to players)");
+  await expect(banner).toContainText("No banner yet");
   await expect(card.getByTestId("program-banner-preview")).toHaveCount(0);
 
-  await banner.getByLabel(/Unggah gambar banner/).setInputFiles({ name: "banner.png", mimeType: "image/png", buffer: solidPng(1500, 500) });
+  await banner.getByLabel(/Upload a banner/).setInputFiles({ name: "banner.png", mimeType: "image/png", buffer: solidPng(1500, 500) });
   await expect(banner.getByRole("status")).toContainText("Image saved.");
   // The page refreshes with the preview (the display copy, embedded as a data URI) in a 3:1 box, and the label offers a replacement.
   const preview = card.getByTestId("program-banner-preview");
@@ -102,19 +102,19 @@ test("the Owner uploads, previews, replaces and removes a program's banner pictu
   await expect(preview).toHaveAttribute("src", /^data:image\/webp;base64,/);
   const box = await preview.boundingBox();
   expect((box?.width ?? 0) / (box?.height ?? 1)).toBeCloseTo(3, 1);
-  await expect(banner.getByLabel(/Ganti gambar banner/)).toBeVisible();
+  await expect(banner.getByLabel(/Replace the banner/)).toBeVisible();
   const [row] = await admin.sql<{ id: string }[]>`SELECT banner_upload_id AS id FROM programs WHERE id = ${programId}`;
   const first = row?.id ?? "";
   expect(first).not.toBe("");
 
-  await banner.getByLabel(/Ganti gambar banner/).setInputFiles({ name: "banner2.png", mimeType: "image/png", buffer: solidPng(1800, 600) });
+  await banner.getByLabel(/Replace the banner/).setInputFiles({ name: "banner2.png", mimeType: "image/png", buffer: solidPng(1800, 600) });
   await expect.poll(async () => (await admin.sql<{ id: string }[]>`SELECT banner_upload_id AS id FROM programs WHERE id = ${programId}`)[0]?.id).not.toBe(first);
 
   expect(await owner.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
 
-  await card.getByTestId("program-banner-remove").getByRole("button", { name: "Hapus gambar banner" }).click();
+  await card.getByTestId("program-banner-remove").getByRole("button", { name: "Remove banner" }).click();
   await expect(card.getByTestId("program-banner-remove")).toHaveCount(0);
-  await expect(banner).toContainText("Belum ada gambar banner");
+  await expect(banner).toContainText("No banner yet");
   expect((await admin.sql<{ id: string | null }[]>`SELECT banner_upload_id AS id FROM programs WHERE id = ${programId}`)[0]?.id).toBeNull();
   // Audited: one entry per change, with the upload ids and never the file name.
   const audits = await admin.sql<{ text: string }[]>`SELECT row_to_json(a)::text AS text FROM audit_log a WHERE action = 'program.banner' AND entity_id = ${programId}`;
@@ -139,7 +139,7 @@ test("a finalized program lists its banner as uploaded, without embedding the pi
     VALUES (${product?.id ?? ""}, ${doneSlug}, 'Musim Selesai', 'finalized', now() - interval '90 days', now() - interval '40 days', 30) RETURNING id`;
   // The picture exists on disk, so the missing preview is the page's choice and not a missing file.
   await owner.goto("/settings/programs");
-  await owner.getByTestId(`program-${slug}`).getByLabel(/Unggah gambar banner/).setInputFiles({ name: "b.png", mimeType: "image/png", buffer: solidPng(1500, 500) });
+  await owner.getByTestId(`program-${slug}`).getByLabel(/Upload a banner/).setInputFiles({ name: "b.png", mimeType: "image/png", buffer: solidPng(1500, 500) });
   await expect(owner.getByTestId(`program-${slug}`).getByRole("status")).toContainText("Image saved.");
   const [uploaded] = await admin.sql<{ id: string }[]>`SELECT banner_upload_id AS id FROM programs WHERE id = ${programId}`;
   await admin.sql`UPDATE programs SET banner_upload_id = ${uploaded?.id ?? ""} WHERE id = ${done?.id ?? ""}`;
@@ -150,7 +150,7 @@ test("a finalized program lists its banner as uploaded, without embedding the pi
   await expect(card.getByTestId("program-banner-remove")).toBeVisible();
   // A program still in play shows the picture.
   await expect(owner.getByTestId(`program-${slug}`).getByTestId("program-banner-preview")).toBeVisible();
-  await card.getByTestId("program-banner-remove").getByRole("button", { name: "Hapus gambar banner" }).click();
+  await card.getByTestId("program-banner-remove").getByRole("button", { name: "Remove banner" }).click();
   await expect(card.getByTestId("program-banner-remove")).toHaveCount(0);
   expect((await admin.sql<{ id: string | null }[]>`SELECT banner_upload_id AS id FROM programs WHERE id = ${done?.id ?? ""}`)[0]?.id).toBeNull();
 });
@@ -158,11 +158,11 @@ test("a finalized program lists its banner as uploaded, without embedding the pi
 test("a leaderboard shorter than the last prize rank is flagged on the Programs and the Prize tiers pages (read-only hint, Bahasa Indonesia)", async () => {
   await owner.goto("/settings/programs");
   const hint = owner.getByTestId(`program-${slug}`).getByTestId("program-leaderboard-hint");
-  await expect(hint).toContainText("5 pemain teratas");
-  await expect(hint).toContainText("peringkat 1 sampai 6");
-  await expect(hint).toContainText("sebagian pemenang hadiah tidak akan tampil di papan peringkat");
+  await expect(hint).toContainText("top 5 players");
+  await expect(hint).toContainText("ranks 1 to 6");
+  await expect(hint).toContainText("some prize winners would not appear on it");
   await owner.goto("/settings/prizes");
-  await expect(owner.getByTestId(`prizes-${programId}`).getByTestId("leaderboard-hint")).toContainText("minimal 6");
+  await expect(owner.getByTestId(`prizes-${programId}`).getByTestId("leaderboard-hint")).toContainText("at least 6");
   // Long enough: no hint.
   await admin.sql`UPDATE programs SET leaderboard_top_n = 6 WHERE id = ${programId}`;
   await owner.goto("/settings/programs");

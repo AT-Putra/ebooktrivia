@@ -72,11 +72,12 @@ export default async function PrizesPage() {
                     <input type="hidden" name="tierId" value={tier.id} />
                     <TierFields prefix={`tier-${tier.id}`} tier={tier} />
                   </ActionForm>
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    <div className="flex flex-col gap-2">
+                  {/* The image on the left; the tier's delete button at the end of the row, on the right (a danger action apart from the others). */}
+                  <div className="flex flex-wrap items-end justify-between gap-3">
+                    <div className="flex min-w-0 flex-col gap-2">
                       <UploadFile id={`tier-image-${tier.id}`} url={`/uploads/image/prize?program=${program.id}&tier=${tier.id}`} label="Prize image (JPEG, PNG or WebP, up to 2 MB)" accept="image/jpeg,image/png,image/webp" mode="image" />
                       {tier.imageUploadId === null ? null : (
-                        <ActionForm action={removePrizeImageAction} submitLabel="Remove image" variant="ghost">
+                        <ActionForm action={removePrizeImageAction} submitLabel="Remove image" variant="outline">
                           <input type="hidden" name="programId" value={program.id} />
                           <input type="hidden" name="tierId" value={tier.id} />
                         </ActionForm>

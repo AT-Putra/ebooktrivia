@@ -66,7 +66,7 @@ export default async function AdnetsPage() {
                   <SecretBadge status={s} />
                   {s.referenced ? null : <Badge variant="outline">Not used by a template</Badge>}
                   {s.set ? (
-                    <ActionForm action={clearAdnetSecretAction} submitLabel="Remove" variant="ghost" className="flex items-center gap-2">
+                    <ActionForm action={clearAdnetSecretAction} submitLabel="Remove" variant="outline" className="flex items-center gap-2">
                       <input type="hidden" name="adnetId" value={adnet.id} />
                       <input type="hidden" name="name" value={s.name} />
                     </ActionForm>
@@ -75,7 +75,7 @@ export default async function AdnetsPage() {
               ))}
             </ul>
             {sealing ? (
-              <ActionForm action={setAdnetSecretAction} submitLabel="Save secret" variant="secondary" className="grid gap-3 sm:grid-cols-[1fr_2fr_auto] sm:items-end">
+              <ActionForm inlineActions action={setAdnetSecretAction} submitLabel="Save secret" variant="secondary" className="grid gap-3 sm:grid-cols-[1fr_2fr_auto] sm:items-end">
                 <input type="hidden" name="adnetId" value={adnet.id} />
                 <TextField id={`sec-name-${adnet.id}`} name="name" label="Secret name" maxLength={64} placeholder="api_key" defaultValue={adnet.secrets.find((s) => !s.set)?.name} />
                 <TextField id={`sec-value-${adnet.id}`} name="value" label="Value (write-only)" type="password" autoComplete="new-password" maxLength={4096} />

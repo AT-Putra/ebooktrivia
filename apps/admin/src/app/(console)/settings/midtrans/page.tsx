@@ -28,7 +28,7 @@ export default async function MidtransPage() {
             {settings.environment === "production" ? "Production" : "Sandbox"}
           </Badge>
         </div>
-        <ActionForm action={setMidtransEnvironmentAction} submitLabel={`Switch to ${other}`} variant="outline" className="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
+        <ActionForm inlineActions action={setMidtransEnvironmentAction} submitLabel={`Switch to ${other}`} variant="outline" className="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
           <input type="hidden" name="environment" value={other} />
           <TextField id="mt-confirm" name="confirm" label={`Type "${other}" to confirm`} maxLength={20} />
         </ActionForm>
@@ -43,7 +43,7 @@ export default async function MidtransPage() {
               <SecretBadge status={keys[env]} testId={`midtrans-key-${env}-status`} />
             </div>
             {sealing ? (
-              <ActionForm action={setMidtransKeyAction} submitLabel="Save key" variant="secondary" className="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
+              <ActionForm inlineActions action={setMidtransKeyAction} submitLabel="Save key" variant="secondary" className="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
                 <input type="hidden" name="environment" value={env} />
                 <TextField id={`mt-key-${env}`} name="serverKey" label={`New ${env} server key`} type="password" autoComplete="new-password" maxLength={200} placeholder={env === "sandbox" ? "SB-Mid-server-..." : "Mid-server-..."} />
               </ActionForm>
@@ -51,7 +51,7 @@ export default async function MidtransPage() {
               <CardDescription>Keys cannot be saved: the payment sealing key is not configured on the server.</CardDescription>
             )}
             {keys[env].set && env !== settings.environment ? (
-              <ActionForm action={clearMidtransKeyAction} submitLabel="Remove key" variant="ghost">
+              <ActionForm action={clearMidtransKeyAction} submitLabel="Remove key" variant="outline">
                 <input type="hidden" name="environment" value={env} />
               </ActionForm>
             ) : null}

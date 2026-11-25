@@ -58,7 +58,7 @@ export function triviaImage({ rt, admin }: RouteContext, request: Request): Prom
 /** ?program= (the picture the play page's banner card shows for the program; Owner only: adminRoute asks `program.edit`, and this checks it again). */
 export function bannerImage({ rt, admin }: RouteContext, request: Request): Promise<Response> {
   return answer(async () => {
-    if (!can(admin.role, "program.edit")) throw new NotAllowed("Hanya Owner yang dapat mengubah gambar banner program.");
+    if (!can(admin.role, "program.edit")) throw new NotAllowed("Only the Owner can change a program's banner.");
     const params = new URL(request.url).searchParams;
     onlyParams(params, ["program"]);
     const programId = uuid(params.get("program") ?? "");

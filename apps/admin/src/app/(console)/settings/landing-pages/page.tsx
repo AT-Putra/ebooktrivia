@@ -5,6 +5,7 @@ import { ActionForm } from "../../../../components/settings/action-form.tsx";
 import { LpZipUpload } from "../../../../components/settings/lp-zip-upload.tsx";
 import { CheckboxField, PageHeading, SecretBadge, SelectField, TextField } from "../../../../components/settings/fields.tsx";
 import { requireAdmin } from "../../../../lib/next/require-admin.ts";
+import { formatWibTime } from "../../../../lib/format.ts";
 import { getRuntime } from "../../../../lib/next/runtime.ts";
 import { can } from "../../../../lib/policy.ts";
 import { CAPI_LABELS, CAPI_PLATFORMS, capiTokenStatuses } from "../../../../lib/settings/conversions.ts";
@@ -126,14 +127,14 @@ export default async function LandingPagesPage() {
                       <span className="text-sm">{CAPI_LABELS[platform]}</span>
                       <SecretBadge status={status} testId={`capi-${platform}-${page.lpKey}`} />
                       {status.set ? (
-                        <ActionForm action={clearCapiTokenAction} submitLabel="Remove" variant="ghost" className="flex items-center gap-2">
+                        <ActionForm action={clearCapiTokenAction} submitLabel="Remove" variant="outline" className="flex items-center gap-2">
                           <input type="hidden" name="landingPageId" value={page.id} />
                           <input type="hidden" name="platform" value={platform} />
                         </ActionForm>
                       ) : null}
                     </div>
                     {sealing ? (
-                      <ActionForm action={setCapiTokenAction} submitLabel="Save access token" variant="secondary" className="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
+                      <ActionForm inlineActions action={setCapiTokenAction} submitLabel="Save access token" variant="secondary" className="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
                         <input type="hidden" name="landingPageId" value={page.id} />
                         <input type="hidden" name="platform" value={platform} />
                         <TextField id={`capi-${platform}-${page.id}`} name="value" label="Access token (write-only)" type="password" autoComplete="new-password" maxLength={4096} />
@@ -154,7 +155,7 @@ export default async function LandingPagesPage() {
                 <li key={d.id} className="flex flex-wrap items-center gap-3">
                   <span className="font-mono text-sm">{d.host}</span>
                   {domains ? (
-                    <ActionForm action={removeDomainAction} submitLabel="Remove" variant="ghost" className="flex items-center gap-2">
+                    <ActionForm action={removeDomainAction} submitLabel="Remove" variant="outline" className="flex items-center gap-2">
                       <input type="hidden" name="landingPageId" value={page.id} />
                       <input type="hidden" name="domainId" value={d.id} />
                     </ActionForm>
@@ -163,7 +164,7 @@ export default async function LandingPagesPage() {
               ))}
             </ul>
             {domains ? (
-              <ActionForm action={registerDomainAction} submitLabel="Register domain" variant="secondary" testId="lp-domain-register" className="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
+              <ActionForm inlineActions action={registerDomainAction} submitLabel="Register domain" variant="secondary" testId="lp-domain-register" className="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
                 <input type="hidden" name="landingPageId" value={page.id} />
                 <TextField id={`lp-host-${page.id}`} name="host" label="Domain" placeholder="shop.example.id" maxLength={253} hint="Not the app's own domain; IDN in xn-- form." />
               </ActionForm>
@@ -183,12 +184,12 @@ export default async function LandingPagesPage() {
                   <li key={v.id} className="flex flex-wrap items-center gap-3 text-sm">
                     <span className="font-medium">Version {v.version}</span>
                     <span className="text-muted-foreground">
-                      {v.fileCount} files, {(v.uncompressedBytes / 1024 / 1024).toFixed(1)} MB, {v.createdAt.toISOString().slice(0, 16).replace("T", " ")} UTC
+                      {v.fileCount} files, {(v.uncompressedBytes / 1024 / 1024).toFixed(1)} MB, {formatWibTime(v.createdAt)}
                     </span>
                     {v.live ? (
                       <Badge variant="success">Live</Badge>
                     ) : (
-                      <ActionForm action={activateLpVersionAction} submitLabel="Make live" variant="ghost" className="flex items-center gap-2">
+                      <ActionForm action={activateLpVersionAction} submitLabel="Make live" variant="outline" className="flex items-center gap-2">
                         <input type="hidden" name="landingPageId" value={page.id} />
                         <input type="hidden" name="versionId" value={v.id} />
                       </ActionForm>
@@ -198,7 +199,7 @@ export default async function LandingPagesPage() {
               </ul>
               {page.active ? null : <CardDescription>The page is inactive: its domains serve nothing until it is active again.</CardDescription>}
               {page.hosting === "zip" ? (
-                <ActionForm action={stopLpHostingAction} submitLabel="Stop hosting (back to external)" variant="ghost" className="flex items-center gap-2">
+                <ActionForm action={stopLpHostingAction} submitLabel="Stop hosting (back to external)" variant="outline" className="flex items-center gap-2">
                   <input type="hidden" name="landingPageId" value={page.id} />
                 </ActionForm>
               ) : null}

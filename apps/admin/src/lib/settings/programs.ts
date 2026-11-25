@@ -278,7 +278,7 @@ export async function cloneProgram(sql: Sql, sourceId: string, target: { readonl
 /** Pre-check before the banner is re-encoded and written (the link checks again): the program exists. */
 export async function checkBannerTarget(sql: Sql, programId: string): Promise<void> {
   const [row] = await sql`SELECT 1 FROM public.programs WHERE id = ${programId}`;
-  if (row === undefined) throw new InvalidInput("Program ini sudah tidak ada.");
+  if (row === undefined) throw new InvalidInput("This program no longer exists.");
 }
 
 /**
@@ -291,8 +291,8 @@ export async function setProgramBanner(sql: Sql, adminUserId: string, programId:
   const link = () =>
     audited(sql, async (tx, audit) => {
       const [current] = await tx<{ banner_upload_id: string | null }[]>`SELECT banner_upload_id FROM public.programs WHERE id = ${programId} FOR UPDATE`;
-      if (current === undefined) throw new InvalidInput("Program ini sudah tidak ada.");
-      if (image === null && current.banner_upload_id === null) throw new InvalidInput("Program ini belum punya gambar banner.");
+      if (current === undefined) throw new InvalidInput("This program no longer exists.");
+      if (image === null && current.banner_upload_id === null) throw new InvalidInput("This program has no banner.");
       if (image !== null) await insertImageRow(tx, image, adminUserId);
       const next = image?.uploadId ?? null;
       await tx`UPDATE public.programs SET banner_upload_id = ${next}, updated_at = clock_timestamp() WHERE id = ${programId}`;

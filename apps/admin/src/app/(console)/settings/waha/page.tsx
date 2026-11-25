@@ -111,7 +111,7 @@ export default async function WahaPage({ searchParams }: { searchParams: Promise
             <CheckboxField id={`waha-active-${server.id}`} name="active" label="Active" defaultChecked={server.active} />
           </ActionForm>
           {sealing ? (
-            <ActionForm action={setWahaApiKeyAction} submitLabel="Save API key" variant="secondary" className="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
+            <ActionForm inlineActions action={setWahaApiKeyAction} submitLabel="Save API key" variant="secondary" className="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
               <input type="hidden" name="serverId" value={server.id} />
               <TextField id={`waha-key-${server.id}`} name="apiKey" label="API key (write-only)" type="password" autoComplete="new-password" maxLength={4096} />
             </ActionForm>
@@ -119,7 +119,7 @@ export default async function WahaPage({ searchParams }: { searchParams: Promise
             <CardDescription>API keys cannot be saved: the messaging sealing key is not configured on the server.</CardDescription>
           )}
           {server.apiKey.set ? (
-            <ActionForm action={clearWahaApiKeyAction} submitLabel="Remove API key" variant="ghost">
+            <ActionForm action={clearWahaApiKeyAction} submitLabel="Remove API key" variant="outline">
               <input type="hidden" name="serverId" value={server.id} />
             </ActionForm>
           ) : null}

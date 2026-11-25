@@ -50,7 +50,7 @@ export default async function TriviaSetsPage({ params }: { params: Promise<{ pro
       {program.paid ? null : (
         <Card>
           <CardTitle className="text-base">New set</CardTitle>
-          <ActionForm action={createSetAction} submitLabel="Add set" testId="set-create" className="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
+          <ActionForm inlineActions action={createSetAction} submitLabel="Add set" testId="set-create" className="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
             <input type="hidden" name="programId" value={program.id} />
             <TextField id="new-set-title" name="title" label="Title" maxLength={TRIVIA_LIMITS.title} />
           </ActionForm>
@@ -93,7 +93,7 @@ export default async function TriviaSetsPage({ params }: { params: Promise<{ pro
                 <div className="flex flex-col gap-2">
                   <UploadFile id={`set-thumb-${set.id}`} url={`/uploads/image/trivia?program=${program.id}&set=${set.id}`} label="Thumbnail (JPEG, PNG or WebP, up to 2 MB)" accept="image/jpeg,image/png,image/webp" mode="image" />
                   {set.thumbnailUploadId === null ? null : (
-                    <ActionForm action={removeSetThumbnailAction} submitLabel="Remove thumbnail" variant="ghost">
+                    <ActionForm action={removeSetThumbnailAction} submitLabel="Remove thumbnail" variant="outline">
                       <input type="hidden" name="programId" value={program.id} />
                       <input type="hidden" name="setId" value={set.id} />
                     </ActionForm>

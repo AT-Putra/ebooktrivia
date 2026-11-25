@@ -189,11 +189,16 @@ export default async function ReviewQueuePage() {
         title="Review queue"
         description="Orders the payment code could not settle on its own (a payment Midtrans reversed, a fraud challenge, a partial refund or chargeback, a reconciliation mismatch). Decide each one: mark paid or not paid."
       />
-      <p className="text-sm" data-testid="review-total">
-        {total === 0 ? "No order is waiting for you." : `${formatInt(total)} order${total === 1 ? "" : "s"} in review, the oldest first.`}
-      </p>
-      {total > orders.length ? <Notice tone="info">The oldest {formatInt(orders.length)} are shown; decide them to see the rest.</Notice> : null}
-      {orders.length === 0 ? <EmptyState testId="review-empty">Nothing to review.</EmptyState> : orders.map((order) => <OrderCard key={order.id} order={order} now={now} />)}
+      {/* One line when nothing waits (the empty state), never a sentence and an empty box saying the same twice. */}
+      {total === 0 || orders.length === 0 ? (
+        <EmptyState testId="review-total">No order is waiting for you.</EmptyState>
+      ) : (
+        <p className="text-sm" data-testid="review-total">{`${formatInt(total)} order${total === 1 ? "" : "s"} in review, the oldest first.`}</p>
+      )}
+      {total > orders.length && orders.length > 0 ? <Notice tone="info">The oldest {formatInt(orders.length)} are shown; decide them to see the rest.</Notice> : null}
+      {orders.map((order) => (
+        <OrderCard key={order.id} order={order} now={now} />
+      ))}
       {recent.length === 0 ? null : (
         <Card data-testid="recent-decisions" className="flex flex-col gap-2">
           <CardTitle className="text-base">Decided in the last 24 hours</CardTitle>

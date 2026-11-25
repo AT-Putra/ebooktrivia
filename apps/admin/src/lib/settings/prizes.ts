@@ -159,13 +159,13 @@ export async function setPrizeImage(sql: Sql, adminUserId: string, programId: st
 export const PRIZE_RANKS_SQL = (sql: Sql) => sql`(SELECT coalesce(max(pt.rank_to), 0)::int FROM public.prize_tiers pt WHERE pt.program_id = p.id)`;
 
 /**
- * The hint for the Owner (Bahasa Indonesia; read-only, no schema): the play page's leaderboard shows the top `topN`
+ * The hint for the Owner (English, like the rest of the console; read-only, no schema): the play page's leaderboard shows the top `topN`
  * (programs.leaderboard_top_n), so when a prize tier reaches a lower rank (`prizeRanks`: the highest rank_to of the program's
  * tiers, 0 with none) some prize winners would not appear on it. null when every prize rank fits.
  */
 export function leaderboardHint(topN: number, prizeRanks: number): string | null {
   return prizeRanks > topN
-    ? `Papan peringkat hanya menampilkan ${String(topN)} pemain teratas, padahal hadiah mencakup peringkat 1 sampai ${String(prizeRanks)}: sebagian pemenang hadiah tidak akan tampil di papan peringkat. Naikkan "Leaderboard size" program ini (halaman Programs) menjadi minimal ${String(prizeRanks)}.`
+    ? `The leaderboard shows only the top ${String(topN)} players, but the prizes go to ranks 1 to ${String(prizeRanks)}: some prize winners would not appear on it. Raise this program's "Leaderboard size" (Programs page) to at least ${String(prizeRanks)}.`
     : null;
 }
 

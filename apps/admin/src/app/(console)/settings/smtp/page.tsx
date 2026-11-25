@@ -47,13 +47,13 @@ export default async function SmtpPage() {
         {server === null ? (
           <CardDescription>Save the server first: the password is bound to its host.</CardDescription>
         ) : sealing ? (
-          <ActionForm action={setSmtpPasswordAction} submitLabel="Save password" variant="secondary" className="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
+          <ActionForm inlineActions action={setSmtpPasswordAction} submitLabel="Save password" variant="secondary" className="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
             <TextField id="smtp-password" name="password" label="Password (write-only)" type="password" autoComplete="new-password" maxLength={4096} />
           </ActionForm>
         ) : (
           <CardDescription>The password cannot be saved: the messaging sealing key is not configured on the server.</CardDescription>
         )}
-        {password.set ? <ActionForm action={clearSmtpPasswordAction} submitLabel="Remove password" variant="ghost" /> : null}
+        {password.set ? <ActionForm action={clearSmtpPasswordAction} submitLabel="Remove password" variant="outline" /> : null}
       </Card>
     </>
   );

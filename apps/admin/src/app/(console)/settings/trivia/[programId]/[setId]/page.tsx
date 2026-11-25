@@ -183,7 +183,7 @@ export default async function TriviaQuestionsPage({ params }: { params: Promise<
                     mode="image"
                   />
                   {question.imageUploadId === null ? null : (
-                    <ActionForm action={removeQuestionImageAction} submitLabel="Remove image" variant="ghost">
+                    <ActionForm action={removeQuestionImageAction} submitLabel="Remove image" variant="outline">
                       <Hidden ids={ids} questionId={question.id} />
                     </ActionForm>
                   )}

@@ -32,7 +32,7 @@ export function RegenerateForm() {
       </div>
       {state.error === "invalid" ? <FormError>That code is not valid.</FormError> : null}
       {state.error === "locked" ? <FormError>{lockedMessage(state)}</FormError> : null}
-      <Button type="submit" variant="secondary" size="sm" disabled={pending}>
+      <Button type="submit" variant="secondary" size="sm" disabled={pending} className="self-start">
         Create new recovery codes
       </Button>
     </form>

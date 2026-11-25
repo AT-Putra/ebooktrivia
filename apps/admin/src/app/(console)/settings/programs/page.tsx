@@ -94,29 +94,29 @@ export default async function ProgramsPage() {
             )}
             <div className="grid gap-4 border-t pt-4 lg:grid-cols-2" data-testid="program-banner">
               <div className="flex flex-col gap-2">
-                <p className="text-sm font-medium">Banner program (ditampilkan ke pemain)</p>
+                <p className="text-sm font-medium">Program banner (shown to players)</p>
                 <p className="text-xs text-muted-foreground">
-                  Gambar lebar dengan rasio 3:1, misalnya 1500 x 500 piksel. Jika bentuknya lain, bagian tengah yang dipakai dan tepinya terpotong. Tanpa gambar, pemain melihat gambar bawaan.
+                  A wide image in a 3:1 ratio, for example 1500 x 500 pixels; another shape is cut to its centre. Without one, players see the built-in art.
                 </p>
                 {program.bannerUploadId === null ? (
-                  <p className="text-xs text-muted-foreground">Belum ada gambar banner: pemain melihat gambar bawaan.</p>
+                  <p className="text-xs text-muted-foreground">No banner yet: players see the built-in art.</p>
                 ) : preview === null ? (
-                  <p className="text-xs text-muted-foreground" data-testid="program-banner-set">Gambar banner sudah diunggah (pratinjau tidak tersedia).</p>
+                  <p className="text-xs text-muted-foreground" data-testid="program-banner-set">A banner is uploaded (no preview available).</p>
                 ) : (
                   // The same 3:1 box and centred crop as the play page.
-                  <img src={preview} alt="Pratinjau banner program" width={600} height={200} className="aspect-[3/1] w-full max-w-xl rounded-lg border object-cover" data-testid="program-banner-preview" />
+                  <img src={preview} alt="Program banner preview" width={600} height={200} className="aspect-[3/1] w-full max-w-xl rounded-lg border object-cover" data-testid="program-banner-preview" />
                 )}
               </div>
               <div className="flex flex-col gap-2">
                 <UploadFile
                   id={`banner-${program.id}`}
                   url={`/uploads/image/banner?program=${program.id}`}
-                  label={program.bannerUploadId === null ? "Unggah gambar banner (JPEG, PNG, atau WebP, maks. 2 MB)" : "Ganti gambar banner (JPEG, PNG, atau WebP, maks. 2 MB)"}
+                  label={program.bannerUploadId === null ? "Upload a banner (JPEG, PNG or WebP, up to 2 MB)" : "Replace the banner (JPEG, PNG or WebP, up to 2 MB)"}
                   accept="image/jpeg,image/png,image/webp"
                   mode="image"
                 />
                 {program.bannerUploadId === null ? null : (
-                  <ActionForm action={removeProgramBannerAction} submitLabel="Hapus gambar banner" variant="ghost" testId="program-banner-remove">
+                  <ActionForm action={removeProgramBannerAction} submitLabel="Remove banner" variant="outline" testId="program-banner-remove">
                     <input type="hidden" name="programId" value={program.id} />
                   </ActionForm>
                 )}

@@ -95,14 +95,14 @@ export default async function TemplatesPage({ searchParams }: { searchParams: Pr
               <li key={r.id} className="flex flex-wrap items-center gap-3">
                 <span className="text-sm">{r.label}</span>
                 <span className="font-mono text-xs">{r.masked}</span>
-                <ActionForm action={removeTestRecipientAction} submitLabel="Remove" variant="ghost" className="flex items-center gap-2">
+                <ActionForm action={removeTestRecipientAction} submitLabel="Remove" variant="outline" className="flex items-center gap-2">
                   <input type="hidden" name="testRecipientId" value={r.id} />
                 </ActionForm>
               </li>
             ))}
           </ul>
           {recipients.length < TEST_RECIPIENT_MAX ? (
-            <ActionForm action={addTestRecipientAction} submitLabel="Add test number" variant="secondary" className="grid gap-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
+            <ActionForm inlineActions action={addTestRecipientAction} submitLabel="Add test number" variant="secondary" className="grid gap-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
               <TextField id="test-recipient-phone" name="phone" label="WhatsApp number" inputMode="tel" maxLength={32} />
               <TextField id="test-recipient-label" name="label" label="Label" maxLength={60} placeholder="Owner phone" />
             </ActionForm>
@@ -166,7 +166,7 @@ export default async function TemplatesPage({ searchParams }: { searchParams: Pr
                   ) : template.channel === "whatsapp" && recipients.length === 0 ? (
                     <CardDescription>No WhatsApp test number yet (the Owner adds them above).</CardDescription>
                   ) : (
-                    <ActionForm action={testSendTemplateAction} submitLabel="Send test" variant="secondary" testId="template-test-send" className="grid gap-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
+                    <ActionForm inlineActions action={testSendTemplateAction} submitLabel="Send test" variant="secondary" testId="template-test-send" className="grid gap-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
                       <input type="hidden" name="templateId" value={template.id} />
                       {template.channel === "email" ? (
                         <p className="text-sm sm:col-span-2">Sends to your login e-mail address.</p>

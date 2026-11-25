@@ -29,6 +29,7 @@ export function ActionForm({
   resetOnSuccess,
   describedBy,
   extra,
+  inlineActions,
 }: {
   action: (previous: SaveState, form: FormData) => Promise<SaveState>;
   submitLabel: string;
@@ -42,6 +43,11 @@ export function ActionForm({
   describedBy?: string | undefined;
   /** A second submit button of this form, shown after the main one (not in a two-step form's warning). */
   extra?: ReactNode | undefined;
+  /**
+   * The buttons sit in the grid's own last column, next to the field (a `sm:grid-cols-[1fr_auto]` form: one input and its button). Otherwise, in a
+   * grid form, the buttons, the warning and the error take a full row under the fields, so a button never lands in whichever column is free.
+   */
+  inlineActions?: boolean | undefined;
 }) {
   const [state, dispatch, pending] = useActionState(action, INITIAL_SAVE);
   const [confirming, setConfirming] = useState(false);
@@ -93,11 +99,11 @@ export function ActionForm({
     <form ref={formRef} onSubmit={onSubmit} className={className ?? "flex flex-col gap-3"} data-testid={testId}>
       {children}
       {asking ? (
-        <p id={warningId} className="text-sm">
+        <p id={warningId} className="col-span-full text-sm">
           {confirm.warning}
         </p>
       ) : null}
-      <div className="flex flex-wrap items-center gap-3" role={asking ? "group" : undefined} aria-labelledby={asking ? warningId : undefined} onKeyDown={onKeyDown}>
+      <div className={inlineActions === true ? "flex flex-wrap items-center gap-3" : "col-span-full flex flex-wrap items-center gap-3"} role={asking ? "group" : undefined} aria-labelledby={asking ? warningId : undefined} onKeyDown={onKeyDown}>
         {asking ? (
           <>
             <Button type="submit" variant="destructive" size="sm" disabled={pending}>
@@ -135,7 +141,11 @@ export function ActionForm({
           </p>
         ) : null}
       </div>
-      {state.status === "error" ? <FormError key={state.at}>{state.error}</FormError> : null}
+      {state.status === "error" ? (
+        <div className="col-span-full">
+          <FormError key={state.at}>{state.error}</FormError>
+        </div>
+      ) : null}
     </form>
   );
 }

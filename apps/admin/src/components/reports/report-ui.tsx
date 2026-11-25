@@ -96,7 +96,7 @@ export function FilterSelect({
   all: string;
 }) {
   return (
-    <div className="flex min-w-36 flex-1 flex-col gap-1">
+    <div className="flex min-w-44 flex-1 flex-col gap-1">
       <Label htmlFor={id}>{label}</Label>
       <select id={id} name={name} defaultValue={value ?? ""} className={CONTROL}>
         <option value="">{all}</option>
@@ -110,9 +110,13 @@ export function FilterSelect({
   );
 }
 
-/** Previous / next links for a list of `count` rows, `PAGE_SIZE` per page, keeping the other query values. */
+/**
+ * Previous / next links for a list of `count` rows, `PAGE_SIZE` per page, keeping the other query values. Nothing for a list that fits one page: an empty
+ * list already says so in its empty state, and "1-1 of 1" says nothing.
+ */
 export function Pager({ path, query, page, count }: { path: string; query: Readonly<Record<string, string>>; page: number; count: number }) {
   const pages = Math.max(1, Math.ceil(count / PAGE_SIZE));
+  if (pages <= 1 && page <= 1) return null;
   const href = (p: number): string => {
     const params = new URLSearchParams(Object.entries(query).filter(([, v]) => v !== ""));
     if (p > 1) params.set("page", String(p));
@@ -124,7 +128,7 @@ export function Pager({ path, query, page, count }: { path: string; query: Reado
   return (
     <nav aria-label="Pages" className="flex flex-wrap items-center justify-between gap-2 text-xs">
       <p className="tabular text-muted-foreground" data-testid="pager-range">
-        {count === 0 ? "No rows" : `${String(first)}-${String(last)} of ${String(count)}`}
+        {count === 0 ? "No rows on this page" : `${String(first)}-${String(last)} of ${String(count)}`}
       </p>
       <div className="flex gap-1">
         {page > 1 ? (
