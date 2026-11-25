@@ -89,12 +89,12 @@ export function LeaderboardCard({ rows, me, tiers, initialAgeSeconds = 120 }: Le
         {t("leaderboard.updatedAgo", { ago: agoLabel(age) })}
       </p>
 
-      <Table className="text-base tabular">
+      <Table className="text-base tabular max-sm:[&_td]:px-1 max-sm:[&_th]:px-1">
         <caption className="sr-only">{t("leaderboard.captionTop")}</caption>
         <TableHeader>
           <TableRow className="hover:bg-transparent">
             <TableHead className="w-14 text-sm">{t("leaderboard.colRank")}</TableHead>
-            <TableHead className="text-sm">{t("leaderboard.colName")}</TableHead>
+            <TableHead className="text-sm whitespace-normal">{t("leaderboard.colName")}</TableHead>
             <TableHead className="text-right text-sm">{t("leaderboard.colScore")}</TableHead>
             <TableHead className="text-right text-sm">{t("leaderboard.colTime")}</TableHead>
           </TableRow>
@@ -108,7 +108,7 @@ export function LeaderboardCard({ rows, me, tiers, initialAgeSeconds = 120 }: Le
                 <TableCell className="h-11 font-heading text-lg">
                   <RankCell rank={r.rank} tiers={tiers} />
                 </TableCell>
-                <TableCell className="h-11 font-medium whitespace-nowrap">{r.name}</TableCell>
+                <TableCell className="h-11 font-medium">{r.name}</TableCell>
                 <TableCell className="h-11 text-right whitespace-nowrap">{formatNumber(r.score)}</TableCell>
                 <TableCell className="h-11 text-right whitespace-nowrap">{formatMinSec(r.seconds)}</TableCell>
               </TableRow>
@@ -126,7 +126,7 @@ export function LeaderboardCard({ rows, me, tiers, initialAgeSeconds = 120 }: Le
             </TableCell>
             <TableCell className="h-12 font-semibold">
               <span className="flex flex-wrap items-center gap-2">
-                <span className="whitespace-nowrap">{me.name}</span>
+                <span>{me.name}</span>
                 <Badge>{t("leaderboard.you")}</Badge>
               </span>
               <span className="sr-only">{t("leaderboard.myRank")}</span>

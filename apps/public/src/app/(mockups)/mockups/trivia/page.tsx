@@ -35,7 +35,7 @@ export default async function TriviaMockupPage({ searchParams }: PageProps) {
       <TriviaHeader programs={PROGRAMS} currentSlug={program.slug} basePath="/mockups/trivia" />
       <main
         id="konten"
-        className="mx-auto grid max-w-[720px] gap-4 px-4 py-4 md:gap-6 md:px-6 md:py-6 xl:max-w-[1200px] xl:grid-cols-12"
+        className="mx-auto grid max-w-[720px] grid-cols-1 gap-4 px-4 py-4 md:gap-6 md:px-6 md:py-6 xl:max-w-[1200px] xl:grid-cols-12"
       >
         <div className="xl:col-span-12">
           <BannerCard program={program} />

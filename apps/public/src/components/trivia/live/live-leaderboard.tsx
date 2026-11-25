@@ -146,12 +146,12 @@ export function LiveLeaderboard({ programId, initial, tiers }: { readonly progra
       {data.top.length === 0 ? (
         <p className="text-base text-muted-foreground">{t("leaderboard.empty")}</p>
       ) : (
-        <Table className="text-base tabular">
+        <Table className="text-base tabular max-sm:[&_td]:px-1 max-sm:[&_th]:px-1">
           <caption className="sr-only">{t("leaderboard.captionTopN", { n: data.top.length })}</caption>
           <TableHeader>
             <TableRow className="hover:bg-transparent">
               <TableHead className="w-14 text-sm">{t("leaderboard.colRank")}</TableHead>
-              <TableHead className="text-sm">{t("leaderboard.colName")}</TableHead>
+              <TableHead className="text-sm whitespace-normal">{t("leaderboard.colName")}</TableHead>
               <TableHead className="text-right text-sm">{t("leaderboard.colScore")}</TableHead>
               <TableHead className="text-right text-sm">{t("leaderboard.colTime")}</TableHead>
             </TableRow>
@@ -169,7 +169,7 @@ export function LiveLeaderboard({ programId, initial, tiers }: { readonly progra
                   </TableCell>
                   <TableCell className="h-11 font-medium break-words">
                     <span className="flex flex-wrap items-center gap-2">
-                      <span className="whitespace-nowrap">{r.name}</span>
+                      <span>{r.name}</span>
                       {mine ? <Badge>{t("leaderboard.you")}</Badge> : null}
                     </span>
                   </TableCell>
@@ -192,7 +192,7 @@ export function LiveLeaderboard({ programId, initial, tiers }: { readonly progra
                   </TableCell>
                   <TableCell className="h-12 font-semibold">
                     <span className="flex flex-wrap items-center gap-2">
-                      <span className="whitespace-nowrap">{data.me.name}</span>
+                      <span>{data.me.name}</span>
                       <Badge>{t("leaderboard.you")}</Badge>
                     </span>
                     <span className="sr-only">{data.me.rank === null ? t("leaderboard.notPlayed") : `${t("leaderboard.myRank")} ${t("leaderboard.ofPlayers", { n: data.me.ranked })}`}</span>

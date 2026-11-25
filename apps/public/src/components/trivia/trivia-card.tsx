@@ -30,8 +30,10 @@ interface CardHeadingProps {
 export function CardHeading({ id, level = "h2", icon, children, action }: CardHeadingProps) {
   const Heading = level;
   return (
-    <header className="flex items-center justify-between gap-3">
-      <div className="flex min-w-0 items-center gap-2">
+    // The action drops below the title only when the title's longest word and the action do not fit side by side (a 320 px phone):
+    // the title's flex basis is its min-content, so the line breaks on that, and it grows to push the action to the right otherwise.
+    <header className="flex flex-wrap items-center justify-between gap-3">
+      <div className="flex min-w-0 grow basis-[min-content] items-center gap-2">
         <span aria-hidden="true" className="shrink-0 text-primary">
           {icon}
         </span>

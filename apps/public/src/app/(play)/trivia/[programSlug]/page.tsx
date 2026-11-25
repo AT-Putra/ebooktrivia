@@ -54,7 +54,7 @@ export default async function TriviaProgramPage({ params }: PageProps) {
         {t("common.skipToContent")}
       </a>
       <LiveHeader programs={programs} currentSlug={page.slug} />
-      <main id="konten" className="mx-auto grid max-w-[720px] gap-4 px-4 py-4 md:gap-6 md:px-6 md:py-6 xl:max-w-[1200px] xl:grid-cols-12">
+      <main id="konten" className="mx-auto grid max-w-[720px] grid-cols-1 gap-4 px-4 py-4 md:gap-6 md:px-6 md:py-6 xl:max-w-[1200px] xl:grid-cols-12">
         <div className="xl:col-span-12">
           <LiveBanner page={page} view={view} />
         </div>
