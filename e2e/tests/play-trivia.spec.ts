@@ -77,6 +77,16 @@ async function signedInPhone(browser: Browser): Promise<{ context: BrowserContex
 async function expectAccessible(page: Page): Promise<void> {
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
   expect(overflow).toBeLessThanOrEqual(0);
+  // The entrance animations (reveal-in, tile-in: from opacity 0) end first: axe reads colours as painted, and a card caught mid-fade blends its text into the
+  // background (CI once read 3.29:1 on the "Set selesai" card). Only finite CSS animations are waited for: a spinner never ends, and transitions are not entrances.
+  await page.evaluate(() =>
+    Promise.all(
+      document
+        .getAnimations()
+        .filter((a) => a instanceof CSSAnimation && a.effect?.getTiming().iterations !== Number.POSITIVE_INFINITY)
+        .map((a) => a.finished.catch(() => undefined)),
+    ).then(() => undefined),
+  );
   const results = await new AxeBuilder({ page }).analyze();
   expect(results.violations).toEqual([]);
 }

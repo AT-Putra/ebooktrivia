@@ -132,19 +132,26 @@ describe("startDomainSet", () => {
     // 28000 a reconnect gets while the role may not log in. The retry test above lost that race now and then (a re-LISTEN attempt started while the role could not
     // log in was still running at stop()): whether it is lost depends on timing, so here UNLISTEN always fails that way, after really unlistening.
     const refused = Object.assign(new Error(`role "${internalUser}" is not permitted to log in`), { code: "28000" });
-    const listenThenRefuse = async (...args: Parameters<postgres.Sql["listen"]>): Promise<postgres.ListenMeta> => {
-      const listener = await internalSql.listen(...args);
-      return {
-        state: listener.state,
-        unlisten: async () => {
-          await listener.unlisten();
-          throw refused;
-        },
+    // A pool of its own: the shared one's LISTEN connection may still be retrying a reconnect the retry test above started while the role could not log in, and a
+    // LISTEN queued on that attempt fails with the same 28000 (CI saw it).
+    const own = postgres(inject("internalDbUrl"), { ...PG_CONNECTION_OPTIONS, max: 1, onnotice: () => undefined });
+    try {
+      const listenThenRefuse = async (...args: Parameters<postgres.Sql["listen"]>): Promise<postgres.ListenMeta> => {
+        const listener = await own.listen(...args);
+        return {
+          state: listener.state,
+          unlisten: async () => {
+            await listener.unlisten();
+            throw refused;
+          },
+        };
       };
-    };
-    const refusingUnlisten = new Proxy(internalSql, { get: (target, prop): unknown => (prop === "listen" ? listenThenRefuse : Reflect.get(target, prop)) });
-    const domains = await startDomainSet(refusingUnlisten, { reloadMs: 3_600_000, log });
-    await expect(domains.stop()).resolves.toBeUndefined();
-    expect(lines.map((l) => l["msg"])).toContain("lp hosts listener could not UNLISTEN on stop; it ends with the pool");
+      const refusingUnlisten = new Proxy(own, { get: (target, prop): unknown => (prop === "listen" ? listenThenRefuse : Reflect.get(target, prop)) });
+      const domains = await startDomainSet(refusingUnlisten, { reloadMs: 3_600_000, log });
+      await expect(domains.stop()).resolves.toBeUndefined();
+      expect(lines.map((l) => l["msg"])).toContain("lp hosts listener could not UNLISTEN on stop; it ends with the pool");
+    } finally {
+      await own.end({ timeout: 5 });
+    }
   });
 });
