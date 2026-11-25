@@ -131,6 +131,9 @@ const GUARDS: Readonly<Record<string, string>> = {
   "(console)/settings/alerts/page.tsx": "permission:alert_recipients.edit",
   "(console)/settings/alerts/actions.ts#saveAlertRecipientsAction": "permission:alert_recipients.edit",
   "(console)/settings/alerts/actions.ts#sendTestAlertAction": "permission:alert_recipients.edit",
+  // The open alerts and resolving a group of them (Owner decision 2026-11-25), Owner only.
+  "(console)/alerts/page.tsx": "permission:alerts.view",
+  "(console)/alerts/actions.ts#resolveAlertsAction": "permission:alerts.resolve",
   // Customer service (Owner decision 2026-11-24): the number, address and hours buyers are shown, Owner only.
   "(console)/settings/customer-service/page.tsx": "permission:cs_contact.edit",
   "(console)/settings/customer-service/actions.ts#saveCsContactAction": "permission:cs_contact.edit",
@@ -288,6 +291,7 @@ describe("server-action directive", () => {
       "(auth)/enroll/actions.ts",
       "(auth)/login/actions.ts",
       "(console)/account/actions.ts",
+      "(console)/alerts/actions.ts",
       "(console)/fulfillment/actions.ts",
       "(console)/orders/review/actions.ts",
       "(console)/privacy/actions.ts",

@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
+  AddressBookIcon,
   BellRingingIcon,
   BookOpenIcon,
   BrowserIcon,
@@ -61,6 +62,7 @@ const ICONS = {
   legal: ScalesIcon,
   limits: SlidersHorizontalIcon,
   alerts: BellRingingIcon,
+  alertRecipients: AddressBookIcon,
   cs: HeadsetIcon,
   team: UsersThreeIcon,
   audit: ClipboardTextIcon,
@@ -71,7 +73,7 @@ export interface NavItem {
   readonly href: string;
   readonly label: string;
   readonly icon: NavIcon;
-  /** A count shown next to the label (US-033: the orders waiting in the review queue); none when 0 or absent. */
+  /** A count shown next to the label (US-033: the orders waiting in the review queue; the open alerts); none when 0 or absent. */
   readonly badge?: number;
 }
 /** A group of the menu by what its pages are for (Dashboard, Orders, Reports, ...). */

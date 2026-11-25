@@ -7,6 +7,7 @@ import { ThemeToggle } from "../../components/theme-toggle.tsx";
 import { requireAdmin } from "../../lib/next/require-admin.ts";
 import { getRuntime } from "../../lib/next/runtime.ts";
 import { can, type Permission, type QuestionPermission } from "../../lib/policy.ts";
+import { openAlertCount } from "../../lib/alerts/open-alerts.ts";
 import { reviewCount } from "../../lib/review/review.ts";
 
 type Entry = NavItem & { readonly permission: Exclude<Permission, QuestionPermission> };
@@ -80,7 +81,9 @@ const NAV: readonly { readonly id: string; readonly label: string; readonly item
     label: "System",
     items: [
       { href: "/settings/limits", label: "Limits", icon: "limits", permission: "app_settings.edit" },
-      { href: "/settings/alerts", label: "Alerts", icon: "alerts", permission: "alert_recipients.edit" },
+      // The open alerts (Owner decision 2026-11-25), with the number open at warning or above as its badge; who receives them is its own page.
+      { href: "/alerts", label: "Alerts", icon: "alerts", permission: "alerts.view" },
+      { href: "/settings/alerts", label: "Alert recipients", icon: "alertRecipients", permission: "alert_recipients.edit" },
       { href: "/team", label: "Team", icon: "team", permission: "admin_user.manage" },
       { href: "/audit", label: "Audit log", icon: "audit", permission: "audit.view" },
       { href: "/account", label: "Account", icon: "account", permission: "account.manage_own" },
@@ -90,12 +93,17 @@ const NAV: readonly { readonly id: string; readonly label: string; readonly item
 
 export default async function ConsoleLayout({ children }: { children: ReactNode }) {
   const admin = await requireAdmin({ permission: "dashboard.view" });
-  const waiting = can(admin.role, "order.review.resolve") ? await reviewCount((await getRuntime()).sql) : 0;
+  const { sql } = await getRuntime();
+  const [waiting, alertsOpen] = await Promise.all([
+    can(admin.role, "order.review.resolve") ? reviewCount(sql) : 0,
+    can(admin.role, "alerts.view") ? openAlertCount(sql) : 0,
+  ]);
+  const badges: Partial<Record<NavItem["icon"], number>> = { review: waiting, alerts: alertsOpen };
   // Controls the role may not use are not rendered at all (the pages and actions also refuse them).
   const groups: NavGroup[] = NAV.map(({ id, label, items }) => ({
     id,
     label,
-    items: items.filter((item) => can(admin.role, item.permission)).map(({ href, label: name, icon }) => ({ href, label: name, icon, ...(icon === "review" ? { badge: waiting } : {}) })),
+    items: items.filter((item) => can(admin.role, item.permission)).map(({ href, label: name, icon }) => ({ href, label: name, icon, ...(badges[icon] === undefined ? {} : { badge: badges[icon] }) })),
   })).filter((g) => g.items.length > 0);
   return (
     <div className="min-h-dvh lg:grid lg:grid-cols-[15rem_1fr]">

@@ -85,6 +85,10 @@ const RULES = {
   "app_settings.edit": "owner",
   // Where the worker sends the Owner's alerts, and the test alert (US-015): the Owner's own number and address.
   "alert_recipients.edit": "owner",
+  // The open alerts, and marking a handled group of them resolved (Owner decision 2026-11-25: an alert could not be closed once its cause was fixed).
+  // Not granted to Staff by AC-A1, so Owner-only, like the recipients.
+  "alerts.view": "owner",
+  "alerts.resolve": "owner",
   // The customer-service contact buyers are shown on every page and in a few WhatsApp replies (Owner decision 2026-11-24): the Owner's own number, address and hours.
   "cs_contact.edit": "owner",
   "admin_user.manage": "owner",
