@@ -351,6 +351,7 @@ export function deliveryConfig(shop: Pick<DeliveryShop, "dataDir">, over: Partia
   return {
     playOrigin: "https://play.example.test",
     apiOrigin: "https://api.example.test",
+    apiEdgeAddress: null,
     dataDir: shop.dataDir,
     fileUrlKey: randomBytes(32),
     leaseMs: 120_000,

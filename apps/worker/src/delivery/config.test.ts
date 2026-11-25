@@ -17,6 +17,26 @@ const message = (env: Record<string, string | undefined>): string => {
   return "";
 };
 
+describe("WORKER_API_EDGE_ADDRESS (the pre-flight's way to the edge proxy on the same VM)", () => {
+  it("is null when unset: the public address, as WAHA uses it", () => {
+    expect(load().apiEdgeAddress).toBeNull();
+  });
+
+  it("takes a private address (Caddy's on the pre-flight network)", () => {
+    expect(load({ WORKER_API_EDGE_ADDRESS: "10.90.55.2" }).apiEdgeAddress).toBe("10.90.55.2");
+    expect(load({ WORKER_API_EDGE_ADDRESS: "172.16.5.4" }).apiEdgeAddress).toBe("172.16.5.4");
+  });
+
+  it("refuses a name, loopback, link-local and metadata addresses, naming the variable and never the value", () => {
+    // 10.89/16: the app's own container networks, never an outbound target (address policy, review US-017 S3).
+    for (const value of ["caddy", "127.0.0.1", "::1", "169.254.169.254", "169.254.1.2", "fe80::1", "100.100.100.200", "0.0.0.0", "10.89.50.2", "10.90.55.2:443"]) {
+      const text = message({ WORKER_API_EDGE_ADDRESS: value });
+      expect(text, value).toContain("WORKER_API_EDGE_ADDRESS");
+      expect(text, value).not.toContain(value);
+    }
+  });
+});
+
 describe("delivery config (worker.env)", () => {
   it("has defaults: the play and api origins from DOMAIN, /srv/data, a lease that covers the whole human-like sequence and a send", () => {
     expect(load()).toMatchObject({

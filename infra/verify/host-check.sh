@@ -321,6 +321,11 @@ expect "worker -> 10.89.52.13:3000 (admin)" closed "$(reach worker 10.89.52.13 3
 expect "caddy -> postgres 10.89.51.2:5432" closed "$(reach caddy 10.89.51.2 5432)"
 expect "caddy -> valkey 10.89.51.3:6379" closed "$(reach caddy 10.89.51.3 6379)"
 expect "public-a -> postgres 10.89.51.2:5432 (control)" open "$(reach public-a 10.89.51.2 5432)"
+# The pre-flight network (ebt-preflight: Caddy and the worker only): the worker reaches the api site there (WORKER_API_EDGE_ADDRESS),
+# nobody else is on it, and Caddy answers nothing else there.
+expect "worker -> caddy 10.90.55.2:443 (pre-flight)" open "$(reach worker 10.90.55.2 443)"
+expect "worker -> caddy 10.90.55.2:80" closed "$(reach worker 10.90.55.2 80)"
+expect "public-a -> 10.90.55.2:443 (not on the pre-flight network)" closed "$(reach public-a 10.90.55.2 443)"
 acme_ip=$(getent ahostsv4 "$ACME_HOST" | awk 'NR == 1 { print $1 }')
 expect "worker -> $ACME_HOST:443 (egress control)" open "$(reach worker "$ACME_HOST" 443)"
 expect "valkey (data network only) -> ${acme_ip:-?}:443" closed "$(reach valkey "${acme_ip:-192.0.2.1}" 443)"

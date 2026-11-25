@@ -20,7 +20,7 @@ const BUDGET_MIB: Record<string, number> = {
 };
 const LONG_RUNNING = Object.keys(BUDGET_MIB);
 const CONTAINERS = [...LONG_RUNNING, "migrate.container"];
-const NETWORKS = ["ebt-edge", "ebt-data", "ebt-admin", "ebt-internal", "ebt-backup"];
+const NETWORKS = ["ebt-edge", "ebt-data", "ebt-admin", "ebt-internal", "ebt-backup", "ebt-preflight"];
 
 function memoryMiB(value: string | undefined): number {
   const m = /^(\d+)([mg])$/.exec(value ?? "");
@@ -110,8 +110,8 @@ describe("quadlets", () => {
     expect(readQuadlet("caddy.container").get("Unit", "Requires")).toEqual(["caddy.socket"]);
   });
 
-  it("pin unique addresses on five networks; only the edge network and the backup network (PostgreSQL alone, US-015) have egress", () => {
-    const subnet: Record<string, string> = { "ebt-edge": "10.89.50.", "ebt-data": "10.89.51.", "ebt-admin": "10.89.52.", "ebt-internal": "10.89.53.", "ebt-backup": "10.89.54." };
+  it("pin unique addresses on six networks; only the edge network and the backup network (PostgreSQL alone, US-015) have egress", () => {
+    const subnet: Record<string, string> = { "ebt-edge": "10.89.50.", "ebt-data": "10.89.51.", "ebt-admin": "10.89.52.", "ebt-internal": "10.89.53.", "ebt-backup": "10.89.54.", "ebt-preflight": "10.90.55." };
     const seen = new Map<string, string>();
     for (const u of units()) {
       for (const [network, ip] of Object.entries(u.networks)) {
@@ -130,6 +130,8 @@ describe("quadlets", () => {
   it("isolate admin and internal: each shares a private network with Caddy only", () => {
     expect(members("ebt-admin")).toEqual(["admin", "caddy"]);
     expect(members("ebt-internal")).toEqual(["caddy", "internal"]);
+    // The worker's file pre-flight to Caddy (WORKER_API_EDGE_ADDRESS), outside the 10.89/16 the address policy blocks: Caddy and the worker only.
+    expect(members("ebt-preflight")).toEqual(["caddy", "worker"]);
     expect(members("ebt-edge")).toEqual(["caddy", "public@a", "public@b", "worker"]);
     expect(members("ebt-data")).toEqual(["admin", "internal", "migrate", "postgres", "public@a", "public@b", "valkey", "worker"]);
     // US-015: wal-g's egress to the backup storage. Only PostgreSQL joins that network, so nothing can reach it through it.
@@ -146,7 +148,15 @@ describe("quadlets", () => {
     expect(admin.env).toMatchObject({ EDGE_HOST: admin.networks["ebt-admin"], TRUSTED_PROXY_IP: caddy["ebt-admin"], EDGE_PORT: "3000" });
     const internal = unit("internal");
     expect(internal.env).toMatchObject({ INTERNAL_HOST: internal.networks["ebt-internal"], INTERNAL_PORT: "9000" });
-    expect(caddy).toEqual({ "ebt-edge": "10.89.50.2", "ebt-admin": "10.89.52.2", "ebt-internal": "10.89.53.2" });
+    expect(caddy).toEqual({ "ebt-edge": "10.89.50.2", "ebt-admin": "10.89.52.2", "ebt-internal": "10.89.53.2", "ebt-preflight": "10.90.55.2" });
+  });
+
+  it("send the worker's file pre-flight to Caddy's pre-flight-network address, where only Caddy (in its own namespace) may bind :443", () => {
+    expect(unit("worker").env["WORKER_API_EDGE_ADDRESS"]).toBe(unit("caddy").networks["ebt-preflight"]);
+    expect(readQuadlet("caddy.container").get("Container", "Sysctl")).toEqual(["net.ipv4.ip_unprivileged_port_start=443"]);
+    for (const name of ["public@.container", "admin.container", "worker.container", "internal.container", "postgres.container", "valkey.container"]) {
+      expect(readQuadlet(name).get("Container", "Sysctl"), name).toEqual([]);
+    }
   });
 
   it("match pg_hba.conf: each login from its own containers' data-network addresses", () => {

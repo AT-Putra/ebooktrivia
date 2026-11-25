@@ -14,9 +14,15 @@ Pull=never
 ContainerName=worker
 Network=ebt-edge.network:ip=10.89.50.14
 Network=ebt-data.network:ip=10.89.51.14
+Network=ebt-preflight.network:ip=10.90.55.14
 Exec=node apps/worker/src/main.ts --role=worker
 EnvironmentFile=/etc/ebooktrivia/worker.env
 Environment=NODE_OPTIONS=--max-old-space-size=448
+# The pre-flight of a WhatsApp file send fetches https://api.<DOMAIN>/files/... (US-005 R11). From a rootless container the VM's own
+# public address is not reachable (pasta gives the containers that address; the egress guard keeps the app user off the host's
+# addresses), so api.<DOMAIN> is reached at Caddy's address on the pre-flight network (ebt-preflight.network: Caddy and the worker only;
+# the Caddyfile's api site listens there too).
+Environment=WORKER_API_EDGE_ADDRESS=10.90.55.2
 UserNS=keep-id:uid=1000,gid=1000
 Volume=/srv/data/deliverables:/srv/data/deliverables:ro,z
 LogDriver=journald

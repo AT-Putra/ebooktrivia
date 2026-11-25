@@ -279,11 +279,17 @@ and `cli move-question-images --dry-run` (the `cli` function of step 4, in a sto
 
 - **Caddy is socket-activated** (`caddy.socket`, `bind fd/3` / `fd/4`). The plan only says "pinned IP". Rootless podman's port forwarding (rootlessport) replaces the client address with the container's own address. Measured on podman 5.8.2: Caddy saw `10.89.50.2` for every client. With the sockets bound by systemd in the host network namespace, Caddy sees the real client and still sits on the bridge network at its pinned IP. HTTP/3 (UDP) is not offered.
 - **ACME uses TLS-ALPN-01 only**, because the HTTP-01 solver would need its own `:80` listener inside the container. Locally, a Pebble ACME CA issued every certificate through `caddy.socket`, including on-demand LP certificates.
-- **Four podman networks** (security review S2, S15).
+- **The podman networks** (security review S2, S15; `ebt-backup` for wal-g is in US-015's section).
   - `ebt-edge` (10.89.50.0/24, egress): Caddy, public@a/b, the worker.
   - `ebt-admin` (10.89.52.0/24, internal): Caddy and admin only. Admin listens on 10.89.52.13 only; its `TRUSTED_PROXY_IP` is Caddy's 10.89.52.2.
   - `ebt-internal` (10.89.53.0/24, internal): Caddy and the internal process only (it needs no egress).
   - `ebt-data` (10.89.51.0/24, internal): PostgreSQL, Valkey and their clients. Caddy is not on it.
+  - `ebt-preflight` (10.90.55.0/24, internal; added 2026-11-25): Caddy (.2) and the worker (.14) only. The worker's pre-flight of a WhatsApp
+    file send fetches `https://api.<DOMAIN>/files/...` there (`WORKER_API_EDGE_ADDRESS`; Caddy's api site also listens on 10.90.55.2:443,
+    `caddy.container` `Sysctl=net.ipv4.ip_unprivileged_port_start=443`). The worker cannot use the VM's public address: pasta gives the
+    rootless containers that address (a connection to it never leaves the container network: ECONNREFUSED), and the egress guard drops
+    the app user's connections to the host's own addresses (the host-gateway route 169.254.1.2 times out). It lies outside 10.89/16 on
+    purpose: that range is the one outbound calls can never reach (address policy, review US-017 S3); this network holds nothing but Caddy.
   - Every app binds its Caddy-facing address only (`EDGE_HOST`, required in production), so the admin allowlist cannot be bypassed from another container.
   - Every container has a pinned address, so each app login reaches the database only from its own address.
 - **Admin and internal have no egress.** If admin must reach an outside service later (GlitchTip error reports via `@sentry/nextjs`), give it an egress-only network of its own rather than `ebt-edge`.

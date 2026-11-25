@@ -19,7 +19,14 @@
 //   WORKER_SESSION_POLL_INTERVAL_MS how often every pool number's status is polled (default 30000); its WhatsApp limits (timelock, capping) every 3 minutes.
 //   WORKER_WA_WARNING_FACTORS      "first,second": the share of a number's daily budget of NEW contacts (waha_sessions.new_contact_cap) that WhatsApp's
 //                                  FIRST_WARNING and SECOND_WARNING leave it (default 0.5,0.25).
+//   WORKER_API_EDGE_ADDRESS        the edge proxy's (Caddy's) PRIVATE address on the pre-flight network (the quadlet sets 10.90.55.2): the pre-flight of a
+//                                  file send connects there for api.<DOMAIN> instead of the public address, TLS still checked against that name. A
+//                                  rootless container on the same VM cannot reach the VM's own public address (pasta gives the containers that address,
+//                                  and the egress guard keeps the app user off the host's addresses), so without it every WhatsApp file is
+//                                  `file_unavailable`. Unset: the public address, as WAHA uses it. Never a loopback, link-local or metadata address.
 // The signed-URL key is derived from SECRETS_PAYMENT_PRIVATE_KEY (packages/crypto file-url-key.ts), which public.env holds too.
+import { isIP } from "node:net";
+import { isBlockedAddress } from "@ebooktrivia/adapters";
 import { CONTACT_MAX_WAIT_MS, DEFAULT_WARNING_CAP_FACTORS, HUMAN_MAX_MS, HUMAN_PRESENCE_TIMEOUT_MS, POOL_MAX_WAIT_MS, normalizeHost } from "@ebooktrivia/core";
 import { fileUrlKeyFromEnv } from "@ebooktrivia/crypto";
 import { ConfigError, type Env, int, optional } from "../env.ts";
@@ -30,6 +37,8 @@ export interface DeliveryConfig {
   readonly playOrigin: string;
   /** https://api.<DOMAIN>: where the signed ebook URLs point. */
   readonly apiOrigin: string;
+  /** The edge proxy's private address the pre-flight connects to for api.<DOMAIN> (WORKER_API_EDGE_ADDRESS), or null: the public address. */
+  readonly apiEdgeAddress: string | null;
   readonly dataDir: string;
   readonly fileUrlKey: Uint8Array;
   readonly leaseMs: number;
@@ -85,6 +94,16 @@ export function loadWarningFactors(env: Env): readonly [number, number] {
   return [first, second];
 }
 
+/** WORKER_API_EDGE_ADDRESS: an IP address the private-network allowlist accepts (never loopback, link-local or metadata; loopback in dev only), or null. */
+export function loadApiEdgeAddress(env: Env, worker: Pick<WorkerConfig, "dev">): string | null {
+  const raw = optional(env, "WORKER_API_EDGE_ADDRESS");
+  if (raw === undefined) return null;
+  if (isIP(raw) === 0 || isBlockedAddress(raw, { allowPrivate: true, allowLoopback: worker.dev.allowLoopback })) {
+    throw new ConfigError("WORKER_API_EDGE_ADDRESS must be the edge proxy's private IP address (never a loopback, link-local or metadata address)");
+  }
+  return raw;
+}
+
 export function loadDeliveryConfig(env: Env, worker: Pick<WorkerConfig, "dev">): DeliveryConfig {
   const rawDomain = optional(env, "DOMAIN");
   const domain = rawDomain === undefined ? null : normalizeHost(rawDomain);
@@ -101,6 +120,7 @@ export function loadDeliveryConfig(env: Env, worker: Pick<WorkerConfig, "dev">):
   return {
     playOrigin: `https://play.${domain}`,
     apiOrigin: `https://api.${domain}`,
+    apiEdgeAddress: loadApiEdgeAddress(env, worker),
     dataDir: optional(env, "WORKER_DATA_DIR") ?? "/srv/data",
     fileUrlKey,
     leaseMs,

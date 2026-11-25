@@ -58,9 +58,12 @@ checks on its side, twice (every WhatsApp file send: the buyer-first PDF and the
 
 1. **Pre-flight, before the send.** The worker signs its **own 60-second URL** for the same file and fetches it: it must answer `200`, `application/pdf`, a `Content-Length` equal to the stored
    size, and a body that starts with `%PDF-`. (A separate URL with its own nonce, so the check never uses up WAHA's 10 downloads per signed URL.) The request goes through the worker's
-   safe-fetch, with a budget of its own (5 s, `PREFLIGHT_TIMEOUT_MS`, never WAHA's request timeout). **The worker therefore needs public egress to `https://api.<DOMAIN>`** (https only, and no private,
-   loopback or metadata address: the same egress rules as every call the worker makes): a worker VM that cannot reach its own public API address, for example behind a private-only DNS name or a
-   firewall that blocks its own public IP, gets `file_unavailable` for every WhatsApp file until that is fixed. Otherwise **nothing is sent**: the delivery goes back to pending
+   safe-fetch, with a budget of its own (5 s, `PREFLIGHT_TIMEOUT_MS`, never WAHA's request timeout). **The worker must reach `https://api.<DOMAIN>`** (https only, and no
+   loopback or metadata address: the same egress rules as every call the worker makes). On our single-VM install it cannot use the VM's public address (rootless containers
+   with pasta, and the egress guard), so `worker.container` sets `WORKER_API_EDGE_ADDRESS=10.90.55.2`: api.<DOMAIN> alone resolves to Caddy on the `ebt-preflight` network,
+   where the api site also listens, and the TLS certificate is still checked against api.<DOMAIN>. A worker that cannot reach that route gets `file_unavailable` for every
+   WhatsApp file until that is fixed (`infra/verify/host-check.sh` checks "worker -> caddy 10.90.55.2:443"). The Caddy gates (WAHA webhook, GlitchTip hook,
+   /healthz) refuse 10.90.55.0/24 whatever their CIDR lists hold, so a wide range there never lets the worker through. Otherwise **nothing is sent**: the delivery goes back to pending
    (`file_unavailable`, "not attempted"), the number's health is not touched, the e-mail path is unaffected, and the critical alert `delivery_not_attempted` (key `file_unavailable`) is raised.
    Fix the route (the public app's `/files/deliverables/...`, its proxy, the Valkey counter, the file on the worker's data volume) and the delivery goes out on the next attempt.
 2. **Read-back, after the send.** The message is read back (`getMessage`) and its delivered size (`_data.size`, `mediaSize`) is compared with the stored size. A mismatch means WAHA delivered
@@ -240,7 +243,7 @@ The database refuses it for every login (ET130): a `sent` row never changes stat
 `sending` or `cancelled`); the same for an opener (ET131), which has no resend at all. The one door for a delivery is `public.resend_delivery(id, confirm_unknown)`: a SECURITY DEFINER function
 owned by the NOLOGIN role `delivery_resend` (no members, `roles.sql`; it may change only the machine's columns of a delivery). The console's login has no write on `deliveries` at all.
 
-**Reports, Delivery report, "Needs attention"** lists the failed and unknown deliveries of paid orders (newest first, buyers masked) with a **Resend** button (AC-A1: Staff may manage resends), and, for information only,
+**Reports, Delivery report, "Needs attention"** lists the failed and unknown deliveries of paid orders (newest first, each buyer with name, WhatsApp number and e-mail) with a **Resend** button (AC-A1: Staff may manage resends), and, for information only,
 the `sent` deliveries whose WhatsApp file arrived wrong (`delivered_wrong_file`, see "The file check"): counted as "wrong-file", with the Owner-facing note "WhatsApp delivered a wrong file. Check that the buyer received the PDF by email, and send the file manually if needed." Staff see the error code only, and there is
 **no resend button** for it (`sent` stays final). The Owner has a **Mark handled** button (permission `delivery.wrong_file_handled`, audited as `delivery.wrong_file_handled`) that takes the row off the list:
 nothing about the delivery changes, the report just leaves out a delivery that has that audit entry:

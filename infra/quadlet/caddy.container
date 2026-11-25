@@ -1,6 +1,7 @@
 # Caddy edge (infra/caddy/Caddyfile), socket-activated by caddy.socket. Pinned on each network it
 # shares with an app; that address is the app's TRUSTED_PROXY_IP: 10.89.50.2 (public), 10.89.52.2
-# (admin), 10.89.53.2 (internal).
+# (admin), 10.89.53.2 (internal). 10.90.55.2 (ebt-preflight) is where the worker's file pre-flight
+# reaches the api site; no app uses it as its TRUSTED_PROXY_IP.
 [Unit]
 Description=Caddy edge proxy
 Requires=caddy.socket
@@ -12,6 +13,7 @@ ContainerName=caddy
 Network=ebt-edge.network:ip=10.89.50.2
 Network=ebt-admin.network:ip=10.89.52.2
 Network=ebt-internal.network:ip=10.89.53.2
+Network=ebt-preflight.network:ip=10.90.55.2
 Exec=caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
 EnvironmentFile=/etc/ebooktrivia/caddy.env
 # Provisioned config: root-owned, labeled container_file_t by infra/provision, never relabeled here.
@@ -27,6 +29,9 @@ Memory=150m
 ReadOnly=true
 NoNewPrivileges=true
 DropCapability=all
+# Inside its own network namespace only: Caddy (no capabilities) may bind :443 on its pre-flight-network address too, where the
+# api site also listens for the worker's pre-flight of a WhatsApp file send (Caddyfile "(https_api)", WORKER_API_EDGE_ADDRESS).
+Sysctl=net.ipv4.ip_unprivileged_port_start=443
 
 [Service]
 Restart=always

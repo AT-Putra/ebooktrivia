@@ -86,10 +86,26 @@ describe("adapted Caddyfile", () => {
     expect(config.admin.disabled).toBe(true);
   });
 
-  it("listens only on the socket-activated descriptors: fd/3 (:80) and fd/4 (:443)", () => {
+  it("listens on the socket-activated descriptors fd/3 (:80) and fd/4 (:443), and on its pre-flight-network address for the api site alone", () => {
     const listens = Object.values(servers).flatMap((s) => s.listen ?? []);
-    expect(listens.sort()).toEqual(["fd/3", "fd/4"]);
+    expect(listens.sort()).toEqual(["10.90.55.2:443", "fd/3", "fd/4"]);
     expect(https?.["listen_protocols"]).toEqual([["h1", "h2"]]);
+    // The worker's pre-flight of a WhatsApp file send (WORKER_API_EDGE_ADDRESS): the api site's own routes, nothing else, on Caddy's
+    // pinned address on the pre-flight network (caddy.container), which only the worker shares.
+    const edge = Object.values(servers).find((s) => s.listen?.includes("10.90.55.2:443"));
+    expect(edge?.listen).toEqual(["10.90.55.2:443"]);
+    expect(edge?.["listen_protocols"]).toEqual([["h1", "h2"]]);
+    const hosts = (edge?.routes ?? []).flatMap((r) => (r.match ?? []).flatMap((m) => (m["host"] as string[] | undefined) ?? []));
+    expect(hosts).toEqual(["api.example.test"]);
+    const apiOnFd4 = https?.routes?.find((r) => JSON.stringify(r.match) === JSON.stringify(edge?.routes?.[0]?.match));
+    // Every address gate of the api site refuses the pre-flight network (the worker's address there), whatever the operator's CIDRs hold.
+    const gates = JSON.stringify(edge?.routes).match(/"remote_ip":\{"ranges":\[[^\]]*\]\}/g) ?? [];
+    expect(gates.length).toBeGreaterThanOrEqual(3);
+    const negated = JSON.stringify(edge?.routes).match(/"not":\[\{"remote_ip":\{"ranges":\["10\.90\.55\.0\/24"\]\}\}\]/g) ?? [];
+    expect(negated.length).toBe(3);
+    // The same routes as the api site on fd/4 (only the adapter's route-group names differ).
+    const same = (handle: unknown) => JSON.stringify(handle).replace(/"group":"group\d+"/g, '"group":"g"');
+    expect(same(edge?.routes?.[0]?.handle)).toBe(same(apiOnFd4?.handle));
   });
 
   it("sets strict_sni_host and h1/h2 on every server and trusts no proxy in front of Caddy", () => {
@@ -326,6 +342,7 @@ describe("adapted Caddyfile", () => {
         method: ["POST"],
         path_regexp: { name: "glitchtip", pattern: "^/hooks/glitchtip/[A-Za-z0-9_-]{16,512}$" },
         remote_ip: { ranges: ["198.51.100.20/32"] },
+        not: [{ remote_ip: { ranges: ["10.90.55.0/24"] } }],
       },
     ]);
     const inner = handlers([hook ?? {}]);
@@ -342,7 +359,7 @@ describe("adapted Caddyfile", () => {
     expect(outer?.match).toEqual([{ path: ["/api/v1/webhooks/waha"] }]);
     const inner = routes(outer?.handle?.flatMap((h) => h.routes ?? []));
     const allowed = inner.find((r) => JSON.stringify(r.match ?? []).includes("remote_ip"));
-    expect(allowed?.match).toEqual([{ method: ["POST"], remote_ip: { ranges: ["198.51.100.30/32"] } }]);
+    expect(allowed?.match).toEqual([{ method: ["POST"], remote_ip: { ranges: ["198.51.100.30/32"] }, not: [{ remote_ip: { ranges: ["10.90.55.0/24"] } }] }]);
     const served = handlers([allowed ?? {}]);
     expect(served.find((h) => h.handler === "request_body")?.["max_size"]).toBe(64_000);
     expect(served.filter((h) => h.handler === "reverse_proxy").flatMap(dials)).toEqual(["public-a:3000", "public-b:3000"]);
@@ -368,7 +385,7 @@ describe("adapted Caddyfile", () => {
       expect(outer).toBeDefined();
       const inner = routes(outer?.handle?.flatMap((h) => h.routes ?? []));
       const allowed = inner.find((r) => JSON.stringify(r.match ?? []).includes("remote_ip"));
-      expect(allowed?.match).toEqual([{ remote_ip: { ranges: ["198.51.100.40/32"] } }]);
+      expect(allowed?.match).toEqual([{ remote_ip: { ranges: ["198.51.100.40/32"] }, not: [{ remote_ip: { ranges: ["10.90.55.0/24"] } }] }]);
       expect(handlers([allowed ?? {}]).filter((h) => h.handler === "reverse_proxy").flatMap(dials)).toEqual(["public-a:3000", "public-b:3000"]);
       const refused = inner.find((r) => r.handle?.some((h) => h.handler === "static_response") === true);
       expect(refused?.match).toBeUndefined();
@@ -456,7 +473,10 @@ describe("adapted Caddyfile", () => {
 
   it("redacts the GlitchTip token and every /files URI, query included, from every log", () => {
     const logs = Object.entries(config.logging.logs);
-    expect(logs.length).toBe(Object.values(servers).flatMap((s) => s.listen ?? []).length + 5);
+    // Every logger a server writes to is one of these (each checked below); the edge-address api server shares the api site's.
+    const used = Object.values(servers).flatMap((s) => Object.values(((s["logs"] as { logger_names?: Record<string, string[]> } | undefined)?.logger_names ?? {})).flat());
+    for (const name of used) expect(config.logging.logs[name], name).toBeDefined();
+    expect(logs.length).toBe(7);
     const secretsOp = { regexp: "(?i)^/+(hooks/glitchtip|files)/.*$", value: "/$1/[redacted]" };
     const orderLog = orderLogName();
     for (const [name, log] of logs) {
@@ -531,7 +551,7 @@ describe("adapted Caddyfile", () => {
         .get("Container", "Network")
         .map((n) => n.split(":ip=") as [string, string]),
     );
-    expect(caddy).toEqual({ "ebt-edge.network": "10.89.50.2", "ebt-admin.network": "10.89.52.2", "ebt-internal.network": "10.89.53.2" });
+    expect(caddy).toEqual({ "ebt-edge.network": "10.89.50.2", "ebt-admin.network": "10.89.52.2", "ebt-internal.network": "10.89.53.2", "ebt-preflight.network": "10.90.55.2" });
     expect(readQuadlet("public@.container").environment()["TRUSTED_PROXY_IP"]).toBe(caddy["ebt-edge.network"]);
     expect(readQuadlet("admin.container").environment()["TRUSTED_PROXY_IP"]).toBe(caddy["ebt-admin.network"]);
   });

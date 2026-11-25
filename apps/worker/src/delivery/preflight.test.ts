@@ -8,7 +8,7 @@ import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createEbookFiles } from "./access.ts";
+import { createEbookFiles, edgeResolver } from "./access.ts";
 import { PREFLIGHT_TIMEOUT_MS } from "./config.ts";
 
 const STORAGE = `deliverables/${randomUUID()}.pdf`;
@@ -48,8 +48,40 @@ afterAll(async () => {
   await rm(dataDir, { recursive: true, force: true });
 });
 
-const filesFor = (apiOrigin: string, dev: typeof PRODUCTION, timeoutMs?: number) =>
-  createEbookFiles({ dataDir, apiOrigin, fileUrlKey: KEY, dev }, timeoutMs === undefined ? {} : { timeoutMs });
+const filesFor = (apiOrigin: string, dev: typeof PRODUCTION, timeoutMs?: number, apiEdgeAddress: string | null = null) =>
+  createEbookFiles({ dataDir, apiOrigin, fileUrlKey: KEY, dev, apiEdgeAddress }, timeoutMs === undefined ? {} : { timeoutMs });
+
+describe("the edge address of api.<DOMAIN> (WORKER_API_EDGE_ADDRESS: the single-VM install)", () => {
+  it("resolves the API host alone to the edge proxy, any case; every other name goes to the normal resolver", async () => {
+    const asked: string[] = [];
+    const resolve = edgeResolver("api.example.id", "10.90.55.2", (name) => {
+      asked.push(name);
+      return Promise.resolve([{ address: "203.0.113.9", family: 4 }]);
+    });
+    expect(await resolve("api.example.id")).toEqual([{ address: "10.90.55.2", family: 4 }]);
+    expect(await resolve("API.Example.ID")).toEqual([{ address: "10.90.55.2", family: 4 }]);
+    expect(await resolve("play.example.id")).toEqual([{ address: "203.0.113.9", family: 4 }]);
+    expect(await resolve("api.example.id.evil.test")).toEqual([{ address: "203.0.113.9", family: 4 }]);
+    expect(asked).toEqual(["play.example.id", "api.example.id.evil.test"]);
+    expect(await edgeResolver("api.example.id", "fd00:89::2")("api.example.id")).toEqual([{ address: "fd00:89::2", family: 6 }]);
+  });
+
+  it("connects to the edge address for the API host, not to what its name resolves to (here: a name that resolves nowhere)", async () => {
+    const before = connections;
+    expect(await filesFor(`https://api.ebt-preflight.invalid:${String(port)}`, DEV_LOOPBACK, 300, "127.0.0.1").preflight(STORAGE, new Date())).toEqual({ ok: false, reason: "unreachable" });
+    expect(connections).toBeGreaterThan(before);
+  });
+
+  it("still never connects to a metadata or link-local address, even if one were configured", async () => {
+    const before = connections;
+    for (const edge of ["169.254.169.254", "169.254.1.2"]) {
+      const started = Date.now();
+      expect(await filesFor("https://api.ebt-preflight.invalid", PRODUCTION, 1500, edge).preflight(STORAGE, new Date()), edge).toEqual({ ok: false, reason: "unreachable" });
+      expect(Date.now() - started, edge).toBeLessThan(1400);
+    }
+    expect(connections).toBe(before);
+  });
+});
 
 describe("the pre-flight through the real safe-fetch (no injected fetch)", () => {
   it("never connects to a loopback, private or metadata address under the production policy: unreachable, and not a single connection is opened", async () => {

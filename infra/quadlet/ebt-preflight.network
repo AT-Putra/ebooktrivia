@@ -1,0 +1,13 @@
+# Pre-flight network: Caddy (10.90.55.2) and the worker (10.90.55.14) only. The worker's pre-flight of a WhatsApp file send fetches
+# https://api.<DOMAIN>/files/... (US-005 R11) at Caddy's address here (WORKER_API_EDGE_ADDRESS), where the Caddyfile's api site
+# also listens, because a rootless container cannot reach the VM's own public address. Outside 10.89.0.0/16 on purpose: the
+# adapters' address policy never lets an outbound call reach the app's own container networks (review US-017 S3), and nothing
+# but Caddy is on this one. Internal: it needs no egress.
+[Unit]
+Description=ebooktrivia pre-flight network (worker to Caddy)
+
+[Network]
+NetworkName=ebt-preflight
+Subnet=10.90.55.0/24
+Gateway=10.90.55.1
+Internal=true

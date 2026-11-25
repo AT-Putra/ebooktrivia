@@ -4,7 +4,8 @@
 #   with the container's own address; see docs/runbooks/staging-provision.md).
 # The container has a pinned address on each network it shares with an app: 10.89.50.2 (public),
 # 10.89.52.2 (admin), 10.89.53.2 (internal). Each app believes X-Forwarded-For from that address
-# only (TRUSTED_PROXY_IP in its quadlet).
+# only (TRUSTED_PROXY_IP in its quadlet). 10.90.55.2 (ebt-preflight) is where the worker reaches the
+# api site; no app uses it as its TRUSTED_PROXY_IP.
 #
 # Environment (infra/quadlet/caddy.container, EnvironmentFile /etc/ebooktrivia/caddy.env, written
 # by infra/provision from provision.env; nothing in it is secret):
@@ -113,6 +114,16 @@
 
 (https) {
 	bind fd/4 {
+		protocols h1 h2
+	}
+}
+
+# The api site also listens on Caddy's pre-flight-network address (10.90.55.2:443): the worker's pre-flight of a WhatsApp file
+# send fetches https://api.<DOMAIN>/files/... there (WORKER_API_EDGE_ADDRESS, worker.container), because a rootless container
+# cannot reach the VM's own public address. Only the worker shares that network (ebt-preflight.network); the routes, the
+# certificate and the checks are the api site's own. caddy.container lets Caddy bind :443 in its namespace (Sysctl).
+(https_api) {
+	bind fd/4 10.90.55.2 {
 		protocols h1 h2
 	}
 }
@@ -302,7 +313,7 @@ order.{$DOMAIN} {
 }
 
 api.{$DOMAIN} {
-	import https
+	import https_api
 	import access_log
 	import app_headers
 	import referrer_default strict-origin-when-cross-origin
@@ -311,7 +322,11 @@ api.{$DOMAIN} {
 	# every other source gets a 404 here.
 	@healthz path /healthz /healthz/*
 	handle @healthz {
-		@monitor remote_ip {$MONITOR_ALLOWED_CIDRS}
+		# Never the pre-flight network (the worker's address there), whatever the operator's ranges hold (security review 2026-11-25 L1).
+		@monitor {
+			remote_ip {$MONITOR_ALLOWED_CIDRS}
+			not remote_ip 10.90.55.0/24
+		}
 		handle @monitor {
 			import public_upstreams
 		}
@@ -327,6 +342,7 @@ api.{$DOMAIN} {
 			method POST
 			path_regexp ^/hooks/glitchtip/[A-Za-z0-9_-]{16,512}$
 			remote_ip {$GLITCHTIP_ALLOWED_CIDRS}
+			not remote_ip 10.90.55.0/24
 		}
 		handle @glitchtip {
 			request_body {
@@ -348,6 +364,7 @@ api.{$DOMAIN} {
 		@waha {
 			method POST
 			remote_ip {$WAHA_ALLOWED_CIDRS}
+			not remote_ip 10.90.55.0/24
 		}
 		handle @waha {
 			request_body {

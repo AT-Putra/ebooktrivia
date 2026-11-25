@@ -6,7 +6,7 @@
 //     over a safe-fetch whose private-network allowlist holds that server's host only when the server has allow_private_ip;
 //   - SMTP: smtp.password must be bound to smtp_settings.host; mail goes through adapters sendMail (resolve + address policy, TLS).
 // Errors name a code, never a key, a host or an address.
-import { createSafeFetch, createWahaClient, sendMail, signFileUrl } from "@ebooktrivia/adapters";
+import { createSafeFetch, createWahaClient, type Resolver, sendMail, signFileUrl, systemResolver } from "@ebooktrivia/adapters";
 import { assertWahaTarget, CryptoError, type SecretOpener } from "@ebooktrivia/crypto";
 import { SECRET_NAMES, type SettingsSecretRow } from "@ebooktrivia/db";
 import { readFile, stat } from "node:fs/promises";
@@ -118,22 +118,37 @@ export type PreflightFetch = (url: string) => Promise<PreflightResponse>;
 /** A pre-flight URL lives this long: enough for one request. (It is also its own URL with its own nonce, so its downloads never count against WAHA's.) */
 export const PREFLIGHT_TTL_SECONDS = 60;
 
+/** The resolver that sends `hostname` (and nothing else) to `address`: the edge proxy's private address for api.<DOMAIN> (WORKER_API_EDGE_ADDRESS). */
+export function edgeResolver(hostname: string, address: string, fallback: Resolver = systemResolver): Resolver {
+  const pinned = [{ address, family: isIP(address) === 6 ? 6 : 4 }] as const;
+  return (name) => (name.toLowerCase() === hostname.toLowerCase() ? Promise.resolve(pinned) : fallback(name));
+}
+
 /**
  * The injected fetch (tests), or a safe-fetch of the worker's own that is closed afterwards. It goes through the SAME egress rules as every outgoing call of the worker
  * (https only, no private, loopback or metadata address), over its own SHORT budget (PREFLIGHT_TIMEOUT_MS: connect, headers and the first bytes), never WAHA's request
- * timeout. So the worker needs public egress to https://api.<DOMAIN> (docs/runbooks/delivery.md): a VM that cannot reach its own public API address gets `file_unavailable`.
+ * timeout. Without WORKER_API_EDGE_ADDRESS the worker needs public egress to https://api.<DOMAIN> (docs/runbooks/delivery.md). With it (the single-VM install: a rootless
+ * container cannot reach the VM's own public address), api.<DOMAIN> alone resolves to the edge proxy's private address, and that host alone may be private: still never
+ * loopback, link-local or metadata, and TLS is still checked against api.<DOMAIN>, so it is the same route WAHA uses, only reached from inside.
  */
 function preflightFetch(
-  config: Partial<Pick<DeliveryConfig, "dev">>,
+  config: Pick<DeliveryConfig, "apiOrigin"> & Partial<Pick<DeliveryConfig, "dev" | "apiEdgeAddress">>,
   options: { readonly fetch?: PreflightFetch; readonly timeoutMs?: number },
 ): { readonly fetch: PreflightFetch; readonly close: () => Promise<void> } {
   if (options.fetch !== undefined) return { fetch: options.fetch, close: () => Promise.resolve() };
-  const safe = createSafeFetch({ allowHttp: config.dev?.allowHttp ?? false, devAllowLoopback: config.dev?.allowLoopback ?? false, timeoutMs: options.timeoutMs ?? PREFLIGHT_TIMEOUT_MS });
+  const edge = config.apiEdgeAddress ?? null;
+  const api = new URL(config.apiOrigin);
+  const safe = createSafeFetch({
+    allowHttp: config.dev?.allowHttp ?? false,
+    devAllowLoopback: config.dev?.allowLoopback ?? false,
+    timeoutMs: options.timeoutMs ?? PREFLIGHT_TIMEOUT_MS,
+    ...(edge === null ? {} : { resolver: edgeResolver(api.hostname, edge), allowPrivateHosts: [api.host] }),
+  });
   return { fetch: (url) => safe(url, { method: "GET" }), close: () => safe.close().catch(() => undefined) };
 }
 
 export function createEbookFiles(
-  config: Pick<DeliveryConfig, "dataDir" | "apiOrigin" | "fileUrlKey"> & Partial<Pick<DeliveryConfig, "dev">>,
+  config: Pick<DeliveryConfig, "dataDir" | "apiOrigin" | "fileUrlKey"> & Partial<Pick<DeliveryConfig, "dev" | "apiEdgeAddress">>,
   options: { readonly fetch?: PreflightFetch; /** The whole-request budget of the pre-flight (default PREFLIGHT_TIMEOUT_MS); a test shortens it. */ readonly timeoutMs?: number } = {},
 ): EbookFiles {
   const absolute = (storagePath: string): string => {
