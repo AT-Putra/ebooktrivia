@@ -15,7 +15,7 @@ export interface OrderRecord {
   /** orders.status, the DB enum. */
   readonly status: string;
   readonly orderCode: string;
-  /** Masked in the database (public.mask_name / public.mask_phone): the raw values never reach this process. */
+  /** Masked in the database (public.mask_name / public.mask_phone_tail, "0812-3456-****"): the raw values never reach this process. */
   readonly maskedName: string;
   readonly maskedPhone: string;
   readonly productTitle: string;

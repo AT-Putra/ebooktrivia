@@ -3,7 +3,9 @@
 // answer row or score (grants.sql, US-027 block): the page reads the catalog, the player's eligibility and which
 // sets were started, and the scores and the leaderboard only through the SECURITY DEFINER reads of sql/play.sql
 // (play_attempts, play_standing, play_leaderboard: masked, and refused inside a transaction that has written).
-// Every query here is a statement (an autocommit transaction) of its own.
+// Other players appear by their WhatsApp number with its last 4 digits hidden, masked in SQL (mask_phone_tail; Owner
+// decision 2026-11-25); the signed-in player's OWN name, e-mail and number are read in full for the profile card only
+// (player_profile_contact). Every query here is a statement (an autocommit transaction) of its own.
 import type { Sql } from "../db.ts";
 import { bannerImageUrl, prizeImageUrl, setImageUrl } from "./image-urls.ts";
 
@@ -57,7 +59,8 @@ export interface PrizeTier {
 export interface BannerWinner {
   readonly rank: number;
   readonly prizeName: string;
-  readonly maskedName: string;
+  /** The winner's WhatsApp number with its last 4 digits hidden, "0812-3456-****" (masked in SQL). */
+  readonly label: string;
 }
 
 export interface ProgramPage {
@@ -106,7 +109,7 @@ export async function programPage(sql: Sql, playerId: string, slug: string): Pro
     SELECT id, rank_from, rank_to, name, value_idr, image_upload_id FROM public.prize_tiers WHERE program_id = ${program.id} ORDER BY rank_from`;
   const winners =
     program.status === "finalized"
-      ? await sql<{ rank: number; prize_name: string; masked_name: string }[]>`SELECT rank, prize_name, masked_name FROM public.program_winners_banner(${program.id})`
+      ? await sql<{ rank: number; prize_name: string; masked_phone: string }[]>`SELECT rank, prize_name, masked_phone FROM public.program_winners_banner(${program.id})`
       : [];
   return {
     id: program.id,
@@ -136,7 +139,7 @@ export async function programPage(sql: Sql, playerId: string, slug: string): Pro
       valueIdr: Number(t.value_idr),
       imageUrl: t.image_upload_id === null ? null : prizeImageUrl(t.id, t.image_upload_id),
     })),
-    winners: winners.map((w) => ({ rank: w.rank, prizeName: w.prize_name, maskedName: w.masked_name })),
+    winners: winners.map((w) => ({ rank: w.rank, prizeName: w.prize_name, label: w.masked_phone })),
   };
 }
 
@@ -145,6 +148,7 @@ export async function programPage(sql: Sql, playerId: string, slug: string): Pro
 
 export interface LeaderRow {
   readonly rank: number;
+  /** The player as the board shows them: the WhatsApp number with its last 4 digits hidden, "0812-3456-****" (masked in SQL). */
   readonly name: string;
   readonly score: number;
   readonly totalMs: number;
@@ -154,6 +158,7 @@ export interface LeaderRow {
 export interface Standing {
   /** Every eligible player has a rank (D8: one who has played nothing ranks with score 0 and every timer). */
   readonly rank: number | null;
+  /** The player's own row on the board, as the others see it: the number with its last 4 digits hidden. */
   readonly name: string;
   readonly score: number;
   readonly totalMs: number;
@@ -168,24 +173,44 @@ export interface Standing {
  * is D8's: the answered questions' time plus the timers of every question not answered yet, as in the snapshot.
  */
 export async function loadTop(sql: Sql, programId: string): Promise<LeaderRow[]> {
-  const rows = await sql<{ rank: number; masked_name: string; score: number; total_ms: string; finished: boolean }[]>`
-    SELECT rank, masked_name, score, total_ms, finished
+  const rows = await sql<{ rank: number; masked_phone: string; score: number; total_ms: string; finished: boolean }[]>`
+    SELECT rank, masked_phone, score, total_ms, finished
       FROM public.play_leaderboard(${programId}, (SELECT p.leaderboard_top_n FROM public.programs p WHERE p.id = ${programId}))`;
-  return rows.map((r) => ({ rank: r.rank, name: r.masked_name, score: r.score, totalMs: Number(r.total_ms), finished: r.finished }));
+  return rows.map((r) => ({ rank: r.rank, name: r.masked_phone, score: r.score, totalMs: Number(r.total_ms), finished: r.finished }));
 }
 
 /** The player's own standing, fresh (play_standing; ET141 when the player is not eligible for the program). */
 export async function loadStanding(sql: Sql, playerId: string, programId: string): Promise<Standing> {
-  const [row] = await sql<{ rank: number | null; masked_name: string; score: number; total_ms: string; sets_completed: number; finished: boolean; ranked: number }[]>`
-    SELECT rank, masked_name, score, total_ms, sets_completed, finished, ranked FROM public.play_standing(${playerId}, ${programId})`;
+  const [row] = await sql<{ rank: number | null; masked_phone: string; score: number; total_ms: string; sets_completed: number; finished: boolean; ranked: number }[]>`
+    SELECT rank, masked_phone, score, total_ms, sets_completed, finished, ranked FROM public.play_standing(${playerId}, ${programId})`;
   if (row === undefined) throw new Error("play_standing returned no row");
   return {
     rank: row.rank,
-    name: row.masked_name,
+    name: row.masked_phone,
     score: row.score,
     totalMs: Number(row.total_ms),
     setsCompleted: row.sets_completed,
     finished: row.finished,
     ranked: row.ranked,
   };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Profile
+
+/** The signed-in player's own contact, in full (Owner decision 2026-11-25): shown to that player only, on the profile card. */
+export interface PlayerContact {
+  readonly name: string;
+  readonly email: string | null;
+  /** E.164, as stored ("+6281234567890"); the card shows it as "0812-3456-7890" (lib/format.ts formatPhoneLocal). */
+  readonly phone: string;
+}
+
+/**
+ * The contact of the request's signed-in player (player_profile_contact, keyed by the live SESSION, never a player id), or null for
+ * a session that has ended or a player who may not log in (anonymized, no program).
+ */
+export async function loadProfileContact(sql: Sql, sessionId: string): Promise<PlayerContact | null> {
+  const [row] = await sql<{ name: string; email: string | null; phone: string }[]>`SELECT name, email, phone FROM public.player_profile_contact(${sessionId})`;
+  return row === undefined ? null : { name: row.name, email: row.email === "" ? null : row.email, phone: row.phone };
 }

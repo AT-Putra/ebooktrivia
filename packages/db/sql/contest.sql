@@ -457,8 +457,9 @@ $fn$;
 -- ---------------------------------------------------------------------------------------------
 -- The banner card's masked winners (AC-Q2, AC-A9; EXECUTE public_rw for the play page, US-027, and
 -- admin_rw for its preview): the CONFIRMED winners of a FINALIZED program, by rank, with the prize
--- tier and the name and phone masked in SQL (functions.sql mask_name / mask_phone, the rules of core
--- contest.ts). Nothing before the Owner confirms. Returns no player id, raw name, phone or e-mail.
+-- tier and the name and phone masked in SQL (functions.sql mask_name; the phone with mask_phone_tail, "0812-3456-****",
+-- what the banner shows since 2026-11-25, Owner decision). Nothing before the Owner confirms. Returns no player id, raw
+-- name, phone or e-mail.
 CREATE OR REPLACE FUNCTION public.program_winners_banner(p_program_id uuid)
   RETURNS TABLE (rank integer, prize_tier_id uuid, prize_name text, masked_name text, masked_phone text)
   LANGUAGE sql
@@ -466,7 +467,7 @@ CREATE OR REPLACE FUNCTION public.program_winners_banner(p_program_id uuid)
   SECURITY DEFINER
   SET search_path = pg_catalog, pg_temp
 AS $fn$
-  SELECT w.rank, t.id, t.name, public.mask_name(pl.name), public.mask_phone(pl.phone)
+  SELECT w.rank, t.id, t.name, public.mask_name(pl.name), public.mask_phone_tail(pl.phone)
     FROM public.programs p
     JOIN public.winners w ON w.program_id = p.id AND w.status = 'confirmed'
     JOIN public.prize_tiers t ON t.id = w.prize_tier_id

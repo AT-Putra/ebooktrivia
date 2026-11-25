@@ -386,13 +386,19 @@ describe("the live leaderboard (play_leaderboard, play_standing)", () => {
     const { programId } = await createProgram();
     await createTriviaSet(programId, 1);
     const at = (s: string) => new Date(s);
-    const players: { id: string; name: string }[] = [];
+    const players: { id: string; name: string; phone: string }[] = [];
+    /** What the board shows for a phone: the local form, grouped 4 / the rest / 4, the last 4 hidden (mask_phone_tail). */
+    const tail = (phone: string): string => {
+      const local = `0${phone.replace(/\D/g, "").slice(2)}`;
+      return `${local.slice(0, 4)}-${local.slice(4, -4)}-****`;
+    };
+    const labelOf = (name: string): string => tail(players.find((p) => p.name === name)?.phone ?? "");
     const add = async (name: string, paid: Date | null, eligible: boolean, score: number, totalMs: number, finished: Date | null) => {
-      const { playerId } = await createPlayer({ programId, eligible: true });
+      const { playerId, phone } = await createPlayer({ programId, eligible: true });
       await sql`UPDATE players SET name = ${name} WHERE id = ${playerId}`;
       await sql`UPDATE player_programs SET first_paid_at = ${paid}, eligible = ${eligible} WHERE player_id = ${playerId}`;
       await sql`INSERT INTO player_program_stats (player_id, program_id, score, total_ms, sets_completed, finished_at) VALUES (${playerId}, ${programId}, ${score}, ${totalMs}, 0, ${finished})`;
-      players.push({ id: playerId, name });
+      players.push({ id: playerId, name, phone });
       return playerId;
     };
     const top = await add("Ayu Lestari", at("2027-01-02T00:00:00Z"), true, 30, 9_000, null);
@@ -404,19 +410,21 @@ describe("the live leaderboard (play_leaderboard, play_standing)", () => {
     // total_ms is a bigint (a string from the driver).
     const board = (await asRole("public_rw", (tx) => tx<Json[]>`SELECT * FROM public.play_leaderboard(${programId}, 10)`)).map((r) => ({ ...r, total_ms: Number(r["total_ms"]) }));
     expect(board).toEqual([
-      { rank: 1, masked_name: "A*** L***", score: 30, total_ms: 9_000, sets_completed: 0, finished: false },
-      { rank: 2, masked_name: "C*** D***", score: 20, total_ms: 5_000, sets_completed: 0, finished: true },
-      { rank: 3, masked_name: "B***", score: 20, total_ms: 5_000, sets_completed: 0, finished: true },
-      { rank: 4, masked_name: "D***", score: 20, total_ms: 5_000, sets_completed: 0, finished: false },
-      { rank: 5, masked_name: "E***", score: 20, total_ms: 6_000, sets_completed: 0, finished: true },
+      { rank: 1, masked_name: "A*** L***", score: 30, total_ms: 9_000, sets_completed: 0, finished: false, masked_phone: labelOf("Ayu Lestari") },
+      { rank: 2, masked_name: "C*** D***", score: 20, total_ms: 5_000, sets_completed: 0, finished: true, masked_phone: labelOf("Citra Dewi") },
+      { rank: 3, masked_name: "B***", score: 20, total_ms: 5_000, sets_completed: 0, finished: true, masked_phone: labelOf("Budi") },
+      { rank: 4, masked_name: "D***", score: 20, total_ms: 5_000, sets_completed: 0, finished: false, masked_phone: labelOf("Dian") },
+      { rank: 5, masked_name: "E***", score: 20, total_ms: 6_000, sets_completed: 0, finished: true, masked_phone: labelOf("Eka") },
     ]);
     expect(JSON.stringify(board)).not.toMatch(new RegExp(players.map((p) => p.id).join("|")));
+    // The raw numbers never leave the database: the board carries the masked label only.
+    for (const p of players) expect(JSON.stringify(board)).not.toContain(p.phone);
     expect(await asRole("public_rw", (tx) => tx`SELECT rank FROM public.play_leaderboard(${programId}, 2)`)).toHaveLength(2);
     const standing = async (playerId: string) => {
       const r = first(await asRole("public_rw", (tx) => tx<Json[]>`SELECT * FROM public.play_standing(${playerId}, ${programId})`));
       return { ...r, total_ms: Number(r["total_ms"]) };
     };
-    expect(await standing(top)).toMatchObject({ rank: 1, ranked: 5, masked_name: "A*** L***" });
+    expect(await standing(top)).toMatchObject({ rank: 1, ranked: 5, masked_name: "A*** L***", masked_phone: labelOf("Ayu Lestari") });
     expect(await standing(tieEarlierPaid)).toMatchObject({ rank: 2 });
     expect(await standing(tieLaterPaid)).toMatchObject({ rank: 3 });
     expect(await standing(unfinished)).toMatchObject({ rank: 4 });
@@ -655,6 +663,64 @@ describe("the reveal watch (play_reveal: late reveals refused and flagged, play_
     expect(await asRole("admin_rw", async (tx) => first(await tx<{ n: number }[]>`SELECT count(*)::int AS n FROM answer_reveals`).n)).toBeGreaterThan(0);
     for (const statement of ["UPDATE answer_reveals SET reveals = 1", "DELETE FROM answer_reveals", "TRUNCATE answer_reveals"]) {
       expect(await sqlState(asRole("admin_rw", (tx) => tx.unsafe(statement))), statement).toBe("42501");
+    }
+  });
+});
+
+describe("the board's phone label (mask_phone_tail; Owner decision 2026-11-25)", () => {
+  it("shows the Indonesian local form, grouped 4 / the rest / 4, with the last 4 digits hidden; a short or missing number shows no digits", async () => {
+    const cases: [string | null, string][] = [
+      ["+6281234567890", "0812-3456-****"],
+      ["+62812345678901", "0812-34567-****"],
+      ["+628123456789", "0812-345-****"],
+      ["6281234567890", "0812-3456-****"],
+      ["+1 415 555 0100", "1415-555-****"],
+      ["+6212345", "01-****"],
+      ["12", "***"],
+      ["", "***"],
+      [null, "***"],
+    ];
+    for (const [phone, label] of cases) {
+      const row = first(await sql<{ label: string }[]>`SELECT public.mask_phone_tail(${phone}) AS label`);
+      expect(row.label, String(phone)).toBe(label);
+    }
+  });
+});
+
+describe("the profile's own contact (player_profile_contact; Owner decision 2026-11-25)", () => {
+  /** A player who has logged in: their player_auth user (prepare_player_login) and one session with its login state. */
+  const signedIn = async (programId: string, eligible: boolean, expiresIn = "1 day", withState = true) => {
+    const { playerId, phone } = await createPlayer({ programId, eligible });
+    const userId = first(await asRole("public_rw", (tx) => tx<{ u: string | null }[]>`SELECT public.prepare_player_login(${phone}) AS u`)).u;
+    const sessionId = `s-${randomInt(1_000_000_000).toString()}`;
+    if (userId !== null) {
+      await sql`INSERT INTO player_auth.session (id, "expiresAt", token, "updatedAt", "userId") VALUES (${sessionId}, now() + ${expiresIn}::interval, ${`tok-${sessionId}`}, now(), ${userId})`;
+      if (withState) await sql`INSERT INTO player_auth.session_state (session_id, login_at) VALUES (${sessionId}, now())`;
+    }
+    return { playerId, phone, sessionId };
+  };
+  const contact = (sessionId: string) =>
+    asRole("public_rw", (tx) => tx<{ name: string; email: string | null; phone: string }[]>`SELECT * FROM public.player_profile_contact(${sessionId})`);
+
+  it("gives public_rw the own name, e-mail and number of a LIVE session's player, in full; never by player id", async () => {
+    const { programId } = await createProgram();
+    const me = await signedIn(programId, true);
+    await sql`UPDATE players SET name = 'Budi Santoso', email = 'budi@contoh.id' WHERE id = ${me.playerId}`;
+    expect(await contact(me.sessionId)).toEqual([{ name: "Budi Santoso", email: "budi@contoh.id", phone: me.phone }]);
+    // A player id (what public_rw can list from player_programs) is not a key: it finds nothing.
+    expect(await contact(me.playerId)).toEqual([]);
+  });
+
+  it("answers nothing for an expired session, a session without its login state, an unknown session or a player who may not log in; no other role may call it", async () => {
+    const { programId } = await createProgram();
+    expect(await contact((await signedIn(programId, true, "-1 minute")).sessionId)).toEqual([]);
+    expect(await contact((await signedIn(programId, true, "1 day", false)).sessionId)).toEqual([]);
+    expect(await contact("no-such-session")).toEqual([]);
+    const live = await signedIn(programId, true);
+    await sql`UPDATE player_programs SET eligible = false WHERE player_id = ${live.playerId}`;
+    expect(await contact(live.sessionId)).toEqual([]);
+    for (const role of ["worker_rw", "admin_rw", "internal_rw"] as const) {
+      expect(await sqlState(asRole(role, (tx) => tx`SELECT * FROM public.player_profile_contact(${live.sessionId})`)), role).toBe("42501");
     }
   });
 });

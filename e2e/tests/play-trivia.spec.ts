@@ -55,6 +55,8 @@ const ip = (): string => `198.51.100.${String(1 + Math.floor(Math.random() * 250
 
 async function signedInPhone(browser: Browser): Promise<{ context: BrowserContext; page: Page; playerId: string }> {
   const { id } = await play.eligiblePlayer();
+  // An e-mail too, so the profile shows all three of the player's own details (Owner decision 2026-11-25).
+  await play.sql`UPDATE players SET email = ${`pemain-${id.slice(0, 8)}@contoh.id`} WHERE id = ${id}`;
   // A second program the player bought: the switcher lists both.
   const [product] = await play.sql<{ id: string }[]>`INSERT INTO products (title, price_idr) VALUES ('Ebook Kedua', 49000) RETURNING id`;
   const [second] = await play.sql<{ id: string }[]>`
@@ -97,10 +99,19 @@ test("the trivia page at 375 px: four cards, the switcher, the WIB countdown; on
   await expect(page.getByText("Juara 2-3")).toBeVisible();
   await expect(page.getByRole("list", { name: "Hadiah" })).toContainText("Juara 2–3 · 2 pemenang");
   await expect(page.getByText(/Set berikutnya terbuka dalam/)).toBeVisible();
-  await expect(page.getByText(/^Tepatnya .+, pukul 00\.00 WIB\.$/)).toBeVisible();
+  // The profile (Owner decision 2026-11-25): the player's OWN name, WhatsApp number and e-mail in full; no "Tepatnya ..." line any more.
+  const [me] = await play.sql<{ name: string; email: string; phone: string }[]>`SELECT name, email, phone FROM players WHERE id = ${playerId}`;
+  const local = `0${(me?.phone ?? "").replace(/\D/g, "").slice(2)}`;
+  await expect(page.getByTestId("profile-name")).toHaveText(me?.name ?? "");
+  await expect(page.getByTestId("profile-phone")).toHaveText(`${local.slice(0, 4)}-${local.slice(4, -4)}-${local.slice(-4)}`);
+  await expect(page.getByTestId("profile-email")).toHaveText(me?.email ?? "");
+  await expect(page.getByText(/^Tepatnya /)).toHaveCount(0);
   await expect(page.getByRole("group", { name: /Set 2, terkunci, Terbuka .* 00\.00 WIB/ })).toBeVisible();
   // D8: a player who has not played yet is on the board too (score 0, every timer as the penalty), and the note says so.
-  await expect(page.getByRole("cell", { name: /B\*\*\* S\*\*\*.*Kamu/ })).toBeVisible();
+  // The board shows each player as the WhatsApp number with its last 4 digits hidden, never the name.
+  const boardLabel = `${local.slice(0, 4)}-${local.slice(4, -4)}-****`;
+  const myRow = new RegExp(`${boardLabel.replaceAll("*", "\\*")}.*Kamu`);
+  await expect(page.getByRole("cell", { name: myRow })).toBeVisible();
   await expect(page.getByText("Waktu termasuk penalti set yang belum dimainkan.")).toBeVisible();
   await expectAccessible(page);
   // The switcher lists both programs.
@@ -183,7 +194,7 @@ test("the trivia page at 375 px: four cards, the switcher, the WIB countdown; on
   await page.getByRole("link", { name: "Kembali ke daftar set" }).click();
   await page.waitForURL(`${play.url}/${play.programSlug}`);
   await expect(page.getByRole("group", { name: /Set 1, selesai, skor 10 dari 30/ })).toBeVisible();
-  await expect(page.getByRole("cell", { name: /B\*\*\* S\*\*\*.*Kamu/ })).toBeVisible();
+  await expect(page.getByRole("cell", { name: myRow })).toBeVisible();
   // D8: the board's time includes the sets not played yet, and says so.
   await expect(page.getByText("Waktu termasuk penalti set yang belum dimainkan.")).toBeVisible();
   await page.getByRole("button", { name: "Perbarui" }).click();

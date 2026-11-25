@@ -485,6 +485,26 @@ AS $fn$
   SELECT CASE WHEN p_phone IS NULL THEN NULL ELSE '****' || right(regexp_replace(p_phone, '[^0-9]', '', 'g'), 3) END
 $fn$;
 
+-- A player as the OTHER players see them (Owner decision 2026-11-25: the trivia leaderboard and the winners banner show the
+-- WhatsApp number, its last 4 digits hidden): the Indonesian local form, grouped 4 / the rest / 4, "0812-3456-****" for
+-- +6281234567890. A number outside +62 keeps its own digits; a short one hides its last 4; no phone (an anonymized player): '***'.
+-- The same grouping as the profile's full number (apps/public lib/format.ts formatPhoneLocal).
+CREATE OR REPLACE FUNCTION public.mask_phone_tail(p_phone text)
+  RETURNS text
+  LANGUAGE sql
+  IMMUTABLE
+  PARALLEL SAFE
+  SET search_path = pg_catalog, pg_temp
+AS $fn$
+  SELECT CASE
+           WHEN l IS NULL OR length(l) < 6 THEN '***'
+           WHEN length(l) <= 8 THEN left(l, length(l) - 4) || '-****'
+           ELSE left(l, 4) || '-' || substr(l, 5, length(l) - 8) || '-****'
+         END
+    FROM (SELECT CASE WHEN d LIKE '62%' THEN '0' || substr(d, 3) ELSE d END AS l
+            FROM (SELECT nullif(regexp_replace(coalesce(p_phone, ''), '[^0-9]', '', 'g'), '') AS d) AS digits) AS local
+$fn$;
+
 -- ===== US-022: order status page (order.<dom>/{publicId}) ========================================
 -- public_rw has column grants on orders (never the buyer's name or e-mail, order_code or
 -- browser_mt_fired_at), so the page reads and claims through these two narrow entry points. Both
@@ -499,6 +519,8 @@ $fn$;
 -- it, and the ids themselves reach a browser only through claim_browser_mt. `lp_host` is the landing
 -- page's primary host, its first registered domain (the page's "order again" link goes back to the page
 -- the buyer came from), null when it has none.
+-- The phone is masked like on the trivia board and the winners banner (mask_phone_tail, "0812-3456-****"; the Owner's decision of
+-- 2026-11-25, security review L1): one rule wherever someone else may see a number, so two views of one buyer never add up to more.
 -- Accepted deviation (security review US-022 L1): public_rw can enumerate, through a LATERAL call over
 -- orders.public_id, which it already reads (checkout dedupe also reads buyer_phone), every order's code,
 -- masks and status. An order code alone grants nothing: the WhatsApp claim (US-025) needs the sender's
@@ -522,7 +544,7 @@ CREATE OR REPLACE FUNCTION public.get_order_status(p_public_id text)
   SECURITY DEFINER
   SET search_path = pg_catalog, pg_temp
 AS $fn$
-  SELECT o.status::text, o.order_code, public.mask_name(o.buyer_name), public.mask_phone(o.buyer_phone), pr.title, o.amount_idr, lp.pixels,
+  SELECT o.status::text, o.order_code, public.mask_name(o.buyer_name), public.mask_phone_tail(o.buyer_phone), pr.title, o.amount_idr, lp.pixels,
          (SELECT d.host FROM public.lp_domains d WHERE d.landing_page_id = lp.id ORDER BY d.created_at, d.id LIMIT 1)
     FROM public.orders o
     JOIN public.products pr ON pr.id = o.product_id
@@ -740,6 +762,29 @@ $fn$;
 -- Whose account a session is (public_rw), shown right after a login so that a player who opened someone
 -- else's forwarded link sees it is not theirs (login CSRF): the player's phone masked by mask_phone
 -- ("****" + its last 3 digits), or NULL when the player may not log in.
+-- The signed-in player's own contact, in full, for the profile card of the play page (Owner decision 2026-11-25: the name, the
+-- e-mail and the WhatsApp number, unmasked, to the player themself). Keyed by the request's player SESSION (apps/public
+-- lib/play/page.ts readPlayerSession), never by a player id: public_rw can list every player id (player_programs), so an
+-- id-keyed read would let a compromised public app dump every player's name and e-mail (security review 2026-11-25 M1). Only a
+-- session that has not expired and has its login state row answers; a player who may not log in (anonymized, no phone, no
+-- eligible program) gets no row. Accepted risk (docs/compliance/pii-inventory.md): a compromised public app, which can read
+-- player_auth.session, could still read the contact of the players signed in at that time.
+CREATE OR REPLACE FUNCTION public.player_profile_contact(p_session_id text)
+  RETURNS TABLE (name text, email text, phone text)
+  LANGUAGE sql
+  STABLE
+  SECURITY DEFINER
+  SET search_path = pg_catalog, pg_temp
+AS $fn$
+  SELECT p.name, p.email, p.phone
+    FROM player_auth.session s
+    JOIN player_auth.session_state st ON st.session_id = s.id
+    JOIN public.players p ON p.auth_user_id = s."userId"
+   WHERE s.id = p_session_id AND s."expiresAt" > pg_catalog.clock_timestamp()
+     AND p.anonymized_at IS NULL AND p.phone IS NOT NULL
+     AND EXISTS (SELECT 1 FROM public.player_programs pp WHERE pp.player_id = p.id AND pp.eligible)
+$fn$;
+
 CREATE OR REPLACE FUNCTION public.player_login_label(p_auth_user_id text)
   RETURNS text
   LANGUAGE sql
@@ -868,6 +913,7 @@ REVOKE ALL ON FUNCTION public.consume_magic_link(bytea, text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.revoke_player_magic_links(uuid) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.magic_link_login_user(bytea, text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.player_login_label(text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.player_profile_contact(text) FROM PUBLIC;
 -- US-026 BLOCK END.
 
 -- ---------------------------------------------------------------------------------------------
@@ -1143,6 +1189,7 @@ REVOKE ALL ON FUNCTION public.setting_positive_int(text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.score_answer(integer, integer, uuid, uuid, timestamptz, timestamptz, timestamptz, integer) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.mask_name(text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.mask_phone(text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.mask_phone_tail(text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.lock_program_contest(uuid) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.lock_program_contest_shared(uuid) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.sweep_login_throttle(integer) FROM PUBLIC;

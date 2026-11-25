@@ -16,8 +16,16 @@ Every text, varchar, jsonb, inet and bytea column of every table, classified, an
 
 - **Who sees it (the Owner's decision, 2026-11-25).** The admin console shows customers' names, WhatsApp numbers and e-mails in
   full to the Owner AND to Staff (delivery and contest reports, contest results, prize fulfilment, the review queue, deletion
-  requests). The public trivia site (leaderboard, winners banner) and the logs keep masking them. The CSV exports stay Owner-only and
-  audited.
+  requests). The logs keep masking them. The CSV exports stay Owner-only and audited.
+- **The trivia site (the Owner's decision, 2026-11-25).**
+  - A signed-in player's profile card shows that player's OWN name, WhatsApp number and e-mail in full (`player_profile_contact`).
+  - The leaderboard and the winners banner show every player as the WhatsApp number with its last 4 digits hidden, "0812-3456-****"
+    (`mask_phone_tail`, masked in SQL), never the name. Every player of a program sees the others' numbers but for those 4 digits.
+  - The order status page masks the buyer's phone with the same rule (security review 2026-11-25 L1): one masking style wherever
+    someone other than the person may see a number, so two views of one buyer never reveal more than either alone.
+  - `player_profile_contact` is keyed by the request's live player SESSION, never by a player id (public_rw can list every player
+    id from player_programs; security review 2026-11-25 M1). Accepted risk: a compromised public app, which can read
+    `player_auth.session`, could read the name, e-mail and number of the players signed in at that time.
 
 ## Subject data: erased or blanked
 
@@ -61,7 +69,7 @@ Every text, varchar, jsonb, inet and bytea column of every table, classified, an
 | payments: gateway_txn_id, payment_type, statuses, amounts | pseudonymous | the money record |
 | payment_reconciliation_findings.attempts | not PII | statuses per attempt |
 | conversion_events (txid = order id, last_error), conversion_attempts (redacted URL, response excerpt, error) | pseudonymous | the postback record; URLs are redacted |
-| set_attempts, player_program_stats, player_programs | pseudonymous (ids and numbers) | ranks never move; the live leaderboard shows the player masked as `***` |
+| set_attempts, player_program_stats, player_programs | pseudonymous (ids and numbers) | ranks never move; the live leaderboard shows an erased player as `***` (no phone left) |
 | leaderboard_snapshots.entries | pseudonymous (player ids, scores, times; no names) | immutable (ET104) and needs no change |
 | winners.flag_reason, winners (ids, rank) | not PII / pseudonymous | the prize record; a winner with an undelivered prize blocks the erasure (ET177) |
 | fulfillments: status, step stamps (*_by_admin_user_id are admin ids) | pseudonymous | the delivery record |

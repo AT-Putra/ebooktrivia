@@ -4,7 +4,8 @@
 // served / open / answered / late / clock-skewed rows, rows served at or after the grace end, outage
 // extensions, missing deadlines,
 // tampered stored scores, refunded players, players who never paid, exact ties and prize tiers.
-// The banner's SQL masking (public.mask_name / mask_phone) equals core maskName / maskPhone.
+// The SQL masking (public.mask_name / mask_phone: the order page and the snapshot) equals core maskName / maskPhone. The play
+// board and the winners banner show the phone with public.mask_phone_tail since 2026-11-25 (tested in packages/db play-flow).
 import { type ContestAnswer, type ContestInput, type ContestPlayer, type ContestQuestion, finalizeContest, maskName, maskPhone } from "@ebooktrivia/core";
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";

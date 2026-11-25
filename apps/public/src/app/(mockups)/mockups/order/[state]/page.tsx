@@ -19,7 +19,7 @@ const ORDER: OrderCardData = {
   ref: "TA-2611-8K4Q7M",
   product: "Ebook Trivia Nusantara Juara",
   amount: 49_000,
-  whatsapp: "+62 812-****-3456",
+  whatsapp: "0812-3456-****",
   email: "bu***@g***.com",
 };
 

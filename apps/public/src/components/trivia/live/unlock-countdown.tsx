@@ -1,7 +1,7 @@
 "use client";
 
-// The next-unlock countdown (US-027, AC-Q4): "Set berikutnya terbuka dalam hh:mm:ss" (a duration: the WIB instant
-// is the line below it, "Tepatnya ..., pukul 00.00 WIB"), ticking once a second
+// The next-unlock countdown (US-027, AC-Q4): "Set berikutnya terbuka dalam hh:mm:ss" (a duration; the profile no longer
+// shows the WIB instant under it, Owner decision 2026-11-25), ticking once a second
 // from the seconds the server computed with the database's clock. At zero the page reloads once, so the grid
 // shows the set that just opened (a page load is one of the leaderboard's refresh points too). aria-live off: a
 // screen reader reads it when asked, it does not announce every second.

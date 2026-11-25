@@ -64,6 +64,12 @@ const idOf = (publicId: string) => ({ v: 1, id: publicId });
 const statusOf = async (d: OrderDeps, publicId: string): Promise<OrderStatusBody> => (await (await call(d, "status", idOf(publicId))).json()) as OrderStatusBody;
 const claimOf = async (d: OrderDeps, publicId: string): Promise<OrderClaimBody> => (await (await call(d, "claim", idOf(publicId))).json()) as OrderClaimBody;
 
+/** The page's phone mask (public.mask_phone_tail, the board's rule): the local form, grouped 4 / the rest / 4, the last 4 hidden. */
+const tail = (phone: string): string => {
+  const local = `0${phone.replace(/\D/g, "").slice(2)}`;
+  return `${local.slice(0, 4)}-${local.slice(4, -4)}-****`;
+};
+
 describe("criterion 1: the status route", () => {
   it.each([
     ["pending", "pending"],
@@ -258,7 +264,7 @@ describe("criterion 1: what the page can show (data, masking, the WhatsApp butto
     expect(record).toMatchObject({ status: "paid", orderCode: order.code, productTitle: expect.stringContaining("Ebook Trivia") as unknown, amountIdr: PRICE_IDR, lpHost: shop.host });
     if (record === undefined) throw new Error("order");
     const view = toView(record, "6281199900011", DOMAIN);
-    expect(view).toMatchObject({ state: "paid", code: order.code, name: "B*** S***", phone: `****${order.phone.slice(-3)}`, vendors: ["meta", "tiktok", "gtag"], loginHref: `https://play.${DOMAIN}/login` });
+    expect(view).toMatchObject({ state: "paid", code: order.code, name: "B*** S***", phone: tail(order.phone), vendors: ["meta", "tiktok", "gtag"], loginHref: `https://play.${DOMAIN}/login` });
     const html = renderToStaticMarkup(
       createElement(OrderCard, {
         state: view.state,
@@ -270,7 +276,7 @@ describe("criterion 1: what the page can show (data, masking, the WhatsApp butto
     const page = JSON.stringify(view) + html;
     for (const secret of ["Budi", "Santoso", EMAIL, "budi.santoso", order.phone, order.phone.slice(1), order.id, order.eventId, ...Object.values(PIXELS)]) expect(page, secret).not.toContain(secret);
     expect(html).toContain(order.code);
-    expect(html).toContain(`****${order.phone.slice(-3)}`);
+    expect(html).toContain(tail(order.phone));
     // Paid: the one big WhatsApp button asks for the ebook and the trivia access, with the order code our number needs.
     expect(html).toContain("Ambil Ebook &amp; Akses Trivia via WhatsApp");
     expect(decodeURIComponent(/href="(https:\/\/wa\.me\/[^"]+)"/.exec(html)?.[1] ?? "")).toContain(`saya mau ambil ebook ${view.product} dan akses trivia. Kode pesanan saya ${order.code}.`);

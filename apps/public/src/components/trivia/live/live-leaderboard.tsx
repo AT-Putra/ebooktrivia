@@ -169,7 +169,7 @@ export function LiveLeaderboard({ programId, initial, tiers }: { readonly progra
                   </TableCell>
                   <TableCell className="h-11 font-medium break-words">
                     <span className="flex flex-wrap items-center gap-2">
-                      {r.name}
+                      <span className="whitespace-nowrap">{r.name}</span>
                       {mine ? <Badge>{t("leaderboard.you")}</Badge> : null}
                     </span>
                   </TableCell>
@@ -192,7 +192,7 @@ export function LiveLeaderboard({ programId, initial, tiers }: { readonly progra
                   </TableCell>
                   <TableCell className="h-12 font-semibold">
                     <span className="flex flex-wrap items-center gap-2">
-                      {data.me.name}
+                      <span className="whitespace-nowrap">{data.me.name}</span>
                       <Badge>{t("leaderboard.you")}</Badge>
                     </span>
                     <span className="sr-only">{data.me.rank === null ? t("leaderboard.notPlayed") : `${t("leaderboard.myRank")} ${t("leaderboard.ofPlayers", { n: data.me.ranked })}`}</span>

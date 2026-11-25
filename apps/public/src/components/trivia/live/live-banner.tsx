@@ -46,7 +46,7 @@ export function LiveBanner({ page, view }: { readonly page: ProgramPage; readonl
               <ol className="flex flex-col gap-1">
                 {page.winners.map((w) => (
                   <li key={w.rank} className="flex flex-wrap justify-between gap-x-3 text-base">
-                    <span className="font-semibold tabular">{t("trivia.live.winnerRow", { rank: w.rank, name: w.maskedName })}</span>
+                    <span className="font-semibold tabular">{t("trivia.live.winnerRow", { rank: w.rank, name: w.label })}</span>
                     <span className="text-muted-foreground">{w.prizeName}</span>
                   </li>
                 ))}

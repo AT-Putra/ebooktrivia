@@ -423,7 +423,7 @@ GRANT INSERT (actor_kind, actor_admin_user_id, action, entity_type, entity_id, c
   ON public.audit_log TO contest_results;
 GRANT EXECUTE ON FUNCTION public.lock_program_contest(uuid), public.setting_positive_int(text),
   public.score_answer(integer, integer, uuid, uuid, timestamptz, timestamptz, timestamptz, integer),
-  public.mask_name(text), public.mask_phone(text)
+  public.mask_name(text), public.mask_phone(text), public.mask_phone_tail(text)
   TO contest_results;
 -- US-028 BLOCK END.
 
@@ -441,6 +441,8 @@ GRANT EXECUTE ON FUNCTION public.lock_program_contest(uuid), public.setting_posi
 GRANT EXECUTE ON FUNCTION public.prepare_player_login(text), public.player_for_login(text), public.player_login_label(text),
   public.magic_link_login_user(bytea, text), public.consume_magic_link(bytea, text)
   TO public_rw;
+-- The profile card's own contact, unmasked, of the request's live session (Owner decision 2026-11-25; functions.sql player_profile_contact).
+GRANT EXECUTE ON FUNCTION public.player_profile_contact(text) TO public_rw;
 -- worker_rw: issues magic links only through issue_magic_link (US-025; it derives the expiry and keeps one
 -- live link per player and channel), and the minute sweeper deletes expired OTP rows (their HMAC and any
 -- sealed code not moved yet): the expiry to find them, never the code or its HMAC.
@@ -514,7 +516,8 @@ GRANT SELECT ON
   public.programs, public.trivia_sets, public.questions, public.question_options, public.set_attempts,
   public.attempt_questions, public.player_program_stats, public.player_programs
   TO trivia_play;
-GRANT SELECT (id, name) ON public.players TO trivia_play;
+-- phone: masked in SQL for the leaderboard (mask_phone_tail; Owner decision 2026-11-25), never returned raw by a play function.
+GRANT SELECT (id, name, phone) ON public.players TO trivia_play;
 GRANT INSERT (player_id, set_id), UPDATE (score, total_ms, finished_at) ON public.set_attempts TO trivia_play;
 GRANT INSERT (attempt_id, question_id, position, permutation),
   UPDATE (served_at, answered_at, option_id, ip, ua_hash, correct, points, elapsed_ms)
@@ -524,7 +527,7 @@ GRANT INSERT (player_id, program_id), UPDATE (score, total_ms, sets_completed, f
 GRANT UPDATE (unlock_floor) ON public.player_programs TO trivia_play;
 GRANT EXECUTE ON FUNCTION public.lock_program_contest_shared(uuid),
   public.score_answer(integer, integer, uuid, uuid, timestamptz, timestamptz, timestamptz, integer),
-  public.mask_name(text)
+  public.mask_name(text), public.mask_phone_tail(text)
   TO trivia_play;
 
 -- The login page's "send my login link again" (Owner decision; functions.sql US-027 block): public_rw only asks for

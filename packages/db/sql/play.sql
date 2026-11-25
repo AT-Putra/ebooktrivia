@@ -743,9 +743,27 @@ END
 $fn$;
 
 -- The top N of a program's live leaderboard (EXECUTE public_rw; the app caches it for 5 s per program). Masked
--- names only (public.mask_name, the one masking rule), no player id. ET147 in a transaction that has written.
+-- names (public.mask_name) and, what the board shows since 2026-11-25 (Owner decision), the WhatsApp number with its
+-- last 4 digits hidden (public.mask_phone_tail); no player id. ET147 in a transaction that has written.
+-- masked_phone was added at the END of the result (a previous release still selects the other columns by name):
+-- CREATE OR REPLACE cannot change a result, so the function is dropped only when its result is not the one below
+-- (this file is one transaction: callers wait on the lock, they never see it missing; play.sql re-grants it).
+DO $do$
+BEGIN
+  IF pg_catalog.to_regprocedure('public.play_leaderboard(uuid, integer)') IS NOT NULL
+     AND pg_catalog.pg_get_function_result(pg_catalog.to_regprocedure('public.play_leaderboard(uuid, integer)'))
+         <> 'TABLE(rank integer, masked_name text, score integer, total_ms bigint, sets_completed integer, finished boolean, masked_phone text)' THEN
+    DROP FUNCTION public.play_leaderboard(uuid, integer);
+  END IF;
+  IF pg_catalog.to_regprocedure('public.play_standing(uuid, uuid)') IS NOT NULL
+     AND pg_catalog.pg_get_function_result(pg_catalog.to_regprocedure('public.play_standing(uuid, uuid)'))
+         <> 'TABLE(rank integer, masked_name text, score integer, total_ms bigint, sets_completed integer, finished boolean, ranked integer, masked_phone text)' THEN
+    DROP FUNCTION public.play_standing(uuid, uuid);
+  END IF;
+END
+$do$;
 CREATE OR REPLACE FUNCTION public.play_leaderboard(p_program_id uuid, p_limit integer)
-  RETURNS TABLE (rank integer, masked_name text, score integer, total_ms bigint, sets_completed integer, finished boolean)
+  RETURNS TABLE (rank integer, masked_name text, score integer, total_ms bigint, sets_completed integer, finished boolean, masked_phone text)
   LANGUAGE plpgsql
   STABLE
   SECURITY DEFINER
@@ -757,7 +775,7 @@ BEGIN
     RAISE EXCEPTION 'play_leaderboard runs in a transaction that has written nothing' USING ERRCODE = 'ET147';
   END IF;
   RETURN QUERY
-    SELECT r.rank, public.mask_name(pl.name), r.score, r.total_ms, r.sets_completed, r.finished_at IS NOT NULL
+    SELECT r.rank, public.mask_name(pl.name), r.score, r.total_ms, r.sets_completed, r.finished_at IS NOT NULL, public.mask_phone_tail(pl.phone)
       FROM public.play_ranking(p_program_id) r
       JOIN public.players pl ON pl.id = r.player_id
      WHERE r.rank <= LEAST(GREATEST(coalesce(p_limit, 10), 1), 100)
@@ -774,7 +792,7 @@ $fn$;
 -- total. `ranked` = the eligible players. ET141 unless the player is eligible for the program (the leaderboard
 -- route's IDOR check).
 CREATE OR REPLACE FUNCTION public.play_standing(p_player_id uuid, p_program_id uuid)
-  RETURNS TABLE (rank integer, masked_name text, score integer, total_ms bigint, sets_completed integer, finished boolean, ranked integer)
+  RETURNS TABLE (rank integer, masked_name text, score integer, total_ms bigint, sets_completed integer, finished boolean, ranked integer, masked_phone text)
   LANGUAGE plpgsql
   STABLE
   SECURITY DEFINER
@@ -825,7 +843,8 @@ BEGIN
   END IF;
   RETURN QUERY
     SELECT 1 + v_ahead + v_unplayed_ahead, public.mask_name(pl.name), v_score, v_total, v_sets, v_finished IS NOT NULL,
-           (SELECT count(*)::integer FROM public.player_programs pp WHERE pp.program_id = p_program_id AND pp.eligible)
+           (SELECT count(*)::integer FROM public.player_programs pp WHERE pp.program_id = p_program_id AND pp.eligible),
+           public.mask_phone_tail(pl.phone)
       FROM public.players pl
      WHERE pl.id = p_player_id;
 END

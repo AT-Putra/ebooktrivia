@@ -531,11 +531,20 @@ export async function withPlayer(deps: Pick<PlayDeps, "auth" | "sql" | "log" | "
   return withCookies(response, player.setCookies);
 }
 
-/** The player for SERVER COMPONENTS (no cookie can be set there): no rotation, read only, the same rules. */
-export async function readPlayer(deps: Pick<PlayDeps, "auth" | "sql">, headers: Headers): Promise<string | null> {
+/**
+ * The player and the session for SERVER COMPONENTS (no cookie can be set there): no rotation, read only, the same rules. The session
+ * id is what the profile card's own-contact read is keyed by (player_profile_contact), never the player id.
+ */
+export async function readPlayerSession(deps: Pick<PlayDeps, "auth" | "sql">, headers: Headers): Promise<{ readonly playerId: string; readonly sessionId: string } | null> {
   const session = await deps.auth.api.getSession({ headers: authHeaders(headers, true), query: { disableRefresh: true, disableCookieCache: true } });
   if (session === null || (await chainStart(deps.sql, session.session.id)) === null) return null;
-  return playerForLogin(deps.sql, session.user.id);
+  const playerId = await playerForLogin(deps.sql, session.user.id);
+  return playerId === null ? null : { playerId, sessionId: session.session.id };
+}
+
+/** The player for SERVER COMPONENTS (readPlayerSession without the session). */
+export async function readPlayer(deps: Pick<PlayDeps, "auth" | "sql">, headers: Headers): Promise<string | null> {
+  return (await readPlayerSession(deps, headers))?.playerId ?? null;
 }
 
 export async function handleSession(deps: PlayDeps, request: Request): Promise<Response> {

@@ -206,9 +206,10 @@ test("the Owner confirms the winners; the banner read path then returns them mas
     await tx.unsafe("SET LOCAL ROLE public_rw");
     return tx<{ rank: number; masked_name: string; masked_phone: string }[]>`SELECT rank, masked_name, masked_phone FROM public.program_winners_banner(${ended.id}::uuid)`;
   });
+  // The banner shows the number with its last 4 digits hidden (mask_phone_tail; Owner decision 2026-11-25): these two differ only there.
   expect(banner).toEqual([
-    { rank: 1, masked_name: "R*** K***", masked_phone: "****111" },
-    { rank: 2, masked_name: "D*** S***", masked_phone: "****222" },
+    { rank: 1, masked_name: "R*** K***", masked_phone: "0812-3450-****" },
+    { rank: 2, masked_name: "D*** S***", masked_phone: "0812-3450-****" },
   ]);
 });
 

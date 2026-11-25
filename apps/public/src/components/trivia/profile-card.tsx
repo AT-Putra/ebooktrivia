@@ -1,5 +1,5 @@
-import { ClockCountdownIcon, UserCircleIcon } from "@phosphor-icons/react/ssr";
-import { formatMinSec, formatNumber } from "../../lib/format.ts";
+import { ClockCountdownIcon, EnvelopeSimpleIcon, UserCircleIcon, WhatsappLogoIcon } from "@phosphor-icons/react/ssr";
+import { formatMinSec, formatNumber, formatPhoneLocal } from "../../lib/format.ts";
 import { t } from "../../lib/t.ts";
 import type { Program } from "../../lib/trivia-fixtures.ts";
 import { CountdownText } from "../countdown.tsx";
@@ -21,7 +21,25 @@ export function ProfileCard({ program }: { program: Program }) {
       <CardHeading id="profile-title" icon={<UserCircleIcon size={24} weight="duotone" />}>
         {t("trivia.profile.title")}
       </CardHeading>
-      <p className="text-lg font-semibold">{p.name}</p>
+      <div className="flex flex-col gap-1">
+        <p className="text-lg font-semibold [overflow-wrap:anywhere]">{p.name}</p>
+        <dl className="flex flex-col gap-1 text-base">
+          <div className="flex min-w-0 items-center gap-2">
+            <dt className="shrink-0 text-muted-foreground">
+              <WhatsappLogoIcon aria-hidden="true" size={20} weight="duotone" />
+              <span className="sr-only">{t("trivia.profile.whatsapp")}</span>
+            </dt>
+            <dd className="tabular">{formatPhoneLocal(p.phone)}</dd>
+          </div>
+          <div className="flex min-w-0 items-center gap-2">
+            <dt className="shrink-0 text-muted-foreground">
+              <EnvelopeSimpleIcon aria-hidden="true" size={20} weight="duotone" />
+              <span className="sr-only">{t("trivia.profile.email")}</span>
+            </dt>
+            <dd className="min-w-0 [overflow-wrap:anywhere]">{p.email}</dd>
+          </div>
+        </dl>
+      </div>
       <dl className="grid grid-cols-2 gap-2">
         <Stat label={t("trivia.profile.score")} value={formatNumber(p.score)} />
         <Stat label={t("trivia.profile.totalTime")} value={formatMinSec(p.seconds)} />

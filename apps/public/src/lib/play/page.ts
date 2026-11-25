@@ -6,12 +6,14 @@
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { getRuntime } from "../runtime.ts";
-import { type PlayDeps, readPlayer } from "./handlers.ts";
+import { type PlayDeps, readPlayerSession } from "./handlers.ts";
 import { limitPageLoad } from "./trivia.ts";
 
 export interface PagePlayer {
   readonly play: Omit<PlayDeps, "defer">;
   readonly playerId: string;
+  /** The request's session: the key of the profile card's own-contact read (player_profile_contact). */
+  readonly sessionId: string;
   /** Set when this load was over the player's page budget: wait this long. */
   readonly retryAfterSeconds: number | null;
 }
@@ -19,9 +21,10 @@ export interface PagePlayer {
 export async function pagePlayer(options: { readonly count?: boolean } = {}): Promise<PagePlayer> {
   const { play } = await getRuntime();
   if (play === null) throw new Error("the player login is not configured");
-  const playerId = await readPlayer(play, await headers());
-  if (playerId === null) redirect("/login");
-  if (options.count !== true) return { play, playerId, retryAfterSeconds: null };
+  const signedIn = await readPlayerSession(play, await headers());
+  if (signedIn === null) redirect("/login");
+  const { playerId, sessionId } = signedIn;
+  if (options.count !== true) return { play, playerId, sessionId, retryAfterSeconds: null };
   const decision = await limitPageLoad(play.valkey, playerId);
-  return { play, playerId, retryAfterSeconds: decision.allowed ? null : decision.retryAfterSeconds };
+  return { play, playerId, sessionId, retryAfterSeconds: decision.allowed ? null : decision.retryAfterSeconds };
 }

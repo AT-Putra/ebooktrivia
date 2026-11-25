@@ -15,7 +15,7 @@ import { SlowDown } from "../../../../components/trivia/live/slow-down.tsx";
 import { programView } from "../../../../lib/play/grid.ts";
 import { topCache } from "../../../../lib/play/leaderboard-cache.ts";
 import { pagePlayer } from "../../../../lib/play/page.ts";
-import { loadStanding, loadTop, playerPrograms, programPage } from "../../../../lib/play/trivia-data.ts";
+import { loadProfileContact, loadStanding, loadTop, playerPrograms, programPage } from "../../../../lib/play/trivia-data.ts";
 import { t } from "../../../../lib/t.ts";
 
 export const metadata: Metadata = {
@@ -34,14 +34,15 @@ interface PageProps {
 export default async function TriviaProgramPage({ params }: PageProps) {
   const { programSlug } = await params;
   if (!SLUG.test(programSlug)) notFound();
-  const { play, playerId, retryAfterSeconds } = await pagePlayer({ count: true });
+  const { play, playerId, sessionId, retryAfterSeconds } = await pagePlayer({ count: true });
   if (retryAfterSeconds !== null) return <SlowDown retryAfterSeconds={retryAfterSeconds} />;
   const page = await programPage(play.sql, playerId, programSlug);
   if (page === null) notFound();
-  const [programs, me, top] = await Promise.all([
+  const [programs, me, top, contact] = await Promise.all([
     playerPrograms(play.sql, playerId),
     loadStanding(play.sql, playerId, page.id),
     topCache.get(page.id, () => loadTop(play.sql, page.id)),
+    loadProfileContact(play.sql, sessionId),
   ]);
   const view = programView(page);
   return (
@@ -70,7 +71,7 @@ export default async function TriviaProgramPage({ params }: PageProps) {
           />
         </div>
         <div className="xl:col-span-5">
-          <LiveProfile page={page} view={view} me={me} />
+          <LiveProfile page={page} view={view} me={me} contact={contact} />
         </div>
         <div className="xl:col-span-12">
           <LiveGrid slug={page.slug} view={view} />

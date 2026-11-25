@@ -145,7 +145,9 @@ test("a paid order: the id is stripped before any vendor script, Purchase fires 
   for (const secret of [BUYER.name, "Budi", "Santoso", BUYER.email, order.phone, order.phone.slice(3), order.id, order.eventId, "snap", "midtrans"]) expect(html, secret).not.toContain(secret);
   expect(html).not.toMatch(/magic|otp=|[?&]token=|login_token/i);
   await expect(page.getByText("B*** S***")).toBeVisible();
-  await expect(page.getByText(`****${order.phone.slice(-3)}`)).toBeVisible();
+  // The phone is masked like the trivia board (public.mask_phone_tail): "0812-3456-****".
+  const local = `0${order.phone.replace(/\D/g, "").slice(2)}`;
+  await expect(page.getByText(`${local.slice(0, 4)}-${local.slice(4, -4)}-****`)).toBeVisible();
   const wa = await page.getByTestId("order-whatsapp").getAttribute("href");
   expect(wa).toMatch(/^https:\/\/wa\.me\/6281199900011\?text=/);
   expect(decodeURIComponent(wa ?? "")).toContain(order.code);

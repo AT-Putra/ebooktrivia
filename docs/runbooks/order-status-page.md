@@ -20,7 +20,8 @@ redirect claims).
 ## What the page shows
 
 - The order code, the product, the amount, the status, and the buyer's name and phone **masked by the product's one masking rule**
-  (`public.mask_name` / `public.mask_phone`, also used by the winners banner: "B*** S***", "****890"). The database function behind the page
+  (`public.mask_name`: "B*** S***"; the phone with `public.mask_phone_tail`, "0812-3456-****", the rule of the trivia board and the
+  winners banner since 2026-11-25, so two views of one buyer never add up to more digits). The database function behind the page
   (`get_order_status`) returns only the masked values, so a raw name or phone never exists in the app process. No e-mail at all.
 - The status is polled: every 3 s at first, slower after 30 s, at most every 30 s, for at most an hour (then a button offers a manual
   check). It stops at **paid** and **refunded** only. An order that looks expired, failed or under review can still be paid late (a virtual

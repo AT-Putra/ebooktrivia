@@ -66,11 +66,11 @@ function request(path: string, body: unknown, options: Req = {}): Request {
 const route = (handler: PlayerHandler, req: Request) => withPlayer(deps, req, (playerId) => handler(deps, req, playerId));
 
 /** A player of `programId` (eligible), signed in with a magic link: the session cookie. */
-async function signedIn(programId: string, name = "Budi Santoso"): Promise<{ id: string; cookie: string }> {
+async function signedIn(programId: string, name = "Budi Santoso"): Promise<{ id: string; cookie: string; phone: string }> {
   const phone = uniquePhone();
   const player = await one(root<{ id: string }[]>`INSERT INTO players (phone, name) VALUES (${phone}, ${name}) RETURNING id`);
   await root`INSERT INTO player_programs (player_id, program_id, first_paid_at, eligible) VALUES (${player.id}, ${programId}, now(), true)`;
-  return { id: player.id, cookie: await sessionOf(player.id) };
+  return { id: player.id, cookie: await sessionOf(player.id), phone };
 }
 async function sessionOf(playerId: string): Promise<string> {
   const link = issueMagicLink({ channel: "whatsapp" });
@@ -229,23 +229,29 @@ describe("the leaderboard over HTTP", () => {
     const budi = await signedIn(p.id, "Budi Santoso");
     await root`INSERT INTO player_program_stats (player_id, program_id, score, total_ms) VALUES (${ayu.id}, ${p.id}, 20, 9000)`;
     const first = await json(await board(budi.cookie));
+    // Each player appears by the WhatsApp number with its last 4 digits hidden (Owner decision 2026-11-25), masked in SQL.
+    const label = (phone: string): string => {
+      const local = `0${phone.replace(/\D/g, "").slice(2)}`;
+      return `${local.slice(0, 4)}-${local.slice(4, -4)}-****`;
+    };
     // D8: Budi has answered nothing, and still ranks, with every timer of the program (two 20 s questions).
     expect(first).toMatchObject({
       v: 1,
       top: [
-        { rank: 1, name: "A*** L***", score: 20, total_ms: 9000, finished: false },
-        { rank: 2, name: "B*** S***", score: 0, total_ms: 40_000, finished: false },
+        { rank: 1, name: label(ayu.phone), score: 20, total_ms: 9000, finished: false },
+        { rank: 2, name: label(budi.phone), score: 0, total_ms: 40_000, finished: false },
       ],
-      me: { rank: 2, name: "B*** S***", score: 0, total_ms: 40_000, ranked: 2 },
+      me: { rank: 2, name: label(budi.phone), score: 0, total_ms: 40_000, ranked: 2 },
     });
     expect(JSON.stringify(first)).not.toContain(ayu.id);
+    for (const raw of [ayu.phone, budi.phone, ayu.phone.slice(-4), budi.phone.slice(-4), "Ayu", "Budi"]) expect(JSON.stringify(first)).not.toContain(raw);
     // Budi scores: his own rank is fresh at once, the top N stays cached until 5 s have passed.
     await root`INSERT INTO player_program_stats (player_id, program_id, score, total_ms) VALUES (${budi.id}, ${p.id}, 30, 9000)`;
     const cached = await json(await board(budi.cookie));
     expect(cached["top"]).toEqual(first["top"]);
     expect(cached["me"]).toMatchObject({ rank: 1, score: 30, ranked: 2 });
     now += 5_000;
-    expect(((await json(await board(budi.cookie)))["top"] as Json[]).map((r) => r["name"])).toEqual(["B*** S***", "A*** L***"]);
+    expect(((await json(await board(budi.cookie)))["top"] as Json[]).map((r) => r["name"])).toEqual([label(budi.phone), label(ayu.phone)]);
     // Another program's board: 403, the same as an unknown one; a malformed id: 400.
     const other = await program(1);
     expect(await json(await board(budi.cookie, other.id))).toEqual({ v: 1, error: "forbidden" });

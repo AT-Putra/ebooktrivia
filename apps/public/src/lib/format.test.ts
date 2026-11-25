@@ -1,6 +1,6 @@
 // The time formats of the play pages: the banner's days-and-clock countdown and the WIB deadline text.
 import { describe, expect, it } from "vitest";
-import { formatHms, formatWibDeadline, splitDaysHms } from "./format.ts";
+import { formatHms, formatPhoneLocal, formatWibDeadline, splitDaysHms } from "./format.ts";
 import { t } from "./t.ts";
 
 const DAY = 86_400;
@@ -86,5 +86,15 @@ describe("the deadline line of the quiz bar breaks only where a reader would", (
 
   it("reads 'Batas akhir: Minggu, 21 Maret 2027 pukul 23.59 WIB' for the 22 March midnight", () => {
     expect(line("2027-03-22T00:00:00+07:00").replaceAll(NBSP, " ")).toBe("Batas akhir: Minggu, 21 Maret 2027 pukul 23.59 WIB");
+  });
+});
+
+describe("formatPhoneLocal (the profile's own number, in full; Owner decision 2026-11-25)", () => {
+  it("writes the Indonesian local form grouped 4 / the rest / 4, the grouping the board masks (public.mask_phone_tail)", () => {
+    expect(formatPhoneLocal("+6281234567890")).toBe("0812-3456-7890");
+    expect(formatPhoneLocal("+62812345678901")).toBe("0812-34567-8901");
+    expect(formatPhoneLocal("+628123456789")).toBe("0812-345-6789");
+    expect(formatPhoneLocal("+1 415 555 0100")).toBe("1415-555-0100");
+    expect(formatPhoneLocal("+6212345")).toBe("012345");
   });
 });

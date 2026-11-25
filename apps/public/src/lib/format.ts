@@ -64,3 +64,14 @@ export function formatWibDeadline(at: Date): { readonly date: string; readonly t
   // "21 Maret 2027" holds together (no-break spaces); the text may break only after the weekday's comma.
   return { date: `${part("weekday")}, ${part("day")}\u00a0${part("month")}\u00a0${part("year")}`, time: `${part("hour").padStart(2, "0")}.${part("minute").padStart(2, "0")}` };
 }
+
+/**
+ * A WhatsApp number in the Indonesian local form, grouped 4 / the rest / 4: "+6281234567890" -> "0812-3456-7890" (the profile card;
+ * the leaderboard's "0812-3456-****" is the same grouping, masked in SQL by public.mask_phone_tail). A number outside +62 keeps its digits.
+ */
+export function formatPhoneLocal(phone: string): string {
+  const digits = phone.replace(/\D/g, "");
+  const local = digits.startsWith("62") ? `0${digits.slice(2)}` : digits;
+  if (local.length <= 8) return local;
+  return `${local.slice(0, 4)}-${local.slice(4, -4)}-${local.slice(-4)}`;
+}

@@ -29,7 +29,8 @@ export interface Program {
   /** The quiz deadline (the grace end) and the time left to it. */
   quizEndsAt: Date;
   quizSeconds: number;
-  profile: { name: string; score: number; seconds: number; rank: number; nextUnlockSeconds: number };
+  /** The player's own name, WhatsApp number (E.164) and e-mail, in full on their profile (Owner decision 2026-11-25). */
+  profile: { name: string; phone: string; email: string; score: number; seconds: number; rank: number; nextUnlockSeconds: number };
   leaderboard: LeaderRow[];
   me: LeaderRow;
   sets: TriviaSet[];
@@ -52,17 +53,18 @@ function buildSets(states: Omit<TriviaSet, "art" | "topic">[]): TriviaSet[] {
   });
 }
 
+/** The board shows each player's WhatsApp number with its last 4 digits hidden (public.mask_phone_tail; Owner decision 2026-11-25). */
 const NAMES = [
-  "Ra** P*****",
-  "Di** A*****",
-  "Si** N*****",
-  "Fa** H*****",
-  "Yo** K*****",
-  "Ma** L*****",
-  "An** W*****",
-  "Hi** S*****",
-  "Ba** T*****",
-  "Ni** R*****",
+  "0812-7741-****",
+  "0857-2093-****",
+  "0813-5520-****",
+  "0896-1184-****",
+  "0821-6637-****",
+  "0878-3302-****",
+  "0815-9046-****",
+  "0838-4471-****",
+  "0819-2258-****",
+  "0852-7719-****",
 ];
 
 function buildBoard(base: number, step: number, baseSeconds: number): LeaderRow[] {
@@ -83,9 +85,9 @@ export const PROGRAMS: Program[] = [
     prizes: { gold: 5_000_000, silver: 2_500_000, bronze: 1_000_000 },
     quizEndsAt: new Date("2027-03-22T00:00:00+07:00"),
     quizSeconds: 89 * 86_400 + 4 * 3600 + 18 * 60 + 22,
-    profile: { name: "Bu** S***", score: 1240, seconds: 2538, rank: 47, nextUnlockSeconds: 3 * 3600 + 12 * 60 + 45 },
+    profile: { name: "Budi Santoso", phone: "+6281234567890", email: "budi.santoso@contoh.id", score: 1240, seconds: 2538, rank: 47, nextUnlockSeconds: 3 * 3600 + 12 * 60 + 45 },
     leaderboard: buildBoard(3480, 110, 3185),
-    me: { rank: 47, name: "Bu** S***", score: 1240, seconds: 2538 },
+    me: { rank: 47, name: "0812-3456-****", score: 1240, seconds: 2538 },
     sets: buildSets([
       { n: 1, state: "completed", score: 100 },
       { n: 2, state: "completed", score: 80 },
@@ -107,9 +109,9 @@ export const PROGRAMS: Program[] = [
     prizes: { gold: 2_000_000, silver: 1_000_000, bronze: 500_000 },
     quizEndsAt: new Date("2027-04-12T00:00:00+07:00"),
     quizSeconds: 21 * 86_400 + 5 * 3600 + 5 * 60 + 30,
-    profile: { name: "Bu** S***", score: 420, seconds: 905, rank: 112, nextUnlockSeconds: 7 * 3600 + 48 * 60 + 2 },
+    profile: { name: "Budi Santoso", phone: "+6281234567890", email: "budi.santoso@contoh.id", score: 420, seconds: 905, rank: 112, nextUnlockSeconds: 7 * 3600 + 48 * 60 + 2 },
     leaderboard: buildBoard(1820, 60, 1450),
-    me: { rank: 112, name: "Bu** S***", score: 420, seconds: 905 },
+    me: { rank: 112, name: "0812-3456-****", score: 420, seconds: 905 },
     sets: buildSets([
       { n: 1, state: "completed", score: 90 },
       { n: 2, state: "completed", score: 100 },

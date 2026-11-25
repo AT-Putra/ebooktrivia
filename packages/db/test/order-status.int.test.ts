@@ -32,22 +32,28 @@ const status = (publicId: string, role: "public_rw" | "admin_rw" | "worker_rw" =
 const claim = (publicId: string) => asRole("public_rw", (tx) => tx<Record<string, unknown>[]>`SELECT * FROM public.claim_browser_mt(${publicId})`);
 const firedAt = async (id: string) => first(await sql<{ at: Date | null }[]>`SELECT browser_mt_fired_at AS at FROM public.orders WHERE id = ${id}`).at;
 
+/** The page's phone mask (mask_phone_tail): the local form, grouped 4 / the rest / 4, the last 4 hidden. */
+const tail = (phone: string): string => {
+  const local = `0${phone.replace(/\D/g, "").slice(2)}`;
+  return `${local.slice(0, 4)}-${local.slice(4, -4)}-****`;
+};
+
 describe("get_order_status", () => {
-  it("returns the page's fields for a known public id, with the buyer MASKED by the product's one rule (mask_name / mask_phone) and no raw name, phone, e-mail, internal id or attempt data", async () => {
+  it("returns the page's fields for a known public id, with the buyer MASKED (mask_name / mask_phone_tail) and no raw name, phone, e-mail, internal id or attempt data", async () => {
     const order = await newOrder();
     const rows = await status(order.publicId);
     expect(rows).toHaveLength(1);
     expect(Object.keys(rows[0] ?? {}).sort()).toEqual(["amount_idr", "lp_host", "masked_name", "masked_phone", "order_code", "pixels", "product_title", "status"]);
-    expect(rows[0]).toMatchObject({ status: "pending", order_code: order.code, masked_name: "P***", masked_phone: `****${order.phone.slice(-3)}`, pixels: PIXELS });
+    expect(rows[0]).toMatchObject({ status: "pending", order_code: order.code, masked_name: "P***", masked_phone: tail(order.phone), pixels: PIXELS });
     const text = JSON.stringify(rows);
     for (const secret of ["Pembeli", "buyer@example.invalid", order.phone, order.phone.slice(1), order.id, order.eventId]) expect(text, secret).not.toContain(secret);
   });
 
-  it("gives the same masks as the winners banner for the same buyer (one masking rule)", async () => {
+  it("masks the buyer's phone like the trivia board and the winners banner (one rule wherever others may see it: mask_phone_tail)", async () => {
     const order = await newOrder("pending", { buyer_name: "Siti  Nur\tRahmawati", buyer_phone: "+6281234567890" });
     const [row] = await status(order.publicId);
-    const [rule] = await sql<{ n: string; p: string }[]>`SELECT public.mask_name('Siti  Nur' || E'\t' || 'Rahmawati') AS n, public.mask_phone('+6281234567890') AS p`;
-    expect(row).toMatchObject({ masked_name: "S*** N*** R***", masked_phone: "****890" });
+    const [rule] = await sql<{ n: string; p: string }[]>`SELECT public.mask_name('Siti  Nur' || E'\t' || 'Rahmawati') AS n, public.mask_phone_tail('+6281234567890') AS p`;
+    expect(row).toMatchObject({ masked_name: "S*** N*** R***", masked_phone: "0812-3456-****" });
     expect([row?.["masked_name"], row?.["masked_phone"]]).toEqual([rule?.n, rule?.p]);
   });
 
@@ -76,11 +82,12 @@ describe("get_order_status", () => {
     }
     for (const row of dump) {
       if (anonymized.has(row["public_id_of_row"] ?? "")) {
-        expect([row["masked_name"], row["masked_phone"]]).toEqual(["***", null]);
+        // An erased buyer has no phone left: the mask shows no digits at all.
+        expect([row["masked_name"], row["masked_phone"]]).toEqual(["***", "***"]);
         continue;
       }
       expect(row["masked_name"], String(row["masked_name"])).toMatch(/^(\S\*\*\*)( \S\*\*\*)*$/);
-      expect(row["masked_phone"], String(row["masked_phone"])).toMatch(/^\*\*\*\*\d{0,3}$/);
+      expect(row["masked_phone"], String(row["masked_phone"])).toMatch(/^0\d{3}-\d+-\*{4}$/);
     }
   });
 

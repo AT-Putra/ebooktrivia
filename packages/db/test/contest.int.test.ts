@@ -408,12 +408,13 @@ describe("confirm_program_winners", () => {
     expect(summary).toMatchObject({ winners_confirmed: 2 });
     const rows = await banner();
     expect(rows).toEqual([
-      { rank: 1, prize_tier_id: t1, prize_name: "Hadiah 1", masked_name: "B*** S***", masked_phone: "****890" },
-      { rank: 2, prize_tier_id: t2, prize_name: "Hadiah 2", masked_name: "s*** n***", masked_phone: "****123" },
+      // The banner shows the WhatsApp number with its last 4 digits hidden (mask_phone_tail; Owner decision 2026-11-25).
+      { rank: 1, prize_tier_id: t1, prize_name: "Hadiah 1", masked_name: "B*** S***", masked_phone: "0812-3456-****" },
+      { rank: 2, prize_tier_id: t2, prize_name: "Hadiah 2", masked_name: "s*** n***", masked_phone: "0812-9999-****" },
     ]);
     expect(await banner("admin_rw")).toEqual(rows);
     const text = JSON.stringify(rows);
-    for (const raw of ["Budi", "Santoso", "siti", "+62812", "4567890", a, b]) expect(text).not.toContain(raw);
+    for (const raw of ["Budi", "Santoso", "siti", "+62812", "4567890", "7890", "0123", a, b]) expect(text).not.toContain(raw);
     expect(await sqlState(asRole("worker_rw", (tx) => tx`SELECT * FROM public.program_winners_banner(${p.programId}::uuid)`))).toBe("42501");
     expect(first(await sql<{ status: string; confirmed: boolean }[]>`SELECT status::text, winners_confirmed_at IS NOT NULL AS confirmed FROM programs WHERE id = ${p.programId}`)).toEqual({ status: "finalized", confirmed: true });
     const audit = first(await sql<{ actor: string; request_id: string; changes: Record<string, unknown> }[]>`SELECT actor_admin_user_id AS actor, request_id, changes FROM audit_log WHERE action = 'contest.winners_confirm' AND entity_id = ${p.programId}`);
