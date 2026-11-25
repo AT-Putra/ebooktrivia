@@ -331,16 +331,17 @@ describe("recovery codes", () => {
 });
 
 describe("sessions", () => {
-  it("expires after 30 minutes idle", async () => {
+  it("has no idle limit: a session left unused for hours stays signed in, and its last use is recorded", async () => {
     const admin = await enroll(rt);
     const ip = freshIp();
-    await root`UPDATE admin_auth.session_state SET last_seen_at = clock_timestamp() - interval '29 minutes'
+    // Owner decision 2026-11-25: no idle limit; only the 12 h limit below ends a session.
+    await root`UPDATE admin_auth.session_state SET last_seen_at = clock_timestamp() - interval '11 hours 59 minutes'
                 WHERE session_id IN (SELECT id FROM admin_auth.session WHERE "userId" = ${admin.userId})`;
     expect((await loadAdminSession(rt, admin.jar.request(ip).headers)).status).toBe("active");
-    // That request moved last_seen_at forward; 31 minutes of silence ends the session.
-    await root`UPDATE admin_auth.session_state SET last_seen_at = clock_timestamp() - interval '31 minutes'
-                WHERE session_id IN (SELECT id FROM admin_auth.session WHERE "userId" = ${admin.userId})`;
-    expect(await loadAdminSession(rt, admin.jar.request(ip).headers)).toEqual({ status: "anonymous" });
+    const [state] = await root<{ idle_seconds: number }[]>`
+      SELECT extract(epoch FROM clock_timestamp() - last_seen_at)::int AS idle_seconds FROM admin_auth.session_state
+       WHERE session_id IN (SELECT id FROM admin_auth.session WHERE "userId" = ${admin.userId})`;
+    expect(state?.idle_seconds).toBeLessThan(60);
   });
 
   it("expires 12 hours after sign-in, however active", async () => {

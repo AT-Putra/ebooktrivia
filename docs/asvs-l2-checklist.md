@@ -24,7 +24,7 @@
 | V4 API and Web Service | 10 | 2 | 2 | 0 | 6 | 0 |
 | V5 File Handling | 9 | 8 | 0 | 1 | 0 | 0 |
 | V6 Authentication | 35 | 26 | 5 | 0 | 4 | 0 |
-| V7 Session Management | 18 | 13 | 3 | 0 | 2 | 0 |
+| V7 Session Management | 18 | 12 | 4 | 0 | 2 | 0 |
 | V8 Authorization | 7 | 5 | 1 | 0 | 1 | 0 |
 | V9 Self-contained Tokens | 7 | 7 | 0 | 0 | 0 | 0 |
 | V10 OAuth and OIDC | 29 | 0 | 0 | 0 | 29 | 0 |
@@ -35,7 +35,7 @@
 | V15 Secure Coding and Architecture | 13 | 9 | 4 | 0 | 0 | 0 |
 | V16 Security Logging and Error Handling | 16 | 8 | 7 | 1 | 0 | 0 |
 | V17 WebRTC | 7 | 0 | 0 | 0 | 7 | 0 |
-| **Total** | **253** | **144** | **43** | **3** | **60** | **3** |
+| **Total** | **253** | **143** | **44** | **3** | **60** | **3** |
 
 The story's other criteria: **ZAP baseline and authenticated scans on staging: Staging-pending** (scripts, plans and
 rules built; local baseline dry run 2026-11-22: 0 High, 0 FAIL-rule alerts; the real finding it showed, pages without a
@@ -202,15 +202,15 @@ working tree; OSV-Scanner 2.7.0: one advisory (GitHub severity moderate) fixed b
 
 | ID | L | Status | Evidence | Gap / follow-up |
 |---|---|---|---|---|
-| V7.1.1 | 2 | Met | The appendix (admin 30 min / 12 h; player 30 days, daily rotation, 90-day cap, with the reason); `admin-access.md "## 3"` | |
+| V7.1.1 | 2 | Met | The appendix (admin 12 h, no idle limit; player 30 days, daily rotation, 90-day cap, with the reason); `admin-access.md "## 3"` | |
 | V7.1.2 | 2 | Met | The appendix (concurrent sessions: allowed, and why) | |
 | V7.1.3 | 2 | N/A | No federated identity | |
-| V7.2.1 | 1 | Met | Admin: one SQL check of state, idle and absolute limits (`apps/admin/src/lib/auth/session.ts:35-63`); player (`play/handlers.ts:466-472`, `auth.ts:144-153`). Tests: `auth-flow.int.test.ts > "refuses a session without session_state (not created by the console's sign-in flows)"`; `play-auth.int.test.ts > "a forged or unsigned cookie is anonymous"` | |
+| V7.2.1 | 1 | Met | Admin: one SQL check of state and the absolute limit (`apps/admin/src/lib/auth/session.ts:36-63`); player (`play/handlers.ts:466-472`, `auth.ts:144-153`). Tests: `auth-flow.int.test.ts > "refuses a session without session_state (not created by the console's sign-in flows)"`; `play-auth.int.test.ts > "a forged or unsigned cookie is anonymous"` | |
 | V7.2.2 | 1 | Met | A token per session (Better Auth createSession) | |
 | V7.2.3 | 1 | Met | 32 characters over 62 symbols, about 190 bits, getRandomValues (`@better-auth/core/dist/utils/id.mjs:3-5`) | No repo test of the entropy |
 | V7.2.4 | 1 | Met | Admin: the second factor creates a new session (`instance.ts:110`); player: login revokes the incoming session, daily rotation (`handlers.ts:281-283`, `auth.ts:154-175`). Tests: `play-auth.int.test.ts > "a login replaces the session the browser came with (rotate on login)"`, `> "rotate once a day: a new token on the next use, the old one valid only for the grace period; one rotation under concurrency"` | |
-| V7.3.1 | 2 | Met | Admin 30 min idle (`session.ts:49`); player: a session unused for 30 days ends (documented decision, appendix). Tests: `auth-flow.int.test.ts > "expires after 30 minutes idle"`; `e2e/tests/admin-auth.spec.ts > "sign-out after the idle timeout still lands on /login and clears the cookie"` | |
-| V7.3.2 | 2 | Met | Admin 12 h, never refreshed (`session.ts:48`); player 90 days (`auth.ts:74, 147-153`). Tests: `auth-flow.int.test.ts > "expires 12 hours after sign-in, however active"`; `play-auth.int.test.ts > "are capped at 90 days from the login: a rotation carries the login over and never outlives it; past it the session ends"` | |
+| V7.3.1 | 2 | Partial | Admin: **no idle limit** (Owner decision 2026-11-25); a session still ends 12 hours after sign-in (`session.ts:49`). Player: a session unused for 30 days ends (documented decision, appendix). Tests: `auth-flow.int.test.ts > "has no idle limit: a session left unused for hours stays signed in, and its last use is recorded"`, `> "expires 12 hours after sign-in, however active"`; `e2e/tests/admin-auth.spec.ts > "sign-out after the 12-hour limit still lands on /login and clears the cookie"` | Medium: a signed-in console left open on an unattended computer can be used by anyone at it for up to 12 hours. Follow-up: Owner and Staff lock their screen or press Sign out when they leave; a shorter absolute limit or an idle limit can be set again in `instance.ts` |
+| V7.3.2 | 2 | Met | Admin 12 h, never refreshed (`session.ts:49`); player 90 days (`auth.ts:74, 147-153`). Tests: `auth-flow.int.test.ts > "expires 12 hours after sign-in, however active"`; `play-auth.int.test.ts > "are capped at 90 days from the login: a rotation carries the login over and never outlives it; past it the session ends"` | |
 | V7.4.1 | 1 | Met | Server-side deletion (`service.ts:513-519`; `handlers.ts:434-443`). Tests: `auth-flow.int.test.ts > "signs out: audited before and after, the session row is gone and the cookie is cleared"`; `play-auth.int.test.ts > "logout deletes the session and expires the cookie"` | |
 | V7.4.2 | 1 | Met | Disable deletes admin sessions (`admin-users.ts:130`); a suspended / anonymized player resolves to nobody on every request (`functions.sql:667-678`). Tests: `auth-flow.int.test.ts > "refuses a disabled admin: sessions are revoked and no new one is created"`; `player-auth.int.test.ts > "player_for_login answers NULL once the player is no longer eligible or is anonymized"` | |
 | V7.4.3 | 2 | Partial | TOTP enrolment revokes every other session (`service.ts:421`); reset / recover delete all (`admin-users.ts:187`) | Regenerating recovery codes offers no "end other sessions". Follow-up with V6.2.2 |
@@ -375,8 +375,9 @@ generic OAuth provider (grep), and no third party is given delegated access.
 There is no other pathway: Better Auth's HTTP handler is mounted nowhere, the stock phone routes are disabled, sign-up and
 trusted devices are off (V6.3.4).
 
-**Session lifetimes (V7.1.1, V7.3.x).** Admin: 30 minutes idle, 12 hours absolute, never refreshed (NIST SP 800-63B AAL2
-re-authentication). Player: a session lives 30 days, is replaced by a new token on its first use after 24 hours, and never
+**Session lifetimes (V7.1.1, V7.3.x).** Admin: 12 hours absolute, never refreshed, and no idle limit (Owner decision
+2026-11-25; NIST SP 800-63B AAL2 asks for 30 minutes idle as well, so V7.3.1 is Partial: lock the screen or sign out when
+leaving the computer). Player: a session lives 30 days, is replaced by a new token on its first use after 24 hours, and never
 outlives 90 days after the login that started it; an unused session ends after 30 days. The player limits deviate from
 AAL2 on purpose: a player account holds only game state (no payment, no editable personal data, masked display) and is
 opened from WhatsApp / e-mail links on a phone, where a short idle timeout would push players into repeated OTP sends (a

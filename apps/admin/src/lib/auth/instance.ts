@@ -1,6 +1,6 @@
 // The Better Auth admin instance (plan M5a.1; spike R13): schema admin_auth, e-mail + password with
-// argon2id, TOTP second factor, sessions of 12 h absolute (never refreshed) with the 30 min idle
-// limit kept in admin_auth.session_state (lib/auth/session.ts).
+// argon2id, TOTP second factor, sessions of 12 h absolute (never refreshed, no idle limit), each
+// with its admin_auth.session_state row (lib/auth/session.ts).
 //
 // Better Auth's HTTP handler is NOT mounted anywhere: the console calls `auth.api.*` from its own
 // server actions (lib/auth/service.ts), so the only reachable flows are the ones written there,
@@ -39,8 +39,8 @@ export const ADMIN_COOKIE_NAMES = {
   trust_device: "__Host-admin_trust_device",
 } as const;
 
+/** A session ends 12 hours after sign-in, however active. There is no idle limit (Owner decision 2026-11-25, docs/asvs-l2-checklist.md V7.3.1). */
 export const SESSION_ABSOLUTE_SECONDS = 12 * 60 * 60;
-export const SESSION_IDLE_SECONDS = 30 * 60;
 /** How long the password step's second-factor challenge stays valid. */
 export const TWO_FACTOR_CHALLENGE_SECONDS = 5 * 60;
 export const TOTP_ISSUER = "ebooktrivia admin";

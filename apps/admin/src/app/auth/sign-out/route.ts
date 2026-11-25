@@ -1,5 +1,5 @@
 // POST /auth/sign-out (a form post, never GET: no state change on GET). adminRoute refuses a
-// cross-origin POST (403) before the session is touched. Without a usable session (idle timeout,
+// cross-origin POST (403) before the session is touched. Without a usable session (12 hours after sign-in,
 // already signed out) the answer is the same 303 to /login, with the cookies expired.
 import { ADMIN_COOKIE_NAMES } from "../../../lib/auth/instance.ts";
 import { signOut } from "../../../lib/auth/service.ts";

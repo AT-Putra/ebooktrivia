@@ -354,13 +354,13 @@ test("nonce CSP: every script carries the per-request nonce, no violations, no u
   await context.close();
 });
 
-test("sign-out after the idle timeout still lands on /login and clears the cookie", async ({ browser }) => {
+test("sign-out after the 12-hour limit still lands on /login and clears the cookie", async ({ browser }) => {
   const context = await contextFor(browser, "203.0.113.15");
   const page = await context.newPage();
   await signInWithTotp(page, OWNER.email, OWNER.password, ownerSecret, "owner");
   const ownerId = await userIdByEmail(OWNER.email);
-  await admin.sql`UPDATE admin_auth.session_state SET last_seen_at = clock_timestamp() - interval '31 minutes'
-                   WHERE session_id IN (SELECT id FROM admin_auth.session WHERE "userId" = ${ownerId})`;
+  // There is no idle limit (Owner decision 2026-11-25): the session ends 12 hours after sign-in.
+  await admin.sql`UPDATE admin_auth.session SET "createdAt" = clock_timestamp() - interval '12 hours 1 second' WHERE "userId" = ${ownerId}`;
   await page.getByRole("button", { name: "Sign out" }).click();
   await expect(page).toHaveURL(/\/login$/);
   expect((await context.cookies()).some((c) => c.name === "__Host-admin_session")).toBe(false);

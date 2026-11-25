@@ -1,6 +1,6 @@
 // What a session may reach (no I/O): the decision behind requireAdmin (lib/next/require-admin.ts),
 // adminAction (lib/next/actions.ts) and adminRoute (lib/next/route.ts). Fails closed:
-//   no / invalid / expired (idle 30 min, absolute 12 h) session, disabled user  -> /login
+//   no / invalid / expired (12 h after sign-in) session, disabled user           -> /login
 //   signed in with the password but TOTP not enrolled                          -> /enroll
 //   signed in, but the password is in a known breach (US-031, ASVS V6.2.12)    -> /change-password
 //   permission denied by policy.ts                                               -> 403

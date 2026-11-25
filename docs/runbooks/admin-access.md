@@ -61,7 +61,7 @@ the deadline the account cannot sign in until the Owner uses **Reset access** on
 | Second-factor hard lock | 20 consecutive failed codes, spread over any number of windows, lock the second factor until a recovery (section 4). Only a successful sign-in resets the count. The log shows `admin.second_factor_locked`, and the audit log shows `admin_auth.second_factor_hard_locked`. |
 | Per-address lockout | 5 failures in 15 minutes from one client address (IPv6: per /64) block that address for 15 minutes. Password and code failures share this one key. |
 | Storage | All locks are stored in PostgreSQL, so they survive restarts and apply to every app instance. The worker deletes spent rows every minute. It keeps consecutive counts and hard locks. |
-| Sessions | Ended after 30 minutes without activity, and 12 hours after sign-in at the latest. Cookie `__Host-admin_session` (Secure, HttpOnly, SameSite=Strict). |
+| Sessions | Ended 12 hours after sign-in, however active; there is no idle limit (Owner decision 2026-11-25), so lock the screen or press Sign out when leaving the computer. Cookie `__Host-admin_session` (Secure, HttpOnly, SameSite=Strict). |
 | TOTP codes | Each code is accepted once. A reused code is refused for 2 minutes. |
 | Recovery codes | 10 per setup, single use. **Account → Create new recovery codes** (needs a current TOTP code) replaces all of them. The overview warns at 3 or fewer. |
 | Disabled account | The Owner's **Disable** on the Team page revokes every session at once. |

@@ -161,7 +161,7 @@ export const adminAuthTwoFactor = adminAuth.table(
 /**
  * One row per admin session, inserted when Better Auth creates the session (databaseHooks) and
  * deleted with it. `requireAdmin` accepts a session only through this row: it moves `last_seen_at`
- * forward (idle timeout 30 min) in the same statement that checks the absolute limit, and an
+ * forward (the last use; there is no idle limit) in the same statement that checks the absolute limit, and an
  * enrolled user's session counts as signed in only once `mfa_verified_at` is set by the second
  * factor (TOTP or a recovery code) that created it. A password-only session is never promoted.
  */
