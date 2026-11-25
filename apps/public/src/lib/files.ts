@@ -18,6 +18,7 @@
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { verifyFileUrl } from "@ebooktrivia/adapters";
+import { FILE_SIZE_HEADER } from "@ebooktrivia/core";
 import { createHash } from "node:crypto";
 import type { Logger } from "./log.ts";
 import { openRegularFile } from "./safe-file.ts";
@@ -101,8 +102,11 @@ export async function handleFileDownload(deps: FilesDeps, request: Request): Pro
     return plain(404);
   }
   log("info", "files.served", { outcome: "ok", count: opened.size });
+  // Next.js drops this Content-Length on the way out (its sendResponse strips it and streams chunked), so the size is ALSO stated in FILE_SIZE_HEADER, which it
+  // keeps: the worker's pre-flight checks that one when no Content-Length arrives (apps/worker/src/delivery/access.ts).
+  const size = String(opened.size);
   return new Response(Readable.toWeb(opened.handle.createReadStream()) as ReadableStream, {
     status: 200,
-    headers: { ...HEADERS, "content-type": "application/pdf", "content-length": String(opened.size), "content-disposition": 'attachment; filename="ebook.pdf"' },
+    headers: { ...HEADERS, "content-type": "application/pdf", "content-length": size, [FILE_SIZE_HEADER]: size, "content-disposition": 'attachment; filename="ebook.pdf"' },
   });
 }

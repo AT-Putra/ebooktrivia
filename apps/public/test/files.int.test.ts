@@ -5,6 +5,7 @@ import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { signFileUrl } from "@ebooktrivia/adapters";
+import { FILE_SIZE_HEADER } from "@ebooktrivia/core";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createWahaMockApp } from "../../../infra/waha-mock/src/app.ts";
 import { FILE_URL_CAP, type FilesDeps, handleFileDownload, urlKey } from "../src/lib/files.ts";
@@ -50,6 +51,8 @@ describe("the signed ebook download", () => {
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toBe("application/pdf");
     expect(res.headers.get("content-length")).toBe(String(PDF.length));
+    // Next.js strips the Content-Length above on the way out; the size the worker's pre-flight checks travels here too.
+    expect(res.headers.get(FILE_SIZE_HEADER)).toBe(String(PDF.length));
     expect(res.headers.get("content-disposition")).toBe('attachment; filename="ebook.pdf"');
     expect(res.headers.get("x-content-type-options")).toBe("nosniff");
     expect(res.headers.get("content-security-policy")).toBe("sandbox");

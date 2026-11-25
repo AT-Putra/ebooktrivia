@@ -9,7 +9,7 @@ import { randomBytes } from "node:crypto";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { PUBLIC_VALKEY_LIBRARY_CODE } from "@ebooktrivia/adapters/valkey-functions";
-import { createSecretOpener, createSecretSealer, generateScopeKeyPair } from "@ebooktrivia/crypto";
+import { createSecretOpener, createSecretSealer, deriveFileUrlKey, generateScopeKeyPair } from "@ebooktrivia/crypto";
 import { SECRET_NAMES } from "@ebooktrivia/db";
 import { createTestDatabase } from "@ebooktrivia/test-support/database";
 import { loadValkeyFunctions } from "@ebooktrivia/test-support/valkey";
@@ -27,6 +27,10 @@ export interface PlayEnv {
   /** The published program the eligible players have paid for (US-027: the trivia page /{programSlug}). */
   readonly programId: string;
   readonly programSlug: string;
+  /** The app's DOMAIN (the signed /files route answers on api.<domain> only). */
+  readonly domain: string;
+  /** The signed-URL key the app derives from its payment private key, as the worker does (a spec signs /files URLs with it). */
+  readonly fileUrlKey: Uint8Array;
   /** An eligible player's phone (E.164) and id. */
   eligiblePlayer(): Promise<{ readonly id: string; readonly phone: string }>;
   /** The newest OTP code sent to `phone`, opened from the outbox with the messaging private key. */
@@ -102,6 +106,8 @@ export async function startPlayEnv(port = PLAY_PORT, options: { readonly dataDir
     url,
     programId: program?.id ?? "",
     programSlug,
+    domain: env.DOMAIN,
+    fileUrlKey: deriveFileUrlKey(payment.privateKey),
     async eligiblePlayer() {
       const phone = `+62812${String(10_000_000 + Math.floor(Math.random() * 89_999_999))}`;
       const row = (await sql<{ id: string }[]>`INSERT INTO players (phone, name) VALUES (${phone}, 'Budi Santoso') RETURNING id`)[0];

@@ -76,9 +76,21 @@ const askingFor = (code: string): string => `Halo, ini kode pesanan saya ${code}
 const alertsOf = (kind: string) => sql<{ severity: string; dedupe_key: string; payload: Record<string, unknown> }[]>`SELECT severity, dedupe_key, payload FROM alerts WHERE kind = ${kind} AND resolved_at IS NULL`;
 const sessionHealth = async (id: string) => first(await sql<{ fail_streak: number; cooldown_until: Date | null }[]>`SELECT fail_streak, cooldown_until FROM waha_sessions WHERE id = ${id}`);
 
-const BROKEN: readonly FileServerMode[] = ["not_found", "forbidden", "html_200", "wrong_type", "wrong_length", "no_length", "no_magic", "unreachable"];
+const BROKEN: readonly FileServerMode[] = ["not_found", "forbidden", "html_200", "wrong_type", "wrong_length", "length_conflict", "no_length", "no_magic", "unreachable"];
 
 describe("(a) the pre-flight: nothing is sent unless the signed URL answers the stored PDF", () => {
+  it("a route that keeps its Content-Length (no size header) is as good as the Next.js route: the file is sent", async () => {
+    const r = rig();
+    r.server.mode = "content_length";
+    const session = await createSession();
+    const order = await paidOrder(shop, { waNotBefore: proactiveLater() });
+    const heard = await r.hear({ session: session.name, chatId: order.chatId, body: askingFor(order.code) });
+    await heard.run();
+    expect(await inboundOf(heard.inboundId)).toMatchObject({ outcome: "delivered" });
+    expect(r.files()).toHaveLength(1);
+    expect((await deliveryOf(order.deliveries.whatsapp)).last_error).toBeNull();
+  });
+
   it("a healthy route: the file is sent, and the pre-flight used a URL of its OWN (a 60 s expiry) so WAHA's URL (10 minutes) keeps its whole download allowance", async () => {
     const r = rig();
     const session = await createSession();

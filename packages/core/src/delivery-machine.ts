@@ -52,6 +52,13 @@ export type DeliveryStatus = (typeof DELIVERY_STATUSES)[number];
  */
 export const DELIVERED_WRONG_FILE = "delivered_wrong_file";
 
+/**
+ * The response header in which the public /files route states the byte size of the file it serves (apps/public/src/lib/files.ts). Next.js drops a route handler's own
+ * Content-Length (its sendResponse strips it and streams the body chunked), so the worker's pre-flight (apps/worker/src/delivery/access.ts) reads the size here when no
+ * Content-Length arrives. It is the size of the file the route opened, as Content-Length would have been.
+ */
+export const FILE_SIZE_HEADER = "x-file-size";
+
 /** deliveries_channel_check. */
 export const DELIVERY_CHANNELS = ["whatsapp", "email"] as const;
 export type DeliveryChannel = (typeof DELIVERY_CHANNELS)[number];

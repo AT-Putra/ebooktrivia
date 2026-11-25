@@ -7,6 +7,7 @@
 //   - SMTP: smtp.password must be bound to smtp_settings.host; mail goes through adapters sendMail (resolve + address policy, TLS).
 // Errors name a code, never a key, a host or an address.
 import { createSafeFetch, createWahaClient, type Resolver, sendMail, signFileUrl, systemResolver } from "@ebooktrivia/adapters";
+import { FILE_SIZE_HEADER } from "@ebooktrivia/core";
 import { assertWahaTarget, CryptoError, type SecretOpener } from "@ebooktrivia/crypto";
 import { SECRET_NAMES, type SettingsSecretRow } from "@ebooktrivia/db";
 import { readFile, stat } from "node:fs/promises";
@@ -165,8 +166,9 @@ export function createEbookFiles(
         try {
           if (response.status !== 200) return { ok: false, reason: "status" };
           if (!/^application\/pdf\b/i.test(response.headers.get("content-type") ?? "")) return { ok: false, reason: "content_type" };
-          // An exact whole number: a missing, chunked or different length is a different file than the one stored.
-          const length = response.headers.get("content-length");
+          // An exact whole number: a missing or different length is a different file than the one stored. The route's Content-Length when one arrives; else the
+          // size the route states in FILE_SIZE_HEADER (Next.js strips a route handler's Content-Length and streams the body chunked). Neither: refused.
+          const length = response.headers.get("content-length") ?? response.headers.get(FILE_SIZE_HEADER);
           if (length === null || !/^[0-9]{1,15}$/.test(length) || Number(length) !== expected) return { ok: false, reason: "content_length" };
           if ((await response.textPrefix(5)) !== "%PDF-") return { ok: false, reason: "magic" };
           return { ok: true, size: expected };
