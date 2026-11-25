@@ -44,7 +44,7 @@ api_healthz_block() {
   ' "$caddyfile"
 }
 block=$(api_healthz_block)
-[[ $block == *"@monitor remote_ip {\$MONITOR_ALLOWED_CIDRS}"* && $block == *"import public_upstreams"* && $block == *"respond 404"* ]] ||
+[[ $block == *"remote_ip {\$MONITOR_ALLOWED_CIDRS}"* && $block == *"not remote_ip 10.90.55.0/24"* && $block == *"import public_upstreams"* && $block == *"respond 404"* ]] ||
   {
     printf 'could not cut the /healthz block out of the api site of infra/caddy/Caddyfile\n' >&2
     exit 1

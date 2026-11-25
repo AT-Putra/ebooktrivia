@@ -1,6 +1,6 @@
 // What the order status page reads and writes (as public_rw): the two SECURITY DEFINER entry points of
-// packages/db/sql/functions.sql (get_order_status, claim_browser_mt), and the pool number of the
-// "Kirim via WhatsApp" button. The publicId is the page's capability: every function takes it as the one
+// packages/db/sql/functions.sql (get_order_status, claim_browser_mt), the pool number of the WhatsApp buttons
+// (pending and paid), and the paid page's wording. The publicId is the page's capability: every function takes it as the one
 // key, answers an unknown id with no row, and never raises for a malformed one.
 import { PAID_PAGE_DEFAULTS, PAID_PAGE_SETTING_KEY, type PaidPageWording, paidPageWordingOf } from "@ebooktrivia/core/paid-page";
 import { PUBLIC_ID_PATTERN } from "@ebooktrivia/core/public-id";

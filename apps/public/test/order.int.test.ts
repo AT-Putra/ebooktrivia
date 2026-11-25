@@ -263,15 +263,17 @@ describe("criterion 1: what the page can show (data, masking, the WhatsApp butto
       createElement(OrderCard, {
         state: view.state,
         order: { ref: view.code, product: view.product, amount: view.amountIdr, name: view.name, whatsapp: view.phone },
-        links: { trivia: view.loginHref, again: view.orderAgainHref, whatsapp: view.whatsappHref },
+        links: { trivia: view.loginHref, again: view.orderAgainHref, whatsapp: view.whatsappHref, whatsappPaid: view.whatsappPaidHref },
+        paidWording: view.paidWording,
       }),
     );
     const page = JSON.stringify(view) + html;
     for (const secret of ["Budi", "Santoso", EMAIL, "budi.santoso", order.phone, order.phone.slice(1), order.id, order.eventId, ...Object.values(PIXELS)]) expect(page, secret).not.toContain(secret);
     expect(html).toContain(order.code);
     expect(html).toContain(`****${order.phone.slice(-3)}`);
-    expect(html).toContain("Kirim via WhatsApp");
-    expect(decodeURIComponent(/href="(https:\/\/wa\.me\/[^"]+)"/.exec(html)?.[1] ?? "")).toContain(order.code);
+    // Paid: the one big WhatsApp button asks for the ebook and the trivia access, with the order code our number needs.
+    expect(html).toContain("Ambil Ebook &amp; Akses Trivia via WhatsApp");
+    expect(decodeURIComponent(/href="(https:\/\/wa\.me\/[^"]+)"/.exec(html)?.[1] ?? "")).toContain(`saya mau ambil ebook ${view.product} dan akses trivia. Kode pesanan saya ${order.code}.`);
     expect(html).not.toMatch(/token|midtrans|snap/i);
   });
 

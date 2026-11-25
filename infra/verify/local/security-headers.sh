@@ -119,7 +119,7 @@ if ((!staging)); then
     drop { if (/^\}$/) drop = 0; next }
     /^(admin|play|order|api)\.\{\$DOMAIN\} \{$/ { sub(/ \{$/, ""); printf "http://%s:%s {\n", $0, port; next }
     /^https:\/\/ \{$/ { printf "http://:%s {\n", port; next }
-    /^\timport https$/ { next }
+    /^\timport https(_api)?$/ { next }
     /^\ttls \{$/ { tls = 1; next }
     tls { if (/^\t\}$/) tls = 0; next }
     { print }
@@ -129,7 +129,7 @@ if ((!staging)); then
   for site in "http://admin.{\$DOMAIN}:$CADDY_PORT {" "http://order.{\$DOMAIN}:$CADDY_PORT {" "http://:$CADDY_PORT {" "reverse_proxy $upstream:$PUBLIC_PORT {"; do
     grep -qF "$site" "$work/Caddyfile" || { printf 'could not adapt infra/caddy/Caddyfile (%s)\n' "$site" >&2; exit 1; }
   done
-  ! grep -qE '^\s*(import https|on_demand)$' "$work/Caddyfile" || { printf 'the TLS socket or on-demand TLS is still in the local Caddyfile\n' >&2; exit 1; }
+  ! grep -qE '^\s*(import https(_api)?|on_demand)$' "$work/Caddyfile" || { printf 'the TLS socket or on-demand TLS is still in the local Caddyfile\n' >&2; exit 1; }
 
   # The SDK files and one LP page, the way build-images.sh sdk and the admin's ZIP hosting lay them out.
   mkdir -p "$work/sdk" "$work/lp/hosts/$LP_HOST/current"
