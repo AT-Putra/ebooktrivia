@@ -30,6 +30,11 @@
 //                 the buyer wrote to, in that chat: the PDF and the login link. The proactive send then finds the row claimed and does
 //                 nothing, so the buyer gets exactly one WhatsApp delivery. A row that is not pending, or an order that is not paid: a
 //                 text that says where things stand (and only to a verified sender), the row untouched.
+//                 A reply held back on OUR side before anything went out (the file route, a template, a login link, a stalled claim: deliver.ts
+//                 not_attempted) is tried again from the same number, to the same chat: the same message is processed again after 1, 2, 5, 10, 20, 30,
+//                 60 and 60 minutes (PDF_RETRY_DELAYS_MS; Owner decision 2026-11-25), then the delivery waits for the buyer's next message. A WhatsApp
+//                 refusal or a WAHA failure is not tried again this way. While the tries last, the opener waits (a buyer who wrote before it was due
+//                 must not get it from another number meanwhile), and a try that no longer leads to this buyer's own claim says nothing.
 //        unresolved  (an @lid WAHA cannot put a number to; Owner decision D6) cannot be told from a stranger, so it NEVER claims the row and
 //                 never gets a login link or a name: the PDF goes as an EXTRA reply (no name, no order, no link) and the buyer's own
 //                 proactive send still goes out on schedule. An order that is not paid gets one neutral text.
@@ -59,7 +64,7 @@ import { performance } from "node:perf_hooks";
 import { setTimeout as delay } from "node:timers/promises";
 import type postgres from "postgres";
 import type { Logger } from "../log.ts";
-import type { FinalizeWrites, OutboxConsumer } from "../outbox-consumer.ts";
+import { type FinalizeWrites, type OutboxConsumer, OutboxDefer } from "../outbox-consumer.ts";
 import type { DeliveryConfig } from "./config.ts";
 import { askContact, ContactCacheError, knownLid, LID_LINK_FRESH_MS, lidCacheOf, rememberLid } from "./contacts.ts";
 import { raiseAlert } from "../sweepers.ts";
@@ -77,6 +82,18 @@ const LOOKUP_TIMEOUT_MS = 10_000;
 const TEXT_TIMEOUT_MS = 30_000;
 /** The extra replies (texts, the PDF for an unresolved sender) stop at this share of a number's daily cap. */
 export const REPLY_CAP_SHARE = 0.8;
+/**
+ * A buyer-first PDF reply held back on our side (deliver.ts not_attempted: nothing went out) is tried again by processing the same message after these
+ * waits (Owner decision 2026-11-25: the buyer already wrote, so the PDF must not wait for a second message). 8 tries over about 3 h; after the last one
+ * the message is done and the delivery waits for the buyer's next message, as before.
+ */
+export const PDF_RETRY_DELAYS_MS: readonly number[] = [1, 2, 5, 10, 20, 30, 60, 60].map((minutes) => minutes * 60_000);
+/** The last_error codes of a hold that is ours (deliver.ts): only these are tried again. A WhatsApp refusal (a ban code), a check-exists answer or a WAHA failure is not. */
+const OUR_SIDE_HOLDS: ReadonlySet<string> = new Set([FILE_UNAVAILABLE, "template_invalid", "magic_link_unavailable", "preparation_failed", "aborted_before_send", "claim_too_old"]);
+/** The try of a held-back reply that this claim of the message is (0: the first handling), from the outbox payload; anything else reads as 0. */
+const pdfRetryOf = (value: unknown): number => (typeof value === "number" && Number.isInteger(value) && value >= 0 ? Math.min(value, PDF_RETRY_DELAYS_MS.length) : 0);
+/** How long past the last try the opener still waits (the last try's own handling, and a margin). */
+const OPENER_HOLD_MARGIN_MS = 5 * 60_000;
 /** The phone-side match of an @lid sender asks WhatsApp about at most this many phones per message. */
 export const LID_CHECK_MAX = 5;
 /** ... a sender lid gets one such round per this many seconds, and a number (session) is asked at most LID_SESSION_CHECK_CEILING questions per this many seconds. */
@@ -525,8 +542,8 @@ export function createInboundConsumer(deps: InboundDeps): OutboxConsumer {
   }
 
   /** The verified buyer's claim of the same row, and the reply; returns the outcome code. */
-  async function buyerFirst(inbound: InboundRow, fetched: Fetched, order: { id: string; status: string }, signal: AbortSignal): Promise<string> {
-    if (order.status !== "paid") return textReply(inbound, fetched, NOT_PAID_YET.has(order.status) ? "not_paid" : "not_available", signal);
+  async function buyerFirst(inbound: InboundRow, fetched: Fetched, order: { id: string; status: string }, signal: AbortSignal, retry: number): Promise<string> {
+    if (order.status !== "paid") return retry > 0 ? "retry_quiet" : textReply(inbound, fetched, NOT_PAID_YET.has(order.status) ? "not_paid" : "not_available", signal);
     const claim = await sql
       .begin(async (tx): Promise<{ context: SendContext } | Refused> => {
         const [ref] = await tx<{ id: string }[]>`SELECT id FROM public.deliveries WHERE order_id = ${order.id} AND channel = 'whatsapp'`;
@@ -572,13 +589,41 @@ export function createInboundConsumer(deps: InboundDeps): OutboxConsumer {
       });
     if ("outcome" in claim) {
       if (claim.outcome === "pool_busy") throw new Error("the number's queue is full; the reply is retried");
+      // A new try of a held-back reply: the number briefly not working, or the contact's hourly limit, is a reason to wait again, not to end the tries.
+      if (retry > 0 && (claim.outcome === "pool_unavailable" || claim.outcome === "contact_capped")) return holdAgain(inbound, order.id, retry, claim.outcome, claim.outcome);
       if (claim.outcome !== "not_pending") return claim.outcome;
+      // A new try whose row is no longer pending (another message of the buyer got the PDF, or the row was settled): nothing more is said to the buyer.
+      if (retry > 0) return "retry_settled";
       // A row that is not pending: text only, and the proactive send is not cancelled. What the text says follows the row: on its way (in
       // flight, sent, unknown), failed (the Owner is told), or withdrawn (cancelled).
       return textReply(inbound, fetched, claim.status === "failed" ? "needs_help" : claim.status === "cancelled" ? "not_available" : "already_sent", signal);
     }
     const result = await deps.delivery.perform(claim.context);
-    return result === "sent" ? "delivered" : `delivery_${result}`;
+    const outcome = result === "sent" ? "delivered" : `delivery_${result}`;
+    if (result === "pending") {
+      // Back to pending: held back on our side (tried again later, from this number to this chat), or refused by WhatsApp or WAHA (not tried again here).
+      // The row as THIS claim left it (its attempt): another message's claim that came in between is not read as this one's outcome.
+      const [row] = await sql<{ last_error: string | null }[]>`
+        SELECT last_error FROM public.deliveries WHERE id = ${claim.context.deliveryId} AND status = 'pending' AND attempts = ${claim.context.attempt}`;
+      if (row?.last_error !== undefined && row.last_error !== null && OUR_SIDE_HOLDS.has(row.last_error)) return holdAgain(inbound, order.id, retry, row.last_error, outcome);
+    }
+    return outcome;
+  }
+
+  /**
+   * The next try of a held-back PDF reply: the opener waits until after the last try (a buyer who wrote before it was due must not get it from another number
+   * meanwhile), and the message is processed again after the next wait. Past the last try, `done` is the message's outcome and nothing waits any more.
+   */
+  async function holdAgain(inbound: InboundRow, orderId: string, retry: number, code: string, done: string): Promise<string> {
+    if (retry >= PDF_RETRY_DELAYS_MS.length) return done;
+    const holdMs = PDF_RETRY_DELAYS_MS.slice(retry).reduce((sum, ms) => sum + ms, 0) + OPENER_HOLD_MARGIN_MS;
+    await sql`
+      INSERT INTO public.delivery_openers (delivery_id, next_attempt_at)
+      SELECT d.id, now() + ${holdMs} * interval '1 millisecond' FROM public.deliveries d WHERE d.order_id = ${orderId} AND d.channel = 'whatsapp'
+      ON CONFLICT (delivery_id) DO UPDATE SET next_attempt_at = GREATEST(public.delivery_openers.next_attempt_at, EXCLUDED.next_attempt_at)
+       WHERE public.delivery_openers.status = 'pending'`;
+    log.info({ inboundId: inbound.id, code, retry: retry + 1 }, "the PDF reply was held back on our side; the message is processed again later");
+    throw new OutboxDefer("pdf_held_back", new Date(Date.now() + (PDF_RETRY_DELAYS_MS[retry] ?? 0)), { pdf_retry: retry + 1 });
   }
 
   /** The order whose WhatsApp opener went out from `sessionId` to `phone` and whose delivery still awaits its reply (the newest one), or undefined. */
@@ -594,7 +639,7 @@ export function createInboundConsumer(deps: InboundDeps): OutboxConsumer {
     return found;
   }
 
-  async function handle(inbound: InboundRow, signal: AbortSignal): Promise<string> {
+  async function handle(inbound: InboundRow, signal: AbortSignal, retry: number): Promise<string> {
     const fetched = await refetch(inbound);
     if (fetched === "unverified") return "unverified";
     if (fetched.fromMe || fetched.chat.kind === "other") return "ignored";
@@ -625,12 +670,14 @@ export function createInboundConsumer(deps: InboundDeps): OutboxConsumer {
     // (`cache`) is not confirmed again by a message from its sender: it would keep itself fresh for as long as the sender wrote.
     if (verdict === "verified" && fetched.chat.kind === "lid" && resolvedPhone !== null && resolution.source !== "cache") await rememberLid(sql, resolvedPhone, fetched.chat.lid);
     // A stranger who knows an order code gets a neutral text and nothing else: no PDF, no login link, and the buyer's delivery is untouched.
+    // A new try of a held-back reply that no longer comes out as the verified buyer (an @lid link that went stale, say) says nothing: no text, no extra PDF.
+    if (retry > 0 && verdict !== "verified") return "retry_quiet";
     if (verdict === "mismatch" || verdict === "ignore") return verdict === "ignore" ? "ignored" : textReply(inbound, fetched, "mismatch", signal);
     // The order's phone was not asked about only because the sender's round was spent or the number's ceiling stopped the question, and the cache knew nothing of it: nothing
     // tells this sender from a stranger, and a stranger could have spent the round on an earlier message. No PDF: the one neutral text.
     if (verdict === "unresolved" && resolution.unasked.has(order.buyer_phone)) return textReply(inbound, fetched, "generic", signal);
     if (verdict === "unresolved") return order.status === "paid" ? pdfOnlyReply(inbound, fetched, order, signal) : textReply(inbound, fetched, "generic", signal);
-    return buyerFirst(inbound, fetched, order, signal);
+    return buyerFirst(inbound, fetched, order, signal, retry);
   }
 
   return {
@@ -639,12 +686,12 @@ export function createInboundConsumer(deps: InboundDeps): OutboxConsumer {
     // The 30 s cover the re-fetch, the lid lookup and the records around the send; the read mark and the phone-side match (an @lid sender only) come on top of them.
     leaseMs: INBOUND_EXTRA_LEASE_MS + deps.config.leaseMs,
     async perform(row, signal): Promise<FinalizeWrites | undefined> {
-      const payload = row.payload as { inbound_id?: unknown; message_id?: unknown };
+      const payload = row.payload as { inbound_id?: unknown; message_id?: unknown; pdf_retry?: unknown };
       if (!isUuid(payload.inbound_id)) throw new Error("waha.inbound payload has no valid inbound_id");
       const [inbound] = await sql<InboundRow[]>`SELECT id, message_id, session_name, from_jid, processed_at FROM public.waha_inbound WHERE id = ${payload.inbound_id}`;
       // The row is gone (deleted for compliance) or already handled: nothing to do.
       if (inbound === undefined || inbound.processed_at !== null) return undefined;
-      const outcome = inbound.message_id === payload.message_id ? await handle(inbound, signal) : "inconsistent";
+      const outcome = inbound.message_id === payload.message_id ? await handle(inbound, signal, pdfRetryOf(payload.pdf_retry)) : "inconsistent";
       return async (tx) => {
         await tx`UPDATE public.waha_inbound SET processed_at = clock_timestamp(), outcome = ${outcome} WHERE id = ${inbound.id} AND processed_at IS NULL`;
       };

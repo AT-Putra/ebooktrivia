@@ -133,7 +133,7 @@ export function createOutboxProcessor(
       try {
         await sql`
           UPDATE public.outbox
-             SET available_at = now() + ${backoffMs(row.attempts)} * interval '1 millisecond', last_error = ${message}
+             SET available_at = now() + ${backoffMs(row.attempts - row.deferrals)} * interval '1 millisecond', last_error = ${message}
            WHERE id = ${id} AND attempts = ${row.attempts} AND processed_at IS NULL`;
       } catch (backoffError) {
         // The lease still expires on its own; the consumer's error is the one that matters.

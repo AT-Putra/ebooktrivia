@@ -66,6 +66,21 @@ checks on its side, twice (every WhatsApp file send: the buyer-first PDF and the
    /healthz) refuse 10.90.55.0/24 whatever their CIDR lists hold, so a wide range there never lets the worker through. Otherwise **nothing is sent**: the delivery goes back to pending
    (`file_unavailable`, "not attempted"), the number's health is not touched, the e-mail path is unaffected, and the critical alert `delivery_not_attempted` (key `file_unavailable`) is raised.
    Fix the route (the public app's `/files/deliverables/...`, its proxy, the Valkey counter, the file on the worker's data volume) and the delivery goes out on the next attempt.
+   When the hold came from a buyer's message (the buyer-first reply), the next attempt comes on its own (Owner decision 2026-11-25). The same message is
+   processed again after 1, 2, 5, 10, 20, 30, 60 and 60 minutes, and the reply goes from the number the buyer wrote to, in that chat. That makes 8 tries
+   over about 3 hours (`PDF_RETRY_DELAYS_MS` in `apps/worker/src/delivery/inbound.ts`). The worker log says "the PDF reply was held back on our side; the
+   message is processed again later", and the message's outbox row stays unprocessed with `payload.pdf_retry` = the next try.
+   - **Which holds are retried:** only our own: `file_unavailable`, `template_invalid`, `magic_link_unavailable`, `preparation_failed`,
+     `aborted_before_send` and `claim_too_old`. A WhatsApp refusal (463/475), a check-exists answer or a WAHA failure is not retried this way.
+   - **When a try finds the PDF already gone:** another message from the buyer may have got the PDF first. The try then says nothing more (outcome
+     `retry_settled`).
+   - **When a try no longer reaches the buyer's own claim:** a refund, or an @lid sender that can no longer be matched, ends that try quietly (outcome
+     `retry_quiet`): no text and no extra PDF.
+   - **The opener during the tries:** it waits (its `next_attempt_at` is pushed past the last try), so a buyer who wrote before it was due never gets it
+     from another number meanwhile.
+   - **A busy number during the tries:** when the number is briefly not WORKING or the contact's hourly limit is reached, the try waits again instead
+     of ending the tries.
+   - **After the last try:** the delivery waits for the buyer's next message, as before.
 2. **Read-back, after the send.** The message is read back (`getMessage`) and its delivered size (`_data.size`, `mediaSize`) is compared with the stored size. A mismatch means WAHA delivered
    a different file: the delivery stays `sent` with `last_error = delivered_wrong_file`, the critical alert `delivery_wrong_file` is raised, and it is **never resent automatically**: the buyer already
    holds the message, so a person decides. The delivery report shows the code and the alert says what to do; the console cannot resend a `sent` row (the database refuses it, ET133), so the Owner

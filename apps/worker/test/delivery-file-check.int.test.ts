@@ -111,9 +111,10 @@ describe("(a) the pre-flight: nothing is sent unless the signed URL answers the 
     await createSession();
     const order = await paidOrder(shop, { waNotBefore: proactiveLater() });
     const heard = await r.hear({ session: session.name, chatId: order.chatId, body: askingFor(order.code) });
-    await heard.run();
+    // Held back on our side: the message is not done; it is tried again a minute later (inbound.ts PDF_RETRY_DELAYS_MS).
+    expect(await heard.run()).toBe("deferred");
     expect(r.waha.sent).toEqual([]);
-    expect(await inboundOf(heard.inboundId)).toMatchObject({ outcome: "delivery_pending" });
+    expect(await inboundOf(heard.inboundId)).toMatchObject({ outcome: null });
     expect(await deliveryOf(order.deliveries.whatsapp)).toMatchObject({ status: "pending", last_error: "file_unavailable" });
     expect(await sessionHealth(session.id)).toMatchObject({ fail_streak: 0, cooldown_until: null });
     const alerts = (await alertsOf("delivery_not_attempted")).filter((a) => a.dedupe_key === "delivery_not_attempted:file_unavailable");

@@ -6,7 +6,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { createDelivery, type Delivery } from "../src/delivery/deliver.ts";
-import { createInboundConsumer, INBOUND_TOPIC } from "../src/delivery/inbound.ts";
+import { createInboundConsumer, INBOUND_TOPIC, PDF_RETRY_DELAYS_MS } from "../src/delivery/inbound.ts";
 import { pdfOnlyCaption, replyText } from "../src/delivery/messages.ts";
 import { inertFailpoint } from "../src/failpoint.ts";
 import { createOutboxProcessor } from "../src/outbox-consumer.ts";
@@ -103,6 +103,11 @@ const openerSession = async (order: { deliveries: { whatsapp: string } }): Promi
   first(await sql<{ name: string; id: string }[]>`SELECT s.session_name AS name, s.id FROM delivery_openers o JOIN waha_sessions s ON s.id = o.session_id WHERE o.delivery_id = ${order.deliveries.whatsapp}`);
 
 const askingFor = (order: Pick<PaidOrder, "code">): string => `Halo, ini kode pesanan saya ${order.code} untuk Ebook.`;
+/** The outbox row of a heard message: a held-back PDF reply is deferred (not processed) with its try in the payload. */
+const outboxOf = async (id: string) =>
+  first(await sql<{ payload: { pdf_retry?: number }; available_at: Date; deferrals: number; processed_at: Date | null }[]>`SELECT payload, available_at, deferrals, processed_at FROM outbox WHERE id = ${id}`);
+/** Makes a deferred message due now (the next claim of the outbox row). */
+const dueNow = (outboxId: string) => sql`UPDATE outbox SET available_at = now() WHERE id = ${outboxId}`;
 const proactiveLater = (): Date => new Date(Date.now() + 180_000);
 
 describe("buyer-first: the sender is the buyer (criterion 3)", () => {
@@ -525,11 +530,144 @@ describe("buyer-first races and failures (criterion 5)", () => {
     const session = await createSession();
     const order = await paidOrder(shop, { waNotBefore: proactiveLater() });
     const heard = await r.hear({ session: session.name, chatId: order.chatId, body: askingFor(order) });
-    await heard.run();
+    expect(await heard.run()).toBe("deferred");
     expect(reads).toBeGreaterThanOrEqual(2);
-    expect(await inboundOf(heard.inboundId)).toMatchObject({ outcome: "delivery_pending" });
+    // Held back on our side: the message is not done, it is tried again (from the same number, to the same chat) a minute later.
+    expect(await inboundOf(heard.inboundId)).toMatchObject({ outcome: null });
+    expect((await outboxOf(heard.outboxId)).payload.pdf_retry).toBe(1);
     expect(await deliveryOf(order.deliveries.whatsapp)).toMatchObject({ status: "pending", last_error: "claim_too_old", attempts: 1, attempts_base: 1, tried_session_ids: [] });
     expect(r.waha.sent).toEqual([]);
+  });
+
+  it("a PDF reply held back on OUR side is tried again a minute later, from the number the buyer wrote to, to the same chat; it goes out once the cause is gone (Owner decision 2026-11-25)", async () => {
+    const r = rig();
+    const writtenTo = await createSession({ weight: 1 });
+    await createSession({ weight: 5 });
+    const order = await paidOrder(shop, { waNotBefore: proactiveLater() });
+    r.magic.failing = true;
+    const heard = await r.hear({ session: writtenTo.name, chatId: order.chatId, body: askingFor(order) });
+    const before = Date.now();
+    expect(await heard.run()).toBe("deferred");
+    const deferred = await outboxOf(heard.outboxId);
+    expect(deferred).toMatchObject({ deferrals: 1, processed_at: null });
+    expect(deferred.payload.pdf_retry).toBe(1);
+    expect(deferred.available_at.getTime() - before).toBeGreaterThanOrEqual((PDF_RETRY_DELAYS_MS[0] ?? 0) - 1000);
+    expect(deferred.available_at.getTime() - before).toBeLessThan((PDF_RETRY_DELAYS_MS[0] ?? 0) + 10_000);
+    expect(await inboundOf(heard.inboundId)).toMatchObject({ outcome: null });
+    expect(await deliveryOf(order.deliveries.whatsapp)).toMatchObject({ status: "pending", last_error: "magic_link_unavailable" });
+    expect(r.waha.sent).toEqual([]);
+
+    // Still held back on the next try: the wait grows (2 minutes).
+    await dueNow(heard.outboxId);
+    const again = Date.now();
+    expect(await heard.run()).toBe("deferred");
+    const second = await outboxOf(heard.outboxId);
+    expect(second.payload.pdf_retry).toBe(2);
+    expect(second.available_at.getTime() - again).toBeGreaterThanOrEqual((PDF_RETRY_DELAYS_MS[1] ?? 0) - 1000);
+
+    // The cause is gone: the same message gets the PDF, from the number the buyer wrote to, in that chat; exactly one file.
+    r.magic.failing = false;
+    await dueNow(heard.outboxId);
+    expect(await heard.run()).toBe("processed");
+    expect(await inboundOf(heard.inboundId)).toMatchObject({ outcome: "delivered" });
+    expect(r.files()).toEqual([expect.objectContaining({ session: writtenTo.name, chatId: order.chatId })]);
+    expect(await deliveryOf(order.deliveries.whatsapp)).toMatchObject({ status: "sent" });
+  });
+
+  it("the tries stop after the last wait (8 over about 3 hours): the message is done and the delivery waits for the buyer's next message", async () => {
+    expect(PDF_RETRY_DELAYS_MS).toHaveLength(8);
+    expect(PDF_RETRY_DELAYS_MS.reduce((a, b) => a + b, 0)).toBe(188 * 60_000);
+    const r = rig();
+    const session = await createSession();
+    const order = await paidOrder(shop, { waNotBefore: proactiveLater() });
+    r.magic.failing = true;
+    const heard = await r.hear({ session: session.name, chatId: order.chatId, body: askingFor(order) });
+    await sql`UPDATE outbox SET payload = payload || ${sql.json({ pdf_retry: PDF_RETRY_DELAYS_MS.length })}::jsonb WHERE id = ${heard.outboxId}`;
+    expect(await heard.run()).toBe("processed");
+    expect(await inboundOf(heard.inboundId)).toMatchObject({ outcome: "delivery_pending" });
+    expect(await deliveryOf(order.deliveries.whatsapp)).toMatchObject({ status: "pending", last_error: "magic_link_unavailable" });
+    expect(r.waha.sent).toEqual([]);
+    // The buyer's next message is answered as before.
+    r.magic.failing = false;
+    const next = await r.hear({ session: session.name, chatId: order.chatId, body: askingFor(order) });
+    expect(await next.run()).toBe("processed");
+    expect(await inboundOf(next.inboundId)).toMatchObject({ outcome: "delivered" });
+    expect(r.files()).toHaveLength(1);
+  });
+
+  it("a new try whose delivery went out meanwhile (another message of the buyer got the PDF) says nothing more: no second file, no text", async () => {
+    const r = rig();
+    const session = await createSession();
+    const order = await paidOrder(shop, { waNotBefore: proactiveLater() });
+    r.magic.failing = true;
+    const firstMessage = await r.hear({ session: session.name, chatId: order.chatId, body: askingFor(order) });
+    expect(await firstMessage.run()).toBe("deferred");
+    r.magic.failing = false;
+    const secondMessage = await r.hear({ session: session.name, chatId: order.chatId, body: askingFor(order) });
+    expect(await secondMessage.run()).toBe("processed");
+    expect(r.files()).toHaveLength(1);
+    await dueNow(firstMessage.outboxId);
+    expect(await firstMessage.run()).toBe("processed");
+    expect(await inboundOf(firstMessage.inboundId)).toMatchObject({ outcome: "retry_settled" });
+    expect(r.files()).toHaveLength(1);
+    expect(r.texts()).toEqual([]);
+  });
+
+  it("while the tries last, the opener waits: a buyer who wrote before it was due does not get it from another number meanwhile", async () => {
+    const r = rig();
+    const writtenTo = await createSession({ weight: 1 });
+    await createSession({ weight: 5 });
+    const order = await paidOrder(shop, { waNotBefore: proactiveLater() });
+    r.magic.failing = true;
+    const heard = await r.hear({ session: writtenTo.name, chatId: order.chatId, body: askingFor(order) });
+    expect(await heard.run()).toBe("deferred");
+    const opener = first(await sql<{ status: string; wait_ms: number }[]>`
+      SELECT status, (extract(epoch FROM next_attempt_at - now()) * 1000)::float8 AS wait_ms FROM delivery_openers WHERE delivery_id = ${order.deliveries.whatsapp}`);
+    expect(opener.status).toBe("pending");
+    expect(opener.wait_ms).toBeGreaterThan(PDF_RETRY_DELAYS_MS.reduce((a, b) => a + b, 0));
+    // The delivery is due for the proactive path, but its opener is not: nothing goes out from the other number.
+    await sql`UPDATE deliveries SET not_before = now() - interval '1 second' WHERE id = ${order.deliveries.whatsapp}`;
+    expect(await r.delivery.process({ id: order.deliveries.whatsapp })).not.toBe("opened");
+    expect(r.waha.sent).toEqual([]);
+  });
+
+  it("a new try after the order stopped being paid (a refund) says nothing: no text, no PDF", async () => {
+    const r = rig();
+    const session = await createSession();
+    const order = await paidOrder(shop, { waNotBefore: proactiveLater() });
+    r.magic.failing = true;
+    const heard = await r.hear({ session: session.name, chatId: order.chatId, body: askingFor(order) });
+    expect(await heard.run()).toBe("deferred");
+    await sql`UPDATE deliveries SET status = 'cancelled' WHERE order_id = ${order.orderId}`;
+    await sql`UPDATE orders SET status = 'refunded', refunded_at = now() WHERE id = ${order.orderId}`;
+    r.magic.failing = false;
+    await dueNow(heard.outboxId);
+    expect(await heard.run()).toBe("processed");
+    expect(await inboundOf(heard.inboundId)).toMatchObject({ outcome: "retry_quiet" });
+    expect(r.waha.sent).toEqual([]);
+  });
+
+  it("a retry counter past the last try (the waits were shortened, say) ends the tries; it never starts them over", async () => {
+    const r = rig();
+    const session = await createSession();
+    const order = await paidOrder(shop, { waNotBefore: proactiveLater() });
+    r.magic.failing = true;
+    const heard = await r.hear({ session: session.name, chatId: order.chatId, body: askingFor(order) });
+    await sql`UPDATE outbox SET payload = payload || ${sql.json({ pdf_retry: PDF_RETRY_DELAYS_MS.length + 5 })}::jsonb WHERE id = ${heard.outboxId}`;
+    expect(await heard.run()).toBe("processed");
+    expect(await inboundOf(heard.inboundId)).toMatchObject({ outcome: "delivery_pending" });
+  });
+
+  it("a refusal by WhatsApp (463) is not tried again this way: the message is done and the delivery stays pending", async () => {
+    const r = rig();
+    const session = await createSession();
+    const order = await paidOrder(shop, { waNotBefore: proactiveLater() });
+    r.waha.fault(session.name, "ban463");
+    const heard = await r.hear({ session: session.name, chatId: order.chatId, body: askingFor(order) });
+    expect(await heard.run()).toBe("processed");
+    expect(await inboundOf(heard.inboundId)).toMatchObject({ outcome: "delivery_pending" });
+    expect((await outboxOf(heard.outboxId)).payload.pdf_retry).toBeUndefined();
+    expect(r.files()).toEqual([]);
   });
 
   it("a reply that fails for sure leaves the delivery pending, and the opener (through another number) is the buyer's way back to the PDF", async () => {
