@@ -263,7 +263,7 @@ test("the internal trivia routes are a 404, and an unknown program is the 404 pa
 // Owner decision 2026-11-24: one shared "Butuh bantuan?" block at the end of every buyer page (apps/public components/help). The app keeps what it read of
 // the contact for 30 s and refreshes it behind a request (lib/cs/contact.ts, stale-while-revalidate): the contact is set, the 30 s are waited out, one
 // request starts the refresh and the next one shows it.
-test("the trivia pages end with the shared help block when a CS contact is set: the program page and a set, without anything personal in its links", async ({ browser }) => {
+test("the program page ends with the shared help block when a CS contact is set, without anything personal in its links; a set being played has none", async ({ browser }) => {
   test.setTimeout(150_000);
   await play.sql`DELETE FROM cs_contact`;
   await play.sql`INSERT INTO cs_contact (id, whatsapp, email, hours) VALUES (1, '+6281234567890', 'cs@contoh.id', 'Setiap hari 08.00-20.00 WIB')`;
@@ -287,8 +287,8 @@ test("the trivia pages end with the shared help block when a CS contact is set: 
     await expectAccessible(page);
     await page.goto(`/${play.programSlug}/set/1`);
     await expect(page.getByRole("heading", { name: "Set 1: Sejarah" })).toBeVisible();
-    await expect(page.getByTestId("help-block")).toHaveCount(1);
-    expect(await page.locator("main").evaluate((main) => main.lastElementChild?.getAttribute("data-testid") ?? null)).toBe("help-block");
+    // Owner decision 2026-11-25: no customer-service block while a set is played (it distracts from the question).
+    await expect(page.getByTestId("help-block")).toHaveCount(0);
     await expectAccessible(page);
   } finally {
     await context.close();

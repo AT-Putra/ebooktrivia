@@ -24,7 +24,7 @@ bypass it and two saves at the same moment cannot both pass. To move a number be
 ## 2. Where buyers see it
 
 **The help block "Butuh bantuan?"** (`components/help/help-card.tsx`): one component, the same look and the same place, at the **end of the main column**, on the order page (every state), the order lookup
-(`order.<DOMAIN>/` without an order), the login (`/login`, `/masuk`), the trivia pages (home, program, set) and the not-found and error pages. A heading, one line of context, the hours when set and the two
+(`order.<DOMAIN>/` without an order), the login (`/login`, `/masuk`), the trivia pages (home and program; not a set being played: Owner decision 2026-11-25, it distracts from the question) and the not-found and error pages. A heading, one line of context, the hours when set and the two
 buttons (both secondary, outline: the page's own primary action keeps the strongest style; 48 px tall, fits at 360 px; the buyer site has no dark theme today, the block uses the tokens). **Only the order code**, on the order page, is put in the prefilled WhatsApp text ("Halo CS, saya butuh bantuan untuk pesanan <kode>.") and
 in the mail subject; never the buyer's name, e-mail or phone, and never the order's public id. With no number and no address **nothing is rendered**: no empty card, no dead button.
 

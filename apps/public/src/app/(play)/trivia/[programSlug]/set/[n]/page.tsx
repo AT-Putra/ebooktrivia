@@ -1,10 +1,10 @@
 // play.<DOMAIN>/{programSlug}/set/{n} (US-027; src/proxy.ts rewrites it here, the route is internal): the question
 // screen of set n (1..S) of the program. The page carries NO question: the client asks the server for the current
 // one (POST /api/v1/play/attempts/current), so nothing of a question, let alone its answer, is in this HTML. A set
-// that is locked for the player goes back to the grid; a program the player may not see is the same 404.
+// that is locked for the player goes back to the grid; a program the player may not see is the same 404. No customer-service block
+// here (Owner decision 2026-11-25: it distracts while a question runs); the program page and the grid keep it.
 import type { Metadata } from "next";
 import { notFound, redirect } from "next/navigation";
-import { HelpBlock } from "../../../../../../components/help/help-block.tsx";
 import { PlaySet } from "../../../../../../components/trivia/live/play-set.tsx";
 import { SlowDown } from "../../../../../../components/trivia/live/slow-down.tsx";
 import { programView } from "../../../../../../lib/play/grid.ts";
@@ -48,7 +48,6 @@ export default async function TriviaSetPage({ params }: PageProps) {
         questionCount={tile.set.questionCount}
         attemptId={tile.set.attempt?.id ?? null}
       />
-      <HelpBlock className="mt-4" />
     </main>
   );
 }
