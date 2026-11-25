@@ -108,7 +108,12 @@ export async function startDomainSet(sql: postgres.Sql, options: DomainSetOption
       stopped = true;
       clearInterval(timer);
       if (retry !== null) clearTimeout(retry);
-      await listener.unlisten();
+      // After the LISTEN connection dropped, postgres.js reconnects it with a backoff, and UNLISTEN runs on that connection: when the database refuses it (down, or
+      // this role may not log in), postgres.js throws anything but a CONNECTION_* error. Stopping must not fail on that: the caller ends the pool next
+      // (internal.ts), which drops the connection and its LISTEN anyway. Logged, not thrown.
+      await listener.unlisten().catch((err: unknown) => {
+        options.log.warn({ err }, "lp hosts listener could not UNLISTEN on stop; it ends with the pool");
+      });
       await tail;
     },
   };
