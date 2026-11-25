@@ -175,7 +175,7 @@ export default async function DeliveryPage({ searchParams }: { searchParams: Pro
                 <TableHead>Channel</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead>Error code</TableHead>
-                {canResend ? <TableHead>Resend</TableHead> : null}
+                {canResend ? <TableHead className="text-right">Resend</TableHead> : null}
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -202,10 +202,11 @@ export default async function DeliveryPage({ searchParams }: { searchParams: Pro
                     ) : null}
                   </TableCell>
                   {canResend ? (
-                    <TableCell>
+                    // Wide enough for the confirmation's two lines: a phone's table scrolls sideways instead of folding them word by word into a tall row.
+                    <TableCell className="min-w-72 py-1.5">
                       {r.status === "failed" ? <ResendForm id={r.id} unknown={false} action={resendDeliveryAction} /> : null}
                       {r.status === "unknown" && canResendUnknown ? <ResendForm id={r.id} unknown action={resendUnknownDeliveryAction} /> : null}
-                      {r.status === "unknown" && !canResendUnknown ? <span className="text-xs text-muted-foreground">The Owner decides</span> : null}
+                      {r.status === "unknown" && !canResendUnknown ? <span className="block text-right text-xs text-muted-foreground">The Owner decides</span> : null}
                     </TableCell>
                   ) : null}
                 </TableRow>
