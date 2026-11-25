@@ -233,7 +233,8 @@ export function OrderLive({ publicId, view }: OrderLiveProps) {
       <OrderCard
         state={state}
         order={{ ref: view.code, product: view.product, amount: view.amountIdr, name: view.name, whatsapp: view.phone }}
-        links={{ trivia: view.loginHref, again: view.orderAgainHref, whatsapp: view.whatsappHref }}
+        links={{ trivia: view.loginHref, again: view.orderAgainHref, whatsapp: view.whatsappHref, whatsappPaid: view.whatsappPaidHref }}
+        paidWording={view.paidWording}
         pointToHelp={helpShown}
         polling={
           stopped ? (

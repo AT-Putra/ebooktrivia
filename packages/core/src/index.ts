@@ -6,6 +6,7 @@ export * from "./checkout.ts";
 export * from "./content-images.ts";
 export * from "./contest.ts";
 export * from "./cs-contact.ts";
+export * from "./paid-page.ts";
 export * from "./conversion-machine.ts";
 export * from "./conversions.ts";
 export * from "./delivery-machine.ts";

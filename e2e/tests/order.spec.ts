@@ -149,8 +149,15 @@ test("a paid order: the id is stripped before any vendor script, Purchase fires 
   const wa = await page.getByTestId("order-whatsapp").getAttribute("href");
   expect(wa).toMatch(/^https:\/\/wa\.me\/6281199900011\?text=/);
   expect(decodeURIComponent(wa ?? "")).toContain(order.code);
+  // WhatsApp first (2026-11-25): the big button asks our number for the ebook and the trivia access; the login is a small link under it.
+  expect(decodeURIComponent(wa ?? "")).toContain("saya mau ambil ebook");
+  await expect(page.getByTestId("order-whatsapp")).toHaveText("Ambil Ebook & Akses Trivia via WhatsApp");
+  await expect(page.getByTestId("order-body")).toHaveText(/^Langkah terakhir: chat kami di WhatsApp\./);
+  await expect(page.getByTestId("order-whatsapp-note")).toBeVisible();
   await expect(page.getByRole("link", { name: "Masuk ke Trivia" })).toHaveAttribute("href", "https://play.example.test/login");
-  await expect(page.getByText(/Tautan masuk sudah kami kirim lewat WhatsApp dan email/)).toBeVisible();
+  const [waBox, loginBox] = await Promise.all([page.getByTestId("order-whatsapp").boundingBox(), page.getByTestId("order-trivia-link").boundingBox()]);
+  expect((waBox?.y ?? 0) < (loginBox?.y ?? 0)).toBe(true);
+  expect((waBox?.height ?? 0) > (loginBox?.height ?? 0)).toBe(true);
 
   // No cookie anywhere, no CSP violation, no script error.
   expect(await context.cookies()).toEqual([]);

@@ -51,7 +51,7 @@ describe("toView", () => {
   it("passes the database's masked name and phone through, and carries nothing else personal", () => {
     expect(view.name).toBe("B*** S***");
     expect(view.phone).toBe("****890");
-    expect(Object.keys(view).sort()).toEqual(["amountIdr", "code", "loginHref", "name", "orderAgainHref", "phone", "product", "state", "vendors", "whatsappHref"]);
+    expect(Object.keys(view).sort()).toEqual(["amountIdr", "code", "loginHref", "name", "orderAgainHref", "paidWording", "phone", "product", "state", "vendors", "whatsappHref", "whatsappPaidHref"]);
     const json = JSON.stringify(view);
     for (const secret of ["1234567890123", "ABCDEFGH12345678"]) expect(json, secret).not.toContain(secret);
   });

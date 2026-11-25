@@ -174,6 +174,8 @@
     "copied": "Copied",
     "sendWhatsapp": "Send via WhatsApp",
     "whatsappText": "Hello, this is my order reference {ref} for {product}.",
+    "whatsappTextPaid": "Hello, I would like to get the {product} ebook and the trivia access. My order reference is {ref}.",
+    "alreadyHaveAccess": "Already have access?",
     "enterTrivia": "Enter Trivia",
     "enterTriviaDisabled": "Available after payment succeeds",
     "orderAgain": "Order again",
@@ -188,8 +190,8 @@
     },
     "paid": {
       "title": "Payment successful",
-      "body": "Your ebook and trivia access are being sent to your WhatsApp and email.",
-      "announce": "Payment successful. You can enter the trivia.",
+      "body": "Last step: chat with us on WhatsApp. We reply there with the ebook PDF and your trivia access.",
+      "announce": "Payment successful. Chat with us on WhatsApp to get the ebook and the trivia access.",
       "art": "Payment successful illustration"
     },
     "expired": {
@@ -214,7 +216,6 @@
       "announce": "Payment refunded."
     },
     "name": "Name",
-    "loginSent": "We sent your sign-in link by WhatsApp and email. You can also sign in with the OTP code sent to your WhatsApp.",
     "pollStopped": "Automatic checking has stopped. Check again if you have paid.",
     "checkAgain": "Check again",
     "reloadToCheck": "Reload the page to check the payment status.",

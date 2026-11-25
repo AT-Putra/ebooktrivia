@@ -9,8 +9,10 @@
 // button on Cancel or Escape, and stays there when "Yes, delete" is pressed (the button, aria-disabled while the action runs, is
 // still focusable), so the keyboard never loses its place and a refusal is read from where it already is. No native dialog.
 //
-// `resetOnSuccess` empties the fields after a saved result (a form that adds something: a second press must not add the same thing again); `describedBy` is
-// the id of what the button is about (a list of the same button for many items: the name of the item).
+// `resetOnSuccess` puts the fields back to their defaults after a saved result: it empties a form that adds something (a second press must not add the
+// same thing again), and shows a settings form the values just saved (its defaults come from the refreshed page). `describedBy` is the id of what the
+// button is about (a list of the same button for many items: the name of the item). `extra` is a second submit button of the same form, next to the
+// main one (its name/value tells the action which one was pressed), so both share the form's one confirmation or error line.
 import { type KeyboardEvent as ReactKeyboardEvent, type SubmitEvent as ReactSubmitEvent, type ReactNode, startTransition, useActionState, useEffect, useId, useRef, useState } from "react";
 import { Button } from "@ebooktrivia/ui/components/button";
 import { INITIAL_SAVE, type SaveState } from "../../lib/form-state.ts";
@@ -26,6 +28,7 @@ export function ActionForm({
   confirm,
   resetOnSuccess,
   describedBy,
+  extra,
 }: {
   action: (previous: SaveState, form: FormData) => Promise<SaveState>;
   submitLabel: string;
@@ -37,6 +40,8 @@ export function ActionForm({
   confirm?: { readonly warning: string; readonly yesLabel?: string } | undefined;
   resetOnSuccess?: boolean | undefined;
   describedBy?: string | undefined;
+  /** A second submit button of this form, shown after the main one (not in a two-step form's warning). */
+  extra?: ReactNode | undefined;
 }) {
   const [state, dispatch, pending] = useActionState(action, INITIAL_SAVE);
   const [confirming, setConfirming] = useState(false);
@@ -45,6 +50,7 @@ export function ActionForm({
   const cancel = useRef<HTMLButtonElement>(null);
   const returnFocus = useRef(false);
   const formRef = useRef<HTMLFormElement>(null);
+  const pressedExtra = useRef(false);
   const asking = confirm !== undefined && confirming;
   useEffect(() => {
     if (confirming) cancel.current?.focus();
@@ -54,7 +60,12 @@ export function ActionForm({
     }
   }, [confirming]);
   useEffect(() => {
-    if (resetOnSuccess === true && state.status === "saved") formRef.current?.reset();
+    const form = formRef.current;
+    // The prototype's reset: a control named "reset" (a second submit button's name) shadows the form's own `reset`.
+    if (resetOnSuccess === true && state.status === "saved" && form !== null) HTMLFormElement.prototype.reset.call(form);
+    // The `extra` button that was pressed may be gone now (a Reset shown only while there is something to reset): keep the keyboard in this form.
+    if (pressedExtra.current && state.status !== "idle" && (document.activeElement === null || document.activeElement === document.body)) trigger.current?.focus();
+    if (state.status !== "idle") pressedExtra.current = false;
   }, [state, resetOnSuccess]);
   const close = () => {
     returnFocus.current = true;
@@ -72,6 +83,7 @@ export function ActionForm({
     if (confirm !== undefined) returnFocus.current = true;
     setConfirming(false);
     const submitter = event.nativeEvent.submitter;
+    pressedExtra.current = submitter instanceof HTMLElement && submitter !== trigger.current;
     const data = new FormData(event.currentTarget, submitter instanceof HTMLElement ? submitter : null);
     startTransition(() => {
       dispatch(data);
@@ -116,6 +128,7 @@ export function ActionForm({
             {submitLabel}
           </Button>
         )}
+        {asking ? null : extra}
         {state.status === "saved" ? (
           <p role="status" className="text-sm" key={state.at}>
             {state.message}

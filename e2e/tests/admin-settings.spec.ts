@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Browser, type BrowserContext, expect, type Page, request, test } from "@playwright/test";
+import { PAID_PAGE_DEFAULTS, PAID_PAGE_SETTING_KEY } from "@ebooktrivia/core";
 import { makeZip } from "../../packages/uploads/test/zip-fixture.ts";
 import { type AdminEnv, consoleNavLinks, freshTotp, openConsoleNav, runAdminCli, startAdminEnv } from "../support/admin.ts";
 
@@ -805,6 +806,72 @@ test("Customer service: the Owner saves the contact, sees what buyers get, and t
       expect((box?.x ?? 0) + (box?.width ?? 0), `${label} at ${String(width)} px`).toBeLessThanOrEqual(width);
       expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
     }
+  }
+  await owner.setViewportSize({ width: 1280, height: 720 });
+});
+
+test("Page after payment: the Owner saves the three texts (trimmed), a broken one is refused, the preview shows the saved texts, and Reset brings the defaults back; 390 and 1280 px hold", async () => {
+  await admin.sql`DELETE FROM app_settings WHERE key = ${PAID_PAGE_SETTING_KEY}`;
+  await owner.goto("/settings/templates");
+  const card = owner.getByTestId("paid-page-card");
+  const form = owner.getByTestId("paid-page-form");
+  const preview = owner.getByTestId("paid-page-preview");
+  const body = form.getByLabel("Text under the title");
+  const button = form.getByLabel("Button", { exact: true });
+  const note = form.getByLabel("Line under the button");
+  const save = form.getByRole("button", { name: "Save page texts" });
+  await expect(body).toHaveValue(PAID_PAGE_DEFAULTS.body);
+  await expect(button).toHaveValue(PAID_PAGE_DEFAULTS.button);
+  await expect(note).toHaveValue(PAID_PAGE_DEFAULTS.note);
+  await expect(preview).toContainText(PAID_PAGE_DEFAULTS.button);
+  await expect(card.getByTestId("paid-page-reset")).toHaveCount(0);
+
+  // A line break is refused with a fixed message; nothing is saved and the typed text stays to be corrected.
+  await body.fill("Satu langkah lagi:\nchat kami di WhatsApp ya.");
+  await save.click();
+  await expect(form.getByTestId("form-error")).toContainText("The text under the title: 10 to 300 characters on one line");
+  expect((await admin.sql`SELECT 1 FROM app_settings WHERE key = ${PAID_PAGE_SETTING_KEY}`).length).toBe(0);
+  await expect(body).toHaveValue("Satu langkah lagi:\nchat kami di WhatsApp ya.");
+
+  // A valid wording: saved trimmed, audited, shown in the preview (an empty note shows nothing), and the fields show what was saved.
+  await body.fill("  Satu langkah lagi: chat kami di WhatsApp, ebook dan akses trivia langsung kami kirim.  ");
+  await button.fill("Chat WhatsApp sekarang");
+  await note.fill("");
+  await save.click();
+  await expect(form.getByRole("status")).toContainText("Page after payment saved");
+  const saved = { body: "Satu langkah lagi: chat kami di WhatsApp, ebook dan akses trivia langsung kami kirim.", button: "Chat WhatsApp sekarang", note: "" };
+  expect((await one(admin.sql<{ value: unknown }[]>`SELECT value FROM app_settings WHERE key = ${PAID_PAGE_SETTING_KEY}`)).value).toEqual(saved);
+  expect((await admin.sql`SELECT 1 FROM audit_log WHERE action = 'app_setting.update' AND entity_id = ${PAID_PAGE_SETTING_KEY}`).length).toBeGreaterThan(0);
+  await expect(body).toHaveValue(saved.body);
+  await expect(preview).toContainText(saved.body);
+  await expect(preview).toContainText(saved.button);
+  await expect(preview).not.toContainText(PAID_PAGE_DEFAULTS.note);
+
+  // Reset: one press, the same form's line says so, and the fields, the preview and the stored value are the defaults again.
+  await card.getByTestId("paid-page-reset").click();
+  await expect(form.getByRole("status")).toContainText("Page after payment reset to the default texts");
+  await expect(body).toHaveValue(PAID_PAGE_DEFAULTS.body);
+  await expect(button).toHaveValue(PAID_PAGE_DEFAULTS.button);
+  await expect(note).toHaveValue(PAID_PAGE_DEFAULTS.note);
+  await expect(preview).toContainText(PAID_PAGE_DEFAULTS.note);
+  await expect(card.getByTestId("paid-page-reset")).toHaveCount(0);
+  // The Reset button is gone: the keyboard stays in the form, on Save.
+  await expect(save).toBeFocused();
+  expect((await one(admin.sql<{ value: unknown }[]>`SELECT value FROM app_settings WHERE key = ${PAID_PAGE_SETTING_KEY}`)).value).toEqual(PAID_PAGE_DEFAULTS);
+
+  // 390 px and 1280 px: nothing scrolls sideways, the fields are touch-sized, and the preview's button has the buyer page's colours.
+  for (const width of [390, 1280]) {
+    await owner.setViewportSize({ width, height: 844 });
+    await owner.goto("/settings/templates");
+    await expect(save).toBeVisible();
+    expect(await owner.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth), `${String(width)} px`).toBeLessThanOrEqual(0);
+    for (const field of [body, button, note]) {
+      const box = await field.boundingBox();
+      expect((box?.x ?? 0) + (box?.width ?? 0), `field at ${String(width)} px`).toBeLessThanOrEqual(width);
+      expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
+    }
+    const cta = preview.getByText(PAID_PAGE_DEFAULTS.button);
+    expect(await cta.evaluate((el) => getComputedStyle(el).backgroundColor)).toBe("rgb(245, 158, 11)");
   }
   await owner.setViewportSize({ width: 1280, height: 720 });
 });

@@ -174,6 +174,8 @@
     "copied": "Tersalin",
     "sendWhatsapp": "Kirim via WhatsApp",
     "whatsappText": "Halo, ini kode pesanan saya {ref} untuk {product}.",
+    "whatsappTextPaid": "Halo, saya mau ambil ebook {product} dan akses trivia. Kode pesanan saya {ref}.",
+    "alreadyHaveAccess": "Sudah dapat akses?",
     "enterTrivia": "Masuk ke Trivia",
     "enterTriviaDisabled": "Tersedia setelah pembayaran berhasil",
     "orderAgain": "Pesan lagi",
@@ -188,8 +190,8 @@
     },
     "paid": {
       "title": "Pembayaran berhasil",
-      "body": "Ebook dan akses trivia sedang dikirim ke WhatsApp dan email kamu.",
-      "announce": "Pembayaran berhasil. Kamu bisa masuk ke trivia.",
+      "body": "Langkah terakhir: chat kami di WhatsApp. Ebook PDF dan akses trivia langsung kami balas di chat itu.",
+      "announce": "Pembayaran berhasil. Chat kami di WhatsApp untuk mengambil ebook dan akses trivia.",
       "art": "Ilustrasi pembayaran berhasil"
     },
     "expired": {
@@ -214,7 +216,6 @@
       "announce": "Pembayaran dikembalikan."
     },
     "name": "Nama",
-    "loginSent": "Tautan masuk sudah kami kirim lewat WhatsApp dan email. Kamu juga bisa masuk dengan kode OTP yang dikirim ke WhatsApp-mu.",
     "pollStopped": "Pemeriksaan otomatis berhenti. Periksa lagi kalau kamu sudah membayar.",
     "checkAgain": "Periksa lagi",
     "reloadToCheck": "Muat ulang halaman untuk memeriksa status pembayaran.",

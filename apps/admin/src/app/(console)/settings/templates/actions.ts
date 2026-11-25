@@ -8,6 +8,7 @@ import type { PreviewState, SaveState } from "../../../../lib/form-state.ts";
 import { adminAction } from "../../../../lib/next/actions.ts";
 import { saveResult } from "../../../../lib/next/settings-result.ts";
 import { formValue, InvalidInput, onlyFields, uuid } from "../../../../lib/settings/fields.ts";
+import { PAID_PAGE_FORM_FIELDS, parsePaidPageForm, savePaidPageWording } from "../../../../lib/settings/paid-page.ts";
 import { addOpenerWording, addTestRecipient, parseTemplate, preview, removeOpenerWording, removeTestRecipient, requestTestSend, type TemplateChannel, updateTemplate } from "../../../../lib/settings/templates.ts";
 
 const PATH = "/settings/templates";
@@ -17,6 +18,16 @@ async function stored(sql: Sql, id: string): Promise<{ key: string; channel: Tem
   if (row === undefined) throw new InvalidInput("This template no longer exists.");
   return row;
 }
+
+/** The texts of the order page after a successful payment (one wording for every program), or their defaults ("reset"); audited. */
+export const savePaidPageAction = adminAction({ permission: "message_template.edit" }, async ({ rt, admin }, _previous: SaveState, form: FormData): Promise<SaveState> =>
+  saveResult(PATH, async () => {
+    onlyFields(form, PAID_PAGE_FORM_FIELDS);
+    const reset = formValue(form, "reset") === "1";
+    await savePaidPageWording(rt.sql, admin.userId, parsePaidPageForm(form));
+    return reset ? "Page after payment reset to the default texts. Buyers see them within a minute." : "Page after payment saved. Buyers see it within a minute.";
+  }),
+);
 
 export const updateTemplateAction = adminAction({ permission: "message_template.edit" }, async ({ rt }, _previous: SaveState, form: FormData): Promise<SaveState> =>
   saveResult(PATH, async () => {

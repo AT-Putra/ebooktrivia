@@ -1,6 +1,9 @@
 import type { Metadata } from "next";
 import { Fragment } from "react";
+import { WhatsappLogoIcon } from "@phosphor-icons/react/ssr";
+import { PAID_PAGE_DEFAULTS, PAID_PAGE_LIMITS } from "@ebooktrivia/core";
 import { Badge } from "@ebooktrivia/ui/components/badge";
+import { Button } from "@ebooktrivia/ui/components/button";
 import { Card, CardDescription, CardTitle } from "@ebooktrivia/ui/components/card";
 import { ActionForm } from "../../../../components/settings/action-form.tsx";
 import { DeletedNotice } from "../../../../components/settings/deleted-notice.tsx";
@@ -10,8 +13,9 @@ import { getRuntime } from "../../../../lib/next/runtime.ts";
 import { can } from "../../../../lib/policy.ts";
 import { param, type Query } from "../../../../lib/reports/common.ts";
 import { isOpenerKey, listTemplates, listTestRecipients, OPENER_MAX_WORDINGS, OPENER_MIN_WORDINGS, TEST_RECIPIENT_MAX, TEST_SEND_CAPS, templateEntry } from "../../../../lib/settings/templates.ts";
+import { getPaidPageWording } from "../../../../lib/settings/paid-page.ts";
 import { activeSessions } from "../../../../lib/settings/waha.ts";
-import { addOpenerWordingAction, addTestRecipientAction, previewTemplateAction, removeOpenerWordingAction, removeTestRecipientAction, testSendTemplateAction, updateTemplateAction } from "./actions.ts";
+import { addOpenerWordingAction, addTestRecipientAction, previewTemplateAction, savePaidPageAction, removeOpenerWordingAction, removeTestRecipientAction, testSendTemplateAction, updateTemplateAction } from "./actions.ts";
 import { TemplateEditor } from "./template-editor.tsx";
 
 export const metadata: Metadata = { title: "Message templates | Admin Console" };
@@ -26,7 +30,8 @@ const deletedText = (asked: string): string | undefined => (asked === "wording" 
 export default async function TemplatesPage({ searchParams }: { searchParams: Promise<Query> }) {
   const admin = await requireAdmin({ permission: "message_template.edit" });
   const rt = await getRuntime();
-  const [templates, sessions, recipients] = await Promise.all([listTemplates(rt.sql), activeSessions(rt.sql), listTestRecipients(rt.sql)]);
+  const [templates, sessions, recipients, paid] = await Promise.all([listTemplates(rt.sql), activeSessions(rt.sql), listTestRecipients(rt.sql), getPaidPageWording(rt.sql)]);
+  const paidIsDefault = paid.body === PAID_PAGE_DEFAULTS.body && paid.button === PAID_PAGE_DEFAULTS.button && paid.note === PAID_PAGE_DEFAULTS.note;
   const testSend = can(admin.role, "message_template.test_send");
   const manageRecipients = can(admin.role, "test_recipient.manage");
   const deleted = deletedText(param(await searchParams, "deleted"));
@@ -38,6 +43,49 @@ export default async function TemplatesPage({ searchParams }: { searchParams: Pr
         description={`Variables: {nama} {judul_ebook} {order_id} {link_trivia} {kode_otp} {sapaan} {cs_whatsapp} {cs_email}, as each template allows. {cs_whatsapp} and {cs_email} are the customer service contact (Settings, Customer service) and only the ebook delivery texts have them; one that is not set renders as nothing, so word the sentence to read well without it. In a WhatsApp text, [[Halo|Hai]] is replaced by one of its 2 to 5 options, picked at random for each message. Test messages use sample values (never a real code or link): e-mail goes to your login address, WhatsApp to the Owner's test numbers; at most ${String(TEST_SEND_CAPS.perAdminHour)} per hour and ${String(TEST_SEND_CAPS.perAdminDay)} per day each.`}
       />
       {deleted === undefined ? null : <DeletedNotice text={deleted} />}
+      <Card data-testid="paid-page-card">
+        <CardTitle className="text-base">Page after payment</CardTitle>
+        <CardDescription>
+          What the order page tells a buyer once the payment succeeded, for every program. The big button opens a chat with our WhatsApp number with the order code
+          already typed, so our number answers with the ebook PDF and the trivia login (the buyer writes first: no opener is needed). The pre-filled message and the
+          small &quot;Sudah dapat akses? Masuk ke Trivia&quot; link under it are fixed. Plain text, one line each.
+        </CardDescription>
+        <div className="grid gap-4 lg:grid-cols-[1fr_20rem]">
+          <ActionForm
+            action={savePaidPageAction}
+            submitLabel="Save page texts"
+            testId="paid-page-form"
+            className="flex flex-col gap-3"
+            resetOnSuccess
+            extra={
+              paidIsDefault ? null : (
+                <Button type="submit" name="reset" value="1" formNoValidate variant="outline" size="sm" data-testid="paid-page-reset">
+                  Reset to the default texts
+                </Button>
+              )
+            }
+          >
+            <TextArea id="paid-body" name="body" label="Text under the title" rows={4} defaultValue={paid.body} required minLength={PAID_PAGE_LIMITS.body.min} maxLength={PAID_PAGE_LIMITS.body.max} hint={`${String(PAID_PAGE_LIMITS.body.min)} to ${String(PAID_PAGE_LIMITS.body.max)} characters.`} />
+            <TextField id="paid-button" name="button" label="Button" defaultValue={paid.button} maxLength={PAID_PAGE_LIMITS.button.max} hint={`${String(PAID_PAGE_LIMITS.button.min)} to ${String(PAID_PAGE_LIMITS.button.max)} characters.`} />
+            <TextField id="paid-note" name="note" label="Line under the button" defaultValue={paid.note} required={false} maxLength={PAID_PAGE_LIMITS.note.max} hint={`Up to ${String(PAID_PAGE_LIMITS.note.max)} characters; empty shows nothing.`} />
+          </ActionForm>
+          <figure className="flex flex-col gap-2" data-testid="paid-page-preview">
+            <figcaption className="text-xs font-medium text-muted-foreground">Saved texts, as a buyer sees them</figcaption>
+            <div className="flex flex-col gap-3 rounded-xl border bg-muted p-4 text-center">
+              <p className="font-semibold">Pembayaran berhasil</p>
+              <p className="text-sm">{paid.body}</p>
+              <span className="flex min-h-11 items-center justify-center gap-2 rounded-lg bg-buyer-cta px-3 py-2 text-sm font-semibold text-on-buyer-cta">
+                <WhatsappLogoIcon aria-hidden="true" size={18} weight="fill" />
+                {paid.button}
+              </span>
+              {paid.note === "" ? null : <p className="text-xs text-muted-foreground">{paid.note}</p>}
+              <p className="text-xs text-muted-foreground">
+                Sudah dapat akses? <span className="underline">Masuk ke Trivia</span>
+              </p>
+            </div>
+          </figure>
+        </div>
+      </Card>
       {manageRecipients ? (
         <Card data-testid="test-recipients">
           <CardTitle className="text-base">WhatsApp test numbers</CardTitle>

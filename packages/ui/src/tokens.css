@@ -27,6 +27,9 @@
   --color-on-secondary: #FFFFFF;
   --color-accent: #F59E0B;
   --color-on-accent: #0F172A;
+  /* The buyer pages' call-to-action button (trivia accent), the same in every theme: the admin previews of buyer pages use it. */
+  --color-buyer-cta: #F59E0B;
+  --color-on-buyer-cta: #0F172A;
   --color-muted: #F1F5FD;
   --color-muted-foreground: #475569;
   --color-border: #E4ECFC;
@@ -108,6 +111,9 @@
   --color-on-secondary: #0F172A;
   --color-accent: #15803D;
   --color-on-accent: #FFFFFF;
+  /* The buyer pages' call-to-action button (trivia accent), the same in every theme: the admin previews of buyer pages use it. */
+  --color-buyer-cta: #F59E0B;
+  --color-on-buyer-cta: #0F172A;
   --color-muted: #F1F5F9;
   --color-muted-foreground: #475569;
   --color-border: #CBD5E1;
@@ -154,6 +160,9 @@
   --color-on-secondary: #F8FAFC;
   --color-accent: #22C55E;
   --color-on-accent: #0F172A;
+  /* The buyer pages' call-to-action button (trivia accent), the same in every theme: the admin previews of buyer pages use it. */
+  --color-buyer-cta: #F59E0B;
+  --color-on-buyer-cta: #0F172A;
   --color-muted: #272F42;
   --color-muted-foreground: #94A3B8;
   --color-border: #475569;

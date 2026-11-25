@@ -3,6 +3,7 @@
 // public.mask_name / public.mask_phone, the product's one masking rule) and the e-mail is never read,
 // so nothing unmasked exists in this process, the HTML, the page's props or an API answer.
 import type { OrderStatus } from "@ebooktrivia/core";
+import { PAID_PAGE_DEFAULTS, type PaidPageWording } from "@ebooktrivia/core/paid-page";
 import { t } from "../t.ts";
 import type { PageState } from "./contract.ts";
 import type { OrderRecord } from "./data.ts";
@@ -34,6 +35,10 @@ export interface OrderView {
   readonly amountIdr: number;
   /** The wa.me link with the order code in its text; null when no pool number is known. */
   readonly whatsappHref: string | null;
+  /** The paid page's wa.me link: asks for the ebook and the trivia access, with the order code our number needs (buyer-first, no opener). */
+  readonly whatsappPaidHref: string | null;
+  /** The paid page's texts (the Owner's wording, or the defaults). */
+  readonly paidWording: PaidPageWording;
   /** Back to the landing page the buyer came from ("order again" / "try again"); null when it has no host. */
   readonly orderAgainHref: string | null;
   /** The OTP login on the play origin (the page carries no login token: the link was sent by WhatsApp and e-mail). */
@@ -42,12 +47,12 @@ export interface OrderView {
   readonly vendors: readonly Vendor[];
 }
 
-export function whatsappHref(poolDigits: string | undefined, code: string, product: string): string | null {
+export function whatsappHref(poolDigits: string | undefined, code: string, product: string, key: "order.whatsappText" | "order.whatsappTextPaid" = "order.whatsappText"): string | null {
   if (poolDigits === undefined) return null;
-  return `https://wa.me/${poolDigits}?text=${encodeURIComponent(t("order.whatsappText", { ref: code, product }))}`;
+  return `https://wa.me/${poolDigits}?text=${encodeURIComponent(t(key, { ref: code, product }))}`;
 }
 
-export function toView(record: OrderRecord, poolDigits: string | undefined, domain: string): OrderView {
+export function toView(record: OrderRecord, poolDigits: string | undefined, domain: string, paidWording: PaidPageWording = PAID_PAGE_DEFAULTS): OrderView {
   return {
     state: pageState(record.status),
     code: record.orderCode,
@@ -56,6 +61,8 @@ export function toView(record: OrderRecord, poolDigits: string | undefined, doma
     product: record.productTitle,
     amountIdr: record.amountIdr,
     whatsappHref: whatsappHref(poolDigits, record.orderCode, record.productTitle),
+    whatsappPaidHref: whatsappHref(poolDigits, record.orderCode, record.productTitle, "order.whatsappTextPaid"),
+    paidWording,
     orderAgainHref: record.lpHost === null ? null : `https://${record.lpHost}/`,
     loginHref: `https://play.${domain}${PLAY_LOGIN_PATH}`,
     vendors: vendorsOf(record.pixels),

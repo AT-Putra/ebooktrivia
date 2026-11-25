@@ -92,6 +92,7 @@ const GUARDS: Readonly<Record<string, string>> = {
   "(console)/settings/smtp/actions.ts#saveSmtpAction": "permission:smtp.edit",
   "(console)/settings/smtp/actions.ts#setSmtpPasswordAction": "permission:smtp.edit",
   "(console)/settings/smtp/actions.ts#clearSmtpPasswordAction": "permission:smtp.edit",
+  "(console)/settings/templates/actions.ts#savePaidPageAction": "permission:message_template.edit",
   "(console)/settings/templates/actions.ts#updateTemplateAction": "permission:message_template.edit",
   "(console)/settings/templates/actions.ts#previewTemplateAction": "permission:message_template.edit",
   "(console)/settings/templates/actions.ts#addOpenerWordingAction": "permission:message_template.edit",

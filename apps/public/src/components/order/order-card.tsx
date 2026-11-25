@@ -1,3 +1,4 @@
+import { PAID_PAGE_DEFAULTS, type PaidPageWording } from "@ebooktrivia/core/paid-page";
 import {
   ArrowUUpLeftIcon,
   CheckCircleIcon,
@@ -59,6 +60,8 @@ export interface OrderCardLinks {
   readonly again: string | null;
   /** wa.me with the order code in its text. */
   readonly whatsapp: string | null;
+  /** The paid page's wa.me (asks for the ebook and the trivia access, with the order code): the page's one big button once paid. */
+  readonly whatsappPaid?: string | null;
   /** The pending-state link to the payment page (mockup only: the live page holds no Snap data). */
   readonly payment?: string;
 }
@@ -83,9 +86,14 @@ interface OrderCardProps {
    * problem is not solved ("Hubungi CS di bawah"). The card has no help area of its own: the block is the one help on the page.
    */
   readonly pointToHelp?: boolean;
+  /** The paid page's texts (the Owner's wording from the admin, or the defaults). */
+  readonly paidWording?: PaidPageWording;
 }
 
-export function OrderCard({ state, order, links, polling, pointToHelp = false }: OrderCardProps) {
+export function OrderCard({ state, order, links, polling, pointToHelp = false, paidWording = PAID_PAGE_DEFAULTS }: OrderCardProps) {
+  // Paid (the Owner's request of 2026-11-25): WhatsApp FIRST. A buyer who writes to our number gets the PDF and the trivia login as a reply, so the
+  // number never has to write first to a stranger (an opener), which puts it at risk. Without a known pool number the login stays the way in.
+  const whatsappPaid = links.whatsappPaid ?? null;
   const { Icon, tint, art } = CONFIG[state];
   const announce = state === "pending" ? "" : t(`order.${state}.announce`);
   const pointer = pointToHelp && state !== "pending" ? t(`help.order.${state}`) : null;
@@ -102,7 +110,9 @@ export function OrderCard({ state, order, links, polling, pointToHelp = false }:
           <Icon aria-hidden="true" size={28} weight={state === "pending" ? "duotone" : "fill"} className={state === "paid" ? "check-pop" : undefined} />
         </span>
         <h1 className="font-heading text-2xl leading-tight">{t(`order.${state}.title`)}</h1>
-        <p className="max-w-[40ch] text-base">{t(`order.${state}.body`)}</p>
+        <p className="max-w-[40ch] text-base" data-testid="order-body">
+          {state === "paid" ? paidWording.body : t(`order.${state}.body`)}
+        </p>
         {pointer === null ? null : (
           <p className="max-w-[40ch] text-base font-semibold" data-testid="order-help-pointer">
             {pointer}
@@ -142,13 +152,33 @@ export function OrderCard({ state, order, links, polling, pointToHelp = false }:
       </section>
 
       <div className="flex flex-col gap-3">
-        {state === "paid" ? (
+        {state === "paid" && whatsappPaid !== null ? (
           <>
-            <Button asChild variant="cta" size="lg" className="min-h-13 w-full text-lg">
-              <a href={links.trivia}>{t("order.enterTrivia")}</a>
+            <Button asChild variant="cta" size="lg" className="h-auto min-h-13 w-full py-3 text-lg whitespace-normal">
+              <a href={whatsappPaid} target="_blank" rel="noopener noreferrer" data-testid="order-whatsapp">
+                <WhatsappLogoIcon aria-hidden="true" size={24} weight="fill" />
+                {paidWording.button}
+              </a>
             </Button>
-            <p className="text-center text-sm text-muted-foreground">{t("order.loginSent")}</p>
+            {paidWording.note === "" ? null : (
+              <p className="text-center text-sm text-muted-foreground" data-testid="order-whatsapp-note">
+                {paidWording.note}
+              </p>
+            )}
+            <p className="text-center text-sm">
+              {t("order.alreadyHaveAccess")}{" "}
+              <a href={links.trivia} className="inline-block py-2 font-semibold underline underline-offset-4" data-testid="order-trivia-link">
+                {t("order.enterTrivia")}
+              </a>
+            </p>
           </>
+        ) : null}
+        {state === "paid" && whatsappPaid === null ? (
+          <Button asChild variant="cta" size="lg" className="min-h-13 w-full text-lg">
+            <a href={links.trivia} data-testid="order-trivia-link">
+              {t("order.enterTrivia")}
+            </a>
+          </Button>
         ) : null}
         {state === "pending" ? (
           <div className="flex flex-col gap-1">
@@ -171,7 +201,7 @@ export function OrderCard({ state, order, links, polling, pointToHelp = false }:
           </Button>
         ) : null}
 
-        {(state === "pending" || state === "paid") && links.whatsapp !== null ? (
+        {state === "pending" && links.whatsapp !== null ? (
           <Button asChild variant="outline" size="lg" className="w-full">
             <a href={links.whatsapp} target="_blank" rel="noopener noreferrer" data-testid="order-whatsapp">
               <WhatsappLogoIcon aria-hidden="true" size={22} weight="fill" />

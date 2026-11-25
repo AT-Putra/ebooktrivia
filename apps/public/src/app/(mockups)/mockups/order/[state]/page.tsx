@@ -27,6 +27,7 @@ const LINKS: OrderCardLinks = {
   trivia: "/mockups/trivia",
   again: "/",
   whatsapp: `https://wa.me/?text=${encodeURIComponent(t("order.whatsappText", { ref: ORDER.ref, product: ORDER.product }))}`,
+  whatsappPaid: `https://wa.me/?text=${encodeURIComponent(t("order.whatsappTextPaid", { ref: ORDER.ref, product: ORDER.product }))}`,
   payment: "#pembayaran",
 };
 

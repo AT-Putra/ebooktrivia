@@ -21,7 +21,8 @@ function render(state: (typeof PAGE_STATES)[number], overrides: Partial<typeof v
     createElement(OrderCard, {
       state,
       order: { ref: v.code, product: v.product, amount: v.amountIdr, name: v.name, whatsapp: v.phone },
-      links: { trivia: v.loginHref, again: v.orderAgainHref, whatsapp: v.whatsappHref },
+      links: { trivia: v.loginHref, again: v.orderAgainHref, whatsapp: v.whatsappHref, whatsappPaid: v.whatsappPaidHref },
+      paidWording: v.paidWording,
     }),
   );
 }
@@ -41,20 +42,44 @@ describe("OrderCard (server render)", () => {
   it("has the WhatsApp button for a pending and a paid order, with the order code in the link", () => {
     for (const state of ["pending", "paid"] as const) {
       const html = render(state);
-      const href = /href="(https:\/\/wa\.me\/[^"]+)"/.exec(html)?.[1];
-      expect(href, state).toBeDefined();
-      expect(decodeURIComponent(href ?? "")).toContain("7K4Q9M2XJ5");
-      expect(html).toContain("Kirim via WhatsApp");
+      const hrefs = [...html.matchAll(/href="(https:\/\/wa\.me\/[^"]+)"/g)].map((m) => m[1] ?? "");
+      expect(hrefs, state).toHaveLength(1);
+      expect(decodeURIComponent(hrefs[0] ?? "")).toContain("7K4Q9M2XJ5");
     }
+    expect(render("pending")).toContain("Kirim via WhatsApp");
     expect(render("pending", { whatsappHref: null })).not.toContain("wa.me");
   });
 
-  it("shows the paid call to action as a plain link to OTP login on the play origin, and says the link was sent", () => {
+  it("makes WhatsApp the paid page's one big button (asking for the ebook and the trivia access), with the login as a small link under it", () => {
     const html = render("paid");
+    const href = /href="(https:\/\/wa\.me\/[^"]+)"/.exec(html)?.[1] ?? "";
+    expect(decodeURIComponent(href)).toBe("https://wa.me/6281111222333?text=Halo, saya mau ambil ebook Ebook Trivia dan akses trivia. Kode pesanan saya 7K4Q9M2XJ5.");
+    // The WhatsApp button comes first, then the note, then the small login link.
+    const wa = html.indexOf('data-testid="order-whatsapp"');
+    const note = html.indexOf('data-testid="order-whatsapp-note"');
+    const login = html.indexOf('data-testid="order-trivia-link"');
+    expect(wa).toBeGreaterThan(-1);
+    expect(note).toBeGreaterThan(wa);
+    expect(login).toBeGreaterThan(note);
+    expect(html).toContain("Ambil Ebook &amp; Akses Trivia via WhatsApp");
+    expect(html).toContain("Langkah terakhir: chat kami di WhatsApp.");
+    expect(html).toContain("Sudah dapat akses?");
     expect(html).toContain('href="https://play.example.test/login"');
-    expect(html).toContain("Masuk ke Trivia");
-    expect(html).toContain("WhatsApp dan email");
+    expect(html).not.toContain("Kirim via WhatsApp");
     expect(html).not.toMatch(/token|magic|[?&]t=|[?&]code=/i);
+  });
+
+  it("shows the Owner's wording on the paid page; an empty note shows nothing", () => {
+    const html = render("paid", { paidWording: { body: "Satu langkah lagi, chat kami ya.", button: "Chat WhatsApp sekarang", note: "" } });
+    expect(html).toContain("Satu langkah lagi, chat kami ya.");
+    expect(html).toContain("Chat WhatsApp sekarang");
+    expect(html).not.toContain('data-testid="order-whatsapp-note"');
+  });
+
+  it("keeps the login as the paid page's big button when no WhatsApp number is known", () => {
+    const html = render("paid", { whatsappHref: null, whatsappPaidHref: null });
+    expect(html).not.toContain("wa.me");
+    expect(html).toMatch(/<a[^>]*href="https:\/\/play\.example\.test\/login"[^>]*data-testid="order-trivia-link"/);
   });
 
   it("disables the trivia button while pending and has no login link", () => {

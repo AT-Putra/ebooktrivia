@@ -5,7 +5,7 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { OrderLive } from "../../../components/order/order-live.tsx";
-import { getOrderStatus, isPublicId, poolNumber } from "../../../lib/order/data.ts";
+import { getOrderStatus, isPublicId, paidPageWording, poolNumber } from "../../../lib/order/data.ts";
 import { toView } from "../../../lib/order/view.ts";
 import { getRuntime } from "../../../lib/runtime.ts";
 import { t } from "../../../lib/t.ts";
@@ -28,5 +28,6 @@ export default async function OrderPage({ params }: PageProps) {
   const { order } = await getRuntime();
   const record = await getOrderStatus(order.sql, publicId);
   if (record === undefined) notFound();
-  return <OrderLive publicId={publicId} view={toView(record, await poolNumber(order.sql), order.domain)} />;
+  const [pool, wording] = await Promise.all([poolNumber(order.sql), paidPageWording(order.sql)]);
+  return <OrderLive publicId={publicId} view={toView(record, pool, order.domain, wording)} />;
 }

@@ -2,6 +2,7 @@
 // packages/db/sql/functions.sql (get_order_status, claim_browser_mt), and the pool number of the
 // "Kirim via WhatsApp" button. The publicId is the page's capability: every function takes it as the one
 // key, answers an unknown id with no row, and never raises for a malformed one.
+import { PAID_PAGE_DEFAULTS, PAID_PAGE_SETTING_KEY, type PaidPageWording, paidPageWordingOf } from "@ebooktrivia/core/paid-page";
 import { PUBLIC_ID_PATTERN } from "@ebooktrivia/core/public-id";
 import type { Sql } from "../db.ts";
 import { idrOf } from "../checkout/data.ts";
@@ -61,6 +62,19 @@ export async function claimBrowserMt(sql: Sql, publicId: string): Promise<Browse
     SELECT order_id, event_id, amount_idr::text AS amount_idr, pixels FROM public.claim_browser_mt(${publicId})`;
   if (row === undefined) return undefined;
   return { eventId: row.event_id, transactionId: row.order_id, valueIdr: idrOf(row.amount_idr), pixels: parsePixelIds(row.pixels) };
+}
+
+/**
+ * The texts of the page after a successful payment (the Owner's, admin Message templates; core paid-page.ts): read with the order, and the defaults
+ * when nothing is saved, a stored text breaks a rule, or the read fails (the page never waits on, or breaks over, its wording).
+ */
+export async function paidPageWording(sql: Sql): Promise<PaidPageWording> {
+  try {
+    const [row] = await sql<{ value: unknown }[]>`SELECT value FROM public.app_settings WHERE key = ${PAID_PAGE_SETTING_KEY}`;
+    return paidPageWordingOf(row?.value);
+  } catch {
+    return PAID_PAGE_DEFAULTS;
+  }
 }
 
 /**

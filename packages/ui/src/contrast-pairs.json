@@ -11,6 +11,7 @@
     { "fg": "on-primary", "bg": "primary", "level": "text" },
     { "fg": "on-secondary", "bg": "secondary", "level": "text" },
     { "fg": "on-accent", "bg": "accent", "level": "text" },
+    { "fg": "on-buyer-cta", "bg": "buyer-cta", "level": "text" },
     { "fg": "on-destructive", "bg": "destructive", "level": "text" },
     { "fg": "on-primary", "bg": "primary-hover", "level": "text" },
     { "fg": "on-secondary", "bg": "secondary-hover", "level": "text" },
